@@ -270,6 +270,116 @@ export const routes: Record<string, any> = {
     }),
   },
   "/v1/agents/:id/upgrade": { POST: h((req) => { const u = userOf(req); agentFor(req.params.id, u.id); return json(tpl.upgradeInstance(req.params.id)); }) },
+  "/v1/agents/:id/test-room": { POST: h((req) => {
+    const u = userOf(req), a = agentFor(req.params.id, u.id);
+    const r = one<any>(`select r.* from rooms r join room_members m on m.room_id=r.id where r.mode='test' and r.status='active' and m.principal_id=? and exists
+      (select 1 from room_members x where x.room_id=r.id and x.principal_id=?)`, u.id, a.id)
+      ?? rt.createRoom({ workspace_id: a.workspace_id, name: `Test · ${a.name}`, kind: "private", participation: "manager", mode: "test", members: [{ id: u.id, kind: "human" }, { id: a.id, kind: "agent" }] });
+    return json(r);
+  }) },
+  "/v1/agents/:id/deploy": { GET: h((req) => {
+    const u = userOf(req), a = agentFor(req.params.id, u.id);
+    const dm = rt.privateRoomFor(u.id, a);
+    const connected = all<any>(`select e.platform, e.external_conversation_id conv, e.is_group, r.name room, r.id room_id from room_endpoints e join rooms r on r.id=e.room_id
+      where (e.agent_id=? or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?)) and r.status='active' and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?))`, a.id, a.id, u.id);
+    const slackTeams = all<any>("select id, json_extract(config, '$.team_name') team from channel_identities where platform='slack' and agent_id is null and json_extract(config, '$.workspace_id')=?", a.workspace_id);
+    const t = (platform: string, extra: any = {}) => ({ platform, connected: connected.filter((c) => c.platform === platform), ...extra });
+    return json({ targets: [
+      t("web", { available: true, url: `${pub()}/#/rooms/${dm.id}` }),
+      t("mobile", { available: true, url: `${pub()}/#/rooms/${dm.id}`, hint: "Open on your phone and choose Share → Add to Home Screen." }),
+      ...["imessage", "whatsapp", "telegram"].map((p) => t(p, { available: !!ch.sharedIdentity(p), address: ch.sharedIdentity(p)?.address, groups: p !== "whatsapp" })),
+      t("slack", { available: !!process.env.SLACK_CLIENT_ID, installed: slackTeams, install_url: `/v1/slack/install?agent=${a.id}` }),
+      t("email", { available: !!ch.sharedIdentity("email"), address: a.email_alias && process.env.SHARED_EMAIL_DOMAIN ? `${a.email_alias}@${process.env.SHARED_EMAIL_DOMAIN}` : null }),
+    ], advanced: agentView(a).channels });
+  }) },
+  "/v1/agents/:id/deploy/:platform": { POST: h(async (req) => {
+    const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req), p = req.params.platform, kind = b.kind === "group" ? "group" : "dm";
+    member(a.workspace_id, u.id);
+    const plan = one<any>("select plan from workspaces where id=?", a.workspace_id).plan;
+    if (!PLANS[plan].channels.includes(p)) fail(402, `${p} isn't included in the ${plan} plan`);
+    if (p === "email") {
+      if (!ch.sharedIdentity("email")) fail(501, "agent email isn't configured on this platform (SHARED_EMAIL_DOMAIN)");
+      const alias = a.email_alias ?? `${a.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}-${a.id.slice(-4)}`;
+      exec("update agents set email_alias=? where id=?", alias, a.id);
+      return json({ address: `${alias}@${process.env.SHARED_EMAIL_DOMAIN}`, instructions: `Email or CC ${alias}@${process.env.SHARED_EMAIL_DOMAIN}; replies thread by subject.` });
+    }
+    if (!["imessage", "whatsapp", "telegram", "slack"].includes(p)) fail(400, "unknown platform");
+    const ident = p === "slack" ? null : ch.sharedIdentity(p) ?? fail(501, `${p} isn't set up on this platform yet`);
+    const code = ch.createDeployCode(a.id, u.id, p, kind);
+    const addr = ident?.address ?? "";
+    const msg = `${kind === "group" ? "join" : "start"} ${code}`;
+    const link = p === "imessage" && kind === "dm" ? `sms:${addr}?&body=${encodeURIComponent(msg)}`
+      : p === "whatsapp" ? `https://wa.me/${addr.replace(/\D/g, "")}?text=${encodeURIComponent(msg)}`
+      : p === "telegram" ? `https://t.me/${addr}?${kind === "group" ? "startgroup" : "start"}=${code}` : null;
+    const instructions = kind === "dm" ? `Tap the button on your phone (or send "${msg}" to ${addr || "the bot"}).`
+      : p === "imessage" ? `Add ${addr} to your group chat, then send "${msg}" in the group.`
+      : p === "telegram" ? `Tap the button to pick a group — ${a.name} joins automatically.` : `In the Slack channel, send "@${a.name} ${msg}".`;
+    return json({ code, message: msg, link, address: addr, instructions, expires_in_days: 7 });
+  }) },
+  "/v1/slack/install": { GET: h((req) => {
+    const u = userOf(req), agentId = new URL(req.url).searchParams.get("agent") ?? "", a = agentFor(agentId, u.id);
+    if (!process.env.SLACK_CLIENT_ID) fail(501, "Slack isn't configured (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_SIGNING_SECRET)");
+    const state = Buffer.from(seal({ ws: a.workspace_id, user: u.id, agent: a.id, exp: now() + 6e5 })).toString("base64url");
+    const p = new URLSearchParams({ client_id: process.env.SLACK_CLIENT_ID!, redirect_uri: `${pub()}/v1/slack/oauth/callback`, state,
+      scope: "app_mentions:read,channels:history,channels:join,channels:read,chat:write,groups:history,groups:read,im:history,im:write,users:read" });
+    return Response.redirect(`https://slack.com/oauth/v2/authorize?${p}`, 302);
+  }) },
+  "/v1/slack/oauth/callback": { GET: h(async (req) => {
+    const q = new URL(req.url).searchParams;
+    const st = unseal<any>(Buffer.from(q.get("state") ?? "", "base64url").toString());
+    if (!st || st.exp < now()) fail(400, "expired state");
+    const r: any = await (await fetch("https://slack.com/api/oauth.v2.access", { method: "POST", body: new URLSearchParams({ code: q.get("code") ?? "",
+      client_id: process.env.SLACK_CLIENT_ID!, client_secret: process.env.SLACK_CLIENT_SECRET!, redirect_uri: `${pub()}/v1/slack/oauth/callback` }) })).json();
+    if (!r.ok) fail(400, `Slack install failed: ${r.error}`);
+    exec(`insert into channel_identities (id, agent_id, platform, address, secret_enc, config, created_at) values (?, null, 'slack', ?, ?, ?, ?)
+      on conflict(id) do update set secret_enc=excluded.secret_enc, config=excluded.config`, `chi_slack_${r.team.id}`, r.team.name,
+      seal({ bot_token: r.access_token, signing_secret: process.env.SLACK_SIGNING_SECRET }), S({ team_id: r.team.id, team_name: r.team.name, bot_user_id: r.bot_user_id, workspace_id: st.ws, shared: true }), now());
+    emit("SLACK_INSTALLED", { workspace_id: st.ws, actor: st.user, data: { team: r.team.name } });
+    return Response.redirect(`${pub()}/#/agents/${st.agent}/deploy`, 302);
+  }) },
+  "/v1/agents/:id/slack/channels": {
+    GET: h(async (req) => {
+      const u = userOf(req), a = agentFor(req.params.id, u.id);
+      const out: any[] = [];
+      for (const ci of all<any>("select * from channel_identities where platform='slack' and agent_id is null and json_extract(config, '$.workspace_id')=?", a.workspace_id)) {
+        const r: any = await (await fetch("https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200", { headers: { authorization: `Bearer ${unseal<any>(ci.secret_enc).bot_token}` } })).json();
+        for (const c of r.channels ?? []) out.push({ identity: ci.id, team: J(ci.config).team_name, id: c.id, name: c.name, private: c.is_private });
+      }
+      return json(out);
+    }),
+    POST: h(async (req) => {
+      const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req);
+      const ci = one<any>("select * from channel_identities where id=? and platform='slack' and json_extract(config, '$.workspace_id')=?", b.identity, a.workspace_id) ?? fail(400, "Slack isn't installed for this workspace");
+      if (one("select 1 from room_endpoints where channel_identity_id=? and external_conversation_id=?", ci.id, b.channel_id)) fail(409, "that channel is already connected");
+      await fetch("https://slack.com/api/conversations.join", { method: "POST", headers: { authorization: `Bearer ${unseal<any>(ci.secret_enc).bot_token}`, "content-type": "application/json" }, body: S({ channel: b.channel_id }) });
+      const room = rt.createRoom({ workspace_id: a.workspace_id, name: `#${b.name ?? b.channel_id}`, kind: "shared", participation: "mention_only", members: [{ id: u.id, kind: "human" }, { id: a.id, kind: "agent" }] });
+      ch.attachEndpoint(room.id, "slack", b.channel_id, ci.id, true, a.id);
+      return json({ room_id: room.id });
+    }),
+  },
+  "/v1/overview": { GET: h((req) => {
+    // Account level: every agent across the user's workspaces — what it does, where it lives, what it's working on.
+    const u = userOf(req), d = new Date(now()), month = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+    return json(all<any>("select w.id, w.name, m.role from workspaces w join memberships m on m.workspace_id=w.id where m.user_id=? and w.kind!='trial'", u.id).map((w) => ({
+      workspace: w, agents: all<any>("select * from agents where workspace_id=? and status!='deleted'", w.id).map((a) => ({
+        id: a.id, name: a.name, avatar: a.avatar, job: a.job, status: a.status, skills: J(a.skills, []),
+        deployed: [...new Set(["web", ...all<any>(`select e.platform from room_endpoints e where e.agent_id=? or e.room_id in (select room_id from room_members where principal_id=?)`, a.id, a.id).map((x) => x.platform)])],
+        connections: all<any>("select c.provider, c.account from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.status='active'", a.id),
+        open_tasks: one<any>("select count(*) n from tasks t join room_members m on m.room_id=t.room_id where m.principal_id=? and t.status!='done'", a.id).n,
+        active_runs: one<any>("select count(*) n from runs where agent_id=? and status not in ('completed','failed_terminal','cancelled')", a.id).n,
+        completed_this_month: one<any>("select count(*) n from runs where agent_id=? and status='completed' and completed_at>=?", a.id, month).n,
+        memories: one<any>("select count(*) n from memories where scope_type='agent' and scope_id=?", a.id).n,
+        spend_this_month: one<any>("select round(coalesce(sum(cost_usd),0), 2) s from usage where agent_id=? and ts>=?", a.id, month).s,
+        last_active: one<any>("select max(ts) t from events where actor=?", a.id).t,
+      })),
+    })));
+  }) },
+  "/v1/tasks": { GET: h((req) => {
+    const u = userOf(req), q = new URL(req.url).searchParams, ws = q.get("workspace"); member(ws, u.id);
+    const vis = visibleRooms(ws!, u.id);
+    return json(all<any>("select t.*, r.name room_name from tasks t join rooms r on r.id=t.room_id where r.workspace_id=? and coalesce(r.mode,'live')='live' order by t.status='done', t.updated_at desc limit 300", ws)
+      .filter((t) => vis.has(t.room_id) && (q.get("mine") !== "1" || t.owner === u.id)).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner), agent: rt.roomAgents(t.room_id)[0]?.name })));
+  }) },
   "/v1/agents/:id/private-room": { POST: h((req) => { const u = userOf(req); const a = agentFor(req.params.id, u.id); return json(rt.privateRoomFor(u.id, a)); }) },
   "/v1/agents/:id/channels": { POST: h(async (req) => {
     const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req);
@@ -288,7 +398,7 @@ export const routes: Record<string, any> = {
     GET: h((req) => { const u = userOf(req), ws = new URL(req.url).searchParams.get("workspace"); member(ws, u.id);
       return json(all<any>(`select r.*, (select count(*) from room_members m where m.room_id=r.id and m.kind='human') humans, (select count(*) from room_members m where m.room_id=r.id and m.kind='agent') agents,
         (select max(ts) from events e where e.room_id=r.id) last_ts, (select count(*) from approvals a where a.room_id=r.id and a.status='pending') pending
-        from rooms r where r.workspace_id=? and r.status='active' and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?)) order by last_ts desc`, ws, u.id)); }),
+        from rooms r where r.workspace_id=? and r.status='active' and coalesce(r.mode,'live')='live' and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?)) order by last_ts desc`, ws, u.id)); }),
     POST: h(async (req) => {
       const u = userOf(req), b = await body(req); member(b.workspace_id, u.id);
       const members = [{ id: u.id, kind: "human" as const }, ...(b.agent_ids ?? []).map((x: string) => { agentFor(x, u.id, b.workspace_id); return { id: x, kind: "agent" as const }; }),
@@ -647,8 +757,11 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/catalog": { GET: () => json({ skills: Object.values(tpl.SKILLS), tools: Object.values(TOOLS).map(({ execute, summarize, ...t }) => t), plans: PLANS }) },
 
+  "/v1/webhooks/slack/app": h(async (req) => { const r = await ch.handleSlackApp(req); kick(); return r; }),
   "/v1/webhooks/:platform/:cid": h(async (req) => { const r = await ch.handleWebhook(req.params.platform, req.params.cid, req); kick(); return r; }),
   "/v1/*": () => err(404, "not found"),
+  "/manifest.webmanifest": () => new Response(Bun.file(new URL("../public/manifest.webmanifest", import.meta.url).pathname), { headers: { "content-type": "application/manifest+json" } }),
+  "/icon.svg": () => new Response(Bun.file(new URL("../public/icon.svg", import.meta.url).pathname), { headers: { "content-type": "image/svg+xml" } }),
   "/*": app,
 };
 

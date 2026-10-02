@@ -70,6 +70,7 @@ create table if not exists custom_skills (id text primary key, agent_id text, wo
   signature text, created_by text, created_at int);
 create table if not exists files (id text primary key, workspace_id text, room_id text, name text, mime text, size int, data blob, text text,
   uploaded_by text, created_at int);
+create table if not exists deploy_codes (code text primary key, agent_id text, user_id text, platform text, kind text, expires_at int, used_at int);
 create table if not exists usage (id integer primary key autoincrement, workspace_id text, agent_id text, run_id text, kind text, qty real,
   cost_usd real default 0, byok int default 0, ts int);
 create table if not exists provider_keys (workspace_id text, provider text, key_enc text, primary key (workspace_id, provider));
@@ -89,7 +90,7 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
   db.exec(SCHEMA);
   // Additive migrations for databases created by earlier versions.
   for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
-    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
+    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
     if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
   }
   db.exec(`update templates set published_version=latest_version where published_version is null and status='published';

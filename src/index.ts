@@ -2,9 +2,11 @@ import { openDb } from "./db";
 import { seedFirstParty } from "./templates";
 import { recover } from "./runtime";
 import { serve, worker } from "./server";
+import { ensureSharedIdentities } from "./channels";
 
 openDb();
 seedFirstParty();
+ensureSharedIdentities();
 const recovered = recover();
 if (recovered) console.log(`[boot] re-queued ${recovered} interrupted runs`);
 const server = serve();

@@ -403,7 +403,12 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
   if (bad) return { kind: "result", status: "FAILED", content: `FAILED: invalid input — ${bad}` };
 
   const humans = rt.roomHumanIds(room.id);
-  const conn = d.requiresConnection ? resolveConnection(d.requiresConnection, agent.id, run, humans) : null;
+  let conn = d.requiresConnection ? resolveConnection(d.requiresConnection, agent.id, run, humans) : null;
+  // Test mode: the full pipeline runs (policy, approvals, trace), but nothing leaves the platform.
+  const testMode = room.mode === "test";
+  const simulateWrite = testMode && (["write_external", "destructive", "financial"].includes(d.risk) || d.id.startsWith("mcp."));
+  const simulateRead = testMode && !!d.requiresConnection && (!conn || conn.status !== "active");
+  if (simulateRead) conn = { id: "sim", owner_id: run.requested_by, visibility: "workspace", status: "active", granted: 1, account: "sample data" };
   const fp = fingerprint(run.id, call.name, call.input);
   const spent = J(run.spent, {}), budget = J(run.budget, {});
   if ((spent.toolCalls ?? 0) >= (budget.maxToolCalls ?? 25)) return { kind: "result", status: "FAILED", content: "FAILED: tool call budget for this run is exhausted" };
@@ -443,7 +448,7 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
     exId, run.id, d.id, fp, "started", S(call.input), conn?.id ?? null, now());
   const ctx: ToolCtx = { run, agent, room, idempotencyKey: fp, connection: conn ? { id: conn.id, cred: unseal(conn.cred_enc), account: conn.account } : undefined };
   try {
-    const out = await d.execute(call.input, ctx);
+    const out = simulateWrite || simulateRead ? simulate(d, call.input, simulateRead) : await d.execute(call.input, ctx);
     const stored = { ...out.output, __untrusted: !!out.untrusted, __status: out.status };
     exec("update tool_executions set status=?, result=?, updated_at=? where id=?", out.status === "UNKNOWN" ? "unknown" : "succeeded", S(stored), now(), exId);
     if (conn) exec("update connections set last_used_at=? where id=?", now(), conn.id);
@@ -481,6 +486,19 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
     exec("delete from tool_executions where id=?", exId);
     return { kind: "result", status: "FAILED", content: `FAILED: ${e.message}` };
   }
+}
+
+const SAMPLES: Record<string, (i: any) => any> = {
+  "calendar.list_events": () => ({ events: [{ summary: "Team sync (sample)", start: new Date(now() + 864e5).toISOString() }, { summary: "Dinner (sample)", start: new Date(now() + 2 * 864e5).toISOString() }] }),
+  "calendar.find_free_time": (i) => ({ slots: [1, 2, 3].map((d) => ({ start: new Date(now() + d * 864e5).toISOString() })), duration_minutes: i.duration_minutes ?? 30 }),
+  "email.search": () => ({ messages: [{ from: "sam@example.com (sample)", subject: "Re: plans", snippet: "Sounds good — Friday works." }] }),
+  "contacts.search": (i) => ({ people: [{ name: `${i.query} (sample)`, emails: [`${String(i.query).toLowerCase()}@example.com`] }] }),
+  "drive.search": (i) => ({ files: [{ id: "sample", name: `${i.query} (sample)`, webViewLink: "https://example.com/doc" }] }),
+};
+/** Test-mode result: what would have happened, without doing it. */
+function simulate(d: ToolDef, input: any, sampleRead: boolean): ToolOutcome {
+  if (sampleRead) return { status: "SUCCEEDED", output: { ...(SAMPLES[d.id]?.(input) ?? { note: "sample result" }), sample: "test mode: sample data, connect the account for real results" } };
+  return { status: "SUCCEEDED", output: { simulated: true, would: d.summarize?.(input) ?? `${d.id} ${JSON.stringify(input).slice(0, 120)}`, note: "test mode — nothing was sent or booked" } };
 }
 
 /** Label tool output by origin so the model treats it as data, never instructions (plan §21.2). */

@@ -10,9 +10,9 @@ export type Platform = "web" | "telegram" | "slack" | "whatsapp" | "email" | "im
 export interface InboundEvent {
   provider: Platform; providerEventId: string; conversationId: string; isGroup: boolean;
   senderId: string; senderName?: string; type: "message" | "button_clicked" | "email_received";
-  text: string; data?: string; subject?: string;
+  text: string; data?: string; subject?: string; to?: string[];
 }
-interface Outbound { text: string; agentName?: string; buttons?: { label: string; data: string }[] }
+interface Outbound { text: string; agentName?: string; agentAlias?: string; buttons?: { label: string; data: string }[] }
 interface Adapter {
   verify(raw: string, h: Headers, secret: any, url: string): boolean;
   parse(raw: string, ident: any): InboundEvent[];
@@ -68,7 +68,7 @@ export const ADAPTERS: Record<string, Adapter> = {
       }
       const b = JSON.parse(raw), e = b.event;
       if (b.type !== "event_callback" || !e || e.bot_id || e.subtype || !["message", "app_mention"].includes(e.type)) return [];
-      const text = cfg.bot_user_id ? e.text.replaceAll(`<@${cfg.bot_user_id}>`, `@${ident.agent_name}`) : e.text;
+      const text = cfg.bot_user_id && ident.agent_name ? e.text.replaceAll(`<@${cfg.bot_user_id}>`, `@${ident.agent_name}`) : e.text;
       // message + app_mention both fire for one post: dedupe on channel+ts.
       return [{ provider: "slack", providerEventId: `${e.channel}:${e.ts}`, conversationId: e.channel, isGroup: e.channel_type !== "im",
         senderId: e.user, senderName: e.user_profile?.real_name, type: "message", text }];
@@ -122,11 +122,13 @@ export const ADAPTERS: Record<string, Adapter> = {
       const d = e.data, from = (d.from.match(/<([^>]+)>/)?.[1] ?? d.from).toLowerCase();
       const body = String(d.text ?? (d.html ?? "").replace(/<[^>]+>/g, " ")).split(/\nOn .+wrote:\n|\n>/)[0].trim();
       return [{ provider: "email", providerEventId: d.email_id ?? d.id, conversationId: from, isGroup: false, senderId: from,
-        senderName: d.from.replace(/<.*>/, "").trim() || from, type: "email_received", text: body || d.subject, subject: d.subject }];
+        senderName: d.from.replace(/<.*>/, "").trim() || from, type: "email_received", text: body || d.subject, subject: d.subject,
+        to: [].concat(d.to ?? []).map((x: string) => (x.match(/<([^>]+)>/)?.[1] ?? x).toLowerCase()) }];
     },
     async send(i, s, ep, m, idem) {
       const cfg = J(ep.config, {});
-      const r: any = await post("https://api.resend.com/emails", { from: `${m.agentName} <${i.address}>`, to: [ep.external_conversation_id],
+      const from = i.agent_id ? i.address : `${(m as any).agentAlias ?? "agent"}@${i.address}`;
+      const r: any = await post("https://api.resend.com/emails", { from: `${m.agentName} <${from}>`, to: [ep.external_conversation_id],
         subject: cfg.subject ? `Re: ${cfg.subject.replace(/^re:\s*/i, "")}` : `Message from ${m.agentName}`,
         text: m.buttons?.length ? `${m.text}\n\nReply with: ${m.buttons.map((b) => b.label.toLowerCase()).join(" / ")}` : m.text }, { authorization: `Bearer ${s.resend_api_key}`, "idempotency-key": idem });
       return r.id;
@@ -170,7 +172,66 @@ export function addChannelIdentity(agentId: string, platform: Platform, address:
     cid, agentId, platform, address, seal(secret ?? {}), S(config), now());
   return one<any>("select id, agent_id, platform, address, config from channel_identities where id=?", cid);
 }
-const identity = (cid: string) => one<any>("select ci.*, a.name agent_name from channel_identities ci join agents a on a.id=ci.agent_id where ci.id=?", cid);
+const identity = (cid: string) => one<any>("select ci.*, a.name agent_name from channel_identities ci left join agents a on a.id=ci.agent_id where ci.id=?", cid);
+
+// ---------------- platform-owned shared lines (one-click deploy) ----------------
+// One iMessage line / WhatsApp number / Telegram bot / email domain serves every agent. A conversation is bound to an
+// agent by a deploy code ("start 12345678") sent from the user's phone; groups are bound the same way ("join 12345678").
+export const SHARED_ENV: Record<string, { id: string; address: () => string | undefined; secret: () => any; config: () => any }> = {
+  imessage: { id: "chi_shared_imessage", address: () => process.env.SHARED_IMESSAGE_LINE,
+    secret: () => ({ api_url: process.env.SHARED_IMESSAGE_API_URL, api_key: process.env.SHARED_IMESSAGE_API_KEY, webhook_secret: process.env.SHARED_IMESSAGE_WEBHOOK_SECRET }), config: () => ({}) },
+  whatsapp: { id: "chi_shared_whatsapp", address: () => process.env.SHARED_WHATSAPP_NUMBER,
+    secret: () => ({ access_token: process.env.SHARED_WHATSAPP_ACCESS_TOKEN, app_secret: process.env.SHARED_WHATSAPP_APP_SECRET, verify_token: process.env.SHARED_WHATSAPP_VERIFY_TOKEN }),
+    config: () => ({ phone_number_id: process.env.SHARED_WHATSAPP_PHONE_NUMBER_ID }) },
+  telegram: { id: "chi_shared_telegram", address: () => process.env.SHARED_TELEGRAM_BOT_USERNAME,
+    secret: () => ({ bot_token: process.env.SHARED_TELEGRAM_BOT_TOKEN, webhook_secret: process.env.SHARED_TELEGRAM_WEBHOOK_SECRET }), config: () => ({ username: process.env.SHARED_TELEGRAM_BOT_USERNAME }) },
+  email: { id: "chi_shared_email", address: () => process.env.SHARED_EMAIL_DOMAIN,
+    secret: () => ({ resend_api_key: process.env.RESEND_API_KEY, webhook_secret: process.env.RESEND_WEBHOOK_SECRET }), config: () => ({}) },
+};
+export function ensureSharedIdentities() {
+  for (const [platform, s] of Object.entries(SHARED_ENV)) {
+    if (!s.address()) continue;
+    exec(`insert into channel_identities (id, agent_id, platform, address, secret_enc, config, created_at) values (?, null, ?, ?, ?, ?, ?)
+      on conflict(id) do update set address=excluded.address, secret_enc=excluded.secret_enc, config=excluded.config`, s.id, platform, s.address()!, seal(s.secret()), S({ ...s.config(), shared: true }), now());
+  }
+}
+export const sharedIdentity = (platform: string) => one<any>("select * from channel_identities where id=? and agent_id is null", SHARED_ENV[platform]?.id ?? "-");
+
+export function createDeployCode(agentId: string, userId: string, platform: string, kind: "dm" | "group") {
+  const code = String(randomInt(10_000_000, 99_999_999));
+  exec("insert into deploy_codes values (?,?,?,?,?,?,null)", code, agentId, userId, platform, kind, now() + 7 * 864e5);
+  return code;
+}
+
+/** "start CODE" (DM) / "join CODE" (group): link the sender to the code's owner and bind this conversation to the agent. */
+function redeemDeploy(code: string, e: InboundEvent, ident: any): { ok: true; agent: any; ep: any; group: boolean } | { error: string } {
+  const c = one<any>("select * from deploy_codes where code=? and expires_at>? and used_at is null", code, now());
+  if (!c) return { error: "That code is invalid or expired. Get a new one from the agent's Deploy page." };
+  const agent = one<any>("select * from agents where id=?", c.agent_id);
+  if (!agent || agent.status === "deleted") return { error: "That agent no longer exists." };
+  exec("update deploy_codes set used_at=? where code=?", now(), code);
+  let ep = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
+  if (e.isGroup) {
+    // Whoever posts the code in a group is linked to the code's owner only for DMs; group senders stay as they are.
+    if (ep) {
+      const room = one<any>("select * from rooms where id=?", ep.room_id);
+      if (room.workspace_id !== agent.workspace_id) return { error: "This group is already connected to another workspace." };
+      rt.addMember(room.id, agent.id, "agent");
+    } else {
+      const room = rt.createRoom({ workspace_id: agent.workspace_id, name: `${PLATFORM_NAME[e.provider] ?? e.provider} group`, kind: "shared", participation: "mention_only",
+        members: [{ id: c.user_id, kind: "human" }, { id: agent.id, kind: "agent" }] });
+      ep = attachEndpoint(room.id, e.provider, e.conversationId, ident.id, true, agent.id);
+    }
+    linkIdentityTo(e.provider, e.senderId, c.user_id, null);
+    return { ok: true, agent, ep, group: true };
+  }
+  linkIdentityTo(e.provider, e.senderId, c.user_id, null);
+  const room = rt.privateRoomFor(c.user_id, agent);
+  if (ep) exec("update room_endpoints set room_id=?, agent_id=? where id=?", room.id, agent.id, ep.id);
+  else ep = attachEndpoint(room.id, e.provider, e.conversationId, ident.id, false, agent.id);
+  return { ok: true, agent, ep: one<any>("select * from room_endpoints where id=?", ep.id), group: false };
+}
+const PLATFORM_NAME: Record<string, string> = { imessage: "iMessage", whatsapp: "WhatsApp", telegram: "Telegram", slack: "Slack", email: "Email", phone: "Phone" };
 
 // ---------------- inbound ----------------
 export async function handleWebhook(platform: string, cid: string, req: Request): Promise<Response> {
@@ -196,6 +257,20 @@ export async function handleWebhook(platform: string, cid: string, req: Request)
   return new Response("ok");
 }
 
+/** Slack's single Events/Interactivity URL for the platform app: route to the installing team's identity. */
+export async function handleSlackApp(req: Request): Promise<Response> {
+  const raw = await req.text();
+  if (!process.env.SLACK_SIGNING_SECRET || !ADAPTERS.slack.verify(raw, req.headers, { signing_secret: process.env.SLACK_SIGNING_SECRET }, req.url)) return new Response("bad signature", { status: 401 });
+  const body = raw.startsWith("payload=") ? JSON.parse(new URLSearchParams(raw).get("payload")!) : JSON.parse(raw);
+  if (body.type === "url_verification") return Response.json({ challenge: body.challenge });
+  const team = body.team_id ?? body.team?.id;
+  const ident = one<any>("select * from channel_identities where id=?", `chi_slack_${team}`);
+  if (!ident) return new Response("unknown team", { status: 404 });
+  for (const e of ADAPTERS.slack.parse(raw, { ...ident, agent_name: null }))
+    exec("insert or ignore into inbound_events (id, provider, provider_event_id, channel_identity_id, raw, received_at) values (?,?,?,?,?,?)", id("inb"), "slack", e.providerEventId, ident.id, S(e), now());
+  return new Response("ok");
+}
+
 export async function processInbound() {
   let n = 0;
   for (const row of all<any>("select * from inbound_events where status='queued' order by received_at limit 100")) {
@@ -217,20 +292,20 @@ export function resolveSender(platform: string, externalId: string, displayName?
 }
 
 /** external conversation -> Room. A linked user's DM lands in their private Room with the agent, whatever the channel. */
-export function resolveRoom(e: InboundEvent, ident: any, senderId: string) {
+export function resolveRoom(e: InboundEvent, ident: any, senderId: string, agentId = ident.agent_id) {
   const ep = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
   if (ep) return ep;
-  const agent = one<any>("select * from agents where id=?", ident.agent_id);
+  const agent = one<any>("select * from agents where id=?", agentId);
   const room = e.isGroup
     ? rt.createRoom({ workspace_id: agent.workspace_id, name: `${e.provider[0].toUpperCase() + e.provider.slice(1)} group`, kind: "shared", participation: "mention_only",
         members: [{ id: agent.id, kind: "agent" }] })
     : rt.privateRoomFor(senderId, agent);
-  return attachEndpoint(room.id, e.provider, e.conversationId, ident.id, e.isGroup);
+  return attachEndpoint(room.id, e.provider, e.conversationId, ident.id, e.isGroup, agent.id);
 }
-export function attachEndpoint(roomId: string, platform: string, conversationId: string, cid: string | null, isGroup = false) {
+export function attachEndpoint(roomId: string, platform: string, conversationId: string, cid: string | null, isGroup = false, agentId: string | null = null) {
   const eid = id("rep");
-  exec("insert into room_endpoints (id, room_id, platform, external_conversation_id, channel_identity_id, is_group, last_active_at) values (?,?,?,?,?,?,?)",
-    eid, roomId, platform, conversationId, cid, isGroup ? 1 : 0, now());
+  exec("insert into room_endpoints (id, room_id, platform, external_conversation_id, channel_identity_id, is_group, last_active_at, agent_id) values (?,?,?,?,?,?,?,?)",
+    eid, roomId, platform, conversationId, cid, isGroup ? 1 : 0, now(), agentId);
   emit("ENDPOINT_LINKED", { room_id: roomId, data: { platform, conversation: conversationId } });
   return one<any>("select * from room_endpoints where id=?", eid);
 }
@@ -239,9 +314,36 @@ const isMember = (ws: string, u: string) => !!one("select 1 from memberships whe
 
 async function processEvent(e: InboundEvent, ident: any) {
   if (!ident) return;
-  const agent = one<any>("select * from agents where id=?", ident.agent_id);
+  const existing = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
+  // Shared lines carry no agent: the conversation's binding (or the email recipient alias) decides.
+  const aliasAgent = !ident.agent_id && e.provider === "email" ? one<any>("select id from agents where email_alias=? and status!='deleted'", (e.to ?? []).map((t) => t.split("@")[0])[0] ?? "-")?.id : null;
+  const agentId = ident.agent_id ?? existing?.agent_id ?? aliasAgent ?? (existing ? rt.roomAgents(existing.room_id)[0]?.id : null);
   const senderId = resolveSender(e.provider, e.senderId, e.senderName);
-  const reply = async (text: string) => { const ep = resolveRoom(e, ident, resolveSender(e.provider, e.senderId)); await ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), ep, { text, agentName: agent.name }, id("idem")); };
+  const raw = (text: string) => ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), existing ?? { external_conversation_id: e.conversationId, is_group: e.isGroup ? 1 : 0, config: "{}" },
+    { text, agentName: one<any>("select name from agents where id=?", agentId)?.name ?? "Agents" }, id("idem"));
+
+  const start = e.text.trim().match(/^\/?(?:start|join)(?:@\w+)?\s+(\d{8})$/i) ?? e.text.trim().match(/^@\S+\s+join\s+(\d{8})$/i);
+  if (start && !ident.agent_id) {
+    const misses = one<any>("select count(*) n from events where type='LINK_FAILED' and json_extract(data, '$.sender')=? and ts>?", `${e.provider}:${e.senderId}`, now() - 36e5).n;
+    if (misses >= 5) return raw("Too many attempts. Try again in an hour.");
+    const r = redeemDeploy(start[1], e, ident);
+    if ("error" in r) { emit("LINK_FAILED", { data: { sender: `${e.provider}:${e.senderId}` } }); return raw(r.error); }
+    emit("AGENT_DEPLOYED", { workspace_id: r.agent.workspace_id, room_id: r.ep.room_id, actor: r.agent.id, data: { platform: e.provider, group: r.group } });
+    const hello = r.group ? `${r.agent.name} joined this group. Mention @${r.agent.name} when you need me.` : `Hi, I'm ${r.agent.name}. You're all set — text me here anytime.`;
+    rt.postMessage(r.ep.room_id, { sender: r.agent.id, text: hello, targets: [r.ep.id] });
+    return;
+  }
+  if (!agentId) {
+    // Unbound conversation on a shared line: explain once a day how to connect, don't guess an agent.
+    if (!one("select 1 from events where type='SHARED_LINE_HELP' and json_extract(data, '$.conv')=? and ts>?", `${e.provider}:${e.conversationId}`, now() - 864e5)) {
+      emit("SHARED_LINE_HELP", { data: { conv: `${e.provider}:${e.conversationId}` } });
+      return raw("Hi! To talk to an agent here, open it on the platform → Deploy, and tap the button for this app (or send the code it shows).");
+    }
+    return;
+  }
+  const agent = one<any>("select * from agents where id=?", agentId);
+  if (!ident.agent_id && e.provider === "slack" && J(ident.config, {}).bot_user_id) e.text = e.text.replaceAll(`<@${J(ident.config, {}).bot_user_id}>`, `@${agent.name}`);
+  const reply = async (text: string) => { const ep = resolveRoom(e, ident, resolveSender(e.provider, e.senderId), agentId); await ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), ep, { text, agentName: agent.name }, id("idem")); };
 
   const link = e.text.trim().match(/^link (\d+)$/i);
   if (link) {
@@ -254,7 +356,7 @@ async function processEvent(e: InboundEvent, ident: any) {
   }
 
   if (e.type === "button_clicked") {
-    const ep = resolveRoom(e, ident, senderId);
+    const ep = resolveRoom(e, ident, senderId, agentId);
     const r = await pressButton(e.data ?? "", senderId, ep.room_id, ep.id);
     if ("error" in r) return reply(r.error!);
     if (r.say) return reply(r.say);
@@ -266,7 +368,7 @@ async function processEvent(e: InboundEvent, ident: any) {
     if (rt.signalEvent(`email:${e.senderId}`, `Email from ${e.senderName} <${e.senderId}> — ${e.subject ?? ""}\n<untrusted origin="EMAIL">${e.text}</untrusted>`)) return;
   }
 
-  const ep = resolveRoom(e, ident, senderId);
+  const ep = resolveRoom(e, ident, senderId, agentId);
   if (e.subject) exec("update room_endpoints set config=json_set(config, '$.subject', ?) where id=?", e.subject, ep.id);
   const room = one<any>("select * from rooms where id=?", ep.room_id);
   await rt.ingestMessage({ roomId: ep.room_id, senderId, text: e.text, platform: e.provider, endpointId: ep.id, externalId: e.providerEventId,
@@ -304,11 +406,15 @@ export function linkIdentity(platform: string, externalId: string, code: string,
   const c = one<any>("select * from link_codes where code=? and expires_at>?", code, now());
   if (!c) return false;
   exec("delete from link_codes where code=?", code);
+  return linkIdentityTo(platform, externalId, c.user_id, ident);
+}
+function linkIdentityTo(platform: string, externalId: string, userId: string, ident?: any) {
+  const c = { user_id: userId };
   const old = one<any>("select * from external_identities where platform=? and external_user_id=?", platform, externalId);
   exec("insert or replace into external_identities (platform, external_user_id, user_id, verified, display_name) values (?,?,?,1,?)", platform, externalId, c.user_id, old?.display_name ?? null);
   if (old && old.user_id !== c.user_id) {
     // Fold the guest into the real user: DM endpoints re-point to the user's own private Room; group memberships move over.
-    if (ident) {
+    if (ident?.agent_id) {
       const agent = one<any>("select * from agents where id=?", ident.agent_id);
       const target = rt.privateRoomFor(c.user_id, agent); // resolved before folding, so it's the user's own room
       for (const ep of all<any>(`select re.* from room_endpoints re join rooms r on r.id=re.room_id join room_members m on m.room_id=r.id
@@ -337,7 +443,13 @@ export async function flushOutbox() {
     const ident = ep?.channel_identity_id ? identity(ep.channel_identity_id) : null;
     if (!ep || !ident || !ADAPTERS[ep.platform]) { exec("update outbox set status='skipped' where id=?", o.id); continue; }
     try {
-      const ext = await ADAPTERS[ep.platform].send(ident, unseal(ident.secret_enc), ep, J(o.payload), o.id);
+      const p = J(o.payload);
+      if (!ident.agent_id) { // shared line: say who's talking in groups; email needs the agent's alias
+        const a = one<any>("select name, email_alias from agents where name=? and workspace_id=(select workspace_id from rooms where id=?)", p.agentName, o.room_id);
+        if (ep.is_group && p.agentName) p.text = `${p.agentName}: ${p.text}`;
+        p.agentAlias = a?.email_alias;
+      }
+      const ext = await ADAPTERS[ep.platform].send(ident, unseal(ident.secret_enc), ep, p, o.id);
       exec("update outbox set status='sent', external_id=?, attempts=attempts+1 where id=?", ext ?? null, o.id);
       exec("update events set data=json_set(data, '$.delivery', json_array(json_object('platform', ?, 'external_id', ?))) where id=?", ep.platform, ext ?? null, o.event_id);
     } catch (e: any) {

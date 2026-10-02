@@ -40,11 +40,11 @@ export function resolveOwner(roomId: string, owner: string | undefined, agentId:
 }
 
 // ---------------- rooms ----------------
-export function createRoom(r: { workspace_id: string; name: string; kind?: "private" | "shared"; participation?: string; objective?: string; members?: { id: string; kind: "human" | "agent"; role?: string }[] }) {
+export function createRoom(r: { workspace_id: string; name: string; kind?: "private" | "shared"; participation?: string; objective?: string; mode?: "live" | "test"; members?: { id: string; kind: "human" | "agent"; role?: string }[] }) {
   const rid = id("room");
   tx(() => {
-    exec("insert into rooms (id, workspace_id, name, objective, kind, participation, created_at) values (?,?,?,?,?,?,?)",
-      rid, r.workspace_id, r.name, r.objective ?? null, r.kind ?? "shared", r.participation ?? (r.kind === "private" ? "manager" : "mention_only"), now());
+    exec("insert into rooms (id, workspace_id, name, objective, kind, participation, mode, created_at) values (?,?,?,?,?,?,?,?)",
+      rid, r.workspace_id, r.name, r.objective ?? null, r.kind ?? "shared", r.participation ?? (r.kind === "private" ? "manager" : "mention_only"), r.mode ?? "live", now());
     for (const m of r.members ?? []) addMember(rid, m.id, m.kind, m.role);
   });
   emit("ROOM_CREATED", { workspace_id: r.workspace_id, room_id: rid, data: { name: r.name } });
@@ -59,7 +59,7 @@ export function addMember(roomId: string, principalId: string, kind: "human" | "
 }
 /** The private Room for (user, agent): every channel's DM with that agent lands here, so work follows the person (plan §2.4). */
 export function privateRoomFor(userId: string, agent: any) {
-  const r = one<any>(`select r.* from rooms r where r.kind='private' and r.workspace_id=? and r.status='active'
+  const r = one<any>(`select r.* from rooms r where r.kind='private' and r.workspace_id=? and r.status='active' and coalesce(r.mode,'live')='live'
     and exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?)
     and exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?)
     and (select count(*) from room_members m where m.room_id=r.id and m.kind='human')=1 order by r.created_at limit 1`, agent.workspace_id, userId, agent.id);
@@ -100,7 +100,7 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
   const eventId = postMessage(room.id, { sender: i.senderId, text: i.text, platform: i.platform, endpointId: i.endpointId, externalId: i.externalId, untrusted: i.untrusted });
   const started: string[] = [];
   // Memory write pipeline (scoped, with provenance).
-  await extractAfterTurn(room, { id: eventId, text: i.text, sender: i.senderId, senderName: nameOf(i.senderId) ?? "someone" }).catch(() => {});
+  if (room.mode !== "test") await extractAfterTurn(room, { id: eventId, text: i.text, sender: i.senderId, senderName: nameOf(i.senderId) ?? "someone" }).catch(() => {});
 
   // 1. Text approvals ("approve", "yes", "confirm 1a2b") for the sender's pending approvals in this room.
   // Only a bare decision counts: "yes but send it to Dana instead" is a new request, not an approval.
