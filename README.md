@@ -4,6 +4,51 @@ Create an agent by describing what you need, give it tools, memory and permissio
 
 Built from `agent_platform_product_technical_plan.md`. The five primitives — **Workspace, Agent, Room, Connection, Run** — are first-class, and external chats are interfaces into a Room, never the source of truth.
 
+## The user journey
+
+1. **Land, sign up.** The landing page explains the product, lists ready-made agents and offers a no-account trial.
+2. **Describe the agent**, for yourself or for a team (pick an existing team or create one inline). The draft shows the job, skills, connections needed and default permissions.
+3. **Test it** (Agent → Test). A live chat in test mode: plans, approvals and tools all run, but nothing leaves the platform. Emails aren't sent, tables aren't booked, and accounts you haven't connected return sample data.
+4. **Deploy in one tap** (Agent → Deploy):
+   - **iMessage**, DM or group: "Text Ava from my iPhone" opens Messages with `start 12345678` prefilled; for groups, add the line and send `join 12345678`.
+   - **WhatsApp:** a `wa.me` link.
+   - **Telegram:** a `t.me` deep link, for DMs or groups.
+   - **Slack:** "Add to Slack" (OAuth), then pick channels.
+   - **Email:** an address on the platform domain.
+   - **Phone:** an installable PWA, via QR code.
+   - On desktop, scan the QR code with your phone.
+   - Every channel reaches the same agent, memory and work.
+5. **It works where people talk**, and the account-level **Agents** page shows what every agent does, where it's deployed, what it's working on and what it costs. **Tasks** lists tasks, reservation watches and group orders.
+
+### Platform channel configuration (shared lines)
+
+One-tap deploy uses platform-owned lines; set whichever you have. Each enables its Deploy button.
+
+| Channel | Env | Webhook to register with the provider |
+|---|---|---|
+| iMessage (Photon) | `SHARED_IMESSAGE_LINE`, `SHARED_IMESSAGE_API_URL`, `SHARED_IMESSAGE_API_KEY`, `SHARED_IMESSAGE_WEBHOOK_SECRET` | `/v1/webhooks/imessage/chi_shared_imessage` |
+| WhatsApp (Meta Cloud API) | `SHARED_WHATSAPP_NUMBER`, `SHARED_WHATSAPP_PHONE_NUMBER_ID`, `SHARED_WHATSAPP_ACCESS_TOKEN`, `SHARED_WHATSAPP_APP_SECRET`, `SHARED_WHATSAPP_VERIFY_TOKEN` | `/v1/webhooks/whatsapp/chi_shared_whatsapp` |
+| Telegram | `SHARED_TELEGRAM_BOT_USERNAME`, `SHARED_TELEGRAM_BOT_TOKEN`, `SHARED_TELEGRAM_WEBHOOK_SECRET` | `/v1/webhooks/telegram/chi_shared_telegram` |
+| Email (Resend inbound) | `SHARED_EMAIL_DOMAIN`, `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET` | `/v1/webhooks/email/chi_shared_email` |
+| Slack app | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET` | Events + Interactivity: `/v1/webhooks/slack/app`; OAuth redirect: `/v1/slack/oauth/callback` |
+
+`.env.demo` holds placeholder values so the Deploy page renders locally (`bun --env-file=.env.demo run src/index.ts`). Teams can still bring their own bot or number under Deploy → Advanced.
+
+## Ready-made agents
+
+| Agent | What it does |
+|---|---|
+| **Reese**, reservations | Searches and books Resy/OpenTable tables. **Watches** hot spots and polls every 5 seconds around release time. Books instantly within limits you **pre-approve once** (strong confirmation); otherwise it texts a one-tap card the moment a table opens. Without a browser runner it uses **sandbox** restaurants (fictional venues with scheduled releases) so the whole flow is testable. |
+| **Pool**, group buying | Runs a group order in an iMessage/WhatsApp/Slack/Telegram group. People reply "in for 2" without tagging. Keeps the tally, reminds before the deadline, and closes with per-person totals, a shipping split and Venmo/PayPal/Cash App links. Never moves money. |
+| Ava, Atlas, Scout, Relay, Recruiter | Executive assistant, research, travel, team ops, healthcare recruiting. |
+
+## Browser automation and MCP
+
+- **Any MCP server is a connection** (Connections → Add MCP server). Its tools are discovered and granted per agent, risk-classified from MCP tool annotations (read-only → automatic; others → approval first; destructive → always), and run through the same policy, approvals and audit as built-in tools.
+- Hosted presets: Browserbase and Browserless (verified endpoints). Browser Use: run its MCP server and paste the URL (API key header `X-Browser-Use-API-Key`).
+- `browser.task` (and Reese's real bookings) run on a granted MCP browser server whose tool takes a `task`, or on an HTTP runner (`BROWSER_TASK_URL`: `{task, start_url, secrets, allowed_domains} → {status, output}`).
+- **Website logins** (Connections → Add site login) are sealed and handed only to the HTTP runner, which substitutes `{{username}}`/`{{password}}`. They follow the same ownership rules as any credential, and never reach a model, event or log. MCP browser servers should use a saved browser profile instead.
+
 ## How a request is handled
 
 Every message an agent acts on goes through a requirement layer before any tool runs (`src/intake.ts`):
@@ -44,13 +89,14 @@ Channels are added per agent (Agent → Channels). Each gives you a webhook URL 
 ## Test it
 
 ```bash
-bun test                 # 79 tests: scenarios, intake, policy, tools, runtime, memory, channels, API, security, evals
+bun test                 # 93 tests: user journeys, scenarios, intake, MCP, policy, tools, runtime, memory, channels, API, security, evals
 bun run criteria         # checks every criterion in ACCEPTANCE.md (tests + typecheck + UI bundle)
 bun run eval             # golden tasks against whatever model is configured; writes reports/eval-*.json
 bun run eval scout --min=0.9
 ```
 
-- **`ACCEPTANCE.md`** — 81 criteria, each traced to a plan section and to the tests that prove it (test names start with the criterion ID).
+- **`test/journey.test.ts`**: end-user journeys driven like a person would: HTTP API for the web app, signed webhooks for phones and Slack.
+- **`ACCEPTANCE.md`** — 95 criteria, each traced to a plan section and to the tests that prove it (test names start with the criterion ID).
 - **`test/scenarios.test.ts`** — the plan's "must prove" milestones, end to end through signed webhooks, the durable runtime and the fake network.
 - **`test/intake.test.ts`**: the requirement layer (clarify, confirm, revise, verify, plan progress, learned skills).
 - **`evals/cases/*.json`**: data-driven golden cases. Any real run can be exported from its trace ("Save as eval case" / `GET /v1/runs/:id/eval-case`), reviewed, and dropped here to become a regression test.
@@ -69,7 +115,10 @@ bun run eval scout --min=0.9
 | Policy engine (§19) | `src/policy.ts` |
 | Tool contract, Tool Gateway, idempotency, retry taxonomy, tools (§10, §35) | `src/tools.ts` |
 | Scoped memory, write pipeline, retrieval (§9) | `src/memory.ts` |
-| ModelGateway, routing profiles, BYOK, offline model (§8) | `src/model.ts` |
+| ModelGateway, routing profiles, BYOK, offline model + planner extension hooks (§8) | `src/model.ts` |
+| MCP client (Streamable HTTP, SSE responses, sessions) | `src/mcp.ts` |
+| Reservation agent: search, book, watches, pre-approved limits, sandbox + browser providers | `src/reservations.ts` |
+| Group buying: orders, tally, deadlines, pay links | `src/orders.ts` |
 | Channel adapters, webhook verification, identity linking, outbox, phone (§5, §6, §20) | `src/channels.ts` |
 | Append-only events (= audit log), envelope encryption, usage ledger (§21, §22.2, §24) | `src/db.ts` |
 | Web app (§3), incl. plan cards, setup checklist, starter prompts, file uploads | `public/app.tsx`, `public/styles.css` |

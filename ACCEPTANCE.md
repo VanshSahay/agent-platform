@@ -12,6 +12,20 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-M4 | Recruiting: a human-claimed candidate is never contacted, outreach requires the right approver, a transient bounce is retried, the run waits for the candidate, and the next-day inbound email resumes that run — the email is sent exactly once. | §33 |
 | AC-M5 | Instructions inside fetched web content cannot trigger an external write; tool output is labeled untrusted; the write requires human approval even if configured automatic. | §21.2 |
 
+## End-user journeys (register → describe → test → one-click deploy → real work)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-J1 | Personal: landing page → register → describe an agent → Test mode runs the full pipeline but sends/books nothing (unconnected accounts use sample data) → one tap opens Messages with a deploy code → the agent works over iMessage and on web in the same Room; strangers on the shared line get instructions, not an agent. | §3, §28 |
+| AC-J2 | Team: create for a team → invite → Add to Slack (OAuth) → pick a channel → teammates use it in Slack and in an iMessage group (agent name prefixed on the shared line) → account overview shows what each agent does and where it's deployed; tasks are listed. | §29 |
+| AC-J3 | Reservations: watch a hot spot, pre-approve limits once (strong confirmation), and the agent books within seconds of the drop and texts the confirmation; the standing approval is used up. | §17.3, §19 |
+| AC-J4 | Reservations without pre-approval: a one-tap (strong, for deposits) card arrives the moment a table opens; if the table is gone the agent says so honestly and books nothing. | §35.3 |
+| AC-J5 | Group buying in an iMessage group: open an order, members join without tagging, chatter is ignored, tally on request, organizer-only close, deadline reminder, auto-close with per-person totals and pay links, payments tracked after close. | §15 |
+| AC-J6 | Memory at both levels: agent-level knowledge stays with that agent; account-level personal facts follow the user to all their agents, privately. | §9.2 |
+| AC-J7 | Real-time group chats: replies sent while an order is still being opened aren't lost (per-conversation run ordering); short orders don't get an instant "24h left". | §5.2 |
+| AC-MCP1 | Connecting an MCP server discovers its tools (risk from tool annotations); granted agents call them through policy, approvals and audit; the server's credentials never appear in events. | §10, §27 |
+| AC-MCP2 | browser.task runs on a granted MCP browser server; stored website logins (OpenTable/Resy) are passed only to the HTTP browser runner, follow ownership rules, and never reach the model or the logs. | §11.2 |
+
 ## Requirement layer: brief → confirm → execute → verify
 
 | ID | Criterion | Plan |
