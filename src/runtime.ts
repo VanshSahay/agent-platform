@@ -11,6 +11,8 @@ import { extractAfterTurn } from "./memory";
 import { structured } from "./model";
 import * as channels from "./channels";
 import * as intake from "./intake";
+import * as reservations from "./reservations";
+import * as orders from "./orders";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
 const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", clarify: "waiting_for_human", confirm: "waiting_for_human", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
@@ -127,9 +129,11 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
 
   // 4. Participation policy (plan §15.2): who should respond?
   const agents = roomAgents(room.id);
+  const orderAgent = orders.orderAgentFor(room.id, i.text); // "in for 2" in a chat with an open group order
   for (const a of agents) {
     let respond = false;
-    if (roleOf(room.id, a.id) === "delegate") respond = new RegExp(`@${a.name.replace(/[^\w]/g, "")}\\b`, "i").test(i.text);
+    if (orderAgent) respond = orderAgent === a.id;
+    else if (roleOf(room.id, a.id) === "delegate") respond = new RegExp(`@${a.name.replace(/[^\w]/g, "")}\\b`, "i").test(i.text);
     else if (room.participation === "manager" || (room.kind === "private" && agents.length === 1)) respond = true;
     else if (mentions(i.text, a.name)) respond = true;
     else if (room.participation === "relevant") {
@@ -483,6 +487,8 @@ export async function tick() {
     n++;
   }
   for (const s of all<any>("select * from schedules where status='active' and next_at is not null and next_at<=?", t)) { fireSchedule(s); n++; }
+  n += await reservations.checkWatches();
+  n += await orders.checkOrders();
   // Runs step concurrently (a slow model call shouldn't block everyone); stepRun's atomic claim makes this safe.
   const queued = all<any>("select id from runs where status='queued' order by created_at"), width = Number(process.env.WORKER_CONCURRENCY ?? 4);
   for (let i = 0; i < queued.length; i += width) await Promise.all(queued.slice(i, i + width).map((r) => stepRun(r.id)));

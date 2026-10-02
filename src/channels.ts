@@ -381,7 +381,8 @@ export async function pressButton(data: string, userId: string, roomId: string, 
   const roomOf = (sql: string) => one<any>(sql, objId)?.room_id;
   if (kind === "apr") {
     if (roomOf("select room_id from approvals where id=?") !== roomId) return { error: "that approval isn't in this conversation" };
-    return rt.decideApproval(objId, userId, action === "approve" ? "approve" : "reject", {}, endpointId);
+    // A button that names the exact action ("Confirm") is a deliberate confirmation.
+    return rt.decideApproval(objId, userId, action === "approve" ? "approve" : "reject", { confirm: action === "approve" }, endpointId);
   }
   if (roomOf("select room_id from runs where id=?") !== roomId) return { error: "that task isn't in this conversation" };
   if (kind === "brf") return action === "go" ? intake.confirmBrief(objId, userId, endpointId) : action === "cancel" ? intake.cancelBrief(objId, userId) : { error: "unknown action" };

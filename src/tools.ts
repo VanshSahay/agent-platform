@@ -581,3 +581,9 @@ export function resolveSiteLogin(site: string, agentId: string, run: any, roomHu
   const score = (c: any) => (c.granted ? 8 : 0) + (c.owner_id === run.requested_by ? 4 : 0) + (roomHumans.includes(c.owner_id) ? 1 : 0);
   return rows.sort((a, b) => score(b) - score(a))[0] ?? null;
 }
+
+// Domain tool packs (registered after the core tools exist).
+import { registerReservationTools } from "./reservations";
+import { registerOrderTools } from "./orders";
+registerReservationTools(def);
+registerOrderTools(def);

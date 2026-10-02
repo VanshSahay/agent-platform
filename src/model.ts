@@ -128,7 +128,14 @@ export interface LocalCtx {
   agents: string[]; openTasks: { title: string; owner: string; status: string }[]; recentAgentReplies: string[]; memories: string[];
 }
 
+// Domain modules (reservations, group orders...) plug their own intents into the offline planner.
+export type Step = { name: string; input: any };
+export const extraPlanners: ((text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName">) => { steps: Step[]; exclusive?: boolean })[] = [];
+export const extraChains: ((objective: string, last: Msg, c: LocalCtx) => Step | null)[] = [];
+export const extraSummaries: Record<string, (j: any) => string> = {};
+
 export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName">) {
+  for (const p of extraPlanners) { const r = p(text, c); if (r.exclusive && r.steps.length) return r.steps; }
   const t = text.toLowerCase(), has = (n: string) => c.tools.includes(n), out: { name: string; input: any }[] = [];
   const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g)?.at(-1); // latest wins (follow-up corrections append)
   const subjectOf = () => text.match(/about (.+?)(?=\s+(?:and|then|on my|to my|in my|by|before|after|for)\b|[.,!?\n]|$)/i)?.[1]?.trim() ?? "Quick follow-up";
@@ -177,7 +184,7 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
     const tool = draft ? "email.draft" : "email.send";
     if (has(tool)) out.push({ name: tool, input: { to: [email], subject: subjectOf(), body: text } });
   }
-  return out;
+  return [...out, ...extraPlanners.flatMap((p) => { const r = p(text, c); return r.exclusive ? [] : r.steps; })];
 }
 
 function localAgent(req: ModelRequest): Pick<ModelResult, "text" | "toolCalls"> {
@@ -193,6 +200,10 @@ function localAgent(req: ModelRequest): Pick<ModelResult, "text" | "toolCalls"> 
   const t = c.objective.toLowerCase();
   // Chain a contacts lookup into the email it was for.
   const last = done.at(-1);
+  for (const chain of extraChains) {
+    const next = last && done.length < 6 ? chain(c.objective, last, c) : null;
+    if (next) return { text: "", toolCalls: [{ id: `call_${done.length}_${next.name}`, name: next.name, input: next.input }] };
+  }
   if (last?.toolName === "contacts.search" && c.tools.includes("email.send") && /\b(email|send|write|message)\b/.test(t)) {
     const addr = last.content.match(/[\w.+-]+@[\w-]+\.[\w.]+/)?.[0];
     if (addr) return { text: "", toolCalls: [{ id: `call_${done.length}_email`, name: /\bdraft\b/.test(t) ? "email.draft" : "email.send",
@@ -220,6 +231,7 @@ function summarize(tool: string, content: string) {
   const body = content.replace(/^<untrusted[^>]*>\n?|\n?<\/untrusted>$/g, "");
   try {
     const j = JSON.parse(body);
+    if (extraSummaries[tool]) return extraSummaries[tool](j);
     if (tool === "web.search" && Array.isArray(j.results))
       return `Here are the top results:\n${j.results.slice(0, 3).map((r: any, i: number) => `${i + 1}. ${r.title} — ${r.url}`).join("\n")}`;
     if (tool === "calendar.find_free_time" && Array.isArray(j.slots))

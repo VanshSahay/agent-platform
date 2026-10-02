@@ -73,6 +73,13 @@ create table if not exists files (id text primary key, workspace_id text, room_i
 create table if not exists deploy_codes (code text primary key, agent_id text, user_id text, platform text, kind text, expires_at int, used_at int);
 create table if not exists standing_approvals (id text primary key, agent_id text, tool_id text, constraints text, max_uses int default 1, uses int default 0,
   expires_at int, granted_by text, approval_id text, ref text, status text default 'active', created_at int);
+create table if not exists reservations (id text primary key, workspace_id text, user_id text, agent_id text, site text, venue_id text, venue text, date text, time text,
+  party_size int, confirmation text, deposit real default 0, status text, sandbox int default 0, created_at int);
+create table if not exists reservation_watches (id text primary key, workspace_id text, agent_id text, room_id text, user_id text, criteria text, release_at int, auto_book int default 0,
+  status text default 'active', checks int default 0, last_checked_at int, next_check_at int, interval_ms int, pending_run_id text, booked_reservation_id text, created_at int);
+create table if not exists group_orders (id text primary key, workspace_id text, room_id text, agent_id text, organizer_id text, title text, vendor text, items text, min_total_qty int,
+  deadline_at int, payment_handle text, shipping_fee real default 0, status text default 'open', reminded int default 0, closed_at int, created_at int);
+create table if not exists order_lines (id text primary key, order_id text, user_id text, item_id text, qty int, note text, paid int default 0, updated_at int);
 create table if not exists usage (id integer primary key autoincrement, workspace_id text, agent_id text, run_id text, kind text, qty real,
   cost_usd real default 0, byok int default 0, ts int);
 create table if not exists provider_keys (workspace_id text, provider text, key_enc text, primary key (workspace_id, provider));

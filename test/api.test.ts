@@ -129,7 +129,7 @@ test("AC-A6 invitations, roles, plan limits", async () => {
 test("AC-PUB1 discovery lists curated first-party agents; install asks only for what's needed", async () => {
   const e = await signup("Ellie");
   const list = await api("/v1/agent-templates");
-  expect(list.data.map((t: any) => t.slug).sort()).toEqual(["atlas-research", "ava-executive-assistant", "recruiter-healthcare", "relay-ops", "scout-travel"]);
+  expect(list.data.map((t: any) => t.slug).sort()).toEqual(["atlas-research", "ava-executive-assistant", "pool-group-buying", "recruiter-healthcare", "reese-reservations", "relay-ops", "scout-travel"]);
   const atlas = await api("/v1/agent-templates/atlas-research");
   expect(atlas.data.connections).toEqual([]); // research needs no account access
   expect(atlas.data.manifest.evals).toContain("citation_coverage");
