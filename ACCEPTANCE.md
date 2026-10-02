@@ -142,6 +142,14 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-S15 | Only the agent's owner or a workspace admin can save a learned skill; examples come only from that room's member-requested runs. | §18.3, §21.1 |
 | AC-S16 | Messages addressed to another agent are never folded into someone else's pending task. | §15.2 |
 | AC-S17 | Unicode file names download correctly; free-time search inputs are bounded; finished tasks can't be cancelled again. | §21 |
+| AC-S18 | Deploy codes can't move a number that belongs to another real account; codes only work on the app and chat type they were issued for; posting a group code links nobody; codes can't be redeemed over (forgeable) email; attempts are rate-limited per sender and globally. | §20.2 |
+| AC-S19 | On the shared email line the recipient alias picks the agent and each (sender, alias) is its own conversation, so one sender can't leak across workspaces. | §21.4 |
+| AC-S20 | A pre-approval covers only bookings from its own watch, by the person who granted it, in the same conversation — never other venues, people or rooms. | §19 |
+| AC-S21 | A watch offers each opening once and pauses after a "no" (resumable with "keep watching"); test mode creates no real watches or memories. | §37 |
+| AC-S22 | A crash inside a run fails that run without blocking later messages in the conversation; stale 'running' runs are re-queued after a lease. | §7.2 |
+| AC-S23 | Only one open group order per chat, opened by a recognized workspace member — no competing order with someone else's pay link. | §15 |
+| AC-S24 | MCP requests re-validate the address on every call and refuse redirects (no SSRF via DNS changes or redirects). | §21.1 |
+| AC-S25 | Re-installing Slack from another workspace can't take over an existing Slack connection. | §21.4 |
 
 ## Quality gates
 

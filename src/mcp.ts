@@ -8,8 +8,10 @@ const sessions = new Map<string, string>(); // connection id -> Mcp-Session-Id
 let seq = 1;
 
 async function post(url: string, headers: Record<string, string>, body: any, session?: string) {
+  // Every request re-checks the address (DNS can change) and never follows redirects into private networks.
+  if (!process.env.ALLOW_PRIVATE_MCP) await (await import("./tools")).assertPublicUrl(url);
   const r = await fetch(url, {
-    method: "POST", signal: AbortSignal.timeout(Number(process.env.MCP_TIMEOUT_MS ?? 120000)),
+    method: "POST", redirect: "manual", signal: AbortSignal.timeout(Number(process.env.MCP_TIMEOUT_MS ?? 120000)),
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": PROTOCOL, ...headers, ...(session ? { "mcp-session-id": session } : {}) },
     body: JSON.stringify(body),
   });
@@ -43,6 +45,7 @@ async function rpc(key: string, url: string, headers: Record<string, string>, me
   const r = await post(url, headers, { jsonrpc: "2.0", id, method, params }, sessions.get(key) || undefined);
   if ((r.status === 404 || r.status === 400) && retry) { sessions.delete(key); return rpc(key, url, headers, method, params, false); } // session expired
   if (r.status === 401 || r.status === 403) throw Object.assign(new Error("MCP server rejected the credentials"), { auth: true });
+  if (r.status >= 300 && r.status < 400) throw new Error("MCP server tried to redirect; refusing");
   if (!r.ok) throw new Error(`MCP ${method} failed (${r.status})`);
   const m = await readResponse(r, id);
   if (m.error) throw new Error(`MCP ${method}: ${m.error.message}`);
@@ -56,7 +59,7 @@ export async function listTools(key: string, url: string, headers: Record<string
   let cursor: string | undefined;
   do {
     const r = await rpc(key, url, headers, "tools/list", cursor ? { cursor } : {});
-    out.push(...(r.tools ?? []));
+    out.push(...(r.tools ?? []).filter((t: any) => t && typeof t.name === "string" && /^[\w.\-/]{1,128}$/.test(t.name)));
     cursor = r.nextCursor;
   } while (cursor && out.length < 500);
   return out;

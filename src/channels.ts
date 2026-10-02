@@ -128,7 +128,7 @@ export const ADAPTERS: Record<string, Adapter> = {
     async send(i, s, ep, m, idem) {
       const cfg = J(ep.config, {});
       const from = i.agent_id ? i.address : `${(m as any).agentAlias ?? "agent"}@${i.address}`;
-      const r: any = await post("https://api.resend.com/emails", { from: `${m.agentName} <${from}>`, to: [ep.external_conversation_id],
+      const r: any = await post("https://api.resend.com/emails", { from: `${m.agentName} <${from}>`, to: [String(ep.external_conversation_id).split("|")[0]],
         subject: cfg.subject ? `Re: ${cfg.subject.replace(/^re:\s*/i, "")}` : `Message from ${m.agentName}`,
         text: m.buttons?.length ? `${m.text}\n\nReply with: ${m.buttons.map((b) => b.label.toLowerCase()).join(" / ")}` : m.text }, { authorization: `Bearer ${s.resend_api_key}`, "idempotency-key": idem });
       return r.id;
@@ -207,8 +207,16 @@ export function createDeployCode(agentId: string, userId: string, platform: stri
 function redeemDeploy(code: string, e: InboundEvent, ident: any): { ok: true; agent: any; ep: any; group: boolean } | { error: string } {
   const c = one<any>("select * from deploy_codes where code=? and expires_at>? and used_at is null", code, now());
   if (!c) return { error: "That code is invalid or expired. Get a new one from the agent's Deploy page." };
+  // A code only works where and how it was issued: this platform, DM vs group.
+  if (c.platform !== e.provider) return { error: "That code is for a different app. Get one for this app from the agent's Deploy page." };
+  if ((c.kind === "group") !== e.isGroup) return { error: c.kind === "group" ? "That code is for adding the agent to a group — send it in the group chat." : "That code is for a direct chat — send it in a 1:1 conversation." };
   const agent = one<any>("select * from agents where id=?", c.agent_id);
   if (!agent || agent.status === "deleted") return { error: "That agent no longer exists." };
+  // Never re-assign a phone/handle that already belongs to a different real account.
+  if (!e.isGroup) {
+    const linked = one<any>("select x.user_id, u.guest from external_identities x join users u on u.id=x.user_id where x.platform=? and x.external_user_id=?", e.provider, e.senderId);
+    if (linked && linked.user_id !== c.user_id && !linked.guest) return { error: "This number is already linked to a different account. Unlink it there first." };
+  }
   exec("update deploy_codes set used_at=? where code=?", now(), code);
   let ep = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
   if (e.isGroup) {
@@ -222,8 +230,7 @@ function redeemDeploy(code: string, e: InboundEvent, ident: any): { ok: true; ag
         members: [{ id: c.user_id, kind: "human" }, { id: agent.id, kind: "agent" }] });
       ep = attachEndpoint(room.id, e.provider, e.conversationId, ident.id, true, agent.id);
     }
-    linkIdentityTo(e.provider, e.senderId, c.user_id, null);
-    return { ok: true, agent, ep, group: true };
+    return { ok: true, agent, ep, group: true }; // posting a group code links nobody's identity
   }
   linkIdentityTo(e.provider, e.senderId, c.user_id, null);
   const room = rt.privateRoomFor(c.user_id, agent);
@@ -314,18 +321,21 @@ const isMember = (ws: string, u: string) => !!one("select 1 from memberships whe
 
 async function processEvent(e: InboundEvent, ident: any) {
   if (!ident) return;
+  // Shared email: the recipient alias picks the agent, and each (sender, alias) pair is its own conversation.
+  const alias = !ident.agent_id && e.provider === "email" ? one<any>("select id, email_alias from agents where email_alias in (" + (e.to ?? []).map(() => "?").join(",") + ") and status!='deleted'", ...(e.to ?? []).map((t) => t.split("@")[0])) : null;
+  if (!ident.agent_id && e.provider === "email") { if (!alias) return; e.conversationId = `${e.senderId}|${alias.email_alias}`; }
   const existing = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
   // Shared lines carry no agent: the conversation's binding (or the email recipient alias) decides.
-  const aliasAgent = !ident.agent_id && e.provider === "email" ? one<any>("select id from agents where email_alias=? and status!='deleted'", (e.to ?? []).map((t) => t.split("@")[0])[0] ?? "-")?.id : null;
-  const agentId = ident.agent_id ?? existing?.agent_id ?? aliasAgent ?? (existing ? rt.roomAgents(existing.room_id)[0]?.id : null);
+  const agentId = ident.agent_id ?? alias?.id ?? existing?.agent_id ?? (existing ? rt.roomAgents(existing.room_id)[0]?.id : null);
   const senderId = resolveSender(e.provider, e.senderId, e.senderName);
   const raw = (text: string) => ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), existing ?? { external_conversation_id: e.conversationId, is_group: e.isGroup ? 1 : 0, config: "{}" },
     { text, agentName: one<any>("select name from agents where id=?", agentId)?.name ?? "Agents" }, id("idem"));
 
   const start = e.text.trim().match(/^\/?(?:start|join)(?:@\w+)?\s+(\d{8})$/i) ?? e.text.trim().match(/^@\S+\s+join\s+(\d{8})$/i);
-  if (start && !ident.agent_id) {
+  if (start && !ident.agent_id && e.provider !== "email") { // email senders can be forged: no code redemption over email
     const misses = one<any>("select count(*) n from events where type='LINK_FAILED' and json_extract(data, '$.sender')=? and ts>?", `${e.provider}:${e.senderId}`, now() - 36e5).n;
-    if (misses >= 5) return raw("Too many attempts. Try again in an hour.");
+    const global = one<any>("select count(*) n from events where type='LINK_FAILED' and ts>?", now() - 6e4).n; // spray across many senders
+    if (misses >= 5 || global >= 30) return raw("Too many attempts. Try again later.");
     const r = redeemDeploy(start[1], e, ident);
     if ("error" in r) { emit("LINK_FAILED", { data: { sender: `${e.provider}:${e.senderId}` } }); return raw(r.error); }
     emit("AGENT_DEPLOYED", { workspace_id: r.agent.workspace_id, room_id: r.ep.room_id, actor: r.agent.id, data: { platform: e.provider, group: r.group } });
@@ -365,7 +375,8 @@ async function processEvent(e: InboundEvent, ident: any) {
 
   if (e.type === "email_received") {
     // EVENT wake condition: a run waiting on a reply from this address resumes (plan §33).
-    if (rt.signalEvent(`email:${e.senderId}`, `Email from ${e.senderName} <${e.senderId}> — ${e.subject ?? ""}\n<untrusted origin="EMAIL">${e.text}</untrusted>`)) return;
+    const ws = one<any>("select workspace_id from agents where id=?", agentId)?.workspace_id;
+    if (agentId && rt.signalEvent(`email:${ws}:${e.senderId}`, `Email from ${e.senderName} <${e.senderId}> — ${e.subject ?? ""}\n<untrusted origin="EMAIL">${e.text}</untrusted>`)) return;
   }
 
   const ep = resolveRoom(e, ident, senderId, agentId);
@@ -407,12 +418,14 @@ export function linkIdentity(platform: string, externalId: string, code: string,
   const c = one<any>("select * from link_codes where code=? and expires_at>?", code, now());
   if (!c) return false;
   exec("delete from link_codes where code=?", code);
-  return linkIdentityTo(platform, externalId, c.user_id, ident);
+  try { return linkIdentityTo(platform, externalId, c.user_id, ident); } catch { return false; } // already another real account's
 }
 function linkIdentityTo(platform: string, externalId: string, userId: string, ident?: any) {
   const c = { user_id: userId };
   const old = one<any>("select * from external_identities where platform=? and external_user_id=?", platform, externalId);
   exec("insert or replace into external_identities (platform, external_user_id, user_id, verified, display_name) values (?,?,?,1,?)", platform, externalId, c.user_id, old?.display_name ?? null);
+  if (old && old.user_id !== c.user_id && !one<any>("select guest from users where id=?", old.user_id)?.guest)
+    throw new Error("identity belongs to another account");
   if (old && old.user_id !== c.user_id) {
     // Fold the guest into the real user: DM endpoints re-point to the user's own private Room; group memberships move over.
     if (ident?.agent_id) {

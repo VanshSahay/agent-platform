@@ -332,6 +332,8 @@ export const routes: Record<string, any> = {
     const r: any = await (await fetch("https://slack.com/api/oauth.v2.access", { method: "POST", body: new URLSearchParams({ code: q.get("code") ?? "",
       client_id: process.env.SLACK_CLIENT_ID!, client_secret: process.env.SLACK_CLIENT_SECRET!, redirect_uri: `${pub()}/v1/slack/oauth/callback` }) })).json();
     if (!r.ok) fail(400, `Slack install failed: ${r.error}`);
+    const prior = one<any>("select json_extract(config, '$.workspace_id') ws from channel_identities where id=?", `chi_slack_${r.team.id}`);
+    if (prior?.ws && prior.ws !== st.ws) fail(409, "This Slack workspace is already connected to another workspace on this platform");
     exec(`insert into channel_identities (id, agent_id, platform, address, secret_enc, config, created_at) values (?, null, 'slack', ?, ?, ?, ?)
       on conflict(id) do update set secret_enc=excluded.secret_enc, config=excluded.config`, `chi_slack_${r.team.id}`, r.team.name,
       seal({ bot_token: r.access_token, signing_secret: process.env.SLACK_SIGNING_SECRET }), S({ team_id: r.team.id, team_name: r.team.name, bot_user_id: r.bot_user_id, workspace_id: st.ws, shared: true }), now());

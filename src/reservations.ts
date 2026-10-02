@@ -139,13 +139,19 @@ function record(i: any, venue: string, site: string, confirmation: string, sandb
 
 // ---------------- standing approvals ("book it if you can get it, within these limits") ----------------
 function matchesLimits(c: any, i: any) {
-  return (!c.venue_ids?.length || c.venue_ids.includes(i.venue_id)) && (!c.dates?.length || c.dates.includes(i.date))
+  const venueOk = c.venue_ids?.length ? c.venue_ids.includes(i.venue_id) : !!c.venue && String(i.venue ?? "").toLowerCase().includes(String(c.venue).toLowerCase());
+  return venueOk && (!c.dates?.length || c.dates.includes(i.date))
     && (!c.time_from || i.time >= c.time_from) && (!c.time_to || i.time <= c.time_to) && (!c.party_size || Number(i.party_size) === Number(c.party_size))
     && Number(i.deposit_per_person ?? 0) <= Number(c.max_deposit_per_person ?? 0);
 }
+/** A pre-approval covers only bookings for the same person, from the watch it was granted for, in the same conversation. */
 function standingFor(input: any, run: any) {
-  for (const s of all<any>("select * from standing_approvals where agent_id=? and tool_id='reservations.book' and status='active' and uses<max_uses and (expires_at is null or expires_at>?)", run.agent_id, now()))
-    if (matchesLimits(J(s.constraints, {}), input)) return s.id as string;
+  if (!input.watch_id) return null;
+  for (const s of all<any>(`select * from standing_approvals where agent_id=? and tool_id='reservations.book' and status='active' and uses<max_uses and (expires_at is null or expires_at>?)
+      and granted_by=? and ref=?`, run.agent_id, now(), run.requested_by ?? "-", input.watch_id)) {
+    const c = J(s.constraints, {});
+    if ((!c.room_id || c.room_id === run.room_id) && matchesLimits(c, input)) return s.id as string;
+  }
   return null;
 }
 
@@ -166,13 +172,21 @@ export async function checkWatches() {
     const c = J(w.criteria);
     if (c.dates.every((d: string) => d < ymd(new Date(now())))) { exec("update reservation_watches set status='expired' where id=?", w.id); continue; }
     if (w.pending_run_id && !rt.isFinished(w.pending_run_id)) { exec("update reservation_watches set next_check_at=? where id=?", nextCheck(w), w.id); continue; }
+    // They said no to the table we found: pause rather than keep pinging them with every new opening.
+    if (w.pending_run_id && one("select 1 from approvals where run_id=? and status='rejected'", w.pending_run_id)) {
+      exec("update reservation_watches set status='paused', pending_run_id=null where id=?", w.id);
+      rt.postMessage(w.room_id, { sender: w.agent_id, text: `Paused watching ${c.query}. Say "keep watching ${c.query}" to resume.`, targets: rt.replyTargets(w.room_id, null) });
+      continue;
+    }
     const agent = one<any>("select * from agents where id=?", w.agent_id), room = one<any>("select * from rooms where id=?", w.room_id);
     const ctx = { run: { id: "watch", workspace_id: w.workspace_id }, agent, room, idempotencyKey: w.id } as any;
     let hit: any = null;
     for (const date of c.dates) {
       if (date < ymd(new Date(now()))) continue;
       const r = await search({ query: c.query, date, party_size: c.party_size, time_from: c.time_from, time_to: c.time_to, site: c.site }, ctx).catch(() => ({ slots: [] as any[] }));
-      hit = r.slots.find((s: any) => Number(s.deposit_per_person ?? 0) <= Number(c.max_deposit_per_person ?? Infinity)) ?? r.slots[0];
+      const tried: string[] = J(w.tried, []);
+      const fresh = r.slots.filter((s: any) => !tried.includes(s.slot_id ?? `${s.venue_id}|${s.date}|${s.time}`)); // each opening is offered once
+      hit = fresh.find((s: any) => Number(s.deposit_per_person ?? 0) <= Number(c.max_deposit_per_person ?? Infinity)) ?? fresh[0];
       if (hit) break;
     }
     exec("update reservation_watches set checks=checks+1, last_checked_at=?, next_check_at=? where id=?", now(), nextCheck(w), w.id);
@@ -180,12 +194,12 @@ export async function checkWatches() {
     // A table opened: hand it to the agent as a pre-planned booking step (policy, approvals, audit all apply).
     const input = { venue_id: hit.venue_id, venue: hit.venue, site: hit.site, date: hit.date, time: hit.time, party_size: hit.party_size, slot_id: hit.slot_id,
       deposit_per_person: hit.deposit_per_person ?? 0, watch_id: w.id };
-    const auto = !!standingFor(input, { agent_id: w.agent_id });
+    const auto = !!standingFor(input, { agent_id: w.agent_id, requested_by: w.user_id, room_id: w.room_id });
     const run = rt.createRun({ room, agent, requestedBy: w.user_id, kind: "task",
       objective: `${auto ? "Book" : "Ask to book"} the table that just opened: ${hit.venue}, ${hit.date} at ${hit.time} for ${hit.party_size} (watch ${w.id}).` });
     exec("update runs set brief_status='skipped' where id=?", run.id);
     rt.appendStep(run.id, "assistant", { text: "", toolCalls: [{ id: `watch_${w.id}`, name: "reservations.book", input }] });
-    exec("update reservation_watches set pending_run_id=? where id=?", run.id, w.id);
+    exec("update reservation_watches set pending_run_id=?, tried=json_insert(coalesce(tried, '[]'), '$[#]', ?) where id=?", run.id, hit.slot_id ?? `${hit.venue_id}|${hit.date}|${hit.time}`, w.id);
     emit("WATCH_HIT", { workspace_id: w.workspace_id, room_id: w.room_id, run_id: run.id, actor: w.agent_id, data: { watch_id: w.id, slot: hit, auto } });
   }
   return n;
@@ -218,7 +232,7 @@ export function registerReservationTools(def: (d: tools.ToolDef) => void) {
     async execute(i, ctx) { return book({ ...i, __ws: ctx.run.workspace_id, __user: ctx.run.requested_by, __agent: ctx.agent.id }, ctx); },
   });
   def({
-    id: "reservations.watch", description: "Keep checking for a hard-to-get table and act the moment one opens (polls every few seconds around release times). Call reservations.preauthorize afterwards if the person wants it booked automatically.",
+    id: "reservations.watch", testSimulate: true, description: "Keep checking for a hard-to-get table and act the moment one opens (polls every few seconds around release times). Call reservations.preauthorize afterwards if the person wants it booked automatically.",
     risk: "write_internal", idempotency: "safe", defaultApproval: "none",
     inputSchema: obj({ query: str("restaurant name"), dates: str("e.g. 'friday', 'dec 18-20', '2026-10-09'"), time_from: str(), time_to: str(), party_size: num(), site: str(), release_at: str("ISO time tables drop, if known") }, ["query", "dates"]),
     summarize: (i) => `Watch ${i.query} for ${i.dates}`,
@@ -240,17 +254,29 @@ export function registerReservationTools(def: (d: tools.ToolDef) => void) {
     id: "reservations.preauthorize", description: "Ask the person to pre-approve booking limits for a watch, so the table can be booked instantly when it opens. Use watch_id 'latest' for the watch just created.",
     risk: "financial", idempotency: "safe", defaultApproval: "always",
     inputSchema: obj({ watch_id: str(), max_deposit_per_person: num(), max_bookings: num() }, ["watch_id"]),
-    summarize: (i) => { const w = watchFor(i.watch_id); const c = J(w?.criteria, {}); return `Pre-approve booking ${c.query ?? "a table"} — ${(c.dates ?? []).map(fmtDate).join(", ")}, ${c.time_from ? fmtTime(c.time_from) : ""}–${c.time_to ? fmtTime(c.time_to) : ""}, party of ${c.party_size}${Number(i.max_deposit_per_person ?? 0) > 0 ? `, deposit up to $${i.max_deposit_per_person}/person` : ", no deposit"}, ${i.max_bookings ?? 1} booking`; },
+    normalize: (i, x) => ({ ...i, watch_id: watchFor(i.watch_id, x.agent.id, x.room.id)?.id ?? i.watch_id }),
+    summarize: (i) => { const w = String(i.watch_id).startsWith("wch_") ? one<any>("select * from reservation_watches where id=?", i.watch_id) : null; const c = J(w?.criteria, {}); return `Pre-approve booking ${c.query ?? "a table"} — ${(c.dates ?? []).map(fmtDate).join(", ")}, ${c.time_from ? fmtTime(c.time_from) : ""}–${c.time_to ? fmtTime(c.time_to) : ""}, party of ${c.party_size}${Number(i.max_deposit_per_person ?? 0) > 0 ? `, deposit up to $${i.max_deposit_per_person}/person` : ", no deposit"}, ${i.max_bookings ?? 1} booking`; },
     async execute(i, ctx) {
       const w = watchFor(i.watch_id, ctx.agent.id, ctx.room.id);
       if (!w) throw new tools.ToolError("BUSINESS_RULE", "no such watch in this conversation");
       const c = J(w.criteria);
       const sid = id("sta");
       exec("insert into standing_approvals (id, agent_id, tool_id, constraints, max_uses, uses, expires_at, granted_by, ref, status, created_at) values (?,?,?,?,?,0,?,?,?, 'active', ?)",
-        sid, ctx.agent.id, "reservations.book", S({ venue_ids: c.venue_ids, dates: c.dates, time_from: c.time_from, time_to: c.time_to, party_size: c.party_size, max_deposit_per_person: i.max_deposit_per_person ?? 0 }),
+        sid, ctx.agent.id, "reservations.book", S({ venue_ids: c.venue_ids, venue: c.query, room_id: w.room_id, dates: c.dates, time_from: c.time_from, time_to: c.time_to, party_size: c.party_size, max_deposit_per_person: i.max_deposit_per_person ?? 0 }),
         i.max_bookings ?? 1, Date.parse(`${c.dates.at(-1)}T23:59:59`), ctx.run.requested_by, w.id, now());
       exec("update reservation_watches set auto_book=1, criteria=json_set(criteria, '$.max_deposit_per_person', ?) where id=?", i.max_deposit_per_person ?? 0, w.id);
       return { status: "SUCCEEDED", output: { standing_approval_id: sid, watch_id: w.id, auto_book: true, query: c.query, dates: c.dates } };
+    },
+  });
+  def({
+    id: "reservations.resume_watch", description: "Resume a paused watch in this conversation (optionally by restaurant name).", risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+    inputSchema: obj({ query: str() }), testSimulate: true,
+    async execute(i, ctx) {
+      const w = all<any>("select * from reservation_watches where agent_id=? and room_id=? and status='paused' order by created_at desc", ctx.agent.id, ctx.room.id)
+        .find((x) => !i.query || J(x.criteria).query.toLowerCase().includes(String(i.query).toLowerCase()));
+      if (!w) throw new tools.ToolError("BUSINESS_RULE", "no paused watch to resume here");
+      exec("update reservation_watches set status='active', next_check_at=? where id=?", now(), w.id);
+      return { status: "SUCCEEDED", output: { resumed: J(w.criteria).query } };
     },
   });
   def({
@@ -287,6 +313,8 @@ extraPlanners.push((text, c) => {
   if (!c.tools.includes("reservations.search")) return { steps: [] };
   const t = text.toLowerCase();
   if (/\b(my reservations|what('?s| do i have) booked|upcoming reservations|my watches)\b/.test(t)) return { steps: [{ name: "reservations.list", input: {} }], exclusive: true };
+  const resume = text.match(/\b(?:keep watching|resume(?: watching)?)\s*([^.!?]*)/i);
+  if (resume && c.tools.includes("reservations.resume_watch")) return { steps: [{ name: "reservations.resume_watch", input: resume[1].trim() ? { query: resume[1].trim() } : {} }], exclusive: true };
   const v = SANDBOX_VENUES.find((x) => t.includes(x.name.toLowerCase()));
   if (!v && !/\b(reservation|reserve|book|table|dinner|lunch|brunch|resy|opentable|spot)\b/.test(t)) return { steps: [] };
   const q = v?.name ?? text.match(/\bat\s+([A-Z][\w'&]*(?:\s+[A-Z][\w'&]*)*)/)?.[1] ?? text.match(/"([^"]+)"/)?.[1] ?? (t.match(/\b(italian|japanese|sushi|omakase|mexican|steak\w*|seafood)\b/)?.[1] ?? "dinner");
@@ -318,4 +346,5 @@ extraSummaries["reservations.watch"] = (j) => `👀 Watching ${j.query} for ${j.
 extraSummaries["reservations.preauthorize"] = (j) => `✅ Auto-book is on for ${j.query}: I'll book the first table that fits your limits and text you the confirmation.`;
 extraSummaries["reservations.list"] = (j) => [j.reservations.length ? `Upcoming:\n${j.reservations.map((r: any) => `• ${r.venue} ${fmtDate(r.date)} ${fmtTime(r.time)} (${r.confirmation})`).join("\n")}` : "No upcoming reservations.",
   j.watches.length ? `Watching:\n${j.watches.map((w: any) => `• ${w.criteria.query} — ${w.criteria.dates.map(fmtDate).join(", ")}${w.auto_book ? " (auto-book)" : ""}`).join("\n")}` : ""].filter(Boolean).join("\n");
+extraSummaries["reservations.resume_watch"] = (j) => `👀 Watching ${j.resumed} again.`;
 extraSummaries["reservations.cancel"] = (j) => (j.stopped ? "Stopped watching." : `Cancelled ${j.venue}.`);

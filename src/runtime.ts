@@ -229,8 +229,17 @@ export function pendingCalls(runId: string) {
   return calls.filter((c: any) => !done.has(c.id));
 }
 
-/** One durable step of the agent loop. Returns when the run completes, fails, or waits. */
+/** One durable step of the agent loop. Returns when the run completes, fails, or waits. A crash fails the run instead of
+ * leaving it 'running' (which would block the conversation behind it). */
 export async function stepRun(runId: string) {
+  try { await stepRunInner(runId); }
+  catch (e: any) {
+    console.error("[run]", runId, e);
+    const r = one<any>("select * from runs where id=?", runId);
+    if (r && r.status === "running") fail(r, "something went wrong on our side");
+  }
+}
+async function stepRunInner(runId: string) {
   const claimed = exec("update runs set status='running', updated_at=? where id=? and status='queued'", now(), runId);
   if (!claimed.changes) return; // someone else has it, or it's not runnable
   let run = one<any>("select * from runs where id=?", runId);
@@ -490,6 +499,8 @@ export async function tick() {
   n += await reservations.checkWatches();
   n += await orders.checkOrders();
   // Runs step concurrently (a slow model call shouldn't block everyone); stepRun's atomic claim makes this safe.
+  // Lease: a run 'running' for 15+ minutes belongs to a dead worker — requeue it (tool fingerprints prevent double writes).
+  exec("update runs set status='queued' where status='running' and updated_at<?", t - 15 * 6e4);
   // One run at a time per agent per conversation, in arrival order (a reply can't overtake the request it depends on).
   const busy = new Set(all<any>("select agent_id || room_id k from runs where status='running'").map((r) => r.k));
   const queued = all<any>("select id, agent_id || room_id k from runs where status='queued' order by created_at").filter((r) => !busy.has(r.k) && busy.add(r.k));

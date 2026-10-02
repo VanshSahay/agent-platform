@@ -91,6 +91,10 @@ export function registerOrderTools(def: (d: tools.ToolDef) => void) {
     inputSchema: obj({ title: str(), vendor: str(), items: { type: "array", items: { type: "object", properties: { name: str(), price: num(), unit: str() }, required: ["name", "price"] } },
       min_total_qty: num(), deadline: str("ISO datetime or natural, e.g. 'friday 6pm'"), payment_handle: str(), shipping_fee: num() }, ["title", "items"]),
     async execute(i, ctx) {
+      const open = currentOrder(ctx.room.id);
+      if (open) throw new tools.ToolError("BUSINESS_RULE", `"${open.title}" is still open — ${rt.nameOf(open.organizer_id)} can close it first`);
+      if (!one("select 1 from memberships where workspace_id=? and user_id=?", ctx.run.workspace_id, ctx.run.requested_by))
+        throw new tools.ToolError("PERMISSION", "I don't know who you are yet — the organizer should text me directly once (from the agent's Deploy page) so I can recognize them, then open the order");
       const list = (i.items ?? []).filter((x: any) => x.name && Number(x.price) >= 0).map((x: any, k: number) => ({ id: `i${k + 1}`, name: String(x.name).trim(), price: Number(x.price), unit: x.unit }));
       if (!list.length) throw new tools.ToolError("BUSINESS_RULE", "a group order needs at least one item with a price");
       const deadline = i.deadline ? parseDeadline(String(i.deadline)) : null;

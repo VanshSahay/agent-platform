@@ -99,7 +99,7 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
   db.exec(SCHEMA);
   // Additive migrations for databases created by earlier versions.
   for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
-    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
+    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
     if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
   }
   // Shared platform lines have no owning agent: relax the old NOT NULL (SQLite needs a table rebuild).

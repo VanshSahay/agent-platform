@@ -18,6 +18,8 @@ export interface ToolDef {
   siteLogin?: (input: any) => string | undefined;     // which website login (host) this call would use
   siteLoginRequired?: boolean;
   preApproved?: (input: any, run: any) => string | null; // id of a standing approval whose limits cover this exact call
+  testSimulate?: boolean;                             // internal write that must not leave real state behind in test mode
+  normalize?: (input: any, ctx: { run: any; agent: any; room: any }) => any; // resolve references ("latest") in the caller's scope
   summarize?: (input: any) => string; // human-readable approval card line
   execute: (input: any, ctx: ToolCtx) => Promise<ToolOutcome>;
 }
@@ -360,7 +362,7 @@ def({
 });
 
 def({
-  id: "memory.remember", description: "Save a durable fact/preference/decision. scope: room (participants of this room) or workspace (whole team; not allowed from private chats).",
+  id: "memory.remember", testSimulate: true, description: "Save a durable fact/preference/decision. scope: room (participants of this room) or workspace (whole team; not allowed from private chats).",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ text: str(), scope: { type: "string", enum: ["room", "workspace", "user_private"] }, kind: { type: "string", enum: ["fact", "preference", "decision", "relationship", "procedure"] } }, ["text"]),
   async execute(i, ctx) {
@@ -409,8 +411,8 @@ def({
   id: "wait.for_reply", description: "Pause this task until an email arrives from an address (or any new message in this room), with a timeout.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ from_email: str(), timeout_hours: num() }),
-  async execute(i) {
-    const key = i.from_email ? `email:${i.from_email.toLowerCase()}` : "room_message";
+  async execute(i, ctx) {
+    const key = i.from_email ? `email:${ctx.run.workspace_id}:${i.from_email.toLowerCase()}` : "room_message";
     return { status: "SUCCEEDED", output: { waiting_for: key }, wait: { kind: "event", reason: `waiting for ${i.from_email ?? "a reply"}`, wake_key: key, timeout_at: now() + (i.timeout_hours ?? 48) * 36e5 } };
   },
 });
@@ -451,9 +453,11 @@ export type GatewayResult =
   | { kind: "retry"; delayMs: number; reason: string };
 
 export async function executeToolCall(run: any, agent: any, room: any, call: { id: string; name: string; input: any }, allowedTools: Set<string>): Promise<GatewayResult> {
+  // (call may be rebound below when a tool normalizes its input)
   const base = { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id };
   const d0 = getTool(call.name);
   const d = d0 && d0.riskOf ? { ...d0, risk: d0.riskOf(call.input ?? {}) } : d0;
+  if (d?.normalize) call = { ...call, input: d.normalize(call.input ?? {}, { run, agent, room }) };
   emit("TOOL_CALL_REQUESTED", { ...base, data: { tool: call.name, input: call.input, call_id: call.id } });
   if (!d) return { kind: "result", status: "FAILED", content: `DENIED: unknown tool ${call.name}` };
   const bad = validate(d.inputSchema, call.input ?? {});
@@ -470,7 +474,7 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
   if (login && !conn) conn = login;
   // Test mode: the full pipeline runs (policy, approvals, trace), but nothing leaves the platform.
   const testMode = room.mode === "test";
-  const simulateWrite = testMode && (["write_external", "destructive", "financial"].includes(d.risk) || d.id.startsWith("mcp."));
+  const simulateWrite = testMode && (["write_external", "destructive", "financial"].includes(d.risk) || d.id.startsWith("mcp.") || !!d.testSimulate);
   const simulateRead = testMode && !!d.requiresConnection && (!conn || conn.status !== "active");
   if (simulateRead) conn = { id: "sim", owner_id: run.requested_by, visibility: "workspace", status: "active", granted: 1, account: "sample data" };
   const fp = fingerprint(run.id, call.name, call.input);

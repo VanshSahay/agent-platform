@@ -170,6 +170,8 @@ test("AC-J4 reservations without pre-approval: you get a one-tap card the moment
 test("AC-J5 group buying in an iMessage group: open, join without tagging, tally, reminder, auto-close with pay links", async () => {
   const maria = await register("Maria");
   const pool = (await api("/v1/agent-templates/pool-group-buying/install", maria.token, { workspace_id: maria.ws })).data.agent;
+  const dm = (await api(`/v1/agents/${pool.id}/deploy/imessage`, maria.token, { kind: "dm" })).data;
+  await text("+1555maria", "chat-maria", dm.message); // Maria links her phone once so Pool recognizes her in groups
   const g = (await api(`/v1/agents/${pool.id}/deploy/imessage`, maria.token, { kind: "group" })).data;
   await text("+1555maria", "grp-coffee", g.message, true, "Maria");
   const fri = new Date(now()); fri.setDate(fri.getDate() + 3);
@@ -215,6 +217,7 @@ test("AC-J7 real-time group chat: quick replies while an order is still opening 
   process.env.DEBOUNCE_MS = "1500";
   const maria = await register("Maria");
   const pool = (await api("/v1/agent-templates/pool-group-buying/install", maria.token, { workspace_id: maria.ws })).data.agent;
+  await text("+1555maria", "chat-maria", (await api(`/v1/agents/${pool.id}/deploy/imessage`, maria.token, { kind: "dm" })).data.message);
   const g = (await api(`/v1/agents/${pool.id}/deploy/imessage`, maria.token, { kind: "group" })).data;
   const raw = (h: string, n: string, t: string) => ch.handleWebhook("imessage", "chi_shared_imessage", signed("imessage", "chi_shared_imessage", imsg("grp-q", h, n, t, true)));
   await raw("+1555maria", "Maria", g.message); await settle();
