@@ -424,7 +424,9 @@ function SetupChecklist({ a, onMessage }: { a: any; onMessage: () => void }) {
   const needsGoogle = a.connections_needed.includes("google");
   const items = [
     needsGoogle && { done: a.connections.some((c: any) => c.provider === "google"), label: "Connect Gmail + Google Calendar", action: <a className="btn sm" href={`/v1/connections/google/start?workspace=${ws}&agent=${a.id}`}>Connect</a> },
-    { done: a.channels.length > 0, label: `Reach ${a.name} from your phone (iMessage, Telegram, WhatsApp…)`, action: <a className="btn sm" href={`#/agents/${a.id}/channels`}>Add channel</a> },
+    a.skills.includes("reservations") && { done: a.connections.some((c: any) => c.provider === "mcp"), label: "Connect a browser runner (Browser Use) for real Resy / OpenTable bookings — until then Reese uses sandbox restaurants", action: <a className="btn sm" href="#/connections">Connect</a> },
+    a.skills.includes("reservations") && { done: a.connections.some((c: any) => c.provider === "site_login"), label: "Save your Resy / OpenTable login", action: <a className="btn sm" href="#/connections">Add login</a> },
+    { done: a.deployed?.some((p: string) => p !== "web"), label: `Reach ${a.name} from your phone or group chats (iMessage, WhatsApp, Slack…)`, action: <a className="btn sm" href={`#/agents/${a.id}/deploy`}>Deploy</a> },
     { done: a.completed_runs > 0, label: "Give it a first task", action: <button className="btn sm primary" onClick={onMessage}>Start</button> },
   ].filter(Boolean) as any[];
   if (items.every((i) => i.done)) return null;

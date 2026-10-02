@@ -57,7 +57,8 @@ export async function checkOrders() {
   for (const o of all<any>("select * from group_orders where status='open' and deadline_at is not null")) {
     const send = (text: string) => rt.postMessage(o.room_id, { sender: o.agent_id, text, targets: rt.replyTargets(o.room_id, null) });
     if (now() >= o.deadline_at) { const r = closeOrder(o, o.agent_id); send(extraSummaries["order.close"](r)); k++; }
-    else if (!o.reminded && now() >= o.deadline_at - 864e5) {
+    // Remind 24h before close — or halfway there for short orders, so a same-day order isn't "24h left" instantly.
+    else if (!o.reminded && now() >= o.deadline_at - Math.min(864e5, (o.deadline_at - o.created_at) / 2)) {
       exec("update group_orders set reminded=1 where id=?", o.id);
       send(`⏰ 24h left on "${o.title}". ${extraSummaries["order.status"](tally(o))}`); k++;
     }
@@ -69,6 +70,10 @@ const ORDER_INTENT = /\b(i'?m in|in for \d|put me down|count me in|i'?ll take|ad
 /** In a room with an open order, order-shaped messages reach the order's agent without an @mention. */
 export function orderAgentFor(roomId: string, text: string) {
   if (!ORDER_INTENT.test(text)) return null;
+  // An order being opened right now (its run hasn't finished) still catches quick replies.
+  const opening = one<any>(`select r.agent_id from runs r where r.room_id=? and r.status not in ('completed','failed_terminal','cancelled') and r.created_at>?
+    and (lower(r.objective) like '%group order%' or lower(r.objective) like '%group buy%' or lower(r.objective) like '%bulk order%')`, roomId, now() - 5 * 6e4);
+  if (opening && !currentOrder(roomId)) return opening.agent_id as string;
   // After closing, people still report payments and ask the tally for a couple of weeks.
   const o = currentOrder(roomId) ?? one<any>("select * from group_orders where room_id=? and status='closed' and closed_at>? order by closed_at desc limit 1", roomId, now() - 14 * 864e5);
   return o ? (o.agent_id as string) : null;
@@ -186,7 +191,9 @@ extraPlanners.push((text, c) => {
 
 const itemLine = (i: any) => `${i.name} ${money(i.price)}${i.unit ? `/${i.unit}` : ""}`;
 extraSummaries["order.create"] = (j) => `🛒 Group order open: ${j.title}\n${j.items.map((i: any) => `• ${itemLine(i)}`).join("\n")}${j.min_total_qty ? `\nMinimum: ${j.min_total_qty} total` : ""}${j.deadline ? `\nCloses ${new Date(j.deadline).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}\nReply like "in for 2${j.items.length > 1 ? ` ${j.items[0].name}` : ""}" — no need to tag me.`;
-extraSummaries["order.status"] = (t) => `${t.title}: ${t.totalQty}${t.min ? `/${t.min}` : ""} ${t.reached ? (t.min ? "✅ minimum reached" : "") : `— ${t.min - t.totalQty} more to go`}\n${t.byItem.filter((i: any) => i.qty).map((i: any) => `• ${i.name}: ${i.qty}`).join("\n")}${t.perPerson.length ? `\nWho's in: ${t.perPerson.map((p: any) => `${p.name} (${p.lines.map((l: any) => `${l.qty} ${l.item}`).join(", ")})${p.paid ? " ✓" : ""}`).join(", ")}` : "\nNobody's in yet."}`;
+extraSummaries["order.status"] = (t) => [`${t.title}: ${t.totalQty}${t.min ? `/${t.min}` : ""} ${t.reached ? (t.min ? "✅ minimum reached" : "") : `— ${t.min - t.totalQty} more to go`}`.trim(),
+  t.byItem.length > 1 ? t.byItem.filter((i: any) => i.qty).map((i: any) => `• ${i.name}: ${i.qty}`).join("\n") : "",
+  t.perPerson.length ? `Who's in: ${t.perPerson.map((p: any) => `${p.name} (${p.lines.map((l: any) => `${l.qty}${t.byItem.length > 1 ? ` ${l.item}` : ""}`).join(", ")})${p.paid ? " ✓" : ""}`).join(", ")}` : "Nobody's in yet."].filter(Boolean).join("\n");
 extraSummaries["order.join"] = (j) => `${j.qty ? `Got it, ${j.who}: ${j.qty} × ${j.item}.` : `Removed ${j.who} from ${j.item}.`} ${j.tally.min ? `Now ${j.tally.totalQty}/${j.tally.min}${j.tally.reached ? " ✅" : ""}.` : `Total so far: ${j.tally.totalQty}.`}`;
 extraSummaries["order.close"] = (t) => `🔒 "${t.title}" is closed — ${t.totalQty} total${t.min && !t.reached ? ` (short of the ${t.min} minimum — organizer decides)` : ""}.\n${t.payments.map((p: any) => `• ${p.name}: ${money(p.total)}${p.link ? ` → ${p.link}` : " (organizer)"}${p.paid ? " ✓ paid" : ""}`).join("\n")}`;
 extraSummaries["order.mark_paid"] = (j) => `✓ ${j.who} marked as paid${j.self_reported ? " (self-reported)" : ""}. ${j.tally.perPerson.filter((p: any) => !p.paid).length} still to pay.`;

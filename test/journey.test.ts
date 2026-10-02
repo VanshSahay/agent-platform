@@ -182,7 +182,7 @@ test("AC-J5 group buying in an iMessage group: open, join without tagging, tally
   await text("+1555cal", "grp-coffee", "lol nice", true, "Cal"); // chatter: no reply
   expect(lastPhoton("grp-coffee")).toMatch(/Ben: 2 × .*Now 4\/4 ✅/);
   await text("+1555cal", "grp-coffee", "who's in?", true, "Cal");
-  expect(lastPhoton("grp-coffee")).toMatch(/4\/4[\s\S]*Ana \(2 .*\), Ben \(2 /);
+  expect(lastPhoton("grp-coffee")).toMatch(/4\/4[\s\S]*Ana \(2\), Ben \(2\)/);
   await text("+1555ana", "grp-coffee", "close the order", true, "Ana");
   expect(lastPhoton("grp-coffee")).toMatch(/only Maria \(the organizer\) can close/);
   advance(fri.setHours(18, 0, 0, 0) - now() - 23 * 3600e3); await settle();
@@ -209,4 +209,20 @@ test("AC-J6 agent-level and account-level memory: teach an agent once; your pers
   expect(seen.every((r) => r.system.includes("vegetarian"))).toBe(true); // account-level, private to Ellie
   const agentMem = (await api(`/v1/memory?workspace=${me.ws}&agent=${reese.id}`, me.token)).data.map((m: any) => m.scope_type);
   expect(agentMem).toEqual(expect.arrayContaining(["agent", "user_private"]));
+});
+
+test("AC-J7 real-time group chat: quick replies while an order is still opening aren't lost; same-day orders don't get an instant '24h left'", async () => {
+  process.env.DEBOUNCE_MS = "1500";
+  const maria = await register("Maria");
+  const pool = (await api("/v1/agent-templates/pool-group-buying/install", maria.token, { workspace_id: maria.ws })).data.agent;
+  const g = (await api(`/v1/agents/${pool.id}/deploy/imessage`, maria.token, { kind: "group" })).data;
+  const raw = (h: string, n: string, t: string) => ch.handleWebhook("imessage", "chi_shared_imessage", signed("imessage", "chi_shared_imessage", imsg("grp-q", h, n, t, true)));
+  await raw("+1555maria", "Maria", g.message); await settle();
+  const tonight = new Date(now()); tonight.setHours(23, 0, 0, 0);
+  await raw("+1555maria", "Maria", `@Pool let's do a group order of dumplings $12 each, closes ${ymd(tonight)} 11pm, venmo @maria-k`);
+  await raw("+1555ana", "Ana", "in for 2"); // arrives before the order exists
+  await settle(); advance(2000); await settle(); advance(2000); await settle();
+  expect(photon().filter((m) => m.chat_id === "grp-q").map((m) => m.text).join("\n")).toMatch(/Got it, Ana: 2 × dumplings/);
+  expect(photon().some((m) => m.chat_id === "grp-q" && /24h left/.test(m.text))).toBe(false);
+  process.env.DEBOUNCE_MS = "0";
 });

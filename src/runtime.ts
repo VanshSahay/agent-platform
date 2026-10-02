@@ -490,7 +490,10 @@ export async function tick() {
   n += await reservations.checkWatches();
   n += await orders.checkOrders();
   // Runs step concurrently (a slow model call shouldn't block everyone); stepRun's atomic claim makes this safe.
-  const queued = all<any>("select id from runs where status='queued' order by created_at"), width = Number(process.env.WORKER_CONCURRENCY ?? 4);
+  // One run at a time per agent per conversation, in arrival order (a reply can't overtake the request it depends on).
+  const busy = new Set(all<any>("select agent_id || room_id k from runs where status='running'").map((r) => r.k));
+  const queued = all<any>("select id, agent_id || room_id k from runs where status='queued' order by created_at").filter((r) => !busy.has(r.k) && busy.add(r.k));
+  const width = Number(process.env.WORKER_CONCURRENCY ?? 4);
   for (let i = 0; i < queued.length; i += width) await Promise.all(queued.slice(i, i + width).map((r) => stepRun(r.id)));
   n += queued.length;
   n += await channels.flushOutbox();
