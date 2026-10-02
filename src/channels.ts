@@ -278,16 +278,19 @@ export function linkIdentity(platform: string, externalId: string, code: string,
   const old = one<any>("select * from external_identities where platform=? and external_user_id=?", platform, externalId);
   exec("insert or replace into external_identities (platform, external_user_id, user_id, verified, display_name) values (?,?,?,1,?)", platform, externalId, c.user_id, old?.display_name ?? null);
   if (old && old.user_id !== c.user_id) {
-    // Fold the guest into the real user: group memberships move over; DM endpoints re-point to the user's private Room.
+    // Fold the guest into the real user: DM endpoints re-point to the user's own private Room; group memberships move over.
+    if (ident) {
+      const agent = one<any>("select * from agents where id=?", ident.agent_id);
+      const target = rt.privateRoomFor(c.user_id, agent); // resolved before folding, so it's the user's own room
+      for (const ep of all<any>(`select re.* from room_endpoints re join rooms r on r.id=re.room_id join room_members m on m.room_id=r.id
+          where re.channel_identity_id=? and re.is_group=0 and r.kind='private' and m.principal_id=?`, ident.id, old.user_id)) {
+        exec("update room_endpoints set room_id=? where id=?", target.id, ep.id);
+        exec("update rooms set status='merged' where id=?", ep.room_id);
+      }
+    }
     for (const m of all<any>("select * from room_members where principal_id=?", old.user_id)) {
       exec("insert or ignore into room_members (room_id, principal_id, kind, role) values (?,?,?,?)", m.room_id, c.user_id, "human", null);
       exec("delete from room_members where room_id=? and principal_id=?", m.room_id, old.user_id);
-    }
-    if (ident) {
-      const agent = one<any>("select * from agents where id=?", ident.agent_id);
-      const target = rt.privateRoomFor(c.user_id, agent); // oldest private room = the one created on web
-      for (const ep of all<any>("select re.* from room_endpoints re join rooms r on r.id=re.room_id where re.channel_identity_id=? and re.is_group=0 and r.kind='private' and r.id!=?", ident.id, target.id))
-        if (!one("select 1 from room_members where room_id=? and kind='human' and principal_id!=?", ep.room_id, c.user_id)) exec("update room_endpoints set room_id=? where id=?", target.id, ep.id);
     }
   }
   emit("IDENTITY_LINKED", { actor: c.user_id, data: { platform, external_user_id: externalId } });

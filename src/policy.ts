@@ -52,6 +52,7 @@ export function evaluatePolicy(f: PolicyFacts): { decision: Decision; reason: st
 
   if (f.priorApproval) return { decision: "ALLOW", reason: "approved by a human for this exact action" };
   if (f.risk === "financial") return { decision: "REQUIRE_STRONG_CONFIRMATION", reason: "financial actions need explicit confirmation" };
+  if (f.risk === "destructive") return { decision: "REQUIRE_APPROVAL", reason: "destructive actions always need approval" };
   if (mode === "always_ask") return { decision: "REQUIRE_APPROVAL", reason: `${f.toolId} always requires approval` };
   if (mode === "ask") return { decision: "REQUIRE_APPROVAL", reason: `${f.toolId} is set to ask first` };
   if (mode === "first_time" && !f.standingGrant) return { decision: "REQUIRE_APPROVAL", reason: `first use of ${f.toolId} needs approval` };

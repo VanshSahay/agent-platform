@@ -536,8 +536,8 @@ export const routes: Record<string, any> = {
       by_agent: all<any>("select agent_id, round(sum(cost_usd), 4) cost_usd, count(*) events from usage where workspace_id=? and agent_id is not null group by agent_id", ws).map((r) => ({ ...r, agent: rt.nameOf(r.agent_id) })),
       metrics: {
         completed_runs: one<any>("select count(*) n from runs where workspace_id=? and status='completed'", ws).n,
-        autonomous_completion_rate: one<any>(`select round(1.0 * sum(case when not exists (select 1 from approvals a where a.run_id=r.id) then 1 else 0 end) / max(count(*), 1), 2) v from runs r where workspace_id=? and status='completed'`, ws).v,
-        approval_acceptance_rate: one<any>("select round(1.0 * sum(status='approved') / max(sum(status in ('approved','rejected')), 1), 2) v from approvals a join rooms r on r.id=a.room_id where r.workspace_id=?", ws).v,
+        autonomous_completion_rate: one<any>(`select round(1.0 * sum(case when not exists (select 1 from approvals a where a.run_id=r.id) then 1 else 0 end) / max(count(*), 1), 2) v from runs r where r.workspace_id=? and r.status='completed'`, ws).v,
+        approval_acceptance_rate: one<any>("select round(1.0 * sum(a.status='approved') / max(sum(a.status in ('approved','rejected')), 1), 2) v from approvals a join rooms r on r.id=a.room_id where r.workspace_id=?", ws).v,
         cross_channel_rooms: one<any>("select count(*) n from (select room_id from events where workspace_id=? and type='message' group by room_id having count(distinct json_extract(data, '$.platform')) > 1)", ws).n,
       },
     });
