@@ -226,7 +226,7 @@ function Agents() {
         <div className="grow"><div><b>{a.name}</b> <span className="muted">— {a.job}</span></div>
           <div className="row wrap small mt8" style={{ gap: 4 }}>{a.deployed.map((p: string) => <span key={p} className="pill accent">{PLATFORM[p] ?? p}</span>)}
             {a.connections.map((c: any, i: number) => <span key={i} className="pill">{c.provider === "site_login" ? c.account : c.provider}</span>)}</div></div>
-        <div className="small muted" style={{ textAlign: "right", minWidth: 140 }}>{a.active_runs ? <span className="pill accent">{a.active_runs} working</span> : <span className="row" style={{ justifyContent: "flex-end" }}><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}</span>}
+        <div className="small muted" style={{ textAlign: "right", minWidth: 140 }}>{a.active_runs ? <span className="pill accent">{a.active_runs} in progress</span> : <span className="row" style={{ justifyContent: "flex-end" }}><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}</span>}
           <div className="mt8">{a.completed_this_month} done this month · {a.open_tasks} open</div><div>{a.memories} memories · ${a.spend_this_month}</div></div>
       </a>)}</div> : <div className="empty">No agents in this workspace yet.</div>}</div>)}
   </>;
@@ -733,7 +733,7 @@ function Connections() {
   return <>
     <div className="row between"><div><h1>Connections</h1><p className="muted">Access to your tools. Each connection has one owner; agents only use what they've been allowed.</p></div>
       <div className="row wrap"><a className="btn primary" href={`/v1/connections/google/start?workspace=${ws}`}>Connect Google</a>
-        <button className="btn" onClick={() => setForm({ kind: "mcp", preset: "browser-use", url: MCP_PRESETS["browser-use"].url, headers: MCP_PRESETS["browser-use"].headers, label: "Browser Use", agents: [] })}>Add MCP server</button>
+        <button className="btn" onClick={() => setForm({ kind: "mcp", preset: "browserbase", url: MCP_PRESETS.browserbase.url, headers: MCP_PRESETS.browserbase.headers, label: "Browserbase", agents: [] })}>Add MCP server</button>
         <button className="btn" onClick={() => setForm({ kind: "site", site: "resy.com", username: "", password: "", agents: [] })}>Add site login</button>
         <button className="btn ghost" onClick={() => setDev({ provider: "google", account: me.user.email, token: "", visibility: "private" })}>Add token</button></div></div>
     {form && <ConnectForm form={form} setForm={setForm} onDone={() => { setForm(null); reload(); }} />}
@@ -747,10 +747,11 @@ function Connections() {
     {sel && <ConnectionDrawer id={sel} onClose={() => { setSel(null); reload(); }} />}
   </>;
 }
-// Example endpoints — verify the exact URL and header in each provider's docs.
+// Hosted endpoints verified Oct 2026 (Browserbase, Browserless). Browser Use: run its MCP server and paste that URL.
 const MCP_PRESETS: Record<string, { label: string; url: string; headers: string }> = {
-  "browser-use": { label: "Browser Use (cloud browser agent)", url: "https://api.browser-use.com/mcp", headers: "X-Browser-Use-API-Key: " },
-  browserbase: { label: "Browserbase / Stagehand", url: "https://mcp.browserbase.com/mcp", headers: "Authorization: Bearer " },
+  browserbase: { label: "Browserbase / Stagehand (hosted)", url: "https://mcp.browserbase.com/mcp", headers: "Authorization: Bearer " },
+  browserless: { label: "Browserless (hosted)", url: "https://mcp.browserless.io/mcp", headers: "Authorization: Bearer " },
+  "browser-use": { label: "Browser Use (your MCP server)", url: "https://your-browser-use-mcp-host/mcp", headers: "X-Browser-Use-API-Key: " },
   custom: { label: "Any MCP server", url: "https://", headers: "Authorization: Bearer " },
 };
 function ConnectForm({ form, setForm, onDone }: { form: any; setForm: (f: any) => void; onDone: () => void }) {
