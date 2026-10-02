@@ -88,6 +88,7 @@ function agentView(a: any) {
     channels: all<any>("select id, platform, address, config from channel_identities where agent_id=?", a.id).map((c) => ({ ...c, config: J(c.config, {}), webhook_url: `${pub()}/v1/webhooks/${c.platform}/${c.id}` })),
     connections_needed: tpl.connectionsNeeded(J(a.skills, [])),
     custom_skills: tpl.customSkills(a.id), starters: tpl.starters(a),
+    deployed: [...new Set(["web", ...all<any>("select e.platform from room_endpoints e join rooms r on r.id=e.room_id where (e.agent_id=? or e.room_id in (select room_id from room_members where principal_id=?)) and r.status='active'", a.id, a.id).map((x) => x.platform)])],
     completed_runs: one<any>("select count(*) n from runs where agent_id=? and status='completed' and parent_run_id is null", a.id).n,
     connections: all<any>("select c.id, c.provider, c.account, c.owner_id, c.visibility, c.status from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=?", a.id)
       .map((c) => ({ ...c, owner: rt.nameOf(c.owner_id) })),
@@ -379,6 +380,19 @@ export const routes: Record<string, any> = {
     const vis = visibleRooms(ws!, u.id);
     return json(all<any>("select t.*, r.name room_name from tasks t join rooms r on r.id=t.room_id where r.workspace_id=? and coalesce(r.mode,'live')='live' order by t.status='done', t.updated_at desc limit 300", ws)
       .filter((t) => vis.has(t.room_id) && (q.get("mine") !== "1" || t.owner === u.id)).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner), agent: rt.roomAgents(t.room_id)[0]?.name })));
+  }) },
+  "/v1/work": { GET: h(async (req) => {
+    // Everything agents are tracking in this workspace that the user may see: tasks, reservation watches, group orders.
+    const u = userOf(req), ws = new URL(req.url).searchParams.get("workspace"); member(ws, u.id);
+    const vis = visibleRooms(ws!, u.id);
+    const orders = (await import("./orders"));
+    return json({
+      watches: all<any>("select w.*, r.name room_name from reservation_watches w join rooms r on r.id=w.room_id where w.workspace_id=? order by w.created_at desc limit 50", ws)
+        .filter((w) => vis.has(w.room_id)).map((w) => ({ ...w, criteria: J(w.criteria), agent: rt.nameOf(w.agent_id) })),
+      reservations: all<any>("select * from reservations where workspace_id=? and user_id=? and status='booked' order by date, time", ws, u.id),
+      orders: all<any>("select o.*, r.name room_name from group_orders o join rooms r on r.id=o.room_id where o.workspace_id=? order by o.created_at desc limit 30", ws)
+        .filter((o) => vis.has(o.room_id)).map((o) => ({ ...orders.tally(o), room_id: o.room_id, room_name: o.room_name, agent: rt.nameOf(o.agent_id), organizer: rt.nameOf(o.organizer_id) })),
+    });
   }) },
   "/v1/agents/:id/private-room": { POST: h((req) => { const u = userOf(req); const a = agentFor(req.params.id, u.id); return json(rt.privateRoomFor(u.id, a)); }) },
   "/v1/agents/:id/channels": { POST: h(async (req) => {

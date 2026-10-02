@@ -97,6 +97,10 @@ table.t th { font-size: 11px; color: var(--muted); text-transform: uppercase; le
 pre.code { background: var(--sunken); border-radius: 8px; padding: 10px; overflow-x: auto; font-size: 12px; margin: 6px 0 0; white-space: pre-wrap; }
 
 .auth { max-width: 380px; margin: 12vh auto; padding: 0 16px; }
+.landing { min-height: 100%; background: var(--bg); overflow-y: auto; height: 100%; }
+.landing-hero { max-width: 1040px; margin: 0 auto; padding: 8vh 24px 0; display: grid; grid-template-columns: 1.3fr 1fr; gap: 48px; align-items: center; }
+.landing-hero .auth { margin: 0; padding: 24px; max-width: none; }
+@media (max-width: 860px) { .landing-hero { grid-template-columns: 1fr; padding-top: 32px; } }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; z-index: 20; }
 

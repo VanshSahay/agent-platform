@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
+import qrcode from "qrcode-generator";
 
 // PWA: installable on phones (added at runtime so the HTML bundler doesn't try to resolve them).
 for (const [rel, href] of [["manifest", "/manifest.webmanifest"], ["icon", "/icon.svg"], ["apple-touch-icon", "/icon.svg"]]) {
@@ -44,10 +45,35 @@ const MODE_LABEL: Record<string, string> = { auto: "Automatic", first_time: "Ask
 const PLATFORM: Record<string, string> = { web: "Web", imessage: "iMessage", telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp", email: "Email", phone: "Phone" };
 
 // ---------------- auth ----------------
+function QR({ value, size = 168 }: { value: string; size?: number }) {
+  const q = qrcode(0, "M"); q.addData(value); q.make();
+  return <div style={{ width: size, height: size, background: "#fff", padding: 8, borderRadius: 10 }} dangerouslySetInnerHTML={{ __html: q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }) }} />;
+}
+
+function Landing({ onDone }: { onDone: () => void }) {
+  const [list] = useApi<any[]>("/v1/agent-templates");
+  return <div className="landing">
+    <div className="landing-hero">
+      <div>
+        <div className="pill accent">Agents that live where you talk</div>
+        <h1 style={{ fontSize: 40, lineHeight: 1.1, margin: "14px 0" }}>Describe an agent.<br />Test it. Text it.</h1>
+        <p className="muted" style={{ fontSize: 17 }}>Create an agent for yourself or your team in plain words, try it safely, then deploy it in one tap to iMessage, WhatsApp, Slack, Telegram or the web — where it actually does the work.</p>
+        <div className="row wrap mt16" style={{ gap: 18 }}>{[["1", "Describe", "“Grab me a table at the hottest spots on Resy”"], ["2", "Test", "Dry-run it — nothing is sent or booked"], ["3", "Deploy", "Text it from your phone or add it to a group"]].map(([n, h, d]) =>
+          <div key={n} style={{ maxWidth: 190 }}><div className="avatar">{n}</div><b className="mt8" style={{ display: "block" }}>{h}</b><div className="small muted">{d}</div></div>)}</div>
+      </div>
+      <Auth onDone={onDone} />
+    </div>
+    <h2 style={{ maxWidth: 1040, margin: "40px auto 12px", padding: "0 24px" }}>Ready-made agents</h2>
+    <div className="grid2" style={{ maxWidth: 1040, margin: "0 auto", padding: "0 24px 60px" }}>{list?.map((t) => <a key={t.id} className="card" href={`#/discover/${t.slug}`}>
+      <div className="row"><div className="avatar">{t.manifest.avatar ?? t.name[0]}</div><b>{t.name}</b><span className="muted small">{t.manifest.title}</span></div>
+      <div className="small muted mt8">{t.tagline}</div><div className="small mt8" style={{ color: "var(--accent-text)" }}>Try it →</div></a>)}</div>
+  </div>;
+}
+
 function Auth({ onDone }: { onDone: () => void }) {
   const [mode, setMode] = useState<"login" | "signup">("signup"), [f, setF] = useState({ name: "", email: "", password: "" }), [err, setErr] = useState("");
   const submit = async (e: any) => { e.preventDefault(); setErr(""); try { await api(`/v1/auth/${mode}`, f); onDone(); } catch (x: any) { setErr(x.message); } };
-  return <div className="auth">
+  return <div className="auth card">
     <h1>{mode === "signup" ? "Create your account" : "Welcome back"}</h1>
     <p className="muted">Persistent agents that work wherever you already talk.</p>
     <form className="col mt16" onSubmit={submit}>
@@ -75,10 +101,10 @@ function App() {
   useEffect(() => { document.querySelector(".main")?.scrollTo(0, 0); }, [route]);
 
   if (route.startsWith("/discover") && !me) return <div className="page"><Discover route={route} anonymous /></div>;
-  if (meErr && !me) return <Auth onDone={reloadMe} />;
+  if (meErr && !me) return <Landing onDone={() => { reloadMe(); go("/agents/new"); }} />;
   if (!me || !ws) return <div className="page muted">Loading…</div>;
   const attention = home ? home.needs_attention.approvals.length + home.needs_attention.waits.length + home.needs_attention.reconnect.length : 0;
-  const nav = [["/", "Home", "⌂"], ["/agents", "Agents", "◎"], ["/rooms", "Rooms", "◇"], ["/discover", "Discover", "✦"], ["/connections", "Connections", "⟷"], ["/activity", "Activity", "≡"]];
+  const nav = [["/", "Home", "⌂"], ["/agents", "Agents", "◎"], ["/rooms", "Rooms", "◇"], ["/tasks", "Tasks", "☑"], ["/discover", "Discover", "✦"], ["/connections", "Connections", "⟷"], ["/activity", "Activity", "≡"]];
   const on = (p: string) => (p === "/" ? route === "/" : route.startsWith(p));
   const wide = /^\/rooms\/[^/]+$/.test(route);
   return <Ctx.Provider value={{ me, ws, setWs, toast, reloadMe }}>
@@ -94,7 +120,7 @@ function App() {
       <main className="main"><div className={`page ${wide ? "wide" : ""}`}>
         {route === "/" ? <Home /> : route === "/agents" ? <Agents /> : route === "/agents/new" ? <CreateAgent /> : route.startsWith("/agents/") ? <AgentPage id={route.split("/")[2]} tab={route.split("/")[3]} />
           : route === "/rooms" ? <Rooms /> : route.startsWith("/rooms/") ? <Room id={route.split("/")[2]} /> : route.startsWith("/discover") ? <Discover route={route} />
-          : route.startsWith("/connections") ? <Connections /> : route === "/activity" ? <Activity /> : route.startsWith("/settings") ? <Settings />
+          : route.startsWith("/connections") ? <Connections /> : route === "/activity" ? <Activity /> : route === "/tasks" ? <Tasks /> : route.startsWith("/settings") ? <Settings />
           : route.startsWith("/invite/") ? <AcceptInvite token={route.split("/")[2]} /> : <div className="empty">Not found</div>}
       </div></main>
     </div>
@@ -188,17 +214,45 @@ function WaitCard({ w, onDone }: { w: any; onDone: () => void }) {
 
 // ---------------- Agents ----------------
 function Agents() {
-  const { ws } = useCtx();
-  const [agents] = useApi<any[]>(`/v1/agents?workspace=${ws}`, 5000);
+  const { setWs } = useCtx();
+  const [ov] = useApi<any[]>("/v1/overview", 8000);
   return <>
-    <div className="row between"><div><h1>Agents</h1><p className="muted">Persistent workers with a job, memory, tools and permissions.</p></div>
+    <div className="row between"><div><h1>Agents</h1><p className="muted">Everything your agents do, across all your workspaces.</p></div>
       <div className="row"><a className="btn" href="#/discover">Browse agents</a><a className="btn primary" href="#/agents/new">New agent</a></div></div>
-    <div className="list mt16">{agents?.length ? agents.map((a) => <a key={a.id} className="item" href={`#/agents/${a.id}`}>
-      <div className="avatar">{a.avatar}</div>
-      <div className="grow"><div><b>{a.name}</b> <span className="muted">— {a.job}</span></div>
-        <div className="small faint">{a.channels.map((c: any) => PLATFORM[c.platform]).concat("Web").join(" · ")} · {a.rooms.length} room{a.rooms.length === 1 ? "" : "s"}</div></div>
-      {a.active_runs.length ? <span className="pill accent">{a.active_runs.length} active</span> : <span className="row small muted"><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}</span>}
-    </a>) : <div className="item muted">No agents yet. <a className="btn sm" href="#/agents/new">Create one</a></div>}</div>
+    {ov?.map((w) => <div key={w.workspace.id}><h2>{w.workspace.name}</h2>
+      {w.agents.length ? <div className="list">{w.agents.map((a: any) => <a key={a.id} className="item" href={`#/agents/${a.id}`} onClick={() => setWs(w.workspace.id)}>
+        <div className="avatar">{a.avatar}</div>
+        <div className="grow"><div><b>{a.name}</b> <span className="muted">— {a.job}</span></div>
+          <div className="row wrap small mt8" style={{ gap: 4 }}>{a.deployed.map((p: string) => <span key={p} className="pill accent">{PLATFORM[p] ?? p}</span>)}
+            {a.connections.map((c: any, i: number) => <span key={i} className="pill">{c.provider === "site_login" ? c.account : c.provider}</span>)}</div></div>
+        <div className="small muted" style={{ textAlign: "right", minWidth: 140 }}>{a.active_runs ? <span className="pill accent">{a.active_runs} working</span> : <span className="row" style={{ justifyContent: "flex-end" }}><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}</span>}
+          <div className="mt8">{a.completed_this_month} done this month · {a.open_tasks} open</div><div>{a.memories} memories · ${a.spend_this_month}</div></div>
+      </a>)}</div> : <div className="empty">No agents in this workspace yet.</div>}</div>)}
+  </>;
+}
+
+function Tasks() {
+  const { ws, toast } = useCtx();
+  const [mine, setMine] = useState(false);
+  const [tasks, reload] = useApi<any[]>(`/v1/tasks?workspace=${ws}${mine ? "&mine=1" : ""}`, 6000);
+  const [work] = useApi<any>(`/v1/work?workspace=${ws}`, 6000);
+  const set = async (t: any, status: string) => { try { await api(`/v1/tasks/${t.id}`, { status }, "PATCH"); reload(); } catch (e: any) { toast(e.message); } };
+  return <>
+    <div className="row between"><div><h1>Tasks</h1><p className="muted">What your agents and your team are tracking.</p></div>
+      <label className="row small"><input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />Only mine</label></div>
+    <div className="list mt16">{tasks?.length ? tasks.map((t) => <div key={t.id} className="item">
+      <input type="checkbox" checked={t.status === "done"} onChange={() => set(t, t.status === "done" ? "open" : "done")} />
+      <div className="grow"><span className={t.status === "done" ? "faint" : ""}>{t.title}</span><div className="small faint">{t.room_name}{t.agent ? ` · ${t.agent}` : ""}</div></div>
+      {t.agent_action === "blocked" && <span className="pill">human-owned</span>}
+      <span className={`pill ${t.status === "blocked" ? "bad" : t.status === "waiting" ? "warn" : t.status === "done" ? "ok" : ""}`}>{t.status}</span>
+      <span className="small muted" style={{ minWidth: 80, textAlign: "right" }}>{t.owner_name ?? "—"}</span></div>) : <div className="item muted">No tasks yet.</div>}</div>
+    {work?.watches?.length > 0 && <><h2>Reservation watches</h2><div className="list">{work.watches.map((w: any) => <a key={w.id} className="item" href={`#/rooms/${w.room_id}`}>
+      <span className={`pill ${w.status === "booked" ? "ok" : w.status === "active" ? "accent" : ""}`}>{w.status}</span>
+      <div className="grow">{w.criteria.query} · {w.criteria.dates.join(", ")} · {w.criteria.time_from}–{w.criteria.time_to} · {w.criteria.party_size} people<div className="small faint">{w.agent} · {w.checks} checks{w.auto_book ? " · auto-book on" : ""}{w.release_at ? ` · drops ${new Date(w.release_at).toLocaleString()}` : ""}</div></div></a>)}</div></>}
+    {work?.reservations?.length > 0 && <><h2>Your reservations</h2><div className="list">{work.reservations.map((r: any) => <div key={r.id} className="item"><b className="grow">{r.venue}</b><span>{r.date} {r.time}</span><span className="muted">{r.party_size} people</span><span className="mono">{r.confirmation}</span></div>)}</div></>}
+    {work?.orders?.length > 0 && <><h2>Group orders</h2><div className="list">{work.orders.map((o: any) => <a key={o.order_id} className="item" href={`#/rooms/${o.room_id}`}>
+      <span className={`pill ${o.status === "open" ? "accent" : ""}`}>{o.status}</span><div className="grow">{o.title}<div className="small faint">{o.room_name} · organizer {o.organizer} · {o.perPerson.length} people · {o.perPerson.filter((p: any) => p.paid).length} paid</div></div>
+      <span>{o.totalQty}{o.min ? `/${o.min}` : ""}</span></a>)}</div></>}
   </>;
 }
 
@@ -211,7 +265,9 @@ function PermissionRows({ rows, onChange }: { rows: any[]; onChange?: (tool: str
 }
 
 function CreateAgent() {
-  const { ws, toast } = useCtx();
+  const { ws, me, setWs, toast, reloadMe } = useCtx();
+  const teams = me.workspaces.filter((w: any) => w.kind === "team");
+  const [forWho, setForWho] = useState<string>(me.workspaces.find((w: any) => w.id === ws)?.kind === "team" ? ws : "me"), [teamName, setTeamName] = useState("");
   const [desc, setDesc] = useState(""), [draft, setDraft] = useState<any>(null), [busy, setBusy] = useState(false), [custom, setCustom] = useState(false);
   const [catalog] = useApi<any>("/v1/catalog");
   const propose = async () => { setBusy(true); try { setDraft(await api("/v1/agents/draft", { description: desc, workspace_id: ws })); } catch (e: any) { toast(e.message); } finally { setBusy(false); } };
@@ -219,8 +275,12 @@ function CreateAgent() {
     setBusy(true);
     try {
       const perms = Object.fromEntries(draft.permissions.map((p: any) => [p.tool, p.mode]));
-      const a = await api("/v1/agents", { workspace_id: ws, name: draft.name, title: draft.title, job: draft.job, skills: draft.skills, permissions: perms });
-      go(`/agents/${a.id}`);
+      // Who it's for decides the workspace: your personal one, an existing team, or a new team.
+      let target = forWho === "me" ? me.workspaces.find((w: any) => w.kind === "personal")?.id ?? ws : forWho;
+      if (forWho === "new") { const w = await api("/v1/workspaces", { name: teamName || "My team" }); target = w.id; reloadMe(); }
+      const a = await api("/v1/agents", { workspace_id: target, name: draft.name, title: draft.title, job: draft.job, skills: draft.skills, permissions: perms });
+      setWs(target);
+      go(`/agents/${a.id}/test`);
     } catch (e: any) { toast(e.message); } finally { setBusy(false); }
   };
   const toggleSkill = async (s: string) => {
@@ -234,6 +294,10 @@ function CreateAgent() {
     <h1>New agent</h1>
     <p className="muted">Describe the job. You can adjust everything after.</p>
     <div className="mt16"><textarea className="input hero-input" autoFocus placeholder="What do you want this agent to do?  e.g. “An executive assistant that watches my email, prepares me for meetings, helps schedule things and reminds me when people haven't replied.”" value={desc} onChange={(e) => setDesc(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) propose(); }} /></div>
+    <div className="row wrap mt8"><span className="small muted">For</span>
+      <select className="input" style={{ width: 220 }} value={forWho} onChange={(e) => setForWho(e.target.value)}>
+        <option value="me">Just me (personal)</option>{teams.map((t: any) => <option key={t.id} value={t.id}>My team: {t.name}</option>)}<option value="new">A new team…</option></select>
+      {forWho === "new" && <input className="input" style={{ width: 200 }} placeholder="Team name" value={teamName} onChange={(e) => setTeamName(e.target.value)} />}</div>
     <div className="row mt8"><button className="btn primary" disabled={!desc.trim() || busy} onClick={propose}>{busy && !draft ? "Thinking…" : draft ? "Re-propose" : "Propose agent"}</button><span className="small faint">⌘↵</span></div>
     {draft && <div className="card mt16 draft">
       <div className="row gap16"><div className="avatar lg">{draft.name[0]}</div>
@@ -245,7 +309,7 @@ function CreateAgent() {
       <h4>CONNECTIONS NEEDED</h4>{draft.connections.length ? draft.connections.map((c: string) => <div key={c} className="check">○ {c === "google" ? "Gmail + Google Calendar" : c}</div>) : <div className="muted">None</div>}
       <h4>DEFAULT PERMISSIONS</h4><PermissionRows rows={draft.permissions} onChange={custom ? (t, m) => setDraft({ ...draft, permissions: draft.permissions.map((p: any) => p.tool === t ? { ...p, mode: m } : p) }) : undefined} />
       <h4>CHANNELS</h4><div className="row wrap">{draft.channels.map((c: string) => <span key={c} className="pill">○ {PLATFORM[c]}</span>)}</div>
-      <div className="row mt16"><button className="btn primary" disabled={busy || !draft.name} onClick={create}>Create agent</button><button className="btn" onClick={() => setCustom(!custom)}>{custom ? "Done customizing" : "Customize"}</button></div>
+      <div className="row mt16"><button className="btn primary" disabled={busy || !draft.name} onClick={create}>Create &amp; test it</button><button className="btn" onClick={() => setCustom(!custom)}>{custom ? "Done customizing" : "Customize"}</button></div>
     </div>}
   </>;
 }
@@ -254,7 +318,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
   const { ws, toast } = useCtx();
   const [a, reload] = useApi<any>(`/v1/agents/${id}`, 6000);
   if (!a) return null;
-  const tabs = ["overview", "job", "skills", "connections", "memory", "channels", "permissions", "schedule", "activity", "settings"];
+  const tabs = ["overview", "test", "deploy", "job", "skills", "connections", "memory", "permissions", "schedule", "activity", "settings"];
   const message = async () => { const r = await api(`/v1/agents/${id}/private-room`, {}); go(`/rooms/${r.id}`); };
   const patch = async (b: any) => { try { await api(`/v1/agents/${id}`, b, "PATCH"); toast("Saved"); reload(); } catch (e: any) { toast(e.message); } };
   return <>
@@ -265,7 +329,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
     {tab === "overview" && <SetupChecklist a={a} onMessage={message} />}
     {tab === "overview" && <div className="grid2">
       <div className="card"><div className="small muted">What it does</div><div className="mt8">{a.job}</div></div>
-      <div className="card"><div className="small muted">Where it lives</div><div className="mt8 row wrap"><span className="pill">Web</span>{a.channels.map((c: any) => <span key={c.id} className="pill accent">{PLATFORM[c.platform]}</span>)}</div></div>
+      <div className="card"><div className="small muted">Where it lives</div><div className="mt8 row wrap"><span className="pill">Web</span>{a.deployed?.filter((p: string) => p !== "web").map((p: string) => <span key={p} className="pill accent">{PLATFORM[p]}</span>)}</div><a className="small mt8" style={{ display: "block", color: "var(--accent-text)" }} href={`#/agents/${a.id}/deploy`}>Deploy somewhere →</a></div>
       <div className="card"><div className="small muted">Who it works with</div><div className="mt8 col">{a.rooms.map((r: any) => <a key={r.id} href={`#/rooms/${r.id}`}>◇ {r.name}</a>)}</div></div>
       <div className="card"><div className="small muted">What it can access</div><div className="mt8 col">{a.connections.length ? a.connections.map((c: any) => <div key={c.id}>{c.provider} · {c.account} <span className="faint">({c.owner})</span></div>) : <span className="muted">No connections{a.connections_needed.length ? ` — needs ${a.connections_needed.join(", ")}` : ""}</span>}</div></div>
       <div className="card" style={{ gridColumn: "1 / -1" }}><div className="small muted">What it's doing</div>{a.active_runs.length ? a.active_runs.map((r: any) => <a key={r.id} href={`#/rooms/${r.room_id}`} className="row mt8"><Status s={r.status} /><span>{r.objective.slice(0, 100)}</span></a>) : <div className="mt8 muted">Idle</div>}</div>
@@ -273,7 +337,9 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
     {tab === "job" && <JobEditor a={a} patch={patch} />}
     {tab === "skills" && <SkillsEditor a={a} patch={patch} />}
     {tab === "connections" && <AgentConnections a={a} reload={reload} />}
-    {tab === "memory" && <MemoryList agent={a.id} />}
+    {tab === "memory" && <MemoryList agent={a.id} agentName={a.name} />}
+    {tab === "test" && <TestPanel a={a} />}
+    {tab === "deploy" && <Deploy a={a} reload={reload} />}
     {tab === "channels" && <ChannelsEditor a={a} reload={reload} />}
     {tab === "permissions" && <div className="card"><PermissionRows rows={a.permission_table} onChange={(t, m) => patch({ permissions: { [t]: m } })} /><p className="small faint mt8">Permissions are enforced by the platform before every action. The agent can't change them.</p></div>}
     {tab === "schedule" && <div className="list">{a.schedules.length ? a.schedules.map((s: any) => <div key={s.id} className="item"><span className="pill">{s.kind}</span><span className="grow">{s.objective}</span><span className="small muted">{s.next_at ? `next ${new Date(s.next_at).toLocaleString()}` : s.spec.wake_key}</span></div>) : <div className="item muted">No schedules. Ask the agent to “remind me…” or “every morning…”.</div>}</div>}
@@ -287,6 +353,64 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
     </div>}
   </>;
 }
+function TestPanel({ a }: { a: any }) {
+  const { toast } = useCtx();
+  const [room, setRoom] = useState<any>(null);
+  useEffect(() => { api(`/v1/agents/${a.id}/test-room`, {}).then(setRoom).catch((e) => toast(e.message)); }, [a.id]);
+  return <div>
+    <div className="card" style={{ marginBottom: 12, background: "var(--warn-soft)", borderColor: "transparent" }}>
+      <b>Test mode.</b> <span className="small">Plans, approvals and tools all run — but nothing leaves the platform: no emails sent, no tables booked, no posts. Accounts you haven't connected use sample data.</span></div>
+    {room && <div style={{ height: "64vh", border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}><Room id={room.id} /></div>}
+    <div className="row mt16"><span className="muted grow">Happy with how it behaves?</span><a className="btn primary" href={`#/agents/${a.id}/deploy`}>Deploy {a.name} →</a></div>
+  </div>;
+}
+
+const PLATFORM_ICON: Record<string, string> = { web: "🌐", mobile: "📱", imessage: "💬", whatsapp: "🟢", telegram: "✈️", slack: "#", email: "✉️" };
+function Deploy({ a }: { a: any; reload: () => void }) {
+  const { toast } = useCtx();
+  const [d, reloadD] = useApi<any>(`/v1/agents/${a.id}/deploy`, 8000);
+  const [codes, setCodes] = useState<Record<string, any>>({}), [chans, setChans] = useState<any[] | null>(null), [adv, setAdv] = useState(false);
+  const phone = /iPhone|Android|iPad/i.test(navigator.userAgent);
+  const get = async (p: string, kind: string) => {
+    try { const r = await api(`/v1/agents/${a.id}/deploy/${p}`, { kind }); setCodes((c) => ({ ...c, [`${p}:${kind}`]: r })); if (phone && r.link) location.href = r.link; reloadD(); }
+    catch (e: any) { toast(e.message); }
+  };
+  if (!d) return null;
+  const T = (p: string) => d.targets.find((t: any) => t.platform === p);
+  const Status = ({ t }: { t: any }) => t.connected?.length ? <span className="pill ok">Live · {t.connected.length}</span> : t.available ? <span className="pill">Ready</span> : <span className="pill">Not set up</span>;
+  const Connected = ({ t }: { t: any }) => t.connected?.length ? <div className="small mt8">{t.connected.map((c: any) => <div key={c.room_id + c.conv}>✓ {c.is_group ? "Group" : "Direct"} · <a href={`#/rooms/${c.room_id}`} style={{ textDecoration: "underline" }}>{c.room}</a></div>)}</div> : null;
+  const Code = ({ k }: { k: string }) => { const r = codes[k]; if (!r) return null;
+    return <div className="row mt8" style={{ alignItems: "flex-start", gap: 14 }}>{r.link && <QR value={r.link} size={132} />}<div className="col" style={{ gap: 6 }}>
+      <div className="small">{r.instructions}</div><div className="mono" style={{ fontSize: 14 }}>{r.message ?? r.address}</div>
+      {r.link && <a className="btn sm primary" href={r.link}>Open on this device</a>}{r.link && <div className="small faint">Or scan with your phone's camera.</div>}</div></div>; };
+  const Card = ({ p, title, children }: { p: string; title: string; children: ReactNode }) => <div className="card">
+    <div className="row between"><div className="row"><span style={{ fontSize: 20 }}>{PLATFORM_ICON[p]}</span><b>{title}</b></div><Status t={T(p)} /></div>{children}<Connected t={T(p)} /></div>;
+  const unavailable = <div className="small muted mt8">Not configured on this platform yet. An admin can add the shared line, or use your own account under Advanced.</div>;
+  return <>
+    <p className="muted">One tap puts {a.name} where you already talk. Every channel reaches the same agent, memory and work.</p>
+    <div className="grid2">
+      <Card p="web" title="Web"><div className="small muted mt8">Always on.</div><div className="row mt8"><a className="btn sm" href={T("web").url.replace(/^.*#/, "#")}>Open chat</a>
+        <button className="btn sm ghost" onClick={() => { navigator.clipboard?.writeText(T("web").url); toast("Link copied"); }}>Copy link</button></div></Card>
+      <Card p="mobile" title="Phone app"><div className="row mt8" style={{ gap: 14, alignItems: "flex-start" }}><QR value={T("mobile").url} size={112} /><div className="small muted">Scan to open {a.name} on your phone, then Share → <b>Add to Home Screen</b> for an app icon.</div></div></Card>
+      <Card p="imessage" title="iMessage">{T("imessage").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("imessage", "dm")}>Text {a.name} from my iPhone</button>
+        <button className="btn sm" onClick={() => get("imessage", "group")}>Add to a group chat</button></div><Code k="imessage:dm" /><Code k="imessage:group" /></> : unavailable}</Card>
+      <Card p="whatsapp" title="WhatsApp">{T("whatsapp").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("whatsapp", "dm")}>Chat on WhatsApp</button></div><Code k="whatsapp:dm" /></> : unavailable}</Card>
+      <Card p="telegram" title="Telegram">{T("telegram").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("telegram", "dm")}>Open in Telegram</button>
+        <button className="btn sm" onClick={() => get("telegram", "group")}>Add to a group</button></div><Code k="telegram:dm" /><Code k="telegram:group" /></> : unavailable}</Card>
+      <Card p="slack" title="Slack">{T("slack").available ? <div className="col mt8">
+        {T("slack").installed.length ? <><div className="small muted">Installed in {T("slack").installed.map((x: any) => x.team).join(", ")}.</div>
+          {chans ? <div className="col">{chans.map((c) => <div key={c.id} className="row"><span className="grow">#{c.name}</span>
+            <button className="btn sm" onClick={async () => { try { await api(`/v1/agents/${a.id}/slack/channels`, { identity: c.identity, channel_id: c.id, name: c.name }); toast(`${a.name} joined #${c.name}`); reloadD(); } catch (e: any) { toast(e.message); } }}>Add</button></div>)}</div>
+            : <button className="btn sm" onClick={async () => setChans(await api(`/v1/agents/${a.id}/slack/channels`))}>Pick channels…</button>}</> : null}
+        <a className="btn sm primary" style={{ alignSelf: "flex-start" }} href={T("slack").install_url}>{T("slack").installed.length ? "Add to another Slack" : "Add to Slack"}</a></div> : unavailable}</Card>
+      <Card p="email" title="Email">{T("email").available ? <div className="mt8">{T("email").address ? <div className="mono">{T("email").address}</div>
+        : <button className="btn sm primary" onClick={async () => { try { await api(`/v1/agents/${a.id}/deploy/email`, {}); reloadD(); } catch (e: any) { toast(e.message); } }}>Give {a.name} an email address</button>}</div> : unavailable}</Card>
+    </div>
+    <h2 style={{ cursor: "pointer" }} onClick={() => setAdv(!adv)}>{adv ? "▾" : "▸"} Advanced: use your own bot, number or line</h2>
+    {adv && <ChannelsEditor a={a} reload={reloadD} />}
+  </>;
+}
+
 function SetupChecklist({ a, onMessage }: { a: any; onMessage: () => void }) {
   const { ws } = useCtx();
   const needsGoogle = a.connections_needed.includes("google");
@@ -591,14 +715,18 @@ function TemplatePage({ slug, anonymous }: { slug: string; anonymous?: boolean }
 function Connections() {
   const { ws, me, toast } = useCtx();
   const [conns, reload] = useApi<any[]>(`/v1/connections?workspace=${ws}`);
-  const [sel, setSel] = useState<string | null>(null), [dev, setDev] = useState<any>(null);
+  const [sel, setSel] = useState<string | null>(null), [dev, setDev] = useState<any>(null), [form, setForm] = useState<any>(null);
   const mine = conns?.filter((c) => c.visibility === "private") ?? [], company = conns?.filter((c) => c.visibility === "workspace") ?? [];
   const addDev = async () => { try { await api("/v1/connections", { workspace_id: ws, provider: dev.provider, account: dev.account, visibility: dev.visibility, credentials: { access_token: dev.token } }); setDev(null); reload(); } catch (e: any) { toast(e.message); } };
-  const Row = (c: any) => <a key={c.id} className="item" style={{ cursor: "pointer" }} onClick={() => setSel(c.id)}><b className="grow">{c.label}</b><span className="muted">{c.visibility === "workspace" ? "Company" : c.owner}</span><span className="muted">{c.account}</span>
+  const Row = (c: any) => <a key={c.id} className="item" style={{ cursor: "pointer" }} onClick={() => setSel(c.id)}><span className="pill">{c.provider === "mcp" ? `MCP · ${c.tool_count ?? 0} tools` : c.provider === "site_login" ? "site login" : c.provider}</span><b className="grow">{c.label}</b><span className="muted">{c.visibility === "workspace" ? "Company" : c.owner}</span><span className="muted">{c.account}</span>
     <span className={`pill ${c.status === "active" ? "ok" : "warn"}`}>{c.status === "active" ? "Connected" : "Reconnect"}</span></a>;
   return <>
     <div className="row between"><div><h1>Connections</h1><p className="muted">Access to your tools. Each connection has one owner; agents only use what they've been allowed.</p></div>
-      <div className="row"><a className="btn primary" href={`/v1/connections/google/start?workspace=${ws}`}>Connect Google</a><button className="btn" onClick={() => setDev({ provider: "google", account: me.user.email, token: "", visibility: "private" })}>Add token</button></div></div>
+      <div className="row wrap"><a className="btn primary" href={`/v1/connections/google/start?workspace=${ws}`}>Connect Google</a>
+        <button className="btn" onClick={() => setForm({ kind: "mcp", preset: "browser-use", url: MCP_PRESETS["browser-use"].url, headers: MCP_PRESETS["browser-use"].headers, label: "Browser Use", agents: [] })}>Add MCP server</button>
+        <button className="btn" onClick={() => setForm({ kind: "site", site: "resy.com", username: "", password: "", agents: [] })}>Add site login</button>
+        <button className="btn ghost" onClick={() => setDev({ provider: "google", account: me.user.email, token: "", visibility: "private" })}>Add token</button></div></div>
+    {form && <ConnectForm form={form} setForm={setForm} onDone={() => { setForm(null); reload(); }} />}
     {dev && <div className="card col mt16"><div className="small muted">Paste an OAuth access token (e.g. from the Google OAuth Playground) — useful in development.</div>
       <input className="input" placeholder="Account (email)" value={dev.account} onChange={(e) => setDev({ ...dev, account: e.target.value })} />
       <input className="input" placeholder="Access token" value={dev.token} onChange={(e) => setDev({ ...dev, token: e.target.value })} />
@@ -609,6 +737,47 @@ function Connections() {
     {sel && <ConnectionDrawer id={sel} onClose={() => { setSel(null); reload(); }} />}
   </>;
 }
+// Example endpoints — verify the exact URL and header in each provider's docs.
+const MCP_PRESETS: Record<string, { label: string; url: string; headers: string }> = {
+  "browser-use": { label: "Browser Use (cloud browser agent)", url: "https://api.browser-use.com/mcp", headers: "X-Browser-Use-API-Key: " },
+  browserbase: { label: "Browserbase / Stagehand", url: "https://mcp.browserbase.com/mcp", headers: "Authorization: Bearer " },
+  custom: { label: "Any MCP server", url: "https://", headers: "Authorization: Bearer " },
+};
+function ConnectForm({ form, setForm, onDone }: { form: any; setForm: (f: any) => void; onDone: () => void }) {
+  const { ws, toast } = useCtx();
+  const [agents] = useApi<any[]>(`/v1/agents?workspace=${ws}`);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = form.kind === "mcp"
+        ? await api("/v1/connections", { workspace_id: ws, provider: "mcp", url: form.url, headers: form.headers, label: form.label, agent_ids: form.agents, visibility: form.visibility ?? "private" })
+        : await api("/v1/connections", { workspace_id: ws, provider: "site_login", site: form.site, username: form.username, password: form.password, agent_ids: form.agents });
+      toast(form.kind === "mcp" ? `Connected — ${r.tools?.length ?? 0} tools found` : "Login saved"); onDone();
+    } catch (e: any) { toast(e.message); } finally { setBusy(false); }
+  };
+  const F = (k: string, v: any) => setForm({ ...form, [k]: v });
+  return <div className="card col mt16">
+    {form.kind === "mcp" ? <>
+      <h3>Add an MCP server</h3><p className="small muted">Its tools become available to the agents you pick, with the same approvals and audit as built-in tools. Browser agents (Browser Use, Browserbase) power browser tasks like booking.</p>
+      <select className="input" value={form.preset} onChange={(e) => setForm({ ...form, preset: e.target.value, url: MCP_PRESETS[e.target.value].url, headers: MCP_PRESETS[e.target.value].headers, label: MCP_PRESETS[e.target.value].label.split(" (")[0] })}>
+        {Object.entries(MCP_PRESETS).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}</select>
+      <label className="field">Server URL<input className="input" value={form.url} onChange={(e) => F("url", e.target.value)} /></label>
+      <label className="field">Auth header (stored encrypted)<input className="input mono" value={form.headers} onChange={(e) => F("headers", e.target.value)} /></label>
+      <label className="field">Name<input className="input" value={form.label} onChange={(e) => F("label", e.target.value)} /></label>
+    </> : <>
+      <h3>Add a website login</h3><p className="small muted">For sites without an API (OpenTable, Resy…). Used only by the browser runner when an agent acts on that site — the agent itself never sees it.</p>
+      <select className="input" value={["resy.com", "opentable.com"].includes(form.site) ? form.site : "other"} onChange={(e) => F("site", e.target.value === "other" ? "" : e.target.value)}>
+        <option value="resy.com">Resy</option><option value="opentable.com">OpenTable</option><option value="other">Other site…</option></select>
+      {!["resy.com", "opentable.com"].includes(form.site) && <input className="input" placeholder="example.com" value={form.site} onChange={(e) => F("site", e.target.value)} />}
+      <input className="input" placeholder="Username or email" value={form.username} onChange={(e) => F("username", e.target.value)} />
+      <input className="input" type="password" placeholder="Password" value={form.password} onChange={(e) => F("password", e.target.value)} />
+    </>}
+    <div className="small muted">Agents that can use it</div>
+    <div className="row wrap">{agents?.map((a) => <label key={a.id} className="pill"><input type="checkbox" checked={form.agents.includes(a.id)} onChange={(e) => F("agents", e.target.checked ? [...form.agents, a.id] : form.agents.filter((x: string) => x !== a.id))} />{a.name}</label>)}</div>
+    <div className="row"><button className="btn primary" disabled={busy} onClick={save}>{busy ? "Connecting…" : "Save"}</button><button className="btn" onClick={() => setForm(null)}>Cancel</button></div>
+  </div>;
+}
 function ConnectionDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const { ws } = useCtx();
   const [c, reload] = useApi<any>(`/v1/connections/${id}`);
@@ -616,7 +785,11 @@ function ConnectionDrawer({ id, onClose }: { id: string; onClose: () => void }) 
   return <><div className="drawer-bg" onClick={onClose} /><div className="drawer">
     <div className="row between"><h1>{c.label}</h1><button className="btn ghost" onClick={onClose}>✕</button></div>
     <p className="muted">{c.account} · owned by {c.owner} · {c.visibility === "workspace" ? "shared with the workspace" : "private"}</p>
-    <div className="small muted">Scopes: <span className="mono">{c.scopes ?? "—"}</span></div><div className="small muted">Last used: {c.last_used_at ? ago(c.last_used_at) : "never"}</div>
+    {c.provider === "mcp" ? <><div className="small muted">Server: <span className="mono">{c.config.url}</span></div>
+      <h2>Tools <button className="btn sm" onClick={async () => { await api(`/v1/connections/${id}/refresh`, {}); reload(); }}>Refresh</button></h2>
+      {(c.config.tools ?? []).map((t: any) => <div key={t.name} className="row small" style={{ padding: "3px 0" }}><span className={`pill ${t.risk === "read" ? "" : t.risk === "destructive" ? "bad" : "warn"}`}>{t.risk.replace("_", " ")}</span><span className="mono">{t.name}</span><span className="faint grow">{t.description?.slice(0, 80)}</span></div>)}</>
+      : c.provider === "site_login" ? <div className="small muted">Site: <span className="mono">{c.config.site}</span> · password stored encrypted, never shown to agents</div>
+      : <div className="small muted">Scopes: <span className="mono">{c.scopes ?? "—"}</span></div>}<div className="small muted">Last used: {c.last_used_at ? ago(c.last_used_at) : "never"}</div>
     <h2>Agents with access</h2>{c.agents.length ? c.agents.map((a: any) => <div key={a.id} className="row between" style={{ padding: "4px 0" }}><span>{a.name}</span><button className="btn sm" onClick={async () => { await api(`/v1/connections/${id}/grants/${a.id}`, undefined, "DELETE"); reload(); }}>Remove</button></div>) : <div className="muted small">None</div>}
     <h2>Audit trail</h2>{c.audit.length ? c.audit.map((e: any, i: number) => <div key={i} className="small" style={{ padding: "3px 0" }}>{ago(e.ts)} · {e.agent} · <span className="mono">{e.tool}</span> · {e.status}</div>) : <div className="muted small">No activity yet.</div>}
     <div className="row mt16">{c.status !== "active" && <a className="btn" href={`/v1/connections/google/start?workspace=${ws}&reconnect=${c.id}`}>Reconnect</a>}
@@ -625,13 +798,16 @@ function ConnectionDrawer({ id, onClose }: { id: string; onClose: () => void }) 
 }
 
 // ---------------- Memory ----------------
-function MemoryList({ agent }: { agent?: string }) {
-  const { ws } = useCtx();
+function MemoryList({ agent, agentName }: { agent?: string; agentName?: string }) {
+  const { ws, toast } = useCtx();
   const [mem, reload] = useApi<any[]>(`/v1/memory?workspace=${ws}${agent ? `&agent=${agent}` : ""}`);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(""), [scope, setScope] = useState(agent ? "agent" : "user_private");
+  const save = async () => { try { await api("/v1/memory", { workspace_id: ws, text, scope, agent_id: agent }); setText(""); reload(); } catch (e: any) { toast(e.message); } };
   return <div className="col">
-    <div className="row"><input className="input" placeholder="Teach the team something (workspace memory)…" value={text} onChange={(e) => setText(e.target.value)} />
-      <button className="btn" onClick={async () => { await api("/v1/memory", { workspace_id: ws, text, scope: "workspace" }); setText(""); reload(); }}>Save</button></div>
+    <div className="row"><select className="input" style={{ width: 210 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+        {agent && <option value="agent">Only {agentName} knows this</option>}<option value="user_private">About me (all my agents, private)</option><option value="workspace">Whole workspace (shared)</option></select>
+      <input className="input" placeholder={scope === "agent" ? `Teach ${agentName} something…` : scope === "user_private" ? "Something all your agents should know about you…" : "Something the whole team should know…"} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && text && save()} />
+      <button className="btn" disabled={!text} onClick={save}>Save</button></div>
     <div className="list">{mem?.length ? mem.map((m) => <div key={m.id} className="item"><span className={`pill ${m.scope_type === "user_private" ? "warn" : m.scope_type === "workspace" ? "accent" : ""}`}>{m.scope_type === "user_private" ? "private" : m.scope_type}{m.scope_name ? `: ${m.scope_name}` : ""}</span>
       <div className="grow">{m.text}<div className="small faint">{m.kind} · confidence {m.confidence} · {m.source_event_ids.length} source{m.source_event_ids.length === 1 ? "" : "s"} · {ago(m.created_at)}</div></div>
       <button className="btn sm ghost" onClick={async () => { await api(`/v1/memory/${m.id}`, undefined, "DELETE"); reload(); }}>Forget</button></div>) : <div className="item muted">Nothing remembered yet.</div>}</div>
