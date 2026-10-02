@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "agent-platform", "runtimeExecutable": "bun", "runtimeArgs": ["run", "src/index.ts"], "port": 3000 }
+  ]
+}

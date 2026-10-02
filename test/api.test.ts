@@ -2,13 +2,13 @@
 import { test, expect, beforeEach, beforeAll, afterAll } from "bun:test";
 import { one, all, exec, J } from "../src/db";
 import * as rt from "../src/runtime";
-import { serve, worker } from "../src/server";
+import { serve, worker, attempts } from "../src/server";
 import { setup, realFetch, scriptModel, call, net } from "./helpers";
 
 let server: ReturnType<typeof serve>;
 beforeAll(() => { server = serve(0); });
 afterAll(() => server.stop(true));
-beforeEach(() => { setup(); process.env.PLATFORM_ADMINS = "admin@example.com"; });
+beforeEach(() => { setup(); attempts.clear(); process.env.PLATFORM_ADMINS = "admin@example.com"; });
 
 async function api(path: string, opts: { method?: string; body?: any; token?: string } = {}) {
   const r = await realFetch(new URL(path, server.url), { method: opts.method ?? (opts.body ? "POST" : "GET"),
@@ -24,13 +24,15 @@ async function signup(name: string) {
 }
 const settle = async () => { await worker(); await rt.drain(); };
 
-test("AC-A1 auth: signup creates a personal workspace; bad credentials and anonymous calls are refused", async () => {
+test("AC-A1 auth: signup creates a personal workspace; bad credentials, brute force and anonymous calls are refused", async () => {
   const e = await signup("Ellie");
   const me = await api("/v1/me", { token: e.token });
   expect(me.data.workspaces[0]).toMatchObject({ kind: "personal", role: "owner" });
   expect((await api("/v1/auth/login", { body: { email: "ellie@example.com", password: "nope" } })).status).toBe(401);
   expect((await api("/v1/auth/login", { body: { email: "ellie@example.com", password: "password123" } })).status).toBe(200);
   expect((await api("/v1/me")).status).toBe(401);
+  for (let i = 0; i < 9; i++) await api("/v1/auth/login", { body: { email: "ellie@example.com", password: "nope" } });
+  expect((await api("/v1/auth/login", { body: { email: "ellie@example.com", password: "nope" } })).status).toBe(429); // brute-force limit
   expect((await api("/v1/auth/signup", { body: { name: "X", email: "ellie@example.com", password: "password123" } })).status).toBe(409);
 });
 
@@ -133,7 +135,7 @@ test("AC-PUB1 discovery lists curated first-party agents; install asks only for 
   expect(atlas.data.manifest.evals).toContain("citation_coverage");
   const inst = await api("/v1/agent-templates/atlas-research/install", { token: e.token, body: { workspace_id: e.ws, answers: { research_style: "biotech" } } });
   expect(inst.data.agent.instructions).toContain("biotech");
-  expect(inst.data.agent.template_version).toBe("1.4.2");
+  expect(inst.data.agent.template_version).toBe("1.4.3");
 });
 
 test("AC-PUB2 fork copies configuration only; publishing is curated; risky manifests are flagged", async () => {

@@ -1,19 +1,24 @@
 {
-  "name": "scratch-2026-10-01-c91982",
-  "module": "index.ts",
+  "name": "agent-platform",
   "type": "module",
   "private": true,
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "criteria": "bun run scripts/criteria.ts",
+    "eval": "bun run evals/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
-  }
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19",
+    "@types/react-dom": "^19"
+  },
+  "peerDependencies": { "typescript": "^5" }
 }

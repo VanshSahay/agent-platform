@@ -23,6 +23,13 @@ function sessionUser(req: Request) {
   if (!token) return null;
   return one<any>("select u.* from sessions s join users u on u.id=s.user_id where s.token=? and s.expires_at>?", token, now()) ?? null;
 }
+// ponytail: in-process limiter; move to Redis when there's more than one API process.
+export const attempts = new Map<string, number[]>();
+function limit(key: string, max: number, windowMs = 60_000) {
+  const t = Date.now(), hits = (attempts.get(key) ?? []).filter((x) => t - x < windowMs);
+  hits.push(t); attempts.set(key, hits);
+  if (hits.length > max) fail(429, "too many attempts; try again in a minute");
+}
 const userOf = (req: Request) => sessionUser(req) ?? fail(401, "sign in required");
 function startSession(userId: string, res: any) {
   const token = id("sid") + id("x");
@@ -122,6 +129,7 @@ export const routes: Record<string, any> = {
 
   "/v1/auth/signup": { POST: h(async (req) => {
     const b = await body(req);
+    limit(`signup:${req.headers.get("x-forwarded-for") ?? "local"}`, 20);
     if (!b.email || !b.password || b.password.length < 8 || !b.name) fail(400, "name, email and an 8+ character password are required");
     if (one("select 1 from users where email=?", b.email.toLowerCase())) fail(409, "email already registered");
     const uid = id("usr");
@@ -133,6 +141,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/auth/login": { POST: h(async (req) => {
     const b = await body(req);
+    limit(`login:${String(b.email ?? "").toLowerCase()}`, 10);
     const u = one<any>("select * from users where email=?", String(b.email ?? "").toLowerCase());
     if (!u?.password_hash || !Bun.password.verifySync(b.password ?? "", u.password_hash)) fail(401, "wrong email or password");
     return startSession(u.id, { user: { id: u.id, name: u.name, email: u.email } });
@@ -500,6 +509,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/agent-templates/:slug/trial": { POST: h(async (req) => {
     const b = await body(req);
+    limit(`trial:${req.headers.get("x-forwarded-for") ?? "local"}`, 30);
     const { trialId, userId, agent } = trialAgent(req.params.slug, b.trial_id ?? null);
     const room = rt.privateRoomFor(userId, agent);
     const turns = one<any>("select count(*) n from events where room_id=? and type='message' and actor=?", room.id, userId).n;

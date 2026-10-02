@@ -57,7 +57,7 @@ const KEYWORD_SKILLS: [RegExp, string[]][] = [
   [/\b(remind|follow.?up|haven'?t replied|nudge)/i, ["follow-up-tracking", "reminders"]],
   [/\b(research|search|look up|web)/i, ["web-research"]],
   [/\b(browser|website|form|book)/i, ["browser"]],
-  [/\b(monitor|track|watch|keep .* updated)/i, ["monitor-topic"]],
+  [/\b(monitor|keep .* (updated|current))/i, ["monitor-topic"]],
 ];
 
 export async function draftAgent(description: string, workspaceId?: string) {

@@ -1,0 +1,96 @@
+# Acceptance criteria
+
+Every row is checked automatically by `bun run criteria`: it runs the test suite (JUnit), the typecheck and the web bundle build, then marks each criterion **pass** only when every test tagged with that ID passed. Plan section numbers refer to `agent_platform_product_technical_plan.md`.
+
+## Milestone "must prove" scenarios (§28, §29, §32, §33, §21.2)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-M1 | A user creates Ava on web, connects Google, later texts Ava over iMessage, and Ava recognizes the ongoing task in the same Room and resumes it correctly (approval given from iMessage, reply delivered there). | §28 |
+| AC-M2 | Three teammates interact with one agent in a Slack channel; mention-only participation; the work (tasks, owners, blocked items) is visible in the Room; a teammate continues from an iMessage group without losing state. | §29 |
+| AC-M3 | Group trip request over iMessage is research-only (no booking), per-person preferences are remembered in Room scope, and a second person continues on web in the same Room. | §32 |
+| AC-M4 | Recruiting: a human-claimed candidate is never contacted, outreach requires the right approver, a transient bounce is retried, the run waits for the candidate, and the next-day inbound email resumes that run — the email is sent exactly once. | §33 |
+| AC-M5 | Instructions inside fetched web content cannot trigger an external write; tool output is labeled untrusted; the write requires human approval even if configured automatic. | §21.2 |
+
+## Permissions & policy (§19)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-P1 | Risk classes (read, internal write, external write, destructive, financial) map to deterministic decisions; destructive always asks; financial needs strong confirmation. | §19.2 |
+| AC-P2 | Per-agent permission modes (never / first-time / ask / always-ask / auto) and per-call prior approval are enforced; tools outside the agent's skills are denied. | §19.1, §19.3 |
+| AC-P3 | Connections must exist, be granted to the agent and active; a private connection is unusable in a room its owner isn't in. | §2.6 |
+| AC-P4 | Writes touching a human-owned (blocked) subject are denied even if approved; tainted runs and exhausted write budgets force approval. | §15, §21.2, §7.5 |
+
+## Tool gateway & reliability (§10, §35)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-T1 | Tool inputs are schema-validated; invalid or unknown calls never execute and the model is told why. | §10.2 |
+| AC-T2 | Repeated identical external writes execute once (fingerprint idempotency). | §35.1 |
+| AC-T3 | Retry taxonomy: RATE_LIMIT waits until retry-after, AUTH pauses and asks the owner to reconnect (resumes on reconnect), UNKNOWN_SIDE_EFFECT stops for human verification and never blindly resends. | §35.2 |
+| AC-T4 | Web fetch refuses private-network targets (SSRF). | §21.1 |
+| AC-T5 | After a crash mid-write, recovery re-queues the run and refuses to double-execute. | §7.2, §35.1 |
+| AC-T6 | Decrypted credentials never reach the model, events, or traces; the audit records which connection was used. | §10.2, §21.3 |
+| AC-T7 | Run budgets stop runaway agents and tell the room. | §7.5 |
+
+## Runtime: Rooms, Runs, waits, delegation (§2, §7, §15, §16, §37)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-R1 | Every run leaves an append-only event trace (context → model → tool proposal → permission → execution → reply) and a deterministic "why did it send this" answer; runs are classified. | §21.5, §23.1, §24.1, §7.4 |
+| AC-R2 | Approvals: rejection is relayed to the agent, approvals expire after 72h, only designated approvers may decide. | §3.7, §19 |
+| AC-R3 | Financial actions require strong confirmation; first-time tools remember the grant. | §19.2 |
+| AC-R4 | Group participation modes: mention-only, relevant, manager. | §15.2 |
+| AC-R5 | Delegation is typed: child run sees only its objective, gets a smaller budget and no autonomous writes, and the parent resumes with the result. | §16 |
+| AC-R6 | Wake conditions: time, recurring, timeout, event and state triggers create runs; proactive messages go to the last-used channel. | §37 |
+| AC-R7 | One agent in many rooms: room memory and work state never cross rooms. | §41 B |
+| AC-R8 | Model outage: retry with backoff, then fail terminally with a message. | §8.3 |
+| AC-R9 | Cancelling a run cancels its waits and pending approvals. | §2.8 |
+
+## Memory (§9, §15.4)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-MEM1 | Private DM memory never enters a shared room's context; it is available in the DM; provenance is stored. | §9.2, §9.3 |
+| AC-MEM2 | Private chats can't write team memory; shared rooms can, explicitly. | §15.4 |
+| AC-MEM3 | Workspace knowledge is withheld when an outside guest is in the room. | §9.5 |
+| AC-MEM4 | Extraction scopes by room type and dedupes repeats (merging provenance). | §9.4 |
+| AC-MEM5 | Retrieval ranks relevant memories first and respects expiry. | §9.6 |
+
+## Channels & identity (§5, §6, §20, §21.6)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-C1 | Every webhook (Telegram, Slack, WhatsApp, Resend email, iMessage bridge, Twilio) verifies its signature; forged and replayed requests are rejected and logged. | §21.6 |
+| AC-C2 | Provider retries are deduplicated; ingestion is separate from processing (no LLM call inside the webhook). | §5.2 |
+| AC-C3 | WhatsApp subscription handshake, Slack URL verification, and Slack's duplicate message/app_mention events are handled. | §6.2, §6.4 |
+| AC-C4 | Unknown senders become untrusted guests; linking is explicit and verified with single-use codes; the guest's DM moves into the user's own Room. | §20 |
+| AC-C5 | Approval cards render natively (Telegram inline keyboard, Slack Block Kit, WhatsApp interactive buttons) and can be decided by button. | §3.7, §5.3 |
+| AC-C6 | Agent-owned mailbox: inbound email maps to a Room, quoted text is stripped, replies thread by subject with an idempotency key. | §6.5 |
+| AC-C7 | Phone: Twilio speech turns run through the same agent and Room; signatures are bound to the public URL. | §6.6 |
+| AC-C8 | Failed deliveries retry and give up after 5 attempts without blocking the run. | §5.3 |
+
+## API, tenancy, public agents (§2.1, §18, §21.4, §22, §34, §38)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-A1 | Auth: signup creates a personal workspace; bad credentials and anonymous calls are refused. | §2.1 |
+| AC-A2 | Tenant isolation: other workspaces and other people's private rooms are invisible (even to co-admins). | §21.4 |
+| AC-A3 | Create an agent from a natural-language description into a draft (job, skills, connections, permissions, channels) without seeing a prompt; edit permissions with validation. | §3.4 |
+| AC-A4 | Web chat → approval card → Home "needs attention" → decision API → trace shows approver and connection used. | §3.3, §3.7, §34 |
+| AC-A5 | BYOK keys and connection credentials are sealed at rest and never returned or logged; revoke wipes credentials and grants. | §8.4, §21.3 |
+| AC-A6 | Invitations, roles and plan limits (agent count, channel availability) are enforced. | §22.1, §29 |
+| AC-A7 | Audit export is admin-only; the usage ledger tracks raw resources independently of billing. | §21.5, §22.2 |
+| AC-PUB1 | Discovery lists the curated first-party agents; install runs onboarding and requests only needed connections. | §17, §18.2 |
+| AC-PUB2 | Fork copies configuration only; publishing is curated; risky manifests are flagged for review; invalid manifests are rejected. | §18.4, §18.5 |
+| AC-PUB3 | Reviews require meaningful usage; creators see aggregates only. | §18.3, §30 |
+| AC-PUB4 | Anonymous trial without an account, upsell after a few turns, hard limit, no external writes. | §38 |
+| AC-PUB5 | Template upgrades change configuration but keep the instance's memory and connections. | §2.3 |
+
+## Quality gates
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-EV1 | The versioned golden-task suite passes 100% on the offline baseline model across all platform dimensions (tool selection, approval, boundary, completion, response, memory). | §23.3, §23.4 |
+| AC-Q1 | TypeScript typecheck passes with `strict`. | — |
+| AC-UI1 | The web app bundles without errors (Home, Agents, Create Agent, Agent page tabs, Rooms with work panel, Discover/trial, Connections, Activity, Settings). | §3 |

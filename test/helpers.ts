@@ -7,7 +7,7 @@ import { addChannelIdentity, handleWebhook } from "../src/channels";
 import * as rt from "../src/runtime";
 import { seal } from "../src/db";
 
-delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY;
+if (!process.env.KEEP_MODEL_KEYS) { delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY; }
 
 // ---------- fake network ----------
 type Handler = (req: Request, body: any) => Response | Promise<Response>;
@@ -24,6 +24,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
   const text = init?.body instanceof URLSearchParams ? init.body.toString() : typeof init?.body === "string" ? init.body : "";
   let body: any = text; try { body = JSON.parse(text); } catch {}
   net.calls.push({ method: req.method, url: req.url, body, headers: Object.fromEntries(req.headers) });
+  if (/api\.anthropic\.com|api\.openai\.com/.test(req.url)) return realFetch(input, init); // real models pass through (evals)
   const r = net.routes.find((x) => x.re.test(req.url));
   if (r) return r.fn(req, body);
   return Response.json({ ok: true, id: id("ext"), result: { message_id: 1 }, messages: [{ id: "wamid.1" }], ts: "1.0" });
