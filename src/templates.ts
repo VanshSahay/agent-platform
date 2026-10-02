@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { all, one, exec, id, now, S, J, tx, emit } from "./db";
-import { TOOLS } from "./tools";
+import { TOOLS, getTool } from "./tools";
 import { defaultMode } from "./policy";
 import { structured } from "./model";
 import * as rt from "./runtime";
@@ -40,9 +40,12 @@ export const SKILLS: Record<string, Skill> = Object.fromEntries(([
 
 export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update", "files.read"];
 
-export function agentTools(agent: { skills: string | string[] }): Set<string> {
+export function agentTools(agent: { skills: string | string[]; id?: string }): Set<string> {
   const skills: string[] = typeof agent.skills === "string" ? J(agent.skills, []) : agent.skills;
-  return new Set([...CORE_TOOLS, ...skills.flatMap((s) => SKILLS[s]?.tools ?? [])]);
+  // MCP servers granted to this agent contribute their tools.
+  const mcp = agent.id ? all<any>("select c.id, c.config from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.provider='mcp' and c.status='active'", agent.id)
+    .flatMap((c) => (J(c.config, {}).tools ?? []).map((t: any) => `mcp.${c.id.slice(4, 10)}.${t.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}`)) : [];
+  return new Set([...CORE_TOOLS, ...skills.flatMap((s) => SKILLS[s]?.tools ?? []), ...mcp]);
 }
 
 // ---------- skills learned from repeated work (plan §11.3) ----------
@@ -103,9 +106,9 @@ export function connectionsNeeded(skills: string[]) {
   return [...new Set(skills.flatMap((s) => SKILLS[s]?.tools ?? []).map((t) => TOOLS[t]?.requiresConnection).filter(Boolean))] as string[];
 }
 
-export function permissionTable(skills: string[], overrides: Record<string, string> = {}) {
-  return [...agentTools({ skills })].filter((t) => TOOLS[t]).map((t) => ({
-    tool: t, risk: TOOLS[t].risk, mode: overrides[t] ?? defaultMode(TOOLS[t].defaultApproval, TOOLS[t].risk), description: TOOLS[t].description,
+export function permissionTable(skills: string[], overrides: Record<string, string> = {}, agentId?: string) {
+  return [...agentTools({ skills, id: agentId })].map((t) => getTool(t)).filter(Boolean).map((d) => ({
+    tool: d!.id, risk: d!.risk, mode: overrides[d!.id] ?? defaultMode(d!.defaultApproval, d!.risk), description: d!.description,
   }));
 }
 

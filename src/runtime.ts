@@ -6,7 +6,7 @@ import { all, one, exec, emit, id, now, S, J, tx } from "./db";
 import { generate } from "./model";
 import { runSignature, maybeSuggestSkill, PLANS } from "./templates";
 import { buildContext } from "./context";
-import { executeToolCall, TOOLS } from "./tools";
+import { executeToolCall, TOOLS, getTool } from "./tools";
 import { extractAfterTurn } from "./memory";
 import { structured } from "./model";
 import * as channels from "./channels";
@@ -391,7 +391,7 @@ export function decideApproval(approvalId: string, userId: string, decision: "ap
   if (!canApprove(a, userId)) return { error: `${nameOf(userId)} can't approve this; it needs ${J(a.approvers, []).map(nameOf).join(" or ")}` };
   if (decision === "approve" && a.strong && !constraints.confirm) return { error: `This needs strong confirmation — reply "confirm ${a.id.slice(-4)}".` };
   exec("update approvals set status=?, decided_by=?, decided_at=?, constraints=? where id=?", decision === "approve" ? "approved" : "rejected", userId, now(), S(constraints), a.id);
-  if (decision === "approve" && TOOLS[a.tool_id]?.defaultApproval === "first_time") exec("insert into grants values (?,?,?,?,?)", id("grt"), a.agent_id, a.tool_id, userId, now());
+  if (decision === "approve" && getTool(a.tool_id)?.defaultApproval === "first_time") exec("insert into grants values (?,?,?,?,?)", id("grt"), a.agent_id, a.tool_id, userId, now());
   emit(decision === "approve" ? "APPROVAL_GRANTED" : "APPROVAL_REJECTED", { room_id: a.room_id, run_id: a.run_id, actor: userId, data: { approval_id: a.id, tool: a.tool_id, constraints } });
   // The run continues where the human answered (e.g. asked on web, approved from iMessage).
   if (fromEndpointId !== undefined) exec("update runs set origin_endpoint_id=? where id=?", fromEndpointId ?? "web", a.run_id);

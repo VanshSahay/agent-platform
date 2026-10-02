@@ -8,11 +8,16 @@ import * as rt from "./runtime";
 export type ErrKind = "TRANSIENT" | "AUTH" | "RATE_LIMIT" | "BUSINESS_RULE" | "PERMISSION" | "UNKNOWN_SIDE_EFFECT";
 export class ToolError extends Error { constructor(public kind: ErrKind, msg: string, public retryAfterMs = 0) { super(msg); } }
 
-export interface ToolCtx { run: any; agent: any; room: any; connection?: { id: string; cred: any; account: string }; idempotencyKey: string }
+export interface ToolCtx { run: any; agent: any; room: any; connection?: { id: string; cred: any; account: string }; idempotencyKey: string; siteLogin?: { username: string; password: string; site: string } }
 export interface ToolOutcome { status: "SUCCEEDED" | "FAILED" | "UNKNOWN" | "PARTIAL"; output: any; untrusted?: boolean; wait?: { kind: string; reason: string; wake_key?: string; owner?: string; timeout_at?: number } }
 export interface ToolDef {
   id: string; description: string; inputSchema: any; risk: Risk;
   idempotency: "safe" | "key_required" | "unsafe"; requiresConnection?: string; defaultApproval: "none" | "first_time" | "always";
+  connectionId?: string;                              // MCP tools: bound to one specific connection
+  riskOf?: (input: any) => Risk;                      // input-dependent risk (e.g. a booking with a deposit is financial)
+  siteLogin?: (input: any) => string | undefined;     // which website login (host) this call would use
+  siteLoginRequired?: boolean;
+  preApproved?: (input: any, run: any) => string | null; // id of a standing approval whose limits cover this exact call
   summarize?: (input: any) => string; // human-readable approval card line
   execute: (input: any, ctx: ToolCtx) => Promise<ToolOutcome>;
 }
@@ -57,7 +62,7 @@ function isPrivateIp(ip: string) {
   return x === "::" || x === "::1" || x.startsWith("fc") || x.startsWith("fd") || x.startsWith("fe80") || x.startsWith("::ffff:");
 }
 /** Public http(s) only: checks the literal host and every address it resolves to. */
-async function assertPublicUrl(raw: string) {
+export async function assertPublicUrl(raw: string) {
   let u: URL; try { u = new URL(raw); } catch { throw new ToolError("BUSINESS_RULE", "invalid URL"); }
   const host = u.hostname.replace(/^\[|\]$/g, "");
   if (!/^https?:$/.test(u.protocol) || /^(localhost|.*\.(internal|local|localhost))$/i.test(host)) throw new ToolError("PERMISSION", "only public http(s) URLs are allowed");
@@ -66,6 +71,61 @@ async function assertPublicUrl(raw: string) {
   return u;
 }
 // ponytail: resolve-then-fetch leaves a DNS-rebinding window; pin the resolved IP via a custom agent if that matters.
+const hostOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return undefined; } };
+
+/** Browser runner seam, in order: an MCP browser server granted to the agent (Browser Use, Browserbase...), then an HTTP
+ * runner (BROWSER_TASK_URL: {task, start_url, secrets} -> {status, output}). Site logins go only to the HTTP runner, which
+ * substitutes {{username}}/{{password}} itself; MCP browser servers should use a saved browser profile instead. */
+export async function runBrowser(task: string, start_url: string | undefined, ctx: ToolCtx): Promise<any | null> {
+  const m = browserMcp(ctx.agent.id);
+  if (m) {
+    const { callTool, parseHeaders } = await import("./mcp");
+    const r = await callTool(m.conn.id, J(m.conn.config).url, parseHeaders(unseal<any>(m.conn.cred_enc)?.headers), m.tool, { task: start_url ? `${task}\nStart at ${start_url}` : task })
+      .catch((e: any) => { throw new ToolError(e.auth ? "AUTH" : "UNKNOWN_SIDE_EFFECT", e.message); });
+    let parsed: any = null; try { parsed = JSON.parse(r.text.match(/\{[\s\S]*\}/)?.[0] ?? ""); } catch {}
+    return { status: r.isError ? "failed" : "succeeded", output: parsed ?? r.text.slice(0, 20000), via: m.conn.label };
+  }
+  if (process.env.BROWSER_TASK_URL) {
+    const r = await call(process.env.BROWSER_TASK_URL, { method: "POST", write: true, headers: { "content-type": "application/json", "idempotency-key": ctx.idempotencyKey,
+      authorization: `Bearer ${process.env.BROWSER_TASK_KEY ?? ""}` }, body: S({ task, start_url, secrets: ctx.siteLogin ? { username: ctx.siteLogin.username, password: ctx.siteLogin.password } : undefined,
+        allowed_domains: ctx.siteLogin ? [ctx.siteLogin.site] : undefined }) });
+    return r.json();
+  }
+  return null;
+}
+/** An MCP connection granted to this agent whose tool takes a natural-language `task` (how browser agents expose themselves). */
+export function browserMcp(agentId: string): { conn: any; tool: string } | null {
+  for (const c of all<any>("select c.* from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.provider='mcp' and c.status='active'", agentId)) {
+    const t = (J(c.config, {}).tools ?? []).find((x: any) => x.inputSchema?.properties?.task && /browser|task|web/i.test(`${x.name} ${x.description ?? ""} ${c.label}`));
+    if (t) return { conn: c, tool: t.name };
+  }
+  return null;
+}
+
+/** Static tools plus MCP tools discovered from connected servers. */
+export function getTool(id: string): ToolDef | undefined {
+  if (TOOLS[id]) return TOOLS[id];
+  if (!id.startsWith("mcp.")) return undefined;
+  const conn = one<any>("select * from connections where provider='mcp' and substr(id, 5, 6)=? and status!='revoked'", id.split(".")[1]);
+  const cfg = J(conn?.config, {});
+  const t = (cfg.tools ?? []).find((x: any) => `mcp.${conn.id.slice(4, 10)}.${x.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}` === id);
+  if (!t) return undefined;
+  const risk: Risk = t.annotations?.readOnlyHint ? "read" : t.annotations?.destructiveHint ? "destructive" : "write_external";
+  const schema = t.inputSchema?.type === "object" ? t.inputSchema : { type: "object", properties: {} };
+  return {
+    id, description: `[${conn.label}] ${t.description ?? t.name}`.slice(0, 1000), inputSchema: schema, risk, idempotency: "unsafe", requiresConnection: "mcp", connectionId: conn.id,
+    defaultApproval: risk === "read" ? "none" : risk === "destructive" ? "always" : "first_time",
+    summarize: (i) => `${conn.label} → ${t.annotations?.title ?? t.name} ${JSON.stringify(i).slice(0, 100)}`,
+    async execute(input) {
+      const { callTool, parseHeaders } = await import("./mcp");
+      const r = await callTool(conn.id, cfg.url, parseHeaders(unseal<any>(conn.cred_enc)?.headers), t.name, input)
+        .catch((e: any) => { throw new ToolError(e.auth ? "AUTH" : risk === "read" ? "TRANSIENT" : "UNKNOWN_SIDE_EFFECT", e.message); });
+      if (r.isError) throw new ToolError("BUSINESS_RULE", r.text.slice(0, 500) || "the MCP tool reported an error");
+      return { status: "SUCCEEDED", untrusted: true, output: { text: r.text.slice(0, 20000), structured: r.structured } };
+    },
+  };
+}
+
 const ENT: Record<string, string> = { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const stripHtml = (h: string) => h.replace(/<(script|style)[\s\S]*?<\/\1>/gi, "").replace(/<[^>]+>/g, " ")
   .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === "#" ? String.fromCodePoint(e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENT[e.toLowerCase()] ?? m)
@@ -115,20 +175,15 @@ def({
 });
 
 def({
-  id: "browser.task", description: "Operate a website in a cloud browser for tasks that need interaction (forms, logged-out flows).", risk: "write_external",
-  idempotency: "unsafe", defaultApproval: "first_time", inputSchema: obj({ task: str(), start_url: str() }, ["task"]),
+  id: "browser.task", description: "Operate a website in a cloud browser for tasks that need interaction (forms, logins, bookings). If the site needs the user's login, reference it as {{username}} / {{password}} — the platform fills them in; you never see them.",
+  risk: "write_external", idempotency: "unsafe", defaultApproval: "first_time", inputSchema: obj({ task: str(), start_url: str(), site: str("e.g. resy.com") }, ["task"]),
   summarize: (i) => `Use a browser: ${i.task}`,
+  siteLogin: (i) => i.site ?? (i.start_url ? hostOf(i.start_url) : undefined),
   async execute({ task, start_url }, ctx) {
-    // ponytail: provider seam. BROWSER_TASK_URL points at a Browser Use / Stagehand runner ({task,start_url} -> {status,output}).
-    // Without it, degrade to a read-only fetch of start_url.
-    if (process.env.BROWSER_TASK_URL) {
-      const r = await call(process.env.BROWSER_TASK_URL, { method: "POST", write: true, headers: { "content-type": "application/json", "idempotency-key": ctx.idempotencyKey,
-        authorization: `Bearer ${process.env.BROWSER_TASK_KEY ?? ""}` }, body: S({ task, start_url }) });
-      const j: any = await r.json();
-      return { status: j.status === "succeeded" ? "SUCCEEDED" : j.status === "partial" ? "PARTIAL" : "UNKNOWN", untrusted: true, output: j };
-    }
+    const j = await runBrowser(task, start_url, ctx);
+    if (j) return { status: j.status === "succeeded" ? "SUCCEEDED" : j.status === "partial" ? "PARTIAL" : j.status === "failed" ? "FAILED" : "UNKNOWN", untrusted: true, output: j };
     if (!start_url) throw new ToolError("BUSINESS_RULE", "browser runtime not configured; provide start_url for read-only mode");
-    const out = await TOOLS["web.fetch"].execute({ url: start_url }, ctx);
+    const out = await TOOLS["web.fetch"].execute({ url: start_url }, { ...ctx, siteLogin: undefined });
     return { ...out, status: "PARTIAL", output: { note: "read-only browser fallback", ...out.output } };
   },
 });
@@ -396,36 +451,45 @@ export type GatewayResult =
 
 export async function executeToolCall(run: any, agent: any, room: any, call: { id: string; name: string; input: any }, allowedTools: Set<string>): Promise<GatewayResult> {
   const base = { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id };
-  const d = TOOLS[call.name];
+  const d0 = getTool(call.name);
+  const d = d0 && d0.riskOf ? { ...d0, risk: d0.riskOf(call.input ?? {}) } : d0;
   emit("TOOL_CALL_REQUESTED", { ...base, data: { tool: call.name, input: call.input, call_id: call.id } });
   if (!d) return { kind: "result", status: "FAILED", content: `DENIED: unknown tool ${call.name}` };
   const bad = validate(d.inputSchema, call.input ?? {});
   if (bad) return { kind: "result", status: "FAILED", content: `FAILED: invalid input — ${bad}` };
 
   const humans = rt.roomHumanIds(room.id);
-  let conn = d.requiresConnection ? resolveConnection(d.requiresConnection, agent.id, run, humans) : null;
+  let conn = d.connectionId
+    ? one<any>("select c.*, (g.agent_id is not null) granted from connections c left join connection_grants g on g.connection_id=c.id and g.agent_id=? where c.id=?", agent.id, d.connectionId)
+    : d.requiresConnection ? resolveConnection(d.requiresConnection, agent.id, run, humans) : null;
+  // Website logins (OpenTable, Resy...) are credentials too: same ownership rules, passed to the browser runner only.
+  const site = d.siteLogin?.(call.input ?? {});
+  const login = site ? resolveSiteLogin(site, agent.id, run, humans) : null;
+  if (site && !login && d.siteLoginRequired && room.mode !== "test") return { kind: "result", status: "FAILED", content: `DENIED: connect your ${site} login first (Connections → Add site login)` };
+  if (login && !conn) conn = login;
   // Test mode: the full pipeline runs (policy, approvals, trace), but nothing leaves the platform.
   const testMode = room.mode === "test";
   const simulateWrite = testMode && (["write_external", "destructive", "financial"].includes(d.risk) || d.id.startsWith("mcp."));
   const simulateRead = testMode && !!d.requiresConnection && (!conn || conn.status !== "active");
   if (simulateRead) conn = { id: "sim", owner_id: run.requested_by, visibility: "workspace", status: "active", granted: 1, account: "sample data" };
   const fp = fingerprint(run.id, call.name, call.input);
+  const standing = d.preApproved?.(call.input ?? {}, run) ?? null; // pre-authorized within limits the human set earlier
   const spent = J(run.spent, {}), budget = J(run.budget, {});
   if ((spent.toolCalls ?? 0) >= (budget.maxToolCalls ?? 25)) return { kind: "result", status: "FAILED", content: "FAILED: tool call budget for this run is exhausted" };
 
   const perms = J(agent.permissions, {});
   const { decision, reason } = evaluatePolicy({
     toolId: d.id, risk: d.risk, defaultApproval: d.defaultApproval, agentMode: perms[d.id], toolAllowed: allowedTools.has(d.id),
-    requiresConnection: d.requiresConnection,
+    requiresConnection: d.requiresConnection ?? (login ? "site_login" : undefined),
     connection: conn && { ownerId: conn.owner_id, visibility: conn.visibility, status: conn.status, granted: !!conn.granted },
     roomHumanIds: humans, blockedSubjects: rt.blockedSubjects(room.id), inputText: flatten(call.input),
-    priorApproval: !!one("select 1 from approvals where run_id=? and fingerprint=? and status='approved'", run.id, fp),
+    priorApproval: !!one("select 1 from approvals where run_id=? and fingerprint=? and status='approved'", run.id, fp) || !!standing,
     standingGrant: !!one("select 1 from grants where agent_id=? and tool_id=?", agent.id, d.id),
     tainted: !!run.tainted, requesterId: run.requested_by,
     requesterIsMember: !!run.requested_by && !!one("select 1 from memberships where workspace_id=? and user_id=?", run.workspace_id, run.requested_by),
     externalWritesSoFar: spent.externalWrites ?? 0, maxAutonomousExternalWrites: budget.maxAutonomousExternalWrites ?? 3,
   });
-  emit("PERMISSION_DECISION", { ...base, data: { tool: d.id, decision, reason, fingerprint: fp, connection_id: conn?.id ?? null } });
+  emit("PERMISSION_DECISION", { ...base, data: { tool: d.id, decision, reason: standing && decision === "ALLOW" ? `pre-approved within your limits (${standing})` : reason, fingerprint: fp, connection_id: conn?.id ?? null } });
 
   if (decision === "DENY") return { kind: "result", status: "FAILED", content: `DENIED: ${reason}` };
   if (decision !== "ALLOW") {
@@ -446,11 +510,13 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
   const exId = id("tex");
   exec("insert into tool_executions (id, run_id, tool_id, fingerprint, status, input, connection_id, created_at) values (?,?,?,?,?,?,?,?)",
     exId, run.id, d.id, fp, "started", S(call.input), conn?.id ?? null, now());
-  const ctx: ToolCtx = { run, agent, room, idempotencyKey: fp, connection: conn ? { id: conn.id, cred: unseal(conn.cred_enc), account: conn.account } : undefined };
+  const ctx: ToolCtx = { run, agent, room, idempotencyKey: fp, connection: conn && conn !== login ? { id: conn.id, cred: unseal(conn.cred_enc), account: conn.account } : undefined,
+    siteLogin: login ? { ...unseal<any>(login.cred_enc), site } : undefined };
   try {
     const out = simulateWrite || simulateRead ? simulate(d, call.input, simulateRead) : await d.execute(call.input, ctx);
     const stored = { ...out.output, __untrusted: !!out.untrusted, __status: out.status };
     exec("update tool_executions set status=?, result=?, updated_at=? where id=?", out.status === "UNKNOWN" ? "unknown" : "succeeded", S(stored), now(), exId);
+    if (standing && out.status === "SUCCEEDED") exec("update standing_approvals set uses=uses+1, status=case when uses+1>=max_uses then 'used' else status end where id=?", standing);
     if (conn) exec("update connections set last_used_at=? where id=?", now(), conn.id);
     rt.addSpent(run.id, { toolCalls: 1, externalWrites: d.risk === "write_external" || d.risk === "destructive" ? 1 : 0, tainted: !!out.untrusted });
     if (d.id.startsWith("web.") || d.id === "browser.task") recordUsage({ workspace_id: run.workspace_id, agent_id: agent.id, run_id: run.id, kind: d.id === "browser.task" ? "browser_tasks" : "search_calls", qty: 1 });
@@ -507,4 +573,11 @@ function wrap(d: ToolDef, stored: string, untrusted: boolean) {
   return untrusted ? `<untrusted origin="TOOL_RESULT_UNTRUSTED" tool="${d.id}">\n${S(clean)}\n</untrusted>` : S(clean);
 }
 
-export const toolSpecs = (ids: Iterable<string>) => [...ids].filter((t) => TOOLS[t]).map((t) => ({ name: t, description: TOOLS[t].description, input_schema: TOOLS[t].inputSchema }));
+export const toolSpecs = (ids: Iterable<string>) => [...ids].map(getTool).filter(Boolean).map((t) => ({ name: t!.id, description: t!.description, input_schema: t!.inputSchema }));
+
+export function resolveSiteLogin(site: string, agentId: string, run: any, roomHumans: string[]) {
+  const rows = all<any>(`select c.*, (g.agent_id is not null) granted from connections c left join connection_grants g on g.connection_id=c.id and g.agent_id=?
+    where c.workspace_id=? and c.provider='site_login' and c.status='active' and (json_extract(c.config, '$.site')=? or ? like '%.' || json_extract(c.config, '$.site'))`, agentId, run.workspace_id, site, site);
+  const score = (c: any) => (c.granted ? 8 : 0) + (c.owner_id === run.requested_by ? 4 : 0) + (roomHumans.includes(c.owner_id) ? 1 : 0);
+  return rows.sort((a, b) => score(b) - score(a))[0] ?? null;
+}

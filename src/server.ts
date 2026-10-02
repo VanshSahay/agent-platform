@@ -6,7 +6,7 @@ import * as tpl from "./templates";
 import { PLANS } from "./templates";
 import * as mem from "./memory";
 import * as intake from "./intake";
-import { TOOLS } from "./tools";
+import { TOOLS, getTool, assertPublicUrl } from "./tools";
 import app from "../public/index.html";
 
 type Req = Request & { params: Record<string, string> };
@@ -84,7 +84,7 @@ function createWorkspace(name: string, kind: string, ownerId: string) {
 function agentView(a: any) {
   return {
     ...a, skills: J(a.skills, []), permissions: J(a.permissions, {}), onboarding: J(a.onboarding, {}),
-    permission_table: tpl.permissionTable(J(a.skills, []), J(a.permissions, {})),
+    permission_table: tpl.permissionTable(J(a.skills, []), J(a.permissions, {}), a.id),
     channels: all<any>("select id, platform, address, config from channel_identities where agent_id=?", a.id).map((c) => ({ ...c, config: J(c.config, {}), webhook_url: `${pub()}/v1/webhooks/${c.platform}/${c.id}` })),
     connections_needed: tpl.connectionsNeeded(J(a.skills, [])),
     custom_skills: tpl.customSkills(a.id), starters: tpl.starters(a),
@@ -262,7 +262,7 @@ export const routes: Record<string, any> = {
       for (const k of ["name", "job", "instructions", "model_profile", "status", "avatar", "confirm_mode"]) if (b[k] !== undefined) exec(`update agents set ${k}=? where id=?`, b[k], a.id);
       if (b.skills) exec("update agents set skills=? where id=?", S(b.skills.filter((s: string) => tpl.SKILLS[s])), a.id);
       if (b.permissions) {
-        for (const [t, m] of Object.entries(b.permissions)) if (!TOOLS[t] || !["auto", "first_time", "ask", "always_ask", "never"].includes(m as string)) fail(400, `bad permission ${t}=${m}`);
+        for (const [t, m] of Object.entries(b.permissions)) if (!getTool(t) || !["auto", "first_time", "ask", "always_ask", "never"].includes(m as string)) fail(400, `bad permission ${t}=${m}`);
         exec("update agents set permissions=? where id=?", S({ ...J(a.permissions, {}), ...b.permissions }), a.id);
       }
       emit("AGENT_UPDATED", { workspace_id: a.workspace_id, actor: u.id, data: { agent_id: a.id, fields: Object.keys(b) } });
@@ -501,7 +501,7 @@ export const routes: Record<string, any> = {
     const ev = (type: string) => all<any>("select data from events where run_id=? and type=? order by seq", r.id, type).map((e) => J(e.data));
     const first = J(one<any>("select data from events where id=?", r.trigger_event_id)?.data)?.text ?? r.objective.split("\n")[0];
     const decision = ev("BRIEF_PROPOSED")[0]?.decision;
-    const wrote = all<any>("select tool_id from tool_executions where run_id=? and status='succeeded'", r.id).some((x) => ["write_external", "destructive", "financial"].includes(TOOLS[x.tool_id]?.risk));
+    const wrote = all<any>("select tool_id from tool_executions where run_id=? and status='succeeded'", r.id).some((x) => ["write_external", "destructive", "financial"].includes(getTool(x.tool_id)?.risk as string));
     return json({
       id: `case-${r.id.slice(4, 12)}`, suite: "cases", agent: slug ?? "(custom agent: replace with a template slug)",
       group: rt.roomHumanIds(r.room_id).length > 1, connection: all("select 1 from connection_grants where agent_id=?", r.agent_id).length > 0,
@@ -554,23 +554,48 @@ export const routes: Record<string, any> = {
   // ---- connections (plan §2.6, §3.8) ----
   "/v1/connections": {
     GET: h((req) => { const u = userOf(req), ws = new URL(req.url).searchParams.get("workspace"); member(ws, u.id);
-      return json(all<any>("select id, workspace_id, owner_id, visibility, provider, label, account, scopes, status, last_used_at, created_at from connections where workspace_id=? and status!='revoked' and (visibility='workspace' or owner_id=?)", ws, u.id)
+      return json(all<any>("select id, workspace_id, owner_id, visibility, provider, label, account, scopes, status, last_used_at, created_at, json_extract(config, '$.site') site, json_array_length(json_extract(config, '$.tools')) tool_count from connections where workspace_id=? and status!='revoked' and (visibility='workspace' or owner_id=?)", ws, u.id)
         .map((c) => ({ ...c, owner: rt.nameOf(c.owner_id), agents: all<any>("select a.id, a.name from connection_grants g join agents a on a.id=g.agent_id where g.connection_id=?", c.id) }))); }),
     POST: h(async (req) => { // direct token / API-key connection (dev + providers without OAuth)
       const u = userOf(req), b = await body(req); member(b.workspace_id, u.id, b.visibility === "workspace" ? ["owner", "admin"] : undefined);
-      if (!b.provider || !b.credentials) fail(400, "provider and credentials required");
+      let config: any = {}, account = b.account ?? u.email, label = b.label ?? b.provider, creds = b.credentials;
+      if (b.provider === "mcp") {
+        // MCP server: discover its tools now so agents can be granted them.
+        if (!b.url) fail(400, "MCP server URL required");
+        if (!process.env.ALLOW_PRIVATE_MCP) await assertPublicUrl(b.url).catch((e: any) => fail(400, e.message));
+        const { listTools, parseHeaders } = await import("./mcp");
+        const headers = parseHeaders(b.headers);
+        const tools = await listTools(`probe-${id("x")}`, b.url, headers).catch((e: any) => fail(400, `couldn't reach the MCP server: ${e.message}`));
+        config = { url: b.url, tools: tools.map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations })) };
+        creds = { headers }; account = new URL(b.url).host; label = b.label ?? new URL(b.url).host;
+      } else if (b.provider === "site_login") {
+        // Website login (OpenTable, Resy...): used by the browser runner only, never shown to a model.
+        if (!b.site || !b.username || !b.password) fail(400, "site, username and password required");
+        config = { site: String(b.site).replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "").toLowerCase() };
+        creds = { username: b.username, password: b.password }; account = b.username; label = b.label ?? `${config.site} login`;
+      } else if (!b.provider || !b.credentials) fail(400, "provider and credentials required");
       const cid = id("con");
-      exec("insert into connections (id, workspace_id, owner_id, visibility, provider, label, account, scopes, cred_enc, created_at) values (?,?,?,?,?,?,?,?,?,?)",
-        cid, b.workspace_id, u.id, b.visibility ?? "private", b.provider, b.label ?? b.provider, b.account ?? u.email, b.scopes ?? null, seal(b.credentials), now());
+      exec("insert into connections (id, workspace_id, owner_id, visibility, provider, label, account, scopes, cred_enc, config, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
+        cid, b.workspace_id, u.id, b.visibility ?? "private", b.provider, label, account, b.scopes ?? null, seal(creds), S(config), now());
       for (const a of b.agent_ids ?? []) { agentFor(a, u.id, b.workspace_id); exec("insert or ignore into connection_grants values (?,?)", cid, a); }
       emit("CONNECTION_CREATED", { workspace_id: b.workspace_id, actor: u.id, data: { connection_id: cid, provider: b.provider } });
-      return json({ id: cid });
+      return json({ id: cid, tools: config.tools?.map((t: any) => ({ name: t.name, risk: t.annotations?.readOnlyHint ? "read" : t.annotations?.destructiveHint ? "destructive" : "write_external" })) });
     }),
   },
+  "/v1/connections/:id/refresh": { POST: h(async (req) => {
+    const u = userOf(req), c = one<any>("select * from connections where id=? and provider='mcp'", req.params.id) ?? fail(404, "not found");
+    if (c.owner_id !== u.id) member(c.workspace_id, u.id, ["owner", "admin"]);
+    const { listTools, parseHeaders } = await import("./mcp");
+    const tools = await listTools(c.id, J(c.config).url, parseHeaders(unseal<any>(c.cred_enc)?.headers)).catch((e: any) => fail(400, e.message));
+    exec("update connections set config=json_set(config, '$.tools', json(?)) where id=?", S(tools.map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations }))), c.id);
+    return json({ tools: tools.length });
+  }) },
   "/v1/connections/:id": { GET: h((req) => {
     const u = userOf(req), c = one<any>("select * from connections where id=?", req.params.id) ?? fail(404, "not found"); member(c.workspace_id, u.id);
     if (c.visibility === "private" && c.owner_id !== u.id) fail(404, "not found");
     const { cred_enc, ...safe } = c;
+    safe.config = J(c.config, {});
+    if (safe.config.tools) safe.config.tools = safe.config.tools.map((t: any) => ({ name: t.name, description: t.description, risk: t.annotations?.readOnlyHint ? "read" : t.annotations?.destructiveHint ? "destructive" : "write_external" }));
     return json({ ...safe, owner: rt.nameOf(c.owner_id), agents: all<any>("select a.id, a.name from connection_grants g join agents a on a.id=g.agent_id where g.connection_id=?", c.id),
       audit: all<any>("select e.ts, e.type, e.run_id, e.actor, json_extract(e.data, '$.tool') tool, json_extract(e.data, '$.status') status from events e where e.type='TOOL_CALL_COMPLETED' and json_extract(e.data, '$.connection_id')=? order by e.seq desc limit 50", c.id)
         .map((e) => ({ ...e, agent: rt.nameOf(e.actor) })) });

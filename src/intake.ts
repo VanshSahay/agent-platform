@@ -2,7 +2,7 @@
 // The model drafts the brief; whether to stop and ask is decided deterministically here, never by the model.
 import { one, all, exec, emit, now, S, J } from "./db";
 import { structured, plan as heuristicPlan } from "./model";
-import { TOOLS } from "./tools";
+import { TOOLS, getTool } from "./tools";
 import { agentTools } from "./templates";
 import { retrieve } from "./memory";
 import * as rt from "./runtime";
@@ -61,7 +61,7 @@ export function heuristicBrief(objective: string, c: { tools: string[]; agents: 
   return {
     goal: text.split("\n")[0].split(/(?<=[.!?])\s/)[0].slice(0, 200), deliverable: done_when[0] ?? (kind === "answer" ? "A reply" : "The requested change"),
     constraints, assumptions, questions, done_when, plan, kind,
-    side_effects: steps.filter((s) => WRITE_RISKS.includes(TOOLS[s.name]?.risk)).map((s) => TOOLS[s.name].summarize?.(s.input) ?? s.name),
+    side_effects: steps.filter((s) => { const d = getTool(s.name); return d && WRITE_RISKS.includes(d.riskOf?.(s.input) ?? d.risk); }).map((s) => getTool(s.name)!.summarize?.(s.input) ?? s.name),
   };
 }
 
@@ -76,13 +76,13 @@ export async function buildBrief(run: any, agent: any, room: any, prev?: Brief):
   // Tools whose connection isn't available can't be planned on (e.g. no contacts lookup without Google).
   const connected = new Set(all<any>("select c.provider from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.status='active'", agent.id).map((r) => r.provider));
   const perms = J(agent.permissions, {});
-  const tools = [...agentTools(agent)].filter((t) => perms[t] !== "never" && (!TOOLS[t]?.requiresConnection || connected.has(TOOLS[t].requiresConnection!)));
+  const tools = [...agentTools(agent)].filter((t) => perms[t] !== "never" && (!getTool(t)?.requiresConnection || getTool(t)!.connectionId || connected.has(getTool(t)!.requiresConnection!)));
   const memories = retrieve(room, agent.id, run.objective, run.requested_by, 6).map((m) => m.text);
   const ctx = { tools, agents: all<any>("select name from agents where workspace_id=? and status='active'", agent.workspace_id).map((a) => a.name),
     speaker: rt.nameOf(run.requested_by), agentName: agent.name, memories };
   const transcript = all<any>("select actor, data from events where room_id=? and type='message' order by seq desc limit 8", room.id).reverse()
     .map((e) => `[${rt.nameOf(e.actor)}] ${J(e.data).text}`).join("\n");
-  const input = `Agent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => TOOLS[x]).map((x) => `${x} (${TOOLS[x].risk})`).join(", ")}
+  const input = `Agent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => getTool(x)).map((x) => `${x} (${getTool(x)!.risk})`).join(", ")}
 Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversation:\n${transcript}\n${prev ? `Previous brief: ${S(prev)}\n` : ""}Request from ${ctx.speaker}: ${run.objective}`;
   // Short small talk with nothing actionable ("thanks!", "ok cool") doesn't need a model-drafted brief.
   const quick = heuristicBrief(run.objective, ctx);
