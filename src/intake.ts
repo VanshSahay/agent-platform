@@ -73,7 +73,10 @@ const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief b
  "kind": "answer" (just reply) | "act" (a few tool actions) | "task" (multi-step, waits on people or days) | "schedule" (reminders/recurring)}`;
 
 export async function buildBrief(run: any, agent: any, room: any, prev?: Brief): Promise<Brief> {
-  const tools = [...agentTools(agent)];
+  // Tools whose connection isn't available can't be planned on (e.g. no contacts lookup without Google).
+  const connected = new Set(all<any>("select c.provider from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.status='active'", agent.id).map((r) => r.provider));
+  const perms = J(agent.permissions, {});
+  const tools = [...agentTools(agent)].filter((t) => perms[t] !== "never" && (!TOOLS[t]?.requiresConnection || connected.has(TOOLS[t].requiresConnection!)));
   const memories = retrieve(room, agent.id, run.objective, run.requested_by, 6).map((m) => m.text);
   const ctx = { tools, agents: all<any>("select name from agents where workspace_id=? and status='active'", agent.workspace_id).map((a) => a.name),
     speaker: rt.nameOf(run.requested_by), agentName: agent.name, memories };

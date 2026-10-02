@@ -164,6 +164,12 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
       out.push({ name: "calendar.create_event", input: { title: subjectOf(), start_in_hours: 24, duration_minutes: 30 } });
     else if (has("calendar.list_events")) out.push({ name: "calendar.list_events", input: { days: 7 } });
   }
+  if (/\b(free|availability|available|find a time|when can (we|i)|open slots?)\b/.test(t) && has("calendar.find_free_time"))
+    out.push({ name: "calendar.find_free_time", input: { days: 5, duration_minutes: Number(t.match(/(\d+)[- ]?min/)?.[1] ?? 30) } });
+  const doc = text.match(/\b(?:find|look for|search for|pull up|open|read)\s+(?:the |my |our )?(.+?)\s+(?:doc|document|file|notes|deck|spreadsheet)\b/i);
+  if (doc && has("drive.search")) out.push({ name: "drive.search", input: { query: doc[1].replace(/^(a|an)\s+/i, "") } });
+  const named = text.match(/\b(?:[Ee]-?mail|[Mm]essage|[Ww]rite to)\s+([A-Z][a-z]+)\b/)?.[1];
+  if (!email && named && has("contacts.search") && /\b(email|send|write|message)\b/.test(t)) out.push({ name: "contacts.search", input: { query: named } });
   if (email && /\b(email|send|write|reply|message)\b/.test(t)) {
     const draft = /\bdraft\b/.test(t);
     const tool = draft ? "email.draft" : "email.send";
@@ -183,6 +189,13 @@ function localAgent(req: ModelRequest): Pick<ModelResult, "text" | "toolCalls"> 
     return { text: "", toolCalls: [{ id: `call_${done.length}_${s.name}`, name: s.name, input: s.input }] };
   }
   const t = c.objective.toLowerCase();
+  // Chain a contacts lookup into the email it was for.
+  const last = done.at(-1);
+  if (last?.toolName === "contacts.search" && c.tools.includes("email.send") && /\b(email|send|write|message)\b/.test(t)) {
+    const addr = last.content.match(/[\w.+-]+@[\w-]+\.[\w.]+/)?.[0];
+    if (addr) return { text: "", toolCalls: [{ id: `call_${done.length}_email`, name: /\bdraft\b/.test(t) ? "email.draft" : "email.send",
+      input: { to: [addr], subject: c.objective.match(/about ([^.,!?\n]+)/i)?.[1]?.trim() ?? "Quick follow-up", body: c.objective } }] };
+  }
   if (done.length) {
     const lines = done.map((m) => {
       if (m.content.startsWith("DENIED")) return `I didn't run ${m.toolName}: ${m.content.slice(8)}`;
@@ -207,6 +220,11 @@ function summarize(tool: string, content: string) {
     const j = JSON.parse(body);
     if (tool === "web.search" && Array.isArray(j.results))
       return `Here are the top results:\n${j.results.slice(0, 3).map((r: any, i: number) => `${i + 1}. ${r.title} — ${r.url}`).join("\n")}`;
+    if (tool === "calendar.find_free_time" && Array.isArray(j.slots))
+      return j.slots.length ? `Open ${j.duration_minutes}-minute slots:\n${j.slots.map((s: any) => `• ${new Date(s.start).toLocaleString()}`).join("\n")}` : "No open slots in working hours.";
+    if (tool === "contacts.search" && Array.isArray(j.people)) return j.people.length ? `Found: ${j.people.map((p: any) => `${p.name} <${p.emails[0] ?? "no email"}>`).join(", ")}` : "No matching contacts.";
+    if (tool === "drive.search" && Array.isArray(j.files)) return j.files.length ? `Found in Drive:\n${j.files.map((f: any) => `• ${f.name} — ${f.webViewLink}`).join("\n")}` : "Nothing matching in Drive.";
+    if (tool === "drive.read") return `${j.name} (${j.link}):\n${String(j.text).slice(0, 600)}`;
     if (tool === "calendar.list_events" && Array.isArray(j.events))
       return j.events.length ? `Your upcoming events:\n${j.events.map((e: any) => `• ${e.summary} (${e.start})`).join("\n")}` : "Your calendar is clear.";
     if (tool === "email.send") return `Sent the email to ${[].concat(j.to ?? []).join(", ")}.`;

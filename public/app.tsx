@@ -146,6 +146,25 @@ function Home() {
     {d.failed.length > 0 && <><h2>Failed</h2><div className="list">{d.failed.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}><span className="pill bad">Failed</span><span className="grow">{r.objective.slice(0, 80)}</span><span className="small muted">{r.error}</span></a>)}</div></>}
   </>;
 }
+function BriefCard({ b, live, onDone, onEdit }: { b: any; live: any; onDone: () => void; onEdit: (prefill: string) => void }) {
+  const { toast } = useCtx();
+  const brief = b.brief, clarify = b.decision === "clarify";
+  const act = async (action: string) => { try { await api(`/v1/runs/${b.run_id}/brief`, { action }); onDone(); } catch (e: any) { toast(e.message); } };
+  const Sec = ({ label, xs }: { label: string; xs: string[] }) => xs?.length ? <div className="mt8"><div className="what">{label}</div>{xs.map((x, i) => <div key={i}>• {x}</div>)}</div> : null;
+  return <div className="approval">
+    <div className="small muted">{clarify ? "Before I start" : `Plan v${brief.version}${live ? "" : " · " + (b.status ?? "settled")}`}</div>
+    <div style={{ fontWeight: 600, marginTop: 4 }}>{brief.goal}</div>
+    {clarify ? <div className="mt8">{brief.questions.map((q: any, i: number) => <div key={i}>{i + 1}. {q.q}{q.default && <span className="muted"> (default: {q.default})</span>}</div>)}</div> : <>
+      {brief.deliverable && <Sec label="Deliverable" xs={[brief.deliverable]} />}
+      <Sec label="Constraints" xs={brief.constraints} /><Sec label="Assuming" xs={brief.assumptions} />
+      <Sec label="Will do (each needs approval)" xs={brief.side_effects} /><Sec label="Done when" xs={brief.done_when} />
+      {brief.plan?.length > 0 && <div className="mt8"><div className="what">Plan</div>{brief.plan.map((p: any, i: number) => <div key={i}>{i + 1}. {p.text}</div>)}</div>}</>}
+    {live && <div className="row mt8 between"><div className="row">
+        <button className="btn" onClick={() => onEdit(clarify ? "" : "Change: ")}>{clarify ? "Answer" : "Edit"}</button>
+        <button className="btn ghost" onClick={() => act("cancel")}>Cancel</button></div>
+      {(!clarify || brief.questions.every((q: any) => q.default)) && <button className="btn primary" onClick={() => act("go")}>{clarify ? "Use defaults" : "Go"}</button>}</div>}
+  </div>;
+}
 function WaitCard({ w, onDone }: { w: any; onDone: () => void }) {
   const resolve = async (outcome: string) => { await api(`/v1/waits/${w.id}/resolve`, { outcome }); onDone(); };
   return <div className="card"><div className="row"><span className="pill warn">{w.kind === "verify" ? "Verify" : "Action needed"}</span><b>{w.agent_name}</b></div>
@@ -246,6 +265,8 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
     {tab === "schedule" && <div className="list">{a.schedules.length ? a.schedules.map((s: any) => <div key={s.id} className="item"><span className="pill">{s.kind}</span><span className="grow">{s.objective}</span><span className="small muted">{s.next_at ? `next ${new Date(s.next_at).toLocaleString()}` : s.spec.wake_key}</span></div>) : <div className="item muted">No schedules. Ask the agent to “remind me…” or “every morning…”.</div>}</div>}
     {tab === "activity" && <Activity agent={a.id} />}
     {tab === "settings" && <div className="card col">
+      <label className="field">Before starting work<select className="input" value={a.confirm_mode ?? "smart"} onChange={(e) => patch({ confirm_mode: e.target.value })}>
+        <option value="smart">Smart — ask only when unclear, multi-step, or several external actions</option><option value="always">Always show the plan and wait for “go”</option><option value="never">Never — just start (approvals still apply)</option></select></label>
       <label className="field">Model profile<select className="input" value={a.model_profile} onChange={(e) => patch({ model_profile: e.target.value })}>{["fast", "standard", "research-standard", "escalation"].map((m) => <option key={m}>{m}</option>)}</select></label>
       <div className="row"><button className="btn" onClick={() => patch({ status: a.status === "active" ? "paused" : "active" })}>{a.status === "active" ? "Pause agent" : "Resume agent"}</button>
         {a.template_id && <button className="btn" onClick={async () => { const r = await api(`/v1/agents/${id}/upgrade`, {}); toast(r.error ?? `Upgraded to ${r.version}`); reload(); }}>Upgrade to latest version</button>}</div>
@@ -347,7 +368,8 @@ function Rooms() {
 function Room({ id }: { id: string }) {
   const { me, toast } = useCtx();
   const [data, setData] = useState<any>(null), [events, setEvents] = useState<any[]>([]), [text, setText] = useState(""), [trace, setTrace] = useState<string | null>(null);
-  const after = useRef(0), tl = useRef<HTMLDivElement>(null);
+  const after = useRef(0), tl = useRef<HTMLDivElement>(null), box = useRef<HTMLTextAreaElement>(null);
+  const edit = (prefill: string) => { setText(prefill); setTimeout(() => box.current?.focus(), 0); };
   const load = useCallback(async () => {
     try {
       const d = await api(`/v1/rooms/${id}?after=${after.current}`);
@@ -360,7 +382,7 @@ function Room({ id }: { id: string }) {
   const send = async () => { if (!text.trim()) return; const t = text; setText(""); try { await api(`/v1/rooms/${id}/messages`, { text: t }); load(); } catch (e: any) { toast(e.message); setText(t); } };
   const humans = data.members.filter((m: any) => m.kind === "human"), agents = data.members.filter((m: any) => m.kind === "agent");
   const approvalsById = Object.fromEntries(data.approvals.map((a: any) => [a.id, a]));
-  const shown = events.filter((e) => e.type === "message" || ["APPROVAL_GRANTED", "APPROVAL_REJECTED", "MEMBER_JOINED", "DELEGATION_CREATED", "TASK_CREATED", "RUN_FAILED", "ENDPOINT_LINKED"].includes(e.type));
+  const shown = events.filter((e) => e.type === "message" || ["APPROVAL_GRANTED", "APPROVAL_REJECTED", "BRIEF_CONFIRMED", "BRIEF_REVISED", "MEMBER_JOINED", "DELEGATION_CREATED", "TASK_CREATED", "RUN_FAILED", "ENDPOINT_LINKED"].includes(e.type));
   return <div className="room">
     <div className="convo">
       <div className="room-head"><div className="grow"><h3>{data.room.name}</h3><div className="small muted">{humans.length} {humans.length === 1 ? "person" : "people"} · {agents.length} AI{data.room.objective ? ` · ${data.room.objective}` : ""}</div></div>
@@ -377,17 +399,21 @@ function Room({ id }: { id: string }) {
             <div className={`avatar ${isAgent ? "" : "human"}`}>{e.actor_name?.[0] ?? "?"}</div>
             <div className="body"><div className="who">{mine ? "You" : e.actor_name}{e.data.platform && e.data.platform !== "web" && <span className="pill">via {PLATFORM[e.data.platform]}</span>}<span className="faint small" style={{ fontWeight: 400 }}>{ago(e.ts)}</span>
               {isAgent && e.run_id && <a className="small faint" style={{ fontWeight: 400, cursor: "pointer" }} onClick={() => setTrace(e.id)}>Why?</a>}</div>
-              {apr ? <ApprovalCard a={{ ...apr, room_name: null }} onDone={load} /> : <div className="text">{e.data.text}</div>}
+              {apr ? <ApprovalCard a={{ ...apr, room_name: null }} onDone={load} />
+                : e.data.brief ? <BriefCard b={e.data.brief} onDone={load} onEdit={edit}
+                    live={data.runs.find((r: any) => r.id === e.data.brief.run_id && ["proposed", "clarifying"].includes(r.brief_status) && r.brief?.version === e.data.brief.brief.version)} />
+                : <div className="text">{e.data.text}</div>}
             </div></div>;
         })}
       </div>
-      <div className="composer"><textarea className="input" placeholder={agents.length > 1 || data.room.participation === "mention_only" && data.room.kind === "shared" ? `Message everyone… (mention ${agents.map((a: any) => "@" + a.name).join(", ")} to ask an agent)` : "Message…"} value={text}
+      <div className="composer"><textarea ref={box} className="input" placeholder={agents.length > 1 || data.room.participation === "mention_only" && data.room.kind === "shared" ? `Message everyone… (mention ${agents.map((a: any) => "@" + a.name).join(", ")} to ask an agent)` : "Message…"} value={text}
         onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="btn primary" onClick={send}>Send</button></div>
     </div>
     <aside className="side">
       <h2>Current work</h2>
       {data.runs.length === 0 && data.tasks.filter((t: any) => t.status !== "done").length === 0 && <div className="small faint">Nothing in progress.</div>}
-      {data.runs.map((r: any) => <div key={r.id} className="work"><div className="row between"><b>{r.agent_name}</b><Status s={r.status} /></div><div className="small mt8">{r.objective.slice(0, 120)}</div>
+      {data.runs.map((r: any) => <div key={r.id} className="work"><div className="row between"><b>{r.agent_name}</b><Status s={r.status} /></div><div className="small mt8">{(r.brief?.goal ?? r.objective).slice(0, 120)}</div>
+        {r.brief?.plan?.length > 0 && <div className="small mt8">{r.brief.plan.map((p: any, i: number) => <div key={i} className={p.status === "done" ? "faint" : ""}>{p.status === "done" ? "✓" : p.status === "skipped" ? "–" : "○"} {p.text}</div>)}</div>}
         {r.waits.map((w: any, i: number) => <div key={i} className="small muted mt8">⏸ {w.reason}{w.owner_name ? ` · Owner: ${w.owner_name}` : ""}</div>)}
         <div className="row mt8"><a className="small faint" style={{ cursor: "pointer" }} onClick={() => setTrace(r.id)}>Trace</a><a className="small faint" style={{ cursor: "pointer" }} onClick={async () => { await api(`/v1/runs/${r.id}/cancel`, {}); load(); }}>Cancel</a></div></div>)}
       {data.tasks.filter((t: any) => t.status !== "done").map((t: any) => <div key={t.id} className="work">
@@ -412,6 +438,8 @@ function sysText(e: any) {
     case "MEMBER_JOINED": return `${e.actor_name} joined`;
     case "TASK_CREATED": return `Task: ${d.title}`;
     case "RUN_FAILED": return `Run failed: ${d.reason}`;
+    case "BRIEF_CONFIRMED": return `✓ ${e.actor_name} confirmed the plan`;
+    case "BRIEF_REVISED": return `${e.actor_name} changed the request`;
     case "ENDPOINT_LINKED": return `Linked ${PLATFORM[d.platform] ?? d.platform} conversation`;
     default: return e.type;
   }
@@ -434,6 +462,11 @@ function Trace({ id, onClose }: { id: string; onClose: () => void }) {
     const d = s.data;
     switch (s.type) {
       case "RUN_STARTED": return ["Run started", `${d.objective}`, ""];
+      case "BRIEF_PROPOSED": return ["Brief", `${d.brief.goal} → ${d.decision}${d.diff?.length ? ` (${d.diff.join("; ")})` : ""}`, d.decision === "auto" || d.decision === "skip" ? "ok" : "warn"];
+      case "BRIEF_CONFIRMED": return ["Plan confirmed", `by ${s.actor_name}`, "ok"];
+      case "BRIEF_REVISED": return ["Requirement changed", d.text, "warn"];
+      case "RESULT_CHECKED": return ["Result check", d.pass ? "all success criteria met" : `missing: ${d.missing.join("; ")}`, d.pass ? "ok" : "warn"];
+      case "PLAN_UPDATED": return ["Plan updated", d.plan.map((p: any) => `${p.status === "done" ? "✓" : "○"} ${p.text}`).join(" · "), ""];
       case "MODEL_CALL": return ["Model call", `${d.model}${d.tool_calls.length ? ` → proposed ${d.tool_calls.join(", ")}` : " → answered"}${d.cost_usd ? ` · $${d.cost_usd.toFixed(4)}` : ""}`, ""];
       case "TOOL_CALL_REQUESTED": return ["Tool proposed", `${d.tool} ${JSON.stringify(d.input).slice(0, 160)}`, ""];
       case "PERMISSION_DECISION": return ["Permission", `${d.decision} — ${d.reason}`, d.decision === "ALLOW" ? "ok" : d.decision === "DENY" ? "bad" : "warn"];

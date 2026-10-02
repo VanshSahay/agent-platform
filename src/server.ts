@@ -435,7 +435,7 @@ export const routes: Record<string, any> = {
     if (!process.env.GOOGLE_CLIENT_ID) fail(501, "Google OAuth isn't configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET), or add a token connection instead");
     const state = Buffer.from(seal({ ws: q.get("workspace"), user: u.id, visibility: q.get("visibility") ?? "private", agent: q.get("agent"), conn: q.get("reconnect"), exp: now() + 6e5 })).toString("base64url");
     const p = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID!, redirect_uri: `${pub()}/v1/connections/google/callback`, response_type: "code", access_type: "offline", prompt: "consent", state,
-      scope: "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events" });
+      scope: "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/contacts.readonly" });
     return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${p}`, 302);
   }) },
   "/v1/connections/google/callback": { GET: h(async (req) => {

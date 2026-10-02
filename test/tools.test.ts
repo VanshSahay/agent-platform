@@ -111,3 +111,26 @@ test("AC-T7 run budgets stop runaway agents", async () => {
   expect(J(run.spent).modelCalls).toBeLessThanOrEqual(12);
   expect(lastFrom(room.id, agent.id)).toMatch(/couldn't finish/);
 });
+
+test("AC-T8 everyday tools: free-time search, contact lookup feeding an email, Drive search", async () => {
+  const { freeSlots } = await import("../src/tools");
+  const mon9 = new Date(2026, 9, 5, 9, 0).getTime(); // Monday 9:00 local
+  const slots = freeSlots([{ start: mon9, end: mon9 + 2 * 36e5 }], mon9, mon9 + 864e5, 60, 9, 18, 3);
+  expect(slots.map((s) => new Date(s.start).getHours())).toEqual([11, 12, 13]); // skips the busy 9-11 block
+  expect(freeSlots([], new Date(2026, 9, 3, 9).getTime(), new Date(2026, 9, 3, 18).getTime(), 30)).toEqual([]); // Saturday
+
+  const ava = customAgent(ws, ellie, ["email-drafting", "calendar", "documents"], {}, "Ava");
+  googleConnection(ws, ellie, [ava.id]);
+  const room2 = rt.privateRoomFor(ellie, ava);
+  net.on(/people\.googleapis\.com/, () => Response.json({ results: [{ person: { names: [{ displayName: "Sam Lee" }], emailAddresses: [{ value: "sam.lee@corp.test" }] } }] }));
+  net.on(/calendar\/v3\/freeBusy/, () => Response.json({ calendars: { primary: { busy: [] } } }));
+  net.on(/drive\/v3\/files\?q=/, () => Response.json({ files: [{ id: "f1", name: "Q3 board deck", webViewLink: "https://docs.test/f1" }] }));
+
+  await say(room2.id, ellie, "Email Sam about the offsite agenda");
+  expect(pendingApprovals(room2.id)[0].summary).toMatch(/Send email to sam\.lee@corp\.test/); // looked up instead of asking
+  await say(room2.id, ellie, "reject");
+  await say(room2.id, ellie, "When am I free for a 45 min call this week?");
+  expect(lastFrom(room2.id, ava.id)).toMatch(/Open 45-minute slots/);
+  await say(room2.id, ellie, "Find the Q3 board deck");
+  expect(lastFrom(room2.id, ava.id)).toMatch(/Q3 board deck — https:\/\/docs\.test\/f1/);
+});

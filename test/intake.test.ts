@@ -27,6 +27,7 @@ test("AC-B1 every request gets a brief; chit-chat skips it, simple actions auto-
 test("AC-B2 missing essentials trigger one batched question; nothing runs until it's answered", async () => {
   const ava = installAgent("ava-executive-assistant", ws, ellie);
   googleConnection(ws, ellie, [ava.id]);
+  exec("update agents set permissions=json_set(permissions, '$.\"contacts.search\"', 'never') where id=?", ava.id); // no lookup -> must ask
   const room = rt.privateRoomFor(ellie, ava);
   await say(room.id, ellie, "Email Sam about moving our dinner to Friday");
   const run = runsIn(room.id)[0];

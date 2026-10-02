@@ -205,6 +205,64 @@ def({
   },
 });
 
+/** Free slots between busy intervals, inside working hours, for a meeting of `minutes`. Pure, so it's unit-tested. */
+export function freeSlots(busy: { start: number; end: number }[], from: number, to: number, minutes: number, workStart = 9, workEnd = 18, max = 5) {
+  const out: { start: string; end: string }[] = [], step = 30 * 6e4, len = minutes * 6e4;
+  const b = [...busy].sort((x, y) => x.start - y.start);
+  for (let t = Math.ceil(from / step) * step; t + len <= to && out.length < max; t += step) {
+    const d = new Date(t), h = d.getHours() + d.getMinutes() / 60, end = new Date(t + len), he = end.getHours() + end.getMinutes() / 60;
+    if (d.getDay() === 0 || d.getDay() === 6 || h < workStart || he > workEnd || end.getDate() !== d.getDate()) continue;
+    if (b.some((x) => x.start < t + len && x.end > t)) continue;
+    out.push({ start: d.toISOString(), end: end.toISOString() });
+    t += len - step; // don't offer overlapping slots
+  }
+  return out;
+}
+
+def({
+  id: "calendar.find_free_time", description: "Find open meeting slots in working hours over the next days, optionally across attendees' calendars.", risk: "read", idempotency: "safe",
+  defaultApproval: "none", requiresConnection: "google", inputSchema: obj({ days: num(), duration_minutes: num(), attendees: { type: "array", items: str() } }),
+  async execute({ days = 5, duration_minutes = 30, attendees = [] }, ctx) {
+    const timeMin = new Date(now()).toISOString(), timeMax = new Date(now() + days * 864e5).toISOString();
+    const j: any = await (await call("https://www.googleapis.com/calendar/v3/freeBusy", { method: "POST", headers: await googleToken(ctx),
+      body: S({ timeMin, timeMax, items: [{ id: "primary" }, ...attendees.map((id: string) => ({ id }))] }) })).json();
+    const busy = Object.values(j.calendars ?? {}).flatMap((c: any) => (c.busy ?? []).map((x: any) => ({ start: Date.parse(x.start), end: Date.parse(x.end) })));
+    return { status: "SUCCEEDED", output: { slots: freeSlots(busy, now(), now() + days * 864e5, duration_minutes), duration_minutes } };
+  },
+});
+
+def({
+  id: "contacts.search", description: "Look up people in the user's Google contacts by name or email.", risk: "read", idempotency: "safe", defaultApproval: "none",
+  requiresConnection: "google", inputSchema: obj({ query: str() }, ["query"]),
+  async execute({ query }, ctx) {
+    const j: any = await (await call(`https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(query)}&readMask=names,emailAddresses,phoneNumbers&pageSize=5`, { headers: await googleToken(ctx) })).json();
+    const people = (j.results ?? []).map((r: any) => ({ name: r.person?.names?.[0]?.displayName, emails: (r.person?.emailAddresses ?? []).map((e: any) => e.value), phones: (r.person?.phoneNumbers ?? []).map((p: any) => p.value) }));
+    return { status: "SUCCEEDED", untrusted: true, output: { people } };
+  },
+});
+
+def({
+  id: "drive.search", description: "Search the user's Google Drive (Docs, Sheets, PDFs) by text.", risk: "read", idempotency: "safe", defaultApproval: "none",
+  requiresConnection: "google", inputSchema: obj({ query: str() }, ["query"]),
+  async execute({ query }, ctx) {
+    const q = encodeURIComponent(`fullText contains '${String(query).replace(/['\\]/g, "")}' and trashed=false`);
+    const j: any = await (await call(`https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=8&fields=files(id,name,mimeType,modifiedTime,webViewLink)`, { headers: await googleToken(ctx) })).json();
+    return { status: "SUCCEEDED", untrusted: true, output: { files: j.files ?? [] } };
+  },
+});
+
+def({
+  id: "drive.read", description: "Read the text of a Drive file (Google Docs are exported as plain text).", risk: "read", idempotency: "safe", defaultApproval: "none",
+  requiresConnection: "google", inputSchema: obj({ file_id: str() }, ["file_id"]),
+  async execute({ file_id }, ctx) {
+    const h = await googleToken(ctx), id = encodeURIComponent(file_id);
+    const meta: any = await (await call(`https://www.googleapis.com/drive/v3/files/${id}?fields=name,mimeType,webViewLink`, { headers: h })).json();
+    const url = meta.mimeType?.startsWith("application/vnd.google-apps.") ? `https://www.googleapis.com/drive/v3/files/${id}/export?mimeType=text/plain` : `https://www.googleapis.com/drive/v3/files/${id}?alt=media`;
+    const text = (await (await call(url, { headers: h })).text()).slice(0, 20000);
+    return { status: "SUCCEEDED", untrusted: true, output: { name: meta.name, link: meta.webViewLink, text } };
+  },
+});
+
 def({
   id: "reminder.schedule", description: "Schedule a reminder or recurring wake-up for this room. The agent wakes at that time with the text as its objective.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
