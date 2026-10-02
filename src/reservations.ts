@@ -287,8 +287,8 @@ extraPlanners.push((text, c) => {
   if (!c.tools.includes("reservations.search")) return { steps: [] };
   const t = text.toLowerCase();
   if (/\b(my reservations|what('?s| do i have) booked|upcoming reservations|my watches)\b/.test(t)) return { steps: [{ name: "reservations.list", input: {} }], exclusive: true };
-  if (!/\b(reservation|reserve|book|table|dinner|lunch|brunch|resy|opentable|spot)\b/.test(t)) return { steps: [] };
   const v = SANDBOX_VENUES.find((x) => t.includes(x.name.toLowerCase()));
+  if (!v && !/\b(reservation|reserve|book|table|dinner|lunch|brunch|resy|opentable|spot)\b/.test(t)) return { steps: [] };
   const q = v?.name ?? text.match(/\bat\s+([A-Z][\w'&]*(?:\s+[A-Z][\w'&]*)*)/)?.[1] ?? text.match(/"([^"]+)"/)?.[1] ?? (t.match(/\b(italian|japanese|sushi|omakase|mexican|steak\w*|seafood)\b/)?.[1] ?? "dinner");
   const dates = parseDates(text), w = parseWindow(text), party = parseParty(text);
   if (!dates.length) return { steps: [] }; // the brief will ask which day

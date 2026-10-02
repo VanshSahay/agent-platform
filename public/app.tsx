@@ -1,6 +1,11 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
 
+// PWA: installable on phones (added at runtime so the HTML bundler doesn't try to resolve them).
+for (const [rel, href] of [["manifest", "/manifest.webmanifest"], ["icon", "/icon.svg"], ["apple-touch-icon", "/icon.svg"]]) {
+  const l = document.createElement("link"); l.rel = rel; l.href = href; document.head.appendChild(l);
+}
+
 // ---------------- plumbing ----------------
 async function api(path: string, body?: any, method?: string) {
   const r = await fetch(path, { method: method ?? (body ? "POST" : "GET"), headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });

@@ -421,6 +421,7 @@ export function validate(schema: any, v: any, path = "input"): string | null {
     if (typeof v !== "object" || v === null || Array.isArray(v)) return `${path} must be an object`;
     for (const k of schema.required ?? []) if (v[k] === undefined) return `${path}.${k} is required`;
     for (const [k, val] of Object.entries(v)) {
+      if (val === undefined) continue;
       if (!schema.properties?.[k]) { if (schema.additionalProperties === false) return `${path}.${k} is not allowed`; continue; }
       const e = validate(schema.properties[k], val, `${path}.${k}`); if (e) return e;
     }

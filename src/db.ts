@@ -15,7 +15,7 @@ create table if not exists invitations (token text primary key, workspace_id tex
 create table if not exists agents (id text primary key, workspace_id text not null, name text not null, avatar text, job text, instructions text,
   skills text default '[]', permissions text default '{}', model_profile text default 'standard', template_id text, template_version text,
   onboarding text default '{}', status text default 'active', created_by text, created_at int);
-create table if not exists channel_identities (id text primary key, agent_id text not null, platform text not null, address text, secret_enc text, config text default '{}', created_at int);
+create table if not exists channel_identities (id text primary key, agent_id text, platform text not null, address text, secret_enc text, config text default '{}', created_at int);
 
 create table if not exists rooms (id text primary key, workspace_id text not null, name text not null, objective text, kind text default 'shared',
   participation text default 'mention_only', status text default 'active', created_at int);
@@ -102,6 +102,11 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
     ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
     if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
   }
+  // Shared platform lines have no owning agent: relax the old NOT NULL (SQLite needs a table rebuild).
+  if ((db.query("pragma table_info(channel_identities)").all() as any[]).find((c) => c.name === "agent_id")?.notnull) db.exec(`
+    create table channel_identities_new (id text primary key, agent_id text, platform text not null, address text, secret_enc text, config text default '{}', created_at int);
+    insert into channel_identities_new select id, agent_id, platform, address, secret_enc, config, created_at from channel_identities;
+    drop table channel_identities; alter table channel_identities_new rename to channel_identities;`);
   db.exec(`update templates set published_version=latest_version where published_version is null and status='published';
     update template_versions set status=coalesce((select case when t.published_version=template_versions.version then 'published' else t.status end from templates t where t.id=template_id), 'draft') where status is null;`);
   const profiles = db.query("select count(*) n from model_profiles").get() as { n: number };

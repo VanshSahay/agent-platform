@@ -65,11 +65,13 @@ export async function checkOrders() {
   return k;
 }
 
-const ORDER_INTENT = /\b(i'?m in|in for \d|put me down|count me in|i'?ll take|add me|make (it|mine) \d|drop me|i'?m out|cancel mine|remove me|take me off|i('ve)? paid|paid you|sent (you )?(the )?(money|payment)|venmo'?d|who'?s in|tally|how many (are )?we|close the order|lock it in|final call)\b/i;
+const ORDER_INTENT = /\b(i'?m in|in for \d|put me down|count me in|i'?ll take|add me|make (it|mine) \d|drop me|i'?m out|cancel mine|remove me|take me off|i('ve)? paid|^\s*(just )?paid\b|paid you|sent (you )?(the )?(money|payment)|venmo'?d|who'?s in|tally|how many (are )?we|close the order|lock it in|final call)\b/i;
 /** In a room with an open order, order-shaped messages reach the order's agent without an @mention. */
 export function orderAgentFor(roomId: string, text: string) {
-  const o = currentOrder(roomId);
-  return o && ORDER_INTENT.test(text) ? (o.agent_id as string) : null;
+  if (!ORDER_INTENT.test(text)) return null;
+  // After closing, people still report payments and ask the tally for a couple of weeks.
+  const o = currentOrder(roomId) ?? one<any>("select * from group_orders where room_id=? and status='closed' and closed_at>? order by closed_at desc limit 1", roomId, now() - 14 * 864e5);
+  return o ? (o.agent_id as string) : null;
 }
 
 const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
@@ -154,7 +156,7 @@ function parseDeadline(s: string): number | null {
 // ---------------- offline planner ----------------
 extraPlanners.push((text, c) => {
   if (!c.tools.includes("order.join")) return { steps: [] };
-  const t = text.replace(/^@?\w+[,:]?\s+/, "");
+  const t = text.replace(/^@\w+[,:]?\s+|^\w+[,:]\s+/, ""); // drop "@Pool " / "Pool, " — not the first word of "in for 2"
   const lt = t.toLowerCase();
   if (/\b(group (order|buy)|bulk (order|buy)|let'?s (do|start|organi[sz]e) an? (group|bulk|team|big) (order|buy)|start an? (group )?order)\b/.test(lt)) {
     const its = [...t.matchAll(/(?:^|[,;:]|\band\b)\s*([^,;:$]+?)\s*(?:for|at|@|-|—)?\s*\$(\d+(?:\.\d{1,2})?)(?:\s*(?:\/|per|each|a)\s*(\w+))?/g)]
@@ -176,7 +178,7 @@ extraPlanners.push((text, c) => {
   if (/\b(drop me|i'?m out|cancel mine|remove me|take me off)\b/.test(lt)) return { exclusive: true, steps: [{ name: "order.join", input: { qty: 0 } }] };
   const paidOther = t.match(/^([A-Z][a-z]+) (?:has )?paid\b/);
   if (paidOther) return { exclusive: true, steps: [{ name: "order.mark_paid", input: { person: paidOther[1] } }] };
-  if (/\b(i('ve)? paid|paid you|sent (you )?(the )?(money|payment)|venmo'?d)\b/.test(lt)) return { exclusive: true, steps: [{ name: "order.mark_paid", input: {} }] };
+  if (/\b(i('ve)? paid|paid you|sent (you )?(the )?(money|payment)|venmo'?d)\b|^\s*(just )?paid\b/.test(lt)) return { exclusive: true, steps: [{ name: "order.mark_paid", input: {} }] };
   if (/\b(close the order|lock it in|final call|that'?s a wrap)\b/.test(lt)) return { exclusive: true, steps: [{ name: "order.close", input: {} }] };
   if (/\b(tally|who'?s in|how many (are )?we|order status|where are we at)\b/.test(lt)) return { exclusive: true, steps: [{ name: "order.status", input: {} }] };
   return { steps: [] };

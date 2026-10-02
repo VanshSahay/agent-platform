@@ -23,7 +23,7 @@ export function remember(a: { run?: any; room: any; text: string; scope: Scope; 
     scopeId = a.room.workspace_id;
   } else if (a.scope === "room") scopeId = a.room.id;
   else if (a.scope === "user_private") {
-    scopeId = a.run?.requested_by ?? humans[0];
+    scopeId = a.scopeId ?? a.run?.requested_by ?? humans[0];
     if (!scopeId) return { error: "no user for private memory" };
   } else if (a.scope === "agent") scopeId = a.run?.agent_id ?? a.scopeId;
   if (!scopeId) return { error: "missing scope" };
