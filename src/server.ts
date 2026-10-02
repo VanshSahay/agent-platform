@@ -358,6 +358,24 @@ export const routes: Record<string, any> = {
       .filter((r) => { try { roomFor(r.room_id, u.id); return true; } catch { return false; } }).map((r) => ({ ...r, agent_name: rt.nameOf(r.agent_id), spent: J(r.spent) })));
   }) },
   "/v1/runs/:id": { GET: h((req) => { const u = userOf(req); const r = one<any>("select * from runs where id=?", req.params.id) ?? fail(404, "run not found"); roomFor(r.room_id, u.id); return json(rt.trace(r.id)); }) },
+  "/v1/runs/:id/eval-case": { GET: h((req) => {
+    // Turn a real run into a golden case (evals/cases/*.json). Review the expectations before committing it.
+    const u = userOf(req), r = one<any>("select * from runs where id=?", req.params.id) ?? fail(404, "run not found");
+    roomFor(r.room_id, u.id);
+    const slug = one<any>("select t.slug from agents a join templates t on t.id=a.template_id where a.id=?", r.agent_id)?.slug;
+    const ev = (type: string) => all<any>("select data from events where run_id=? and type=? order by seq", r.id, type).map((e) => J(e.data));
+    const first = J(one<any>("select data from events where id=?", r.trigger_event_id)?.data)?.text ?? r.objective.split("\n")[0];
+    const decision = ev("BRIEF_PROPOSED")[0]?.decision;
+    const wrote = all<any>("select tool_id from tool_executions where run_id=? and status='succeeded'", r.id).some((x) => ["write_external", "destructive", "financial"].includes(TOOLS[x.tool_id]?.risk));
+    return json({
+      id: `case-${r.id.slice(4, 12)}`, suite: "cases", agent: slug ?? "(custom agent: replace with a template slug)",
+      group: rt.roomHumanIds(r.room_id).length > 1, connection: all("select 1 from connection_grants where agent_id=?", r.agent_id).length > 0,
+      turns: [["Ellie", first], ...ev("BRIEF_REVISED").map((d) => ["Ellie", d.text])],
+      expect: { called: [...new Set(ev("TOOL_CALL_REQUESTED").map((d) => d.tool))], approval_for: [...new Set(ev("APPROVAL_REQUESTED").map((d) => d.tool))],
+        brief_status: ({ auto: "auto", confirm: "proposed", clarify: "clarifying", skip: "skipped" } as any)[decision], no_external_write: !wrote || undefined },
+      _review: "Generated from a real run. Keep only expectations that define correct behavior, then save as evals/cases/<id>.json.",
+    });
+  }) },
   "/v1/runs/:id/brief": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req), r = one<any>("select * from runs where id=?", req.params.id) ?? fail(404, "run not found");
     roomFor(r.room_id, u.id);

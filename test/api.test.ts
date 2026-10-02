@@ -229,3 +229,17 @@ test("AC-O1 onboarding: empty workspace offers quick-start; agents come with sta
   const room = (await api(`/v1/agents/${ava.id}/private-room`, { token: e.token, body: {} })).data;
   expect((await api(`/v1/rooms/${room.id}`, { token: e.token })).data.starters).toHaveLength(4);
 });
+
+test("AC-EV2 a real run exports as a replayable golden case", async () => {
+  const e = await signup("Ellie");
+  const inst = await api("/v1/agent-templates/atlas-research/install", { token: e.token, body: { workspace_id: e.ws } });
+  const room = (await api(`/v1/agents/${inst.data.agent.id}/private-room`, { token: e.token, body: {} })).data;
+  await api(`/v1/rooms/${room.id}/messages`, { token: e.token, body: { text: "Search for the latest news on fusion energy" } });
+  await settle();
+  const run = one<any>("select id from runs where room_id=?", room.id);
+  const c = (await api(`/v1/runs/${run.id}/eval-case`, { token: e.token })).data;
+  expect(c).toMatchObject({ agent: "atlas-research", turns: [["Ellie", "Search for the latest news on fusion energy"]], expect: { called: ["web.search"], brief_status: "auto", no_external_write: true } });
+  const { fromFile, runCase } = await import("../evals/golden");
+  const replay = await runCase(fromFile(c));
+  expect(replay.pass).toBe(true);
+});

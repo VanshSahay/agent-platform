@@ -40,6 +40,7 @@ export function fakeGoogle() {
   net.on(/gmail\.googleapis\.com\/.*\/messages\/send/, () => Response.json({ id: id("gm") }));
   net.on(/calendar\/v3\/calendars\/primary\/events\?/, () => Response.json({ items: [{ id: "ev1", summary: "Board meeting", start: { dateTime: "2026-10-02T15:00:00Z" } }] }));
   net.on(/calendar\/v3\/calendars\/primary\/events$/, (_r, b) => Response.json({ id: b.id, start: b.start, htmlLink: "https://cal/x" }));
+  net.on(/people\.googleapis\.com/, (r) => Response.json({ results: /query=Sam/i.test(r.url) ? [{ person: { names: [{ displayName: "Sam Lee" }], emailAddresses: [{ value: "sam.lee@example.com" }] } }] : [] }));
   net.on(/duckduckgo/, () => new Response(`<a class="result__a" href="https://hotel.example/one">Hotel One</a><a class="result__snippet">Beachfront, $650</a>
     <a class="result__a" href="https://hotel.example/two">Hotel Two</a><a class="result__snippet">Near restaurants, $720</a>
     <a class="result__a" href="https://hotel.example/three">Hotel Three</a><a class="result__snippet">Quiet, $480</a>`));

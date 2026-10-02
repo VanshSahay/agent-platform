@@ -12,6 +12,22 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-M4 | Recruiting: a human-claimed candidate is never contacted, outreach requires the right approver, a transient bounce is retried, the run waits for the candidate, and the next-day inbound email resumes that run — the email is sent exactly once. | §33 |
 | AC-M5 | Instructions inside fetched web content cannot trigger an external write; tool output is labeled untrusted; the write requires human approval even if configured automatic. | §21.2 |
 
+## Requirement layer: brief → confirm → execute → verify
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-B1 | Every request gets a structured brief (goal, deliverable, constraints, assumptions, side effects, done-when, plan); chit-chat skips it; simple actions start immediately and the model executes against the brief. | §7.4 |
+| AC-B2 | When essential information is missing (and can't be looked up), the agent asks one batched question and runs nothing until it's answered; the answer continues the same task. | §7.4 |
+| AC-B3 | Multi-step tasks show the plan with Go/Cancel and wait; "go" starts it, "cancel" drops it. | §3.4, §3.7 |
+| AC-B4 | A mid-flight change re-briefs with a visible diff, withdraws stale approvals, re-confirms, and only the new action is executed. | §32, §35 |
+| AC-B5 | Results are checked against "done when" before reporting; gaps are retried once, then disclosed. | §35.3 |
+| AC-B6 | Plan steps tick off as tools succeed; the agent can re-plan; long waits post one progress note instead of chat spam. | §3.3, §37 |
+| AC-B7 | Brief cards work from channel buttons, scoped to their room. | §5.3 |
+| AC-B8 | Confirmation is decided by a deterministic policy with a per-agent mode (smart / always / never); a single external write relies on its approval card instead of asking twice. | §19.3 |
+| AC-B9 | Unanswered questions and unconfirmed plans expire after 72h instead of guessing. | §2.8 |
+| AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
+| AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |
+
 ## Permissions & policy (§19)
 
 | ID | Criterion | Plan |
@@ -32,6 +48,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-T5 | After a crash mid-write, recovery re-queues the run and refuses to double-execute. | §7.2, §35.1 |
 | AC-T6 | Decrypted credentials never reach the model, events, or traces; the audit records which connection was used. | §10.2, §21.3 |
 | AC-T7 | Run budgets stop runaway agents and tell the room. | §7.5 |
+| AC-T8 | Everyday tools work: free-time search across calendars, contact lookup feeding an email (instead of asking), Drive search/read. | §10.4 |
 
 ## Runtime: Rooms, Runs, waits, delegation (§2, §7, §15, §16, §37)
 
@@ -109,6 +126,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 
 | ID | Criterion | Plan |
 |---|---|---|
-| AC-EV1 | The versioned golden-task suite passes 100% on the offline baseline model across all platform dimensions (tool selection, approval, boundary, completion, response, memory). | §23.3, §23.4 |
+| AC-EV1 | The versioned golden-task suite passes 100% on the offline baseline model across all platform dimensions (tool selection, approval, boundary, completion, response, memory, clarification). | §23.3, §23.4 |
+| AC-EV2 | Any real run exports as a golden case (evals/cases/*.json) that replays and passes. | §23.4 |
 | AC-Q1 | TypeScript typecheck passes with `strict`. | — |
 | AC-UI1 | The web app bundles without errors (Home, Agents, Create Agent, Agent page tabs, Rooms with work panel, Discover/trial, Connections, Activity, Settings). | §3 |

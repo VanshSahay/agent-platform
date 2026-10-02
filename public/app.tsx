@@ -518,6 +518,7 @@ function Trace({ id, onClose }: { id: string; onClose: () => void }) {
     {t && <><p className="muted">{t.agent} ran this {t.trigger ? <>because <b>{t.trigger.by}</b> said “{t.trigger.text}”{t.trigger.platform !== "web" ? ` via ${PLATFORM[t.trigger.platform]}` : ""}</> : t.run.kind === "schedule" ? "on a schedule" : `for ${t.requested_by ?? "the room"}`}.</p>
       <div className="row small muted"><Status s={t.run.status} /> · {t.run.spent.modelCalls} model calls · {t.run.spent.toolCalls} tool calls · ${(t.run.spent.cost ?? 0).toFixed(4)}</div>
       <div className="mt16">{t.steps.map((s: any) => { const [h, d, c] = label(s); return <div key={s.seq} className={`step ${c}`}><b className="small">{h}</b><div className="small muted">{d}</div></div>; })}</div>
+      <div className="mt16"><a className="btn sm" href={`/v1/runs/${t.run.id}/eval-case`} download={`case-${t.run.id}.json`}>Save as eval case</a></div>
       {t.children.length > 0 && <><h2>Delegated</h2>{t.children.map((c: any) => <div key={c.id} className="small">{c.agent}: {c.objective} — <Status s={c.status} /></div>)}</>}</>}
   </div></>;
 }
