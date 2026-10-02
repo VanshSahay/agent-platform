@@ -4,6 +4,7 @@ import { createHmac, timingSafeEqual, randomInt } from "node:crypto";
 import { all, one, exec, id, now, S, J, seal, unseal, emit } from "./db";
 import * as rt from "./runtime";
 import * as intake from "./intake";
+import * as tpl from "./templates";
 
 export type Platform = "web" | "telegram" | "slack" | "whatsapp" | "email" | "imessage" | "phone";
 export interface InboundEvent {
@@ -254,18 +255,9 @@ async function processEvent(e: InboundEvent, ident: any) {
 
   if (e.type === "button_clicked") {
     const ep = resolveRoom(e, ident, senderId);
-    const b = e.data?.match(/^brf:(run_\w+):(go|cancel)$/);
-    if (b) {
-      const run = one<any>("select room_id from runs where id=?", b[1]);
-      if (run?.room_id !== ep.room_id) return; // buttons only act on tasks in the room they were clicked in
-      const r = b[2] === "go" ? intake.confirmBrief(b[1], senderId, ep.id) : intake.cancelBrief(b[1], senderId);
-      if ("error" in r) return reply(r.error!);
-      return;
-    }
-    const m = e.data?.match(/^apr:(apr_\w+):(approve|reject)$/);
-    if (!m) return;
-    const r = rt.decideApproval(m[1], senderId, m[2] as any, {}, ep.id);
+    const r = await pressButton(e.data ?? "", senderId, ep.room_id, ep.id);
     if ("error" in r) return reply(r.error!);
+    if (r.say) return reply(r.say);
     return;
   }
 
@@ -279,6 +271,27 @@ async function processEvent(e: InboundEvent, ident: any) {
   const room = one<any>("select * from rooms where id=?", ep.room_id);
   await rt.ingestMessage({ roomId: ep.room_id, senderId, text: e.text, platform: e.provider, endpointId: ep.id, externalId: e.providerEventId,
     untrusted: !isMember(room.workspace_id, senderId) }); // external contacts are untrusted (plan §21.1)
+}
+
+/** Every card button (web or channel) lands here; a button only acts on objects in the room it was pressed in. */
+export async function pressButton(data: string, userId: string, roomId: string, endpointId: string | null): Promise<{ ok?: boolean; error?: string; say?: string }> {
+  const [kind, objId, action] = data.split(":");
+  const roomOf = (sql: string) => one<any>(sql, objId)?.room_id;
+  if (kind === "apr") {
+    if (roomOf("select room_id from approvals where id=?") !== roomId) return { error: "that approval isn't in this conversation" };
+    return rt.decideApproval(objId, userId, action === "approve" ? "approve" : "reject", {}, endpointId);
+  }
+  if (roomOf("select room_id from runs where id=?") !== roomId) return { error: "that task isn't in this conversation" };
+  if (kind === "brf") return action === "go" ? intake.confirmBrief(objId, userId, endpointId) : intake.cancelBrief(objId, userId);
+  if (kind === "skl") {
+    if (action !== "save") return { ok: true };
+    const r = await tpl.saveSkillFromRun(objId, userId);
+    if ("error" in r) return r;
+    const s = (r as any).skill;
+    rt.postMessage(roomId, { sender: s.agent_id, text: `Saved skill "${s.name}". I'll follow it for similar requests.`, targets: endpointId ? [endpointId] : [] });
+    return { ok: true };
+  }
+  return { error: "unknown button" };
 }
 
 // ---------------- identity linking ----------------

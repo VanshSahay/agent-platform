@@ -66,6 +66,8 @@ create table if not exists inbound_events (id text primary key, provider text, p
 create table if not exists outbox (id text primary key, endpoint_id text, room_id text, event_id text, payload text, status text default 'queued',
   external_id text, error text, attempts int default 0, created_at int);
 
+create table if not exists custom_skills (id text primary key, agent_id text, workspace_id text, name text, procedure text, tools text, example text,
+  signature text, created_by text, created_at int);
 create table if not exists usage (id integer primary key autoincrement, workspace_id text, agent_id text, run_id text, kind text, qty real,
   cost_usd real default 0, byok int default 0, ts int);
 create table if not exists provider_keys (workspace_id text, provider text, key_enc text, primary key (workspace_id, provider));
@@ -85,7 +87,7 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
   db.exec(SCHEMA);
   // Additive migrations for databases created by earlier versions.
   for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
-    ["runs", "brief", "text"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
+    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
     if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
   }
   db.exec(`update templates set published_version=latest_version where published_version is null and status='published';

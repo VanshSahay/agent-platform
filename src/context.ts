@@ -1,7 +1,7 @@
 // Context assembly (plan §9.5, §15.3, §21.2). Permission filtering happens here, before anything reaches the model.
 import { all, one, J } from "./db";
 import { retrieve } from "./memory";
-import { agentTools, SKILLS } from "./templates";
+import { agentTools, SKILLS, customSkills } from "./templates";
 import { toolSpecs } from "./tools";
 import type { Msg, LocalCtx } from "./model";
 import { nameOf, roleOf } from "./runtime";
@@ -29,6 +29,7 @@ export function buildContext(run: any, agent: any, room: any) {
     SYSTEM_POLICY,
     `[AGENT_INSTRUCTIONS]\nYou are ${agent.name}. Job: ${agent.job}\n${agent.instructions ?? ""}`,
     skills.length ? `[SKILLS]\n${skills.filter((s) => SKILLS[s]).map((s) => `- ${SKILLS[s].name}: ${SKILLS[s].procedure}`).join("\n")}` : "",
+    customSkills(agent.id).length ? `[LEARNED_PROCEDURES — saved by the user from past successful tasks]\n${customSkills(agent.id).map((s) => `- ${s.name}: ${s.procedure}`).join("\n")}` : "",
     `[ROOM] "${room.name}"${room.objective ? ` — objective: ${room.objective}` : ""} (${room.kind}, participation=${room.participation})\nParticipants:\n` +
       members.map((m) => `- ${nameOf(m.principal_id)} (${m.kind}${m.role ? `, role=${m.role}` : ""})`).join("\n"),
     `[WORK_STATE]\n` + (tasks.length ? tasks.map((t) => `- task ${t.id}: ${t.title} | status=${t.status} | owner=${nameOf(t.owner)}${t.agent_action === "blocked" ? " | agent_action=blocked" : ""}`).join("\n") : "- no open tasks") +

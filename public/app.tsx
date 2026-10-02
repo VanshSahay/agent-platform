@@ -293,9 +293,12 @@ function JobEditor({ a, patch }: any) {
 function SkillsEditor({ a, patch }: any) {
   const [cat] = useApi<any>("/v1/catalog");
   if (!cat) return null;
-  return <div className="list">{cat.skills.map((s: any) => <label key={s.id} className="item" style={{ cursor: "pointer" }}>
+  return <>{a.custom_skills.length > 0 && <><h2>Learned from your tasks</h2><div className="list">{a.custom_skills.map((s: any) => <div key={s.id} className="item">
+      <div className="grow"><b>{s.name}</b><div className="small muted">{s.procedure}</div><div className="small faint mono">{s.tools.join(" → ")}</div></div>
+      <button className="btn sm ghost" onClick={async () => { await api(`/v1/agents/${a.id}/custom-skills/${s.id}`, undefined, "DELETE"); patch({}); }}>Remove</button></div>)}</div><h2>Built-in skills</h2></>}
+    <div className="list">{cat.skills.map((s: any) => <label key={s.id} className="item" style={{ cursor: "pointer" }}>
     <input type="checkbox" checked={a.skills.includes(s.id)} onChange={() => patch({ skills: a.skills.includes(s.id) ? a.skills.filter((x: string) => x !== s.id) : [...a.skills, s.id] })} />
-    <div className="grow"><b>{s.name}</b><div className="small muted">{s.procedure}</div><div className="small faint mono">{s.tools.join(" · ")}</div></div></label>)}</div>;
+    <div className="grow"><b>{s.name}</b><div className="small muted">{s.procedure}</div><div className="small faint mono">{s.tools.join(" · ")}</div></div></label>)}</div></>;
 }
 function AgentConnections({ a, reload }: any) {
   const { ws, toast } = useCtx();
@@ -402,7 +405,9 @@ function Room({ id }: { id: string }) {
               {apr ? <ApprovalCard a={{ ...apr, room_name: null }} onDone={load} />
                 : e.data.brief ? <BriefCard b={e.data.brief} onDone={load} onEdit={edit}
                     live={data.runs.find((r: any) => r.id === e.data.brief.run_id && ["proposed", "clarifying"].includes(r.brief_status) && r.brief?.version === e.data.brief.brief.version)} />
-                : <div className="text">{e.data.text}</div>}
+                : <><div className="text">{e.data.text}</div>
+                  {e.data.buttons?.length > 0 && isAgent && <div className="row mt8">{e.data.buttons.map((b: any) => <button key={b.data} className="btn sm"
+                    onClick={async () => { try { await api(`/v1/rooms/${id}/buttons`, { data: b.data }); load(); } catch (x: any) { toast(x.message); } }}>{b.label}</button>)}</div>}</>}
             </div></div>;
         })}
       </div>

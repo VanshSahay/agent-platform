@@ -35,6 +35,42 @@ export function agentTools(agent: { skills: string | string[] }): Set<string> {
   return new Set([...CORE_TOOLS, ...skills.flatMap((s) => SKILLS[s]?.tools ?? [])]);
 }
 
+// ---------- skills learned from repeated work (plan §11.3) ----------
+const NON_SIGNATURE = new Set([...CORE_TOOLS, "plan.update"]);
+/** The shape of a run: the distinct non-bookkeeping tools it used, in order. */
+export function runSignature(toolNames: string[]) { return [...new Set(toolNames.filter((t) => !NON_SIGNATURE.has(t)))].join(">"); }
+
+/** After the same kind of task succeeds 3 times, offer to save it as a skill (once per shape). */
+export function maybeSuggestSkill(run: any) {
+  if (!run.signature || run.parent_run_id || run.kind === "schedule") return null;
+  const n = one<any>("select count(*) n from runs where agent_id=? and signature=? and status='completed'", run.agent_id, run.signature).n;
+  if (n < 3 || one("select 1 from custom_skills where agent_id=? and signature=?", run.agent_id, run.signature)
+    || one("select 1 from events where type='SKILL_SUGGESTED' and actor=? and json_extract(data, '$.signature')=?", run.agent_id, run.signature)) return null;
+  emit("SKILL_SUGGESTED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id, data: { signature: run.signature } });
+  return run.signature;
+}
+
+export async function saveSkillFromRun(runId: string, userId: string, name?: string) {
+  const run = one<any>("select * from runs where id=?", runId);
+  if (!run?.signature) return { error: "that task has no reusable steps" };
+  const existing = one<any>("select * from custom_skills where agent_id=? and signature=?", run.agent_id, run.signature);
+  if (existing) return { skill: existing };
+  const examples = all<any>("select objective from runs where agent_id=? and signature=? and status='completed' order by created_at desc limit 5", run.agent_id, run.signature).map((r) => r.objective.split("\n")[0]);
+  const tools = run.signature.split(">");
+  const fallback = () => ({
+    name: name ?? (J(run.brief)?.goal ?? examples[0]).split(/\s+/).slice(0, 5).join(" "),
+    procedure: `For requests like "${examples[0]}": ${tools.map((t: string, i: number) => `${i + 1}) use ${t}`).join(", ")}; then check the result against what was asked and report back with links.`,
+  });
+  const d = await structured<{ name: string; procedure: string }>("fast",
+    `Write a reusable procedure an AI agent should follow for this recurring kind of request. {"name": 2-5 words, "procedure": 2-4 sentences naming the tools in order and the checks to do}. Tools used: ${tools.join(", ")}.`,
+    examples.join("\n"), fallback, run.workspace_id);
+  const sid = id("skl");
+  exec("insert into custom_skills values (?,?,?,?,?,?,?,?,?,?)", sid, run.agent_id, run.workspace_id, name ?? d.name, d.procedure, S(tools), examples[0], run.signature, userId, now());
+  emit("SKILL_SAVED", { workspace_id: run.workspace_id, room_id: run.room_id, actor: userId, data: { skill_id: sid, agent_id: run.agent_id, name: name ?? d.name } });
+  return { skill: one<any>("select * from custom_skills where id=?", sid) };
+}
+export const customSkills = (agentId: string) => all<any>("select * from custom_skills where agent_id=? order by created_at", agentId).map((s) => ({ ...s, tools: J(s.tools, []) }));
+
 export function connectionsNeeded(skills: string[]) {
   return [...new Set(skills.flatMap((s) => SKILLS[s]?.tools ?? []).map((t) => TOOLS[t]?.requiresConnection).filter(Boolean))] as string[];
 }

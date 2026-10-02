@@ -4,6 +4,7 @@
 // to Temporal when you need multiple workers or > ~50 runs/sec. The run/wait/step model below maps 1:1 onto workflow + signals.
 import { all, one, exec, emit, id, now, S, J, tx } from "./db";
 import { generate } from "./model";
+import { runSignature, maybeSuggestSkill } from "./templates";
 import { buildContext } from "./context";
 import { executeToolCall, TOOLS } from "./tools";
 import { extractAfterTurn } from "./memory";
@@ -305,6 +306,8 @@ function classify(runId: string, current: string) {
 function complete(run: any, agent: any, room: any, text: string) {
   setStatus(run.id, "completed", { result: { text, ...(J(run.result, {}) ?? {}) } });
   exec("update runs set kind=? where id=?", classify(run.id, run.kind), run.id);
+  const used = all<any>("select tool_id from tool_executions where run_id=? and status='succeeded' order by created_at", run.id).map((x) => x.tool_id);
+  exec("update runs set signature=? where id=?", runSignature(used) || null, run.id);
   emit("RUN_COMPLETED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { text: text.slice(0, 500) } });
   if (run.parent_run_id) {
     // Typed handoff back to the parent (plan §16.2); the child's text is not posted to the room.
@@ -312,6 +315,10 @@ function complete(run: any, agent: any, room: any, text: string) {
     return;
   }
   if (text.trim()) postMessage(room.id, { sender: agent.id, text, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id) });
+  if (maybeSuggestSkill(one<any>("select * from runs where id=?", run.id)))
+    postMessage(room.id, { sender: agent.id, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id),
+      text: `I've done this kind of task ${3} times now. Save it as a skill so I do it the same way every time?`,
+      buttons: [{ label: "Save as skill", data: `skl:${run.id}:save` }, { label: "Not now", data: `skl:${run.id}:no` }] });
 }
 
 function fail(run: any, reason: string) {

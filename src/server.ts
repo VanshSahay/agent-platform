@@ -82,6 +82,7 @@ function agentView(a: any) {
     permission_table: tpl.permissionTable(J(a.skills, []), J(a.permissions, {})),
     channels: all<any>("select id, platform, address, config from channel_identities where agent_id=?", a.id).map((c) => ({ ...c, config: J(c.config, {}), webhook_url: `${pub()}/v1/webhooks/${c.platform}/${c.id}` })),
     connections_needed: tpl.connectionsNeeded(J(a.skills, [])),
+    custom_skills: tpl.customSkills(a.id),
     connections: all<any>("select c.id, c.provider, c.account, c.owner_id, c.visibility, c.status from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=?", a.id)
       .map((c) => ({ ...c, owner: rt.nameOf(c.owner_id) })),
     rooms: all<any>("select r.id, r.name, r.kind from rooms r join room_members m on m.room_id=r.id where m.principal_id=? and r.status='active'", a.id),
@@ -319,6 +320,15 @@ export const routes: Record<string, any> = {
     kick();
     return json(res);
   }) },
+  "/v1/rooms/:id/buttons": { POST: h(async (req) => {
+    const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
+    const res = await ch.pressButton(String(b.data ?? ""), u.id, r.id, null);
+    if (res.error) fail(400, res.error);
+    kick();
+    return json(res);
+  }) },
+  "/v1/agents/:id/custom-skills/:sid": { DELETE: h((req) => { const u = userOf(req); agentFor(req.params.id, u.id);
+    exec("delete from custom_skills where id=? and agent_id=?", req.params.sid, req.params.id); return json({ ok: true }); }) },
   "/v1/rooms/:id/runs": { POST: h(async (req) => {
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
     const a = agentFor(b.agent_id, u.id, r.workspace_id);

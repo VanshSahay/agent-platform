@@ -140,3 +140,20 @@ test("AC-B9 unanswered questions expire after 72h instead of guessing", async ()
   expect(runsIn(room.id)[0].status).toBe("cancelled");
   expect(lastFrom(room.id, ava.id)).toMatch(/didn't hear back/);
 });
+
+test("AC-K1 repeated successful work is offered as a reusable skill once, and saved skills guide future runs", async () => {
+  const atlas = installAgent("atlas-research", ws, ellie);
+  const room = rt.privateRoomFor(ellie, atlas);
+  for (const topic of ["solar", "batteries", "hydrogen"]) await say(room.id, ellie, `Search for the latest news on ${topic}`);
+  const offer = messages(room.id).filter((m) => m.buttons?.some((b: any) => b.data.startsWith("skl:")));
+  expect(offer).toHaveLength(1);
+  const { pressButton } = await import("../src/channels");
+  expect(await pressButton(offer[0].buttons[0].data, ellie, room.id, null)).toEqual({ ok: true });
+  expect(all("select * from custom_skills")).toHaveLength(1);
+  await say(room.id, ellie, "Search for the latest news on wind");
+  expect(messages(room.id).filter((m) => m.buttons?.some((b: any) => b.data.startsWith("skl:")))).toHaveLength(1); // not offered again
+  const seen = scriptModel({ text: "ok" });
+  await say(room.id, ellie, "Search for the latest news on fusion");
+  expect(seen[0].system).toContain("[LEARNED_PROCEDURES");
+  expect(await pressButton(offer[0].buttons[0].data, ellie, rt.privateRoomFor(user("Other"), atlas).id, null)).toHaveProperty("error"); // room-scoped
+});
