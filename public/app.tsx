@@ -314,7 +314,7 @@ function ChannelsEditor({ a, reload }: any) {
       {platform && CHANNEL_FIELDS[platform].map(([k, l]) => <label key={k} className="field">{l}<input className="input" value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>)}
       {platform && <div><button className="btn primary" onClick={add}>Add {PLATFORM[platform]}</button> <span className="small faint">You'll get a webhook URL to paste into the provider.</span></div>}
     </div>
-    <div className="card"><h3>Talk to {a.name} from your phone</h3><p className="muted small">Text <span className="mono">link {code || "123456"}</span> to {a.name} on any connected channel so it knows it's you. Codes expire in 10 minutes.</p>
+    <div className="card"><h3>Talk to {a.name} from your phone</h3><p className="muted small">Text <span className="mono">link {code || "12345678"}</span> to {a.name} on any connected channel so it knows it's you. Codes expire in 10 minutes.</p>
       <button className="btn" onClick={async () => setCode((await api("/v1/identity/link-code", {})).code)}>{code ? `Your code: ${code}` : "Get a link code"}</button>
       {me.identities.length > 0 && <div className="small muted mt8">Linked: {me.identities.map((i: any) => `${PLATFORM[i.platform]} ${i.display_name ?? i.external_user_id}`).join(", ")}</div>}</div>
   </div>;

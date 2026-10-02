@@ -50,7 +50,14 @@ function roomFor(roomId: string, userId: string) {
   if (!inRoom && (!m || r.kind === "private")) fail(404, "room not found");
   return r;
 }
-const agentFor = (agentId: string, userId: string) => { const a = one<any>("select * from agents where id=?", agentId) ?? fail(404, "agent not found"); member(a.workspace_id, userId); return a; };
+const agentFor = (agentId: string, userId: string, wsId?: string) => {
+  const a = one<any>("select * from agents where id=?", agentId) ?? fail(404, "agent not found");
+  member(a.workspace_id, userId);
+  if (wsId && a.workspace_id !== wsId) fail(400, "agent belongs to another workspace");
+  return a;
+};
+/** Rooms the user may see: shared rooms of the workspace + private rooms they're in. */
+const visibleRooms = (ws: string, userId: string) => new Set(all<any>("select r.id from rooms r where r.workspace_id=? and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?))", ws, userId).map((r) => r.id as string));
 
 function createWorkspace(name: string, kind: string, ownerId: string) {
   const wid = id("ws");
@@ -205,15 +212,15 @@ export const routes: Record<string, any> = {
       .filter((a) => rt.canApprove(a, u.id)).map((a) => ({ ...a, input: J(a.input), agent_name: rt.nameOf(a.agent_id), room_name: one<any>("select name from rooms where id=?", a.room_id)?.name }));
     const myWaits = all<any>("select w.*, r.agent_id, r.objective from waits w join runs r on r.id=w.run_id where r.workspace_id=? and w.status='open' and w.owner=? and w.kind in ('verify','reconnect')", ws, u.id)
       .map((w) => ({ ...w, agent_name: rt.nameOf(w.agent_id) }));
-    const visibleRooms = new Set(all<any>("select r.id from rooms r where r.workspace_id=? and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?))", ws, u.id).map((r) => r.id));
-    const runs = (sql: string) => all<any>(sql, ws).filter((r) => visibleRooms.has(r.room_id)).map((r) => ({ ...r, agent_name: rt.nameOf(r.agent_id), room_name: one<any>("select name from rooms where id=?", r.room_id)?.name,
+    const vis = visibleRooms(ws!, u.id);
+    const runs = (sql: string) => all<any>(sql, ws).filter((r) => vis.has(r.room_id)).map((r) => ({ ...r, agent_name: rt.nameOf(r.agent_id), room_name: one<any>("select name from rooms where id=?", r.room_id)?.name,
       waits: all<any>("select kind, reason from waits where run_id=? and status='open'", r.id) }));
     return json({
       user: u.name, needs_attention: { approvals, waits: myWaits, reconnect: all<any>("select id, provider, account from connections where workspace_id=? and owner_id=? and status='needs_reauth'", ws, u.id) },
       active: runs("select * from runs where workspace_id=? and status not in ('completed','failed_terminal','cancelled') order by updated_at desc limit 30"),
       completed: runs("select * from runs where workspace_id=? and status='completed' and parent_run_id is null order by completed_at desc limit 10").map((r) => ({ ...r, result: J(r.result) })),
       failed: runs("select * from runs where workspace_id=? and status='failed_terminal' order by completed_at desc limit 5"),
-      blocked: all<any>("select t.*, r.name room_name from tasks t join rooms r on r.id=t.room_id where r.workspace_id=? and t.status='blocked'", ws).filter((t) => visibleRooms.has(t.room_id)).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner) })),
+      blocked: all<any>("select t.*, r.name room_name from tasks t join rooms r on r.id=t.room_id where r.workspace_id=? and t.status='blocked'", ws).filter((t) => vis.has(t.room_id)).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner) })),
     });
   }) },
 
@@ -221,6 +228,7 @@ export const routes: Record<string, any> = {
   "/v1/agents/draft": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req);
     if (!b.description) fail(400, "describe what the agent should do");
+    if (b.workspace_id) member(b.workspace_id, u.id); // drafting can spend the workspace's BYOK key
     return json(await tpl.draftAgent(b.description, b.workspace_id));
   }) },
   "/v1/agents": {
@@ -273,7 +281,7 @@ export const routes: Record<string, any> = {
         from rooms r where r.workspace_id=? and r.status='active' and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?)) order by last_ts desc`, ws, u.id)); }),
     POST: h(async (req) => {
       const u = userOf(req), b = await body(req); member(b.workspace_id, u.id);
-      const members = [{ id: u.id, kind: "human" as const }, ...(b.agent_ids ?? []).map((x: string) => { agentFor(x, u.id); return { id: x, kind: "agent" as const }; }),
+      const members = [{ id: u.id, kind: "human" as const }, ...(b.agent_ids ?? []).map((x: string) => { agentFor(x, u.id, b.workspace_id); return { id: x, kind: "agent" as const }; }),
         ...(b.member_ids ?? []).filter((x: string) => one("select 1 from memberships where workspace_id=? and user_id=?", b.workspace_id, x)).map((x: string) => ({ id: x, kind: "human" as const }))];
       return json(rt.createRoom({ workspace_id: b.workspace_id, name: b.name ?? "New room", objective: b.objective, kind: "shared", participation: b.participation ?? "mention_only", members }));
     }),
@@ -288,16 +296,19 @@ export const routes: Record<string, any> = {
   "/v1/rooms/:id/members": { POST: h(async (req) => {
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
     if (r.kind === "private") fail(400, "private rooms are 1:1; create a shared room to invite people");
-    if (b.agent_id) { agentFor(b.agent_id, u.id); rt.addMember(r.id, b.agent_id, "agent"); }
+    if (b.agent_id) { agentFor(b.agent_id, u.id, r.workspace_id); rt.addMember(r.id, b.agent_id, "agent"); }
     if (b.user_id) { if (!one("select 1 from memberships where workspace_id=? and user_id=?", r.workspace_id, b.user_id)) fail(400, "invite them to the workspace first"); rt.addMember(r.id, b.user_id, "human"); }
     return json({ ok: true });
   }) },
   "/v1/rooms/:id/endpoints": { POST: h(async (req) => {
     // Point an existing external conversation (e.g. a Slack channel) at this room.
+    // Admin-only, group conversations only, and never re-point an existing conversation (that would hijack someone's DM).
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
+    member(r.workspace_id, u.id, ["owner", "admin"]);
+    if (r.kind !== "shared" || !b.is_group) fail(400, "only group conversations can be attached to shared rooms");
     const ci = one<any>("select ci.* from channel_identities ci join agents a on a.id=ci.agent_id where ci.id=? and a.workspace_id=?", b.channel_identity_id, r.workspace_id) ?? fail(400, "unknown channel identity");
-    exec("delete from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", ci.platform, ci.id, b.conversation_id);
-    return json(ch.attachEndpoint(r.id, ci.platform, b.conversation_id, ci.id, !!b.is_group));
+    if (one("select 1 from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", ci.platform, ci.id, b.conversation_id)) fail(409, "that conversation is already linked to a room");
+    return json(ch.attachEndpoint(r.id, ci.platform, b.conversation_id, ci.id, true));
   }) },
   "/v1/rooms/:id/messages": { POST: h(async (req) => {
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
@@ -308,7 +319,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/rooms/:id/runs": { POST: h(async (req) => {
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
-    const a = agentFor(b.agent_id, u.id);
+    const a = agentFor(b.agent_id, u.id, r.workspace_id);
     if (!one("select 1 from room_members where room_id=? and principal_id=?", r.id, a.id)) fail(400, "agent is not in this room");
     const run = rt.createRun({ room: r, agent: a, objective: b.objective, requestedBy: u.id, originEndpointId: "web", kind: "task" });
     kick();
@@ -338,6 +349,8 @@ export const routes: Record<string, any> = {
     // Human resolution of verify/reconnect waits: "it did go through" / "it didn't, retry".
     const u = userOf(req), w = one<any>("select * from waits where id=? and status='open'", req.params.id) ?? fail(404, "wait not found"), b = await body(req);
     roomFor(w.room_id, u.id);
+    if (!["verify", "reconnect"].includes(w.kind)) fail(400, "only verification and reconnect waits can be resolved by hand");
+    if (w.owner !== u.id) fail(403, `only ${rt.nameOf(w.owner) ?? "its owner"} can resolve this`);
     if (w.kind === "verify") {
       const ex = one<any>("select * from tool_executions where run_id=? and status='unknown' order by created_at desc limit 1", w.run_id);
       if (ex) b.outcome === "succeeded" ? exec("update tool_executions set status='succeeded', result=? where id=?", S({ verified_by: u.name, __status: "SUCCEEDED" }), ex.id) : exec("delete from tool_executions where id=?", ex.id);
@@ -349,7 +362,8 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/approvals": { GET: h((req) => {
     const u = userOf(req), ws = new URL(req.url).searchParams.get("workspace"); member(ws, u.id);
-    return json(all<any>("select a.* from approvals a join rooms r on r.id=a.room_id where r.workspace_id=? order by a.created_at desc limit 100", ws)
+    const vis = visibleRooms(ws!, u.id);
+    return json(all<any>("select a.* from approvals a join rooms r on r.id=a.room_id where r.workspace_id=? order by a.created_at desc limit 200", ws).filter((a) => vis.has(a.room_id))
       .map((a) => ({ ...a, input: J(a.input), approvers: J(a.approvers), can_decide: a.status === "pending" && rt.canApprove(a, u.id), agent_name: rt.nameOf(a.agent_id) })));
   }) },
   "/v1/approvals/:id/decision": { POST: h(async (req) => {
@@ -372,7 +386,7 @@ export const routes: Record<string, any> = {
       const cid = id("con");
       exec("insert into connections (id, workspace_id, owner_id, visibility, provider, label, account, scopes, cred_enc, created_at) values (?,?,?,?,?,?,?,?,?,?)",
         cid, b.workspace_id, u.id, b.visibility ?? "private", b.provider, b.label ?? b.provider, b.account ?? u.email, b.scopes ?? null, seal(b.credentials), now());
-      for (const a of b.agent_ids ?? []) { agentFor(a, u.id); exec("insert or ignore into connection_grants values (?,?)", cid, a); }
+      for (const a of b.agent_ids ?? []) { agentFor(a, u.id, b.workspace_id); exec("insert or ignore into connection_grants values (?,?)", cid, a); }
       emit("CONNECTION_CREATED", { workspace_id: b.workspace_id, actor: u.id, data: { connection_id: cid, provider: b.provider } });
       return json({ id: cid });
     }),
@@ -388,7 +402,7 @@ export const routes: Record<string, any> = {
   "/v1/connections/:id/grants": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req), c = one<any>("select * from connections where id=?", req.params.id) ?? fail(404, "not found");
     if (c.owner_id !== u.id) member(c.workspace_id, u.id, ["owner", "admin"]);
-    agentFor(b.agent_id, u.id);
+    agentFor(b.agent_id, u.id, c.workspace_id);
     exec("insert or ignore into connection_grants values (?,?)", c.id, b.agent_id);
     return json({ ok: true });
   }) },
@@ -471,8 +485,11 @@ export const routes: Record<string, any> = {
   "/v1/agent-templates/mine": { GET: h((req) => { const u = userOf(req);
     return json(all<any>("select t.* from templates t join publishers p on p.id=t.publisher_id where p.owner_user_id=?", u.id).map((t) => ({ ...t, manifest: tpl.getManifest(t.id), analytics: tpl.creatorAnalytics(t.id) }))); }) },
   "/v1/agent-templates/:slug": { GET: h((req) => {
-    const t = one<any>("select t.*, p.name publisher from templates t join publishers p on p.id=t.publisher_id where t.slug=?", req.params.slug) ?? fail(404, "not found");
-    const m = tpl.getManifest(t.id)!;
+    const t = one<any>("select t.*, p.name publisher, p.owner_user_id from templates t join publishers p on p.id=t.publisher_id where t.slug=?", req.params.slug) ?? fail(404, "not found");
+    const viewer = sessionUser(req);
+    const privileged = !!viewer && (viewer.id === t.owner_user_id || admins().includes(viewer.email));
+    if (!t.published_version && !privileged) fail(404, "not found");
+    const m = tpl.getManifest(t.id, privileged ? t.latest_version : undefined)!;
     return json({ ...t, manifest: m, permissions: tpl.permissionTable(m.skills, m.permissions), connections: tpl.connectionsNeeded(m.skills),
       skills: m.skills.map((s) => tpl.SKILLS[s]), reviews: all<any>("select r.rating, r.text, r.ts, u.name from reviews r join users u on u.id=r.user_id where r.template_id=? order by r.ts desc", t.id),
       versions: all<any>("select version, created_at from template_versions where template_id=? order by created_at desc", t.id) });
@@ -499,7 +516,10 @@ export const routes: Record<string, any> = {
   "/v1/agent-templates/:id/review": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req);
     if (!admins().includes(u.email)) fail(403, "platform admins only");
-    tpl.reviewTemplate(req.params.id, b.decision, u.id); return json({ ok: true });
+    if (!["approve", "reject"].includes(b.decision)) fail(400, "decision must be approve or reject");
+    const r = tpl.reviewTemplate(req.params.id, b.decision, u.id);
+    if ("error" in r) fail(400, r.error!);
+    return json(r);
   }) },
   "/v1/agent-templates/:slug/reviews": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req);

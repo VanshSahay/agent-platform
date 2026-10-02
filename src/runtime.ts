@@ -98,7 +98,8 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
   const started: string[] = [];
 
   // 1. Text approvals ("approve", "yes", "confirm 1a2b") for the sender's pending approvals in this room.
-  const approvalReply = i.text.trim().match(/^(approve|approved|yes|yep|go ahead|ok|confirm(?: (\w{4}))?|reject|no|deny|don'?t)\b/i);
+  // Only a bare decision counts: "yes but send it to Dana instead" is a new request, not an approval.
+  const approvalReply = i.text.trim().match(/^(approve|approved|yes|yep|go ahead|ok|confirm(?: (\w{4}))?|reject|no|deny|don'?t)[.!]?$/i);
   if (approvalReply) {
     const pending = all<any>("select * from approvals where room_id=? and status='pending' order by created_at desc", room.id).filter((a) => canApprove(a, i.senderId));
     if (pending.length) {
@@ -305,16 +306,20 @@ export function cancelRun(runId: string, by: string) {
 
 // ---------------- approvals (plan §3.7, §19) ----------------
 export function canApprove(a: any, userId: string) {
-  if (J(a.approvers, []).includes(userId)) return true;
+  const approvers: string[] = J(a.approvers, []);
+  if (approvers.length) return approvers.includes(userId);
   const ws = one<any>("select workspace_id from rooms where id=?", a.room_id)?.workspace_id;
-  return !a.strong && !!one("select 1 from memberships where workspace_id=? and user_id=? and role in ('owner','admin')", ws, userId) && !J(a.approvers, []).length;
+  return !!one("select 1 from memberships where workspace_id=? and user_id=? and role in ('owner','admin')", ws, userId);
 }
 
 export function requestApproval(run: any, agent: any, d: any, input: any, fp: string, strong: boolean, reason: string, conn: any) {
   const existing = one<any>("select * from approvals where run_id=? and fingerprint=? and status='pending'", run.id, fp);
-  if (existing) return one<any>("select id from waits where wake_key=? and status='open'", `approval:${existing.id}`)?.id;
-  // Approver: the credential owner for private connections, else the requester.
-  const approvers = conn?.visibility === "private" ? [conn.owner_id] : [run.requested_by ?? roomHumanIds(run.room_id)[0]].filter(Boolean);
+  if (existing) return one<any>("select id from waits where wake_key=? and status='open'", `approval:${existing.id}`)?.id
+    ?? createWait(run, { kind: "approval", reason: `approval: ${existing.summary}`, owner: J(existing.approvers, [])[0], wake_key: `approval:${existing.id}`, timeout_at: now() + 72 * 36e5, on_timeout: "expire" });
+  // Approver: the credential owner for private connections, else the requester — but never an outside guest
+  // (empty list = workspace owners/admins decide).
+  const member = (u?: string | null) => !!u && !!one("select 1 from memberships where workspace_id=? and user_id=?", run.workspace_id, u);
+  const approvers = conn?.visibility === "private" ? [conn.owner_id] : member(run.requested_by) ? [run.requested_by] : [];
   const aid = id("apr");
   const summary = d.summarize ? d.summarize(input) : `${d.id} ${JSON.stringify(input).slice(0, 120)}`;
   exec(`insert into approvals (id, run_id, room_id, agent_id, tool_id, input, fingerprint, summary, risk, approvers, strong, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?)`,

@@ -4,7 +4,7 @@ import { evaluatePolicy, type PolicyFacts } from "../src/policy";
 const base: PolicyFacts = {
   toolId: "email.send", risk: "write_external", defaultApproval: "always", toolAllowed: true, requiresConnection: "google",
   connection: { ownerId: "u1", visibility: "private", status: "active", granted: true }, roomHumanIds: ["u1"], blockedSubjects: [],
-  inputText: "to bob@x.test", priorApproval: false, standingGrant: false, tainted: false, externalWritesSoFar: 0, maxAutonomousExternalWrites: 3,
+  inputText: "to bob@x.test", priorApproval: false, standingGrant: false, tainted: false, requesterId: "u1", requesterIsMember: true, externalWritesSoFar: 0, maxAutonomousExternalWrites: 3,
 };
 const d = (f: Partial<PolicyFacts>) => evaluatePolicy({ ...base, ...f }).decision;
 

@@ -132,21 +132,30 @@ export function publishVersion(m: Manifest, publisherId: string, opts: { platfor
     if (t && t.publisher_id !== publisherId) return { error: "slug belongs to another publisher" };
     if (t && one("select 1 from template_versions where template_id=? and version=?", t.id, m.version)) return { error: `version ${m.version} already exists` };
     const flags = reviewFlags(m);
-    // Curated/closed: only platform templates go live without review (plan §30).
-    const status = opts.platform && !flags.length ? "published" : "in_review";
+    // Curated/closed: only platform templates go live without review (plan §30). Each version is reviewed on its own;
+    // installs and upgrades only ever see the last *published* version.
+    const vstatus = opts.platform && !flags.length ? "published" : "in_review";
     if (!t) {
       t = { id: id("tpl") };
-      exec("insert into templates (id, slug, publisher_id, name, tagline, status, latest_version, forked_from, created_at) values (?,?,?,?,?,?,?,?,?)",
-        t.id, m.slug, publisherId, m.name, m.tagline ?? "", status, m.version, opts.forkedFrom ?? null, now());
-    } else exec("update templates set name=?, tagline=?, status=?, latest_version=? where id=?", m.name, m.tagline ?? "", status, m.version, t.id);
-    exec("insert into template_versions values (?,?,?,?,?)", t.id, m.version, S(m), flags.join("; ") || null, now());
-    return { id: t.id, status, flags };
+      exec("insert into templates (id, slug, publisher_id, name, tagline, status, latest_version, published_version, forked_from, created_at) values (?,?,?,?,?,?,?,?,?,?)",
+        t.id, m.slug, publisherId, m.name, m.tagline ?? "", vstatus, m.version, vstatus === "published" ? m.version : null, opts.forkedFrom ?? null, now());
+    } else if (vstatus === "published") exec("update templates set name=?, tagline=?, status='published', latest_version=?, published_version=? where id=?", m.name, m.tagline ?? "", m.version, m.version, t.id);
+    else exec("update templates set latest_version=?, status=case when published_version is null then 'in_review' else status end where id=?", m.version, t.id);
+    exec("insert into template_versions (template_id, version, manifest, review_notes, status, created_at) values (?,?,?,?,?,?)", t.id, m.version, S(m), flags.join("; ") || null, vstatus, now());
+    return { id: t.id, status: vstatus, flags };
   });
 }
 
 export function reviewTemplate(templateId: string, decision: "approve" | "reject", reviewer: string) {
-  exec("update templates set status=? where id=?", decision === "approve" ? "published" : "rejected", templateId);
-  emit("TEMPLATE_REVIEWED", { actor: reviewer, data: { templateId, decision } });
+  const v = one<any>("select * from template_versions where template_id=? and status='in_review' order by created_at desc limit 1", templateId);
+  if (!v) return { error: "nothing awaiting review" };
+  exec("update template_versions set status=? where template_id=? and version=?", decision === "approve" ? "published" : "rejected", templateId, v.version);
+  if (decision === "approve") {
+    const m: Manifest = J(v.manifest);
+    exec("update templates set status='published', published_version=?, name=?, tagline=? where id=?", v.version, m.name, m.tagline ?? "", templateId);
+  } else exec("update templates set status=case when published_version is null then 'rejected' else status end where id=?", templateId);
+  emit("TEMPLATE_REVIEWED", { actor: reviewer, data: { templateId, version: v.version, decision } });
+  return { ok: true, version: v.version };
 }
 
 export function seedFirstParty(dir = join(import.meta.dir, "..", "agents")) {
@@ -164,7 +173,7 @@ export function seedFirstParty(dir = join(import.meta.dir, "..", "agents")) {
 export const getManifest = (templateId: string, version?: string): Manifest | null => {
   const t = one<any>("select * from templates where id=? or slug=?", templateId, templateId);
   if (!t) return null;
-  const v = one<any>("select manifest from template_versions where template_id=? and version=?", t.id, version ?? t.latest_version);
+  const v = one<any>("select manifest from template_versions where template_id=? and version=?", t.id, version ?? t.published_version ?? t.latest_version);
   return v ? J(v.manifest) : null;
 };
 
@@ -181,7 +190,7 @@ export function createAgent(workspaceId: string, userId: string, a: { name: stri
 /** Install a published template into a workspace as an Agent Instance. User data lives only in the instance (plan §2.3). */
 export function install(slug: string, workspaceId: string, userId: string, answers: Record<string, string> = {}) {
   const t = one<any>("select * from templates where slug=?", slug);
-  if (!t || t.status !== "published") return { error: "template not available" };
+  if (!t?.published_version) return { error: "template not available" };
   const m = getManifest(t.id)!;
   const instructions = [m.instructions, m.scope && `Scope: ${m.scope}`, ...(m.escalation ?? []).map((e) => `Escalate: ${e}`),
     ...Object.entries(answers).map(([k, v]) => `${m.onboarding?.find((q) => q.id === k)?.question ?? k} → ${v}`)].filter(Boolean).join("\n");
@@ -200,7 +209,9 @@ export function install(slug: string, workspaceId: string, userId: string, answe
 export function upgradeInstance(agentId: string) {
   const a = one<any>("select * from agents where id=?", agentId);
   if (!a?.template_id) return { error: "not a template instance" };
-  const m = getManifest(a.template_id)!;
+  const t = one<any>("select published_version from templates where id=?", a.template_id);
+  if (!t?.published_version) return { error: "no published version" };
+  const m = getManifest(a.template_id, t.published_version)!;
   exec("update agents set job=?, skills=?, permissions=?, model_profile=?, template_version=? where id=?", m.job, S(m.skills), S(m.permissions ?? {}), m.model_profile ?? "standard", m.version, agentId);
   return { version: m.version };
 }
@@ -208,12 +219,13 @@ export function upgradeInstance(agentId: string) {
 /** Fork copies configuration only — never creator or user data (plan §18.5). */
 export function fork(slug: string, userId: string, newSlug: string) {
   const src = one<any>("select * from templates where slug=?", slug);
-  if (!src) return { error: "no such template" };
+  if (!src?.published_version) return { error: "no such template" };
   const m = { ...getManifest(src.id)!, slug: newSlug, version: "0.1.0", publisher: one<any>("select name from users where id=?", userId)?.name ?? "me" };
   const pub = ensurePublisher(`user:${userId}`, userId);
   const r = publishVersion(m, pub, { forkedFrom: src.id });
   if ("error" in r) return r;
   exec("update templates set status='draft' where id=?", r.id);
+  exec("update template_versions set status='draft' where template_id=?", r.id);
   return { ...r, status: "draft", manifest: m };
 }
 
@@ -252,4 +264,5 @@ export function creatorAnalytics(templateId: string) {
 export const listTemplates = (status = "published") =>
   all<any>(`select t.*, p.name publisher, (select count(*) from installs i where i.template_id=t.id) installs,
     (select avg(rating) from reviews r where r.template_id=t.id) rating from templates t join publishers p on p.id=t.publisher_id
-    where t.status=? order by t.featured desc, installs desc`, status);
+    where ${status === "in_review" ? "exists (select 1 from template_versions v where v.template_id=t.id and v.status='in_review')" : "t.status=?"}
+    order by t.featured desc, installs desc`, ...(status === "in_review" ? [] : [status]));

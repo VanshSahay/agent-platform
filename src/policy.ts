@@ -18,6 +18,8 @@ export interface PolicyFacts {
   priorApproval: boolean;          // this exact call (fingerprint) was approved
   standingGrant: boolean;          // first_time tool already approved once for this agent
   tainted: boolean;                // run has ingested untrusted content (web/email/tool output)
+  requesterId?: string | null;     // human who asked for this run
+  requesterIsMember: boolean;      // requester belongs to the workspace (not an outside guest)
   externalWritesSoFar: number;
   maxAutonomousExternalWrites: number;
 }
@@ -38,9 +40,14 @@ export function evaluatePolicy(f: PolicyFacts): { decision: Decision; reason: st
     if (!c) return { decision: "DENY", reason: `no ${f.requiresConnection} connection available to this agent` };
     if (!c.granted) return { decision: "DENY", reason: `agent has not been granted this ${f.requiresConnection} connection` };
     if (c.status !== "active") return { decision: "DENY", reason: `connection is ${c.status}; owner must reconnect` };
+    // Outside guests never drive workspace credentials.
+    if (!f.requesterIsMember) return { decision: "DENY", reason: "people outside the workspace can't use its connections" };
     // A private connection is only usable in rooms its owner participates in (plan §2.6: never one shared credential pool).
     if (c.visibility === "private" && !f.roomHumanIds.includes(c.ownerId))
       return { decision: "DENY", reason: "private connection owner is not a member of this room" };
+    // ...and anyone other than its owner needs the owner's say-so, even to read.
+    if (c.visibility === "private" && f.requesterId !== c.ownerId && !f.priorApproval)
+      return { decision: "REQUIRE_APPROVAL", reason: "uses someone else's private connection; the owner must approve" };
   }
 
   const writes = f.risk !== "read" && f.risk !== "write_internal";

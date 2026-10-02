@@ -241,8 +241,15 @@ async function processEvent(e: InboundEvent, ident: any) {
   const senderId = resolveSender(e.provider, e.senderId, e.senderName);
   const reply = async (text: string) => { const ep = resolveRoom(e, ident, resolveSender(e.provider, e.senderId)); await ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), ep, { text, agentName: agent.name }, id("idem")); };
 
-  const link = e.text.trim().match(/^link (\d{6})$/i);
-  if (link) return reply(linkIdentity(e.provider, e.senderId, link[1], ident) ? `Linked. I'll recognize you here from now on.` : `That code is invalid or expired.`);
+  const link = e.text.trim().match(/^link (\d+)$/i);
+  if (link) {
+    // Brute-force guard: 5 misses per sender per hour.
+    const misses = one<any>("select count(*) n from events where type='LINK_FAILED' and json_extract(data, '$.sender')=? and ts>?", `${e.provider}:${e.senderId}`, now() - 36e5).n;
+    if (misses >= 5) return reply("Too many attempts. Try again in an hour.");
+    if (linkIdentity(e.provider, e.senderId, link[1], ident)) return reply(`Linked. I'll recognize you here from now on.`);
+    emit("LINK_FAILED", { data: { sender: `${e.provider}:${e.senderId}` } });
+    return reply(`That code is invalid or expired.`);
+  }
 
   if (e.type === "button_clicked") {
     const m = e.data?.match(/^apr:(apr_\w+):(approve|reject)$/);
@@ -267,7 +274,7 @@ async function processEvent(e: InboundEvent, ident: any) {
 
 // ---------------- identity linking ----------------
 export function createLinkCode(userId: string) {
-  const code = String(randomInt(100000, 999999));
+  const code = String(randomInt(10_000_000, 99_999_999));
   exec("insert into link_codes values (?,?,?)", code, userId, now() + 10 * 6e4);
   return code;
 }

@@ -73,8 +73,8 @@ create table if not exists model_profiles (name text primary key, primary_model 
 
 create table if not exists publishers (id text primary key, name text, owner_user_id text, verified int default 0);
 create table if not exists templates (id text primary key, slug text unique, publisher_id text, name text, tagline text, status text default 'draft',
-  featured int default 0, latest_version text, forked_from text, created_at int);
-create table if not exists template_versions (template_id text, version text, manifest text, review_notes text, created_at int, primary key (template_id, version));
+  featured int default 0, latest_version text, published_version text, forked_from text, created_at int);
+create table if not exists template_versions (template_id text, version text, manifest text, review_notes text, status text, created_at int, primary key (template_id, version));
 create table if not exists installs (id text primary key, template_id text, version text, workspace_id text, agent_id text, ts int);
 create table if not exists reviews (id text primary key, template_id text, user_id text, rating int, text text, ts int);
 `;
@@ -83,6 +83,12 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
   db = new Database(path, { create: true });
   db.exec("pragma journal_mode = wal; pragma foreign_keys = on;");
   db.exec(SCHEMA);
+  // Additive migrations for databases created by earlier versions.
+  for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"]]) {
+    if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
+  }
+  db.exec(`update templates set published_version=latest_version where published_version is null and status='published';
+    update template_versions set status=coalesce((select case when t.published_version=template_versions.version then 'published' else t.status end from templates t where t.id=template_id), 'draft') where status is null;`);
   const profiles = db.query("select count(*) n from model_profiles").get() as { n: number };
   if (!profiles.n) {
     // Routing lives in the DB, not in agent definitions (plan §8.3). Edit rows to re-route.

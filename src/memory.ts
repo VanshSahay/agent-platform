@@ -18,6 +18,8 @@ export function remember(a: { run?: any; room: any; text: string; scope: Scope; 
   let scopeId = a.scopeId;
   if (a.scope === "workspace") {
     if (a.room.kind === "private") return { error: "private conversations can't write team memory; say it in a shared room or save it to the workspace explicitly from the web app" };
+    if (a.run?.tainted) return { error: "this task read untrusted content, so it can't write team memory" };
+    if (a.room.id && humans.some((h) => !isMember(a.room.workspace_id, h))) return { error: "rooms with outside guests can't write team memory" };
     scopeId = a.room.workspace_id;
   } else if (a.scope === "room") scopeId = a.room.id;
   else if (a.scope === "user_private") {

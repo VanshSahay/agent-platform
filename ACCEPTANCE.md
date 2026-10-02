@@ -88,6 +88,23 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-PUB4 | Anonymous trial without an account, upsell after a few turns, hard limit, no external writes. | §38 |
 | AC-PUB5 | Template upgrades change configuration but keep the instance's memory and connections. | §2.3 |
 
+## Security hardening (from independent review)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-S1 | Outside guests can't use workspace connections and can never approve their own actions (approval falls back to workspace admins). | §21.1, §19 |
+| AC-S2 | A teammate's private connection needs its owner's approval for any use by someone else, including reads. | §2.6 |
+| AC-S3 | Channel conversations can't be hijacked: only admins attach group conversations, DMs can't be attached, existing links are never re-pointed. | §20, §21.4 |
+| AC-S4 | The approvals list never shows other people's private rooms. | §21.4 |
+| AC-S5 | Only verify/reconnect waits can be resolved by hand, and only by their owner (no stuck runs from forced resumes). | §2.8 |
+| AC-S6 | The agent can't lift a human's blocked guard or change a human-owned task. | §15, §33 |
+| AC-S7 | Only a bare yes/no/approve/reject reply decides an approval. | §3.7 |
+| AC-S8 | Web fetch re-checks every redirect hop and every resolved address (incl. IPv4-mapped IPv6) against private ranges. | §21.1 |
+| AC-S9 | Link codes are 8 digits, single-use, and senders are locked out after 5 misses per hour. | §20.2 |
+| AC-S10 | Rooms with outside guests and runs that read untrusted content can't write workspace memory. | §9.4, §21.2 |
+| AC-S11 | Instances only upgrade to reviewed, published template versions; a version under review doesn't delist the live one. | §18.4, §30 |
+| AC-S12 | Cross-workspace agents, drafting against another workspace's keys, and email header injection are refused. | §21.4, §8.4 |
+
 ## Quality gates
 
 | ID | Criterion | Plan |

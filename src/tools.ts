@@ -1,6 +1,8 @@
 // Tool contract + Tool Gateway (plan §10). Every call: schema validation -> policy -> approval -> credential resolution -> idempotent execute -> audit.
 import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage } from "./db";
 import { evaluatePolicy, type Risk } from "./policy";
+import { lookup as dnsLookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import * as rt from "./runtime";
 
 export type ErrKind = "TRANSIENT" | "AUTH" | "RATE_LIMIT" | "BUSINESS_RULE" | "PERMISSION" | "UNKNOWN_SIDE_EFFECT";
@@ -28,7 +30,7 @@ async function call(url: string, init: RequestInit & { write?: boolean } = {}) {
   if (r.status === 429) throw new ToolError("RATE_LIMIT", "rate limited", Number(r.headers.get("retry-after") ?? 30) * 1000);
   if (r.status === 502 || r.status === 503) throw new ToolError("TRANSIENT", `provider unavailable (${r.status})`, 5000);
   if (r.status >= 500) throw new ToolError(init.write ? "UNKNOWN_SIDE_EFFECT" : "TRANSIENT", `provider error ${r.status}`, 5000);
-  if (!r.ok) throw new ToolError("BUSINESS_RULE", `provider returned ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  if (!r.ok && !(r.status >= 300 && r.status < 400)) throw new ToolError("BUSINESS_RULE", `provider returned ${r.status}: ${(await r.text()).slice(0, 300)}`);
   return r;
 }
 
@@ -47,9 +49,23 @@ async function googleToken(ctx: ToolCtx) {
   return { authorization: `Bearer ${c.cred.access_token}`, "content-type": "application/json" };
 }
 
-function isPrivateHost(host: string) {
-  return /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|\[?::1\]?$|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host.endsWith(".internal") || host.endsWith(".local");
+export const resolver = { lookup: (host: string) => dnsLookup(host, { all: true }) as Promise<{ address: string }[]> };
+function isPrivateIp(ip: string) {
+  const v4 = ip.replace(/^::ffff:/i, "").match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (v4) { const [a, b] = [Number(v4[1]), Number(v4[2])]; return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b < 128) || a >= 224; }
+  const x = ip.toLowerCase();
+  return x === "::" || x === "::1" || x.startsWith("fc") || x.startsWith("fd") || x.startsWith("fe80") || x.startsWith("::ffff:");
 }
+/** Public http(s) only: checks the literal host and every address it resolves to. */
+async function assertPublicUrl(raw: string) {
+  let u: URL; try { u = new URL(raw); } catch { throw new ToolError("BUSINESS_RULE", "invalid URL"); }
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  if (!/^https?:$/.test(u.protocol) || /^(localhost|.*\.(internal|local|localhost))$/i.test(host)) throw new ToolError("PERMISSION", "only public http(s) URLs are allowed");
+  const addrs = isIP(host) ? [{ address: host }] : await resolver.lookup(host).catch(() => { throw new ToolError("BUSINESS_RULE", `can't resolve ${host}`); });
+  if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) throw new ToolError("PERMISSION", "only public http(s) URLs are allowed");
+  return u;
+}
+// ponytail: resolve-then-fetch leaves a DNS-rebinding window; pin the resolved IP via a custom agent if that matters.
 const stripHtml = (h: string) => h.replace(/<(script|style)[\s\S]*?<\/\1>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 
@@ -82,10 +98,15 @@ def({
   id: "web.fetch", description: "Fetch a public web page and return its readable text.", risk: "read", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ url: str() }, ["url"]),
   async execute({ url }) {
-    let u: URL; try { u = new URL(url); } catch { throw new ToolError("BUSINESS_RULE", "invalid URL"); }
-    if (!/^https?:$/.test(u.protocol) || isPrivateHost(u.hostname)) throw new ToolError("PERMISSION", "only public http(s) URLs are allowed");
-    const r = await call(u.toString(), { headers: { "user-agent": "Mozilla/5.0 agent-platform" }, redirect: "follow" });
-    const text = stripHtml(await r.text()).slice(0, 8000);
+    let u = await assertPublicUrl(url), r: Response | undefined;
+    for (let hop = 0; hop < 5; hop++) { // follow redirects ourselves so every hop is re-checked
+      r = await call(u.toString(), { headers: { "user-agent": "Mozilla/5.0 agent-platform" }, redirect: "manual" });
+      const loc = r.status >= 300 && r.status < 400 && r.headers.get("location");
+      if (!loc) break;
+      u = await assertPublicUrl(new URL(loc, u).toString());
+    }
+    if (!r || (r.status >= 300 && r.status < 400)) throw new ToolError("BUSINESS_RULE", "too many redirects");
+    const text = stripHtml(await r!.text()).slice(0, 8000);
     return { status: "SUCCEEDED", untrusted: true, output: { url, text } };
   },
 });
@@ -139,6 +160,8 @@ def({
   requiresConnection: "google", inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str(), thread_id: str() }, ["to", "subject", "body"]),
   summarize: (i) => `Send email to ${i.to.join(", ")}: "${i.subject}"`,
   async execute({ to, subject, body, thread_id }, ctx) {
+    if (to.some((a: string) => !/^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(a))) throw new ToolError("BUSINESS_RULE", "invalid recipient address");
+    subject = subject.replace(/[\r\n]+/g, " "); // no header injection (e.g. a smuggled Bcc:)
     const raw = b64url(`To: ${to.join(", ")}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
     const r: any = await (await call("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { method: "POST", write: true, headers: await googleToken(ctx), body: S({ raw, threadId: thread_id }) })).json();
     if (!r.id) return { status: "UNKNOWN", output: r };
@@ -208,8 +231,12 @@ def({
   id: "task.update", description: "Update a tracked task's status (open, waiting, blocked, done) or notes.", risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ task_id: str(), status: { type: "string", enum: ["open", "waiting", "blocked", "done"] }, notes: str() }, ["task_id"]),
   async execute(i, ctx) {
+    const cur = one<any>("select * from tasks where id=? and room_id=?", i.task_id, ctx.room.id);
+    if (!cur) throw new ToolError("BUSINESS_RULE", "no such task in this room");
+    // Agents can't lift a human's guard or change a human's task (only humans do that, from the room).
+    if (cur.agent_action === "blocked" || (cur.owner && !cur.owner.startsWith("agt_")))
+      throw new ToolError("PERMISSION", `"${cur.title}" is owned by ${rt.nameOf(cur.owner) ?? "a human"}; only they can change it`);
     const t = rt.updateTask(i.task_id, ctx.room.id, i, ctx.agent.id);
-    if (!t) throw new ToolError("BUSINESS_RULE", "no such task in this room");
     return { status: "SUCCEEDED", output: t };
   },
 });
@@ -303,7 +330,9 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
     roomHumanIds: humans, blockedSubjects: rt.blockedSubjects(room.id), inputText: flatten(call.input),
     priorApproval: !!one("select 1 from approvals where run_id=? and fingerprint=? and status='approved'", run.id, fp),
     standingGrant: !!one("select 1 from grants where agent_id=? and tool_id=?", agent.id, d.id),
-    tainted: !!run.tainted, externalWritesSoFar: spent.externalWrites ?? 0, maxAutonomousExternalWrites: budget.maxAutonomousExternalWrites ?? 3,
+    tainted: !!run.tainted, requesterId: run.requested_by,
+    requesterIsMember: !!run.requested_by && !!one("select 1 from memberships where workspace_id=? and user_id=?", run.workspace_id, run.requested_by),
+    externalWritesSoFar: spent.externalWrites ?? 0, maxAutonomousExternalWrites: budget.maxAutonomousExternalWrites ?? 3,
   });
   emit("PERMISSION_DECISION", { ...base, data: { tool: d.id, decision, reason, fingerprint: fp, connection_id: conn?.id ?? null } });
 

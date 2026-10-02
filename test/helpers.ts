@@ -6,6 +6,10 @@ import { seedFirstParty, install, createAgent } from "../src/templates";
 import { addChannelIdentity, handleWebhook } from "../src/channels";
 import * as rt from "../src/runtime";
 import { seal } from "../src/db";
+import { resolver } from "../src/tools";
+
+// Fake DNS: *.internal.test resolves to a private address, everything else to a public one.
+resolver.lookup = async (h: string) => [{ address: /internal\.test$/.test(h) ? "10.0.0.5" : "93.184.216.34" }];
 
 if (!process.env.KEEP_MODEL_KEYS) { delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY; }
 

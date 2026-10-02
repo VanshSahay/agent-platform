@@ -150,7 +150,9 @@ test("AC-PUB2 fork copies configuration only; publishing is curated; risky manif
   const manifest = { ...f.data.manifest, version: "0.2.0", permissions: { ...f.data.manifest.permissions, "email.send": "auto" } };
   const sub = await api(`/v1/agent-templates/${f.data.id}/versions`, { token: e.token, body: { manifest } });
   expect(sub.data).toMatchObject({ status: "in_review", flags: ["email.send set to auto (write_external)"] });
-  expect((await api("/v1/agent-templates/ellie-ava")).data.status).toBe("in_review");
+  expect((await api("/v1/agent-templates/ellie-ava")).status).toBe(404); // unpublished: invisible to the public
+  expect((await api("/v1/agent-templates/ellie-ava", { token: e.token })).data.status).toBe("in_review");
+  expect((await api("/v1/agent-templates/ellie-ava/install", { token: e.token, body: { workspace_id: e.ws } })).status).toBe(400);
   expect((await api(`/v1/agent-templates/${f.data.id}/review`, { token: e.token, body: { decision: "approve" } })).status).toBe(403);
   await api(`/v1/agent-templates/${f.data.id}/review`, { token: admin.token, body: { decision: "approve" } });
   expect((await api("/v1/agent-templates")).data.some((t: any) => t.slug === "ellie-ava")).toBe(true);

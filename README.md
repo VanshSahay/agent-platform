@@ -24,7 +24,7 @@ No API keys needed to try it: without model keys the platform runs an offline he
 | `PLATFORM_ADMINS` | Comma-separated emails allowed to review public templates and edit model routing |
 | `DB_PATH` | SQLite file (default `data.sqlite`) |
 
-Channels are added per agent (Agent → Channels). Each gives you a webhook URL `…/v1/webhooks/<platform>/<id>` to paste into Telegram `setWebhook`, Slack Events + Interactivity, Meta WhatsApp, Resend inbound, your Photon iMessage bridge, or a Twilio voice number. To make an agent recognize you on a channel, get a link code (Agent → Channels) and text `link 123456` to it.
+Channels are added per agent (Agent → Channels). Each gives you a webhook URL `…/v1/webhooks/<platform>/<id>` to paste into Telegram `setWebhook`, Slack Events + Interactivity, Meta WhatsApp, Resend inbound, your Photon iMessage bridge, or a Twilio voice number. To make an agent recognize you on a channel, get a link code (Agent → Channels) and text `link 12345678` to it.
 
 ## Test it
 
