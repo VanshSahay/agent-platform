@@ -153,7 +153,7 @@ function BriefCard({ b, live, onDone, onEdit }: { b: any; live: any; onDone: () 
   const act = async (action: string) => { try { await api(`/v1/runs/${b.run_id}/brief`, { action }); onDone(); } catch (e: any) { toast(e.message); } };
   const Sec = ({ label, xs }: { label: string; xs: string[] }) => xs?.length ? <div className="mt8"><div className="what">{label}</div>{xs.map((x, i) => <div key={i}>• {x}</div>)}</div> : null;
   return <div className="approval">
-    <div className="small muted">{clarify ? "Before I start" : `Plan v${brief.version}${live ? "" : " · " + (b.status ?? "settled")}`}</div>
+    <div className="small muted">{clarify ? "Before I start" : `Plan v${brief.version}`}</div>
     <div style={{ fontWeight: 600, marginTop: 4 }}>{brief.goal}</div>
     {clarify ? <div className="mt8">{brief.questions.map((q: any, i: number) => <div key={i}>{i + 1}. {q.q}{q.default && <span className="muted"> (default: {q.default})</span>}</div>)}</div> : <>
       {brief.deliverable && <Sec label="Deliverable" xs={[brief.deliverable]} />}

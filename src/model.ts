@@ -131,7 +131,7 @@ export interface LocalCtx {
 export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName">) {
   const t = text.toLowerCase(), has = (n: string) => c.tools.includes(n), out: { name: string; input: any }[] = [];
   const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g)?.at(-1); // latest wins (follow-up corrections append)
-  const subjectOf = () => text.match(/about ([^.,!?\n]+)/i)?.[1]?.trim() ?? "Quick follow-up";
+  const subjectOf = () => text.match(/about (.+?)(?=\s+(?:and|then|on my|to my|in my|by|before|after|for)\b|[.,!?\n]|$)/i)?.[1]?.trim() ?? "Quick follow-up";
   const dontContact = text.match(/(?:don'?t|do not) (?:contact|email|message|text|reach out to) ([A-Z][a-z]+)/);
   const ask = text.match(/\bask (\w+) to ([^.!?]+)/i);
   const delegateTo = ask && c.agents.find((a) => a.toLowerCase() === ask[1].toLowerCase() && a !== c.agentName);
