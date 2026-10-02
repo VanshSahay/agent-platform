@@ -125,6 +125,7 @@ function Home() {
   const n = att.approvals.length + att.waits.length + att.reconnect.length;
   return <>
     <h1>Good {hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening"}, {me.user.name.split(" ")[0]}</h1>
+    {d.agent_count === 0 && <QuickStart />}
     <p className="muted">{n ? `${n} thing${n > 1 ? "s" : ""} need${n === 1 ? "s" : ""} your attention.` : "Nothing needs you right now."}</p>
     <h2>Needs your attention {n > 0 && <span className="pill accent">{n}</span>}</h2>
     {!n && <div className="empty">You're all caught up.</div>}
@@ -164,6 +165,13 @@ function BriefCard({ b, live, onDone, onEdit }: { b: any; live: any; onDone: () 
         <button className="btn ghost" onClick={() => act("cancel")}>Cancel</button></div>
       {(!clarify || brief.questions.every((q: any) => q.default)) && <button className="btn primary" onClick={() => act("go")}>{clarify ? "Use defaults" : "Go"}</button>}</div>}
   </div>;
+}
+function QuickStart() {
+  const { ws, toast } = useCtx();
+  const [list] = useApi<any[]>("/v1/agent-templates");
+  const add = async (slug: string) => { try { const r = await api(`/v1/agent-templates/${slug}/install`, { workspace_id: ws }); go(`/agents/${r.agent.id}`); } catch (e: any) { toast(e.message); } };
+  return <div className="card mt16"><h3>Start with an agent</h3><p className="muted small">Pick one to add in one click, or <a href="#/agents/new" style={{ textDecoration: "underline" }}>describe your own</a>.</p>
+    <div className="col mt8">{list?.map((t) => <div key={t.id} className="row"><div className="avatar">{t.manifest.avatar ?? t.name[0]}</div><div className="grow"><b>{t.name}</b> <span className="muted small">{t.tagline}</span></div><button className="btn sm primary" onClick={() => add(t.slug)}>Add</button></div>)}</div></div>;
 }
 function WaitCard({ w, onDone }: { w: any; onDone: () => void }) {
   const resolve = async (outcome: string) => { await api(`/v1/waits/${w.id}/resolve`, { outcome }); onDone(); };
@@ -249,6 +257,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
       <div className="grow"><h1>{a.name}</h1><div className="row small"><span className={`dot ${a.status === "active" ? "" : "idle"}`} /><span className="muted">{a.status === "active" ? "Active" : "Paused"}</span>{a.template_version && <span className="pill">v{a.template_version}</span>}</div></div>
       <button className="btn primary" onClick={message}>Message</button><AddTo agent={a} /></div>
     <div className="tabs">{tabs.map((t) => <a key={t} className={t === tab ? "on" : ""} href={`#/agents/${id}/${t}`}>{t[0].toUpperCase() + t.slice(1)}</a>)}</div>
+    {tab === "overview" && <SetupChecklist a={a} onMessage={message} />}
     {tab === "overview" && <div className="grid2">
       <div className="card"><div className="small muted">What it does</div><div className="mt8">{a.job}</div></div>
       <div className="card"><div className="small muted">Where it lives</div><div className="mt8 row wrap"><span className="pill">Web</span>{a.channels.map((c: any) => <span key={c.id} className="pill accent">{PLATFORM[c.platform]}</span>)}</div></div>
@@ -272,6 +281,18 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
         {a.template_id && <button className="btn" onClick={async () => { const r = await api(`/v1/agents/${id}/upgrade`, {}); toast(r.error ?? `Upgraded to ${r.version}`); reload(); }}>Upgrade to latest version</button>}</div>
     </div>}
   </>;
+}
+function SetupChecklist({ a, onMessage }: { a: any; onMessage: () => void }) {
+  const { ws } = useCtx();
+  const needsGoogle = a.connections_needed.includes("google");
+  const items = [
+    needsGoogle && { done: a.connections.some((c: any) => c.provider === "google"), label: "Connect Gmail + Google Calendar", action: <a className="btn sm" href={`/v1/connections/google/start?workspace=${ws}&agent=${a.id}`}>Connect</a> },
+    { done: a.channels.length > 0, label: `Reach ${a.name} from your phone (iMessage, Telegram, WhatsApp…)`, action: <a className="btn sm" href={`#/agents/${a.id}/channels`}>Add channel</a> },
+    { done: a.completed_runs > 0, label: "Give it a first task", action: <button className="btn sm primary" onClick={onMessage}>Start</button> },
+  ].filter(Boolean) as any[];
+  if (items.every((i) => i.done)) return null;
+  return <div className="card" style={{ marginBottom: 12 }}><div className="row between"><h3>Get {a.name} working</h3><span className="small muted">{items.filter((i) => i.done).length}/{items.length}</span></div>
+    {items.map((i, k) => <div key={k} className="row mt8"><span style={{ color: i.done ? "var(--ok)" : "var(--faint)" }}>{i.done ? "✓" : "○"}</span><span className={`grow ${i.done ? "faint" : ""}`}>{i.label}</span>{!i.done && i.action}</div>)}</div>;
 }
 function AddTo({ agent }: { agent: any }) {
   const { ws, toast } = useCtx();
@@ -411,6 +432,8 @@ function Room({ id }: { id: string }) {
             </div></div>;
         })}
       </div>
+      {data.starters?.length > 0 && events.filter((e) => e.type === "message").length < 4 && <div className="row wrap" style={{ padding: "8px 16px 0", gap: 6 }}>
+        <span className="small faint">Try:</span>{data.starters.map((s: string) => <button key={s} className="pill" style={{ cursor: "pointer", border: 0 }} onClick={() => edit(s.replace(/…/g, "").replace(/\s+/g, " ").trim() + (s.includes("…") ? " " : ""))}>{s}</button>)}</div>}
       <div className="composer"><textarea ref={box} className="input" placeholder={agents.length > 1 || data.room.participation === "mention_only" && data.room.kind === "shared" ? `Message everyone… (mention ${agents.map((a: any) => "@" + a.name).join(", ")} to ask an agent)` : "Message…"} value={text}
         onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="btn primary" onClick={send}>Send</button></div>
     </div>

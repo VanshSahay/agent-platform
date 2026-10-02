@@ -67,5 +67,11 @@
     "approval_before_send",
     "followup_detection",
     "cross_channel_resume"
+  ],
+  "starters": [
+    "What's on my calendar this week?",
+    "When am I free for a 30 min call this week?",
+    "Email … about …",
+    "Remind me tomorrow to …"
   ]
 }

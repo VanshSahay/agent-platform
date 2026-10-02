@@ -82,7 +82,8 @@ function agentView(a: any) {
     permission_table: tpl.permissionTable(J(a.skills, []), J(a.permissions, {})),
     channels: all<any>("select id, platform, address, config from channel_identities where agent_id=?", a.id).map((c) => ({ ...c, config: J(c.config, {}), webhook_url: `${pub()}/v1/webhooks/${c.platform}/${c.id}` })),
     connections_needed: tpl.connectionsNeeded(J(a.skills, [])),
-    custom_skills: tpl.customSkills(a.id),
+    custom_skills: tpl.customSkills(a.id), starters: tpl.starters(a),
+    completed_runs: one<any>("select count(*) n from runs where agent_id=? and status='completed' and parent_run_id is null", a.id).n,
     connections: all<any>("select c.id, c.provider, c.account, c.owner_id, c.visibility, c.status from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=?", a.id)
       .map((c) => ({ ...c, owner: rt.nameOf(c.owner_id) })),
     rooms: all<any>("select r.id, r.name, r.kind from rooms r join room_members m on m.room_id=r.id where m.principal_id=? and r.status='active'", a.id),
@@ -92,8 +93,9 @@ function agentView(a: any) {
 }
 
 function roomView(r: any, after = 0) {
+  const agents = all<any>("select a.* from agents a join room_members m on m.principal_id=a.id where m.room_id=? and coalesce(m.role,'')!='delegate'", r.id);
   return {
-    room: r,
+    room: r, starters: agents.length === 1 ? tpl.starters(agents[0]) : [],
     members: all<any>("select * from room_members where room_id=?", r.id).map((m) => ({ ...m, name: rt.nameOf(m.principal_id) })),
     endpoints: all<any>("select id, platform, external_conversation_id, is_group, last_active_at from room_endpoints where room_id=?", r.id),
     tasks: all<any>("select * from tasks where room_id=? order by status='done', created_at", r.id).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner) })),
@@ -218,7 +220,7 @@ export const routes: Record<string, any> = {
     const runs = (sql: string) => all<any>(sql, ws).filter((r) => vis.has(r.room_id)).map((r) => ({ ...r, agent_name: rt.nameOf(r.agent_id), room_name: one<any>("select name from rooms where id=?", r.room_id)?.name,
       waits: all<any>("select kind, reason from waits where run_id=? and status='open'", r.id) }));
     return json({
-      user: u.name, needs_attention: { approvals, waits: myWaits, reconnect: all<any>("select id, provider, account from connections where workspace_id=? and owner_id=? and status='needs_reauth'", ws, u.id) },
+      user: u.name, agent_count: one<any>("select count(*) n from agents where workspace_id=? and status!='deleted'", ws).n, needs_attention: { approvals, waits: myWaits, reconnect: all<any>("select id, provider, account from connections where workspace_id=? and owner_id=? and status='needs_reauth'", ws, u.id) },
       active: runs("select * from runs where workspace_id=? and status not in ('completed','failed_terminal','cancelled') order by updated_at desc limit 30"),
       completed: runs("select * from runs where workspace_id=? and status='completed' and parent_run_id is null order by completed_at desc limit 10").map((r) => ({ ...r, result: J(r.result) })),
       failed: runs("select * from runs where workspace_id=? and status='failed_terminal' order by completed_at desc limit 5"),

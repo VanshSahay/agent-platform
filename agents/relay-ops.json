@@ -1,7 +1,7 @@
 {
   "name": "Relay",
   "slug": "relay-ops",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "platform",
   "avatar": "R",
   "title": "Team Operations Coordinator",
@@ -43,5 +43,10 @@
       "hour": 9,
       "objective": "Daily status: if your rooms have open or blocked tasks, summarize status and blockers by owner. If nothing is open, reply with an empty message."
     }
+  ],
+  "starters": [
+    "What's the status?",
+    "Take care of the … follow-ups",
+    "Remind the team every weekday at 9 to …"
   ]
 }

@@ -71,6 +71,19 @@ export async function saveSkillFromRun(runId: string, userId: string, name?: str
 }
 export const customSkills = (agentId: string) => all<any>("select * from custom_skills where agent_id=? order by created_at", agentId).map((s) => ({ ...s, tools: J(s.tools, []) }));
 
+const SKILL_STARTERS: Record<string, string> = {
+  "web-research": "Research the latest on …", "email-triage": "What needs a reply in my inbox?", "email-drafting": "Email … about …",
+  calendar: "When am I free for a 30 min call this week?", "meeting-prep": "Prep me for my next meeting", "follow-up-tracking": "Follow up with … and wait for their reply",
+  reminders: "Remind me tomorrow to …", "travel-planning": "Find three hotel options in … for …", "group-coordination": "What's the status?",
+  "task-tracking": "Take care of the … follow-ups", documents: "Find the … doc and summarize it", "monitor-topic": "Every morning, check … and tell me what changed",
+};
+/** Starter prompts that get a new user to a first useful result ("…" marks the blank to fill). */
+export function starters(agent: any): string[] {
+  const m = agent.template_id ? getManifest(agent.template_id, agent.template_version ?? undefined) : null;
+  if (m?.starters?.length) return m.starters;
+  return [...new Set((J(agent.skills, []) as string[]).map((s) => SKILL_STARTERS[s]).filter(Boolean))].slice(0, 4);
+}
+
 export function connectionsNeeded(skills: string[]) {
   return [...new Set(skills.flatMap((s) => SKILLS[s]?.tools ?? []).map((t) => TOOLS[t]?.requiresConnection).filter(Boolean))] as string[];
 }
@@ -126,7 +139,7 @@ export interface Manifest {
   name: string; slug: string; version: string; publisher: string; tagline: string; avatar?: string; title: string;
   job: string; scope?: string; instructions?: string; skills: string[]; permissions?: Record<string, string>;
   model_profile?: string; channels?: string[]; onboarding?: { id: string; question: string }[];
-  proactivity?: string[]; schedules?: { every: "daily" | "weekdays"; hour: number; objective: string }[]; escalation?: string[]; memory_rules?: string[]; network?: string[]; evals?: string[]; pricing?: string; data_retention?: string;
+  proactivity?: string[]; starters?: string[]; schedules?: { every: "daily" | "weekdays"; hour: number; objective: string }[]; escalation?: string[]; memory_rules?: string[]; network?: string[]; evals?: string[]; pricing?: string; data_retention?: string;
 }
 
 export function validateManifest(m: Manifest): string[] {

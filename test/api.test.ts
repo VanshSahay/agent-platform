@@ -135,7 +135,7 @@ test("AC-PUB1 discovery lists curated first-party agents; install asks only for 
   expect(atlas.data.manifest.evals).toContain("citation_coverage");
   const inst = await api("/v1/agent-templates/atlas-research/install", { token: e.token, body: { workspace_id: e.ws, answers: { research_style: "biotech" } } });
   expect(inst.data.agent.instructions).toContain("biotech");
-  expect(inst.data.agent.template_version).toBe("1.4.3");
+  expect(inst.data.agent.template_version).toBe("1.5.0");
   const relay = await api("/v1/agent-templates/relay-ops/install", { token: e.token, body: { workspace_id: e.ws } });
   expect(relay.data.agent.schedules[0]).toMatchObject({ kind: "recurring", spec: { every: "weekdays", hour: 9 } }); // declared proactivity
 });
@@ -216,4 +216,16 @@ test("AC-A7 audit export is admin-only; usage ledger tracks raw resources indepe
   const u = await api(`/v1/usage?workspace=${team.data.id}`, { token: e.token });
   expect(u.data.by_kind.find((k: any) => k.kind === "search_calls").qty).toBe(1);
   expect(u.data.metrics.completed_runs).toBe(1);
+});
+
+test("AC-O1 onboarding: empty workspace offers quick-start; agents come with starter prompts and a setup checklist", async () => {
+  const e = await signup("Ellie");
+  expect((await api(`/v1/home?workspace=${e.ws}`, { token: e.token })).data.agent_count).toBe(0);
+  const ava = (await api("/v1/agent-templates/ava-executive-assistant/install", { token: e.token, body: { workspace_id: e.ws } })).data.agent;
+  expect(ava.starters[0]).toBe("What's on my calendar this week?");
+  expect(ava).toMatchObject({ connections_needed: ["google"], completed_runs: 0, channels: [] });
+  const custom = await api("/v1/agents", { token: e.token, body: { workspace_id: e.ws, name: "Tess", job: "j", skills: ["web-research", "reminders"] } });
+  expect(custom.data.starters).toEqual(["Research the latest on …", "Remind me tomorrow to …"]);
+  const room = (await api(`/v1/agents/${ava.id}/private-room`, { token: e.token, body: {} })).data;
+  expect((await api(`/v1/rooms/${room.id}`, { token: e.token })).data.starters).toHaveLength(4);
 });
