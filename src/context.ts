@@ -5,6 +5,7 @@ import { agentTools, SKILLS } from "./templates";
 import { toolSpecs } from "./tools";
 import type { Msg, LocalCtx } from "./model";
 import { nameOf, roleOf } from "./runtime";
+import { briefContext } from "./intake";
 
 const SYSTEM_POLICY = `[SYSTEM_POLICY]
 - You are a persistent agent on a multi-channel platform. The same Room may be reached from web, Slack, iMessage, Telegram, WhatsApp, email or phone.
@@ -33,6 +34,7 @@ export function buildContext(run: any, agent: any, room: any) {
     `[WORK_STATE]\n` + (tasks.length ? tasks.map((t) => `- task ${t.id}: ${t.title} | status=${t.status} | owner=${nameOf(t.owner)}${t.agent_action === "blocked" ? " | agent_action=blocked" : ""}`).join("\n") : "- no open tasks") +
       (approvals.length ? `\nPending approvals:\n${approvals.map((a) => `- ${a.summary} (waiting on ${J(a.approvers, []).map(nameOf).join("/")})`).join("\n")}` : "") +
       (waits.length ? `\nOther work waiting:\n${waits.map((w) => `- ${w.reason}`).join("\n")}` : ""),
+    briefContext(run),
     memories.length ? `[MEMORY_VERIFIED]\n${memories.map((m) => `- (${m.scope_type}) ${m.text}`).join("\n")}` : "",
   ].filter(Boolean).join("\n\n");
 

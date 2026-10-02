@@ -3,6 +3,7 @@
 import { createHmac, timingSafeEqual, randomInt } from "node:crypto";
 import { all, one, exec, id, now, S, J, seal, unseal, emit } from "./db";
 import * as rt from "./runtime";
+import * as intake from "./intake";
 
 export type Platform = "web" | "telegram" | "slack" | "whatsapp" | "email" | "imessage" | "phone";
 export interface InboundEvent {
@@ -10,7 +11,7 @@ export interface InboundEvent {
   senderId: string; senderName?: string; type: "message" | "button_clicked" | "email_received";
   text: string; data?: string; subject?: string;
 }
-interface Outbound { text: string; agentName?: string; approvalId?: string }
+interface Outbound { text: string; agentName?: string; buttons?: { label: string; data: string }[] }
 interface Adapter {
   verify(raw: string, h: Headers, secret: any, url: string): boolean;
   parse(raw: string, ident: any): InboundEvent[];
@@ -20,7 +21,7 @@ interface Adapter {
 const hmac = (alg: string, key: string | Buffer, data: string, enc: "hex" | "base64" = "hex") => createHmac(alg, key).update(data).digest(enc);
 const safeEq = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 const fresh = (tsSec: number) => Math.abs(now() / 1000 - tsSec) < 300; // replay window
-const buttons = (m: Outbound) => m.approvalId ? [{ label: "Approve", data: `apr:${m.approvalId}:approve` }, { label: "Reject", data: `apr:${m.approvalId}:reject` }] : [];
+const buttons = (m: Outbound) => m.buttons ?? [];
 async function post(url: string, body: any, headers: Record<string, string> = {}) {
   const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: S(body) });
   if (!r.ok) throw new Error(`${url.split("?")[0]} ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -126,7 +127,7 @@ export const ADAPTERS: Record<string, Adapter> = {
       const cfg = J(ep.config, {});
       const r: any = await post("https://api.resend.com/emails", { from: `${m.agentName} <${i.address}>`, to: [ep.external_conversation_id],
         subject: cfg.subject ? `Re: ${cfg.subject.replace(/^re:\s*/i, "")}` : `Message from ${m.agentName}`,
-        text: m.approvalId ? `${m.text}\n\nReply "approve" or "reject".` : m.text }, { authorization: `Bearer ${s.resend_api_key}`, "idempotency-key": idem });
+        text: m.buttons?.length ? `${m.text}\n\nReply with: ${m.buttons.map((b) => b.label.toLowerCase()).join(" / ")}` : m.text }, { authorization: `Bearer ${s.resend_api_key}`, "idempotency-key": idem });
       return r.id;
     },
   },
@@ -144,8 +145,8 @@ export const ADAPTERS: Record<string, Adapter> = {
       return [{ provider: "imessage", providerEventId: m.id, conversationId: m.chat_id, isGroup: !!m.is_group, senderId: m.sender.handle, senderName: m.sender.name, type: "message", text: m.text }];
     },
     async send(_i, s, ep, m) {
-      const text = m.approvalId ? `${m.text}` : m.text; // iMessage has no buttons; text replies ("approve") are parsed
-      const r: any = await post(`${s.api_url}/messages`, { chat_id: ep.external_conversation_id, text }, { authorization: `Bearer ${s.api_key}` });
+      // iMessage has no buttons; text replies ("approve", "go") are parsed
+      const r: any = await post(`${s.api_url}/messages`, { chat_id: ep.external_conversation_id, text: m.text }, { authorization: `Bearer ${s.api_key}` });
       return r.id;
     },
   },
@@ -252,9 +253,17 @@ async function processEvent(e: InboundEvent, ident: any) {
   }
 
   if (e.type === "button_clicked") {
+    const ep = resolveRoom(e, ident, senderId);
+    const b = e.data?.match(/^brf:(run_\w+):(go|cancel)$/);
+    if (b) {
+      const run = one<any>("select room_id from runs where id=?", b[1]);
+      if (run?.room_id !== ep.room_id) return; // buttons only act on tasks in the room they were clicked in
+      const r = b[2] === "go" ? intake.confirmBrief(b[1], senderId, ep.id) : intake.cancelBrief(b[1], senderId);
+      if ("error" in r) return reply(r.error!);
+      return;
+    }
     const m = e.data?.match(/^apr:(apr_\w+):(approve|reject)$/);
     if (!m) return;
-    const ep = resolveRoom(e, ident, senderId);
     const r = rt.decideApproval(m[1], senderId, m[2] as any, {}, ep.id);
     if ("error" in r) return reply(r.error!);
     return;

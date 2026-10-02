@@ -254,6 +254,17 @@ def({
 });
 
 def({
+  id: "plan.update", description: "Update this task's plan: mark a step (1-based) done/skipped, or replace the remaining steps when the plan needs to change.",
+  risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ step: num("1-based step number"), status: { type: "string", enum: ["done", "skipped", "todo"] }, replace_remaining: { type: "array", items: str() } }),
+  async execute(i, ctx) {
+    const r = (await import("./intake")).updatePlan(ctx.run.id, i);
+    if ("error" in r) throw new ToolError("BUSINESS_RULE", r.error!);
+    return { status: "SUCCEEDED", output: r };
+  },
+});
+
+def({
   id: "agent.delegate", description: "Hand part of the work to another agent in this workspace. It receives only the objective you give it, not this conversation.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ agent: str("agent name"), objective: str(), context: str("only what the other agent needs") }, ["agent", "objective"]),

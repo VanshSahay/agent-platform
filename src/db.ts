@@ -84,7 +84,8 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
   db.exec("pragma journal_mode = wal; pragma foreign_keys = on;");
   db.exec(SCHEMA);
   // Additive migrations for databases created by earlier versions.
-  for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"]]) {
+  for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
+    ["runs", "brief", "text"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
     if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
   }
   db.exec(`update templates set published_version=latest_version where published_version is null and status='published';

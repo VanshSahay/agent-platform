@@ -130,8 +130,8 @@ export interface LocalCtx {
 
 export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName">) {
   const t = text.toLowerCase(), has = (n: string) => c.tools.includes(n), out: { name: string; input: any }[] = [];
-  const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/)?.[0];
-  const subjectOf = () => text.match(/about ([^.,!?]+)/i)?.[1]?.trim() ?? "Quick follow-up";
+  const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g)?.at(-1); // latest wins (follow-up corrections append)
+  const subjectOf = () => text.match(/about ([^.,!?\n]+)/i)?.[1]?.trim() ?? "Quick follow-up";
   const dontContact = text.match(/(?:don'?t|do not) (?:contact|email|message|text|reach out to) ([A-Z][a-z]+)/);
   const ask = text.match(/\bask (\w+) to ([^.!?]+)/i);
   const delegateTo = ask && c.agents.find((a) => a.toLowerCase() === ask[1].toLowerCase() && a !== c.agentName);
@@ -175,7 +175,9 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
 function localAgent(req: ModelRequest): Pick<ModelResult, "text" | "toolCalls"> {
   const c = req.ctx ?? { agentName: "Agent", objective: req.messages.find((m) => m.role === "user")?.content ?? "", tools: req.tools?.map((t) => t.name) ?? [], agents: [], openTasks: [], recentAgentReplies: [], memories: [] };
   const steps = plan(c.objective, c);
-  const done = req.messages.filter((m) => m.role === "tool");
+  // Work done since the requirement last changed (a revision restarts the plan).
+  const lastChange = req.messages.map((m) => m.role === "user" && m.content.startsWith("[EVENT] Requirement changed")).lastIndexOf(true);
+  const done = req.messages.slice(lastChange + 1).filter((m) => m.role === "tool");
   if (done.length < steps.length) {
     const s = steps[done.length];
     return { text: "", toolCalls: [{ id: `call_${done.length}_${s.name}`, name: s.name, input: s.input }] };

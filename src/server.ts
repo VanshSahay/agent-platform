@@ -4,6 +4,7 @@ import * as rt from "./runtime";
 import * as ch from "./channels";
 import * as tpl from "./templates";
 import * as mem from "./memory";
+import * as intake from "./intake";
 import { TOOLS } from "./tools";
 import app from "../public/index.html";
 
@@ -96,7 +97,7 @@ function roomView(r: any, after = 0) {
     endpoints: all<any>("select id, platform, external_conversation_id, is_group, last_active_at from room_endpoints where room_id=?", r.id),
     tasks: all<any>("select * from tasks where room_id=? order by status='done', created_at", r.id).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner) })),
     approvals: all<any>("select * from approvals where room_id=? and status='pending' order by created_at", r.id).map((a) => ({ ...a, input: J(a.input), approvers: J(a.approvers, []).map((x: string) => ({ id: x, name: rt.nameOf(x) })), agent_name: rt.nameOf(a.agent_id) })),
-    runs: all<any>("select * from runs where room_id=? and status not in ('completed','failed_terminal','cancelled') order by created_at", r.id).map((x) => ({ ...x, agent_name: rt.nameOf(x.agent_id),
+    runs: all<any>("select * from runs where room_id=? and status not in ('completed','failed_terminal','cancelled') order by created_at", r.id).map((x) => ({ ...x, brief: J(x.brief), agent_name: rt.nameOf(x.agent_id),
       waits: all<any>("select kind, reason, owner from waits where run_id=? and status='open'", x.id).map((w) => ({ ...w, owner_name: rt.nameOf(w.owner) })) })),
     events: all<any>("select seq, id, type, actor, run_id, data, ts from events where room_id=? and seq>? order by seq limit 500", r.id, after).map((e) => ({ ...e, data: J(e.data), actor_name: rt.nameOf(e.actor) })),
   };
@@ -249,7 +250,8 @@ export const routes: Record<string, any> = {
     GET: h((req) => { const u = userOf(req); return json(agentView(agentFor(req.params.id, u.id))); }),
     PATCH: h(async (req) => {
       const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req);
-      for (const k of ["name", "job", "instructions", "model_profile", "status", "avatar"]) if (b[k] !== undefined) exec(`update agents set ${k}=? where id=?`, b[k], a.id);
+      if (b.confirm_mode && !["smart", "always", "never"].includes(b.confirm_mode)) fail(400, "confirm_mode must be smart, always or never");
+      for (const k of ["name", "job", "instructions", "model_profile", "status", "avatar", "confirm_mode"]) if (b[k] !== undefined) exec(`update agents set ${k}=? where id=?`, b[k], a.id);
       if (b.skills) exec("update agents set skills=? where id=?", S(b.skills.filter((s: string) => tpl.SKILLS[s])), a.id);
       if (b.permissions) {
         for (const [t, m] of Object.entries(b.permissions)) if (!TOOLS[t] || !["auto", "first_time", "ask", "always_ask", "never"].includes(m as string)) fail(400, `bad permission ${t}=${m}`);
@@ -344,6 +346,15 @@ export const routes: Record<string, any> = {
       .filter((r) => { try { roomFor(r.room_id, u.id); return true; } catch { return false; } }).map((r) => ({ ...r, agent_name: rt.nameOf(r.agent_id), spent: J(r.spent) })));
   }) },
   "/v1/runs/:id": { GET: h((req) => { const u = userOf(req); const r = one<any>("select * from runs where id=?", req.params.id) ?? fail(404, "run not found"); roomFor(r.room_id, u.id); return json(rt.trace(r.id)); }) },
+  "/v1/runs/:id/brief": { POST: h(async (req) => {
+    const u = userOf(req), b = await body(req), r = one<any>("select * from runs where id=?", req.params.id) ?? fail(404, "run not found");
+    roomFor(r.room_id, u.id);
+    const res = b.action === "go" ? intake.confirmBrief(r.id, u.id, null) : b.action === "cancel" ? intake.cancelBrief(r.id, u.id)
+      : b.action === "revise" && b.text?.trim() ? intake.reviseBrief(r.id, u.id, b.text.trim(), "web") : fail(400, "action must be go, cancel or revise (with text)");
+    if ("error" in res) fail(400, res.error!);
+    kick();
+    return json(res);
+  }) },
   "/v1/runs/:id/cancel": { POST: h((req) => { const u = userOf(req); const r = one<any>("select * from runs where id=?", req.params.id) ?? fail(404, "run not found"); roomFor(r.room_id, u.id); return json({ ok: rt.cancelRun(r.id, u.id) }); }) },
   "/v1/waits/:id/resolve": { POST: h(async (req) => {
     // Human resolution of verify/reconnect waits: "it did go through" / "it didn't, retry".

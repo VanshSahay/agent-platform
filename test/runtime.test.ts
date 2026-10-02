@@ -12,11 +12,11 @@ beforeEach(() => { setup(); ellie = user("Ellie"); sam = user("Sam"); ws = works
 test("AC-R1 every run leaves an append-only, explainable trace", async () => {
   const a = customAgent(ws, ellie, ["web-research"]);
   const room = rt.privateRoomFor(ellie, a);
-  scriptModel(call("web.search", { query: "miami hotels" }), { text: "Here are options" });
+  scriptModel(call("web.search", { query: "miami hotels" }), { text: "Here are options: https://hotel.example/one" });
   await say(room.id, ellie, "find hotels");
   const run = runsIn(room.id)[0];
   const types = all<any>("select type from events where run_id=? order by seq", run.id).map((e) => e.type);
-  expect(types).toEqual(["RUN_STARTED", "MODEL_CALL", "TOOL_CALL_REQUESTED", "PERMISSION_DECISION", "TOOL_CALL_COMPLETED", "MODEL_CALL", "RUN_COMPLETED", "message"]);
+  expect(types).toEqual(["RUN_STARTED", "BRIEF_PROPOSED", "MODEL_CALL", "TOOL_CALL_REQUESTED", "PERMISSION_DECISION", "TOOL_CALL_COMPLETED", "MODEL_CALL", "RESULT_CHECKED", "RUN_COMPLETED", "message"]);
   const reply = all<any>("select id from events where run_id=? and type='message'", run.id)[0];
   const t = rt.trace(reply.id)!;
   expect(t.trigger).toMatchObject({ text: "find hotels", by: "Ellie" });

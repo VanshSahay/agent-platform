@@ -9,9 +9,10 @@ import { executeToolCall, TOOLS } from "./tools";
 import { extractAfterTurn } from "./memory";
 import { structured } from "./model";
 import * as channels from "./channels";
+import * as intake from "./intake";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
-const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
+const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", clarify: "waiting_for_human", confirm: "waiting_for_human", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
   event: "waiting_for_external", agent: "waiting_for_agent", time: "scheduled", retry: "retrying" };
 
 // ---------------- principals ----------------
@@ -67,13 +68,14 @@ export function privateRoomFor(userId: string, agent: any) {
 
 // ---------------- messages ----------------
 export function postMessage(roomId: string, m: { sender: string; text: string; platform?: string; endpointId?: string | null; externalId?: string; runId?: string;
-  approvalId?: string; untrusted?: boolean; targets?: string[] }) {
+  approvalId?: string; untrusted?: boolean; targets?: string[]; buttons?: { label: string; data: string }[]; brief?: any }) {
   const room = one<any>("select * from rooms where id=?", roomId);
   const eid = emit("message", { workspace_id: room.workspace_id, room_id: roomId, run_id: m.runId, actor: m.sender,
-    data: { text: m.text, platform: m.platform ?? "web", endpoint_id: m.endpointId ?? null, external_id: m.externalId ?? null, approval_id: m.approvalId ?? null, untrusted: !!m.untrusted } });
+    data: { text: m.text, platform: m.platform ?? "web", endpoint_id: m.endpointId ?? null, external_id: m.externalId ?? null, approval_id: m.approvalId ?? null, untrusted: !!m.untrusted,
+      ...(m.buttons?.length ? { buttons: m.buttons } : {}), ...(m.brief ? { brief: m.brief } : {}) } });
   if (m.endpointId) exec("update room_endpoints set last_active_at=? where id=?", now(), m.endpointId);
   if (m.sender.startsWith("agt_")) {
-    for (const ep of m.targets ?? []) channels.enqueue(ep, roomId, eid, { text: m.text, agentName: nameOf(m.sender), approvalId: m.approvalId });
+    for (const ep of m.targets ?? []) channels.enqueue(ep, roomId, eid, { text: m.text, agentName: nameOf(m.sender), buttons: m.buttons });
     exec("insert into usage (workspace_id, agent_id, kind, qty, ts) values (?,?,?,?,?)", room.workspace_id, m.sender, "channel_messages", (m.targets ?? []).length, now());
   }
   return eid;
@@ -96,6 +98,8 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
   addMember(room.id, i.senderId, "human");
   const eventId = postMessage(room.id, { sender: i.senderId, text: i.text, platform: i.platform, endpointId: i.endpointId, externalId: i.externalId, untrusted: i.untrusted });
   const started: string[] = [];
+  // Memory write pipeline (scoped, with provenance).
+  await extractAfterTurn(room, { id: eventId, text: i.text, sender: i.senderId, senderName: nameOf(i.senderId) ?? "someone" }).catch(() => {});
 
   // 1. Text approvals ("approve", "yes", "confirm 1a2b") for the sender's pending approvals in this room.
   // Only a bare decision counts: "yes but send it to Dana instead" is a new request, not an approval.
@@ -113,15 +117,19 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
     }
   }
 
-  // 2. Runs waiting for a message in this room resume instead of starting fresh work.
+  // 2. Messages that belong to an existing task: answers to questions, "go", edits, or mid-flight changes.
+  if (await intake.routeFollowup(room, i.senderId, i.text, i.endpointId ?? "web")) return { eventId, started };
+
+  // 3. Runs waiting for a message in this room resume instead of starting fresh work.
   for (const w of all<any>("select * from waits where status='open' and wake_key='room_message' and room_id=?", room.id))
     resumeWait(w.id, `${nameOf(i.senderId)} replied: ${i.text}`);
 
-  // 3. Participation policy (plan §15.2): who should respond?
+  // 4. Participation policy (plan §15.2): who should respond?
   const agents = roomAgents(room.id);
   for (const a of agents) {
     let respond = false;
-    if (room.participation === "manager" || (room.kind === "private" && agents.length === 1)) respond = true;
+    if (roleOf(room.id, a.id) === "delegate") respond = new RegExp(`@${a.name.replace(/[^\w]/g, "")}\\b`, "i").test(i.text);
+    else if (room.participation === "manager" || (room.kind === "private" && agents.length === 1)) respond = true;
     else if (mentions(i.text, a.name)) respond = true;
     else if (room.participation === "relevant") {
       const r = await structured<{ relevant: boolean }>("fast", `Should ${a.name} (job: ${a.job}) respond to this group message? Only if it is clearly asking for or about its job. {"relevant": boolean}`,
@@ -139,24 +147,22 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
       exec("update waits set wake_at=? where id=?", now() + debounceMs, open.id);
       continue;
     }
-    const run = createRun({ room, agent: a, objective: i.text, requestedBy: i.senderId, triggerEventId: eventId, originEndpointId: i.endpointId ?? "web", tainted: i.untrusted });
+    const run = createRun({ room, agent: a, objective: i.text, requestedBy: i.senderId, triggerEventId: eventId, originEndpointId: i.endpointId ?? "web", tainted: i.untrusted, intake: true });
     if (burst) createWait(run, { kind: "debounce", reason: "collecting message burst", wake_at: now() + debounceMs });
     started.push(run.id);
   }
-
-  // 4. Memory write pipeline (scoped, with provenance).
-  await extractAfterTurn(room, { id: eventId, text: i.text, sender: i.senderId, senderName: nameOf(i.senderId) ?? "someone" }).catch(() => {});
   return { eventId, started };
 }
 
 // ---------------- runs ----------------
 export function createRun(r: { room: any; agent: any; objective: string; requestedBy?: string | null; triggerEventId?: string | null; originEndpointId?: string | null;
-  kind?: string; parentRunId?: string; budget?: Partial<typeof DEFAULT_BUDGET>; tainted?: boolean; result?: any }) {
+  kind?: string; parentRunId?: string; budget?: Partial<typeof DEFAULT_BUDGET>; tainted?: boolean; result?: any; intake?: boolean }) {
   const rid = id("run");
   exec(`insert into runs (id, workspace_id, room_id, agent_id, objective, kind, status, requested_by, parent_run_id, trigger_event_id, origin_endpoint_id, budget, spent, tainted, result, created_at, updated_at)
     values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, rid, r.room.workspace_id, r.room.id, r.agent.id, r.objective, r.kind ?? "respond", "queued", r.requestedBy ?? null,
     r.parentRunId ?? null, r.triggerEventId ?? null, r.originEndpointId ?? null, S({ ...DEFAULT_BUDGET, ...r.budget }), S({ cost: 0, toolCalls: 0, externalWrites: 0, modelCalls: 0 }),
     r.tainted ? 1 : 0, r.result ? S(r.result) : null, now(), now());
+  if (r.intake) exec("update runs set brief_status='pending' where id=?", rid);
   emit("RUN_STARTED", { workspace_id: r.room.workspace_id, room_id: r.room.id, run_id: rid, actor: r.agent.id, data: { objective: r.objective, requested_by: r.requestedBy, kind: r.kind ?? "respond" } });
   return one<any>("select * from runs where id=?", rid);
 }
@@ -182,6 +188,7 @@ export function createWait(run: any, w: { kind: string; reason: string; owner?: 
     wid, run.id, run.room_id, w.kind, w.reason, w.owner ?? null, w.wake_key ?? null, w.wake_at ?? null, w.timeout_at ?? null, w.on_timeout ?? "resume", now());
   setStatus(run.id, WAIT_STATUS[w.kind] ?? "waiting_for_external");
   emit("RUN_WAITING", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, data: { wait_id: wid, kind: w.kind, reason: w.reason, owner: w.owner } });
+  if (w.kind === "event") intake.progressNote(one<any>("select * from runs where id=?", run.id), w.reason);
   return wid;
 }
 
@@ -206,7 +213,7 @@ export function signalEvent(key: string, text: string) {
   return n;
 }
 
-function pendingCalls(runId: string) {
+export function pendingCalls(runId: string) {
   const last = one<any>("select data from run_steps where run_id=? and type='assistant' order by id desc limit 1", runId);
   if (!last) return [];
   const calls = J(last.data).toolCalls ?? [];
@@ -225,12 +232,17 @@ export async function stepRun(runId: string) {
   const base = { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id };
   if (agent.status !== "active") return fail(run, "agent is paused");
   if (now() - run.created_at > budget.maxWallClockSeconds * 1000) return fail(run, "run exceeded its wall-clock budget");
+  // Requirement layer: brief -> clarify/confirm/auto before any tool runs.
+  if (run.brief_status === "pending") {
+    if ((await intake.intake(run, agent, room)) === "wait") return;
+    run = one<any>("select * from runs where id=?", runId);
+  }
 
   const runCalls = async (calls: any[], allowed: Set<string>) => {
     for (const c of calls) {
       run = one<any>("select * from runs where id=?", runId);
       const r = await executeToolCall(run, agent, room, c, allowed);
-      if (r.kind === "result") appendToolResult(run.id, c, r.content);
+      if (r.kind === "result") { appendToolResult(run.id, c, r.content); if (r.status === "SUCCEEDED") intake.markStep(run.id, c.name); }
       else if (r.kind === "wait") return "wait";
       else { createWait(run, { kind: "retry", reason: `retrying ${c.name}: ${r.reason}`, wake_at: now() + r.delayMs }); return "wait"; }
     }
@@ -261,7 +273,22 @@ export async function stepRun(runId: string) {
     addSpent(run.id, { cost: res.costUsd, modelCalls: 1 });
     appendStep(run.id, "assistant", { text: res.text, toolCalls: res.toolCalls, model: res.model, raw: res.raw });
     emit("MODEL_CALL", { ...base, data: { model: res.model, tool_calls: res.toolCalls.map((t) => t.name), usage: res.usage, cost_usd: res.costUsd } });
-    if (!res.toolCalls.length) return complete(run, agent, room, res.text);
+    if (!res.toolCalls.length) {
+      // Don't claim "done" until the result is checked against the brief's success criteria.
+      const b = J(run.brief);
+      if (b?.done_when?.length && ["confirmed", "auto"].includes(run.brief_status) && !run.parent_run_id) {
+        const v = await intake.verify(run, res.text);
+        const checks = (spent.verifications ?? 0) + 1;
+        exec("update runs set spent=json_set(spent, '$.verifications', ?) where id=?", checks, run.id);
+        emit("RESULT_CHECKED", { ...base, data: { pass: v.pass, missing: v.missing, acknowledged: v.acknowledged } });
+        if (!v.pass && !v.acknowledged && checks < 2) {
+          appendStep(run.id, "signal", { text: `[CHECK] Not done yet. Still missing: ${v.missing.join("; ")}. Keep working, or explain exactly what's blocking it.` });
+          continue;
+        }
+        if (!v.pass && !v.acknowledged) return complete(run, agent, room, `${res.text}\n\n⚠️ Not fully done — still missing: ${v.missing.join("; ")}`);
+      }
+      return complete(run, agent, room, res.text);
+    }
     if ((await runCalls(res.toolCalls, c.allowed)) === "wait") return;
   }
   return fail(run, "step limit reached without finishing");
@@ -328,6 +355,7 @@ export function requestApproval(run: any, agent: any, d: any, input: any, fp: st
   const wid = createWait(run, { kind: "approval", reason: `approval: ${summary}`, owner: approvers[0], wake_key: `approval:${aid}`, timeout_at: now() + 72 * 36e5, on_timeout: "expire" });
   const who = approvers.map(nameOf).join(" or ");
   postMessage(run.room_id, { sender: agent.id, runId: run.id, approvalId: aid, targets: replyTargets(run.room_id, run.origin_endpoint_id),
+    buttons: [{ label: strong ? "Confirm" : "Approve", data: `apr:${aid}:approve` }, { label: "Reject", data: `apr:${aid}:reject` }],
     text: `${agent.name} wants to: ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}` });
   return wid;
 }
@@ -375,7 +403,7 @@ export function delegate(parent: any, agentName: string, objective: string, cont
   if (to.id === from.id) return { error: "can't delegate to yourself" };
   if (parent.parent_run_id) return { error: "delegated runs can't delegate further" };
   const room = one<any>("select * from rooms where id=?", parent.room_id);
-  addMember(room.id, to.id, "agent");
+  addMember(room.id, to.id, "agent", "delegate"); // present for the handoff; speaks only when @-mentioned
   const pb = J(parent.budget, DEFAULT_BUDGET);
   const child = createRun({ room, agent: to, objective, requestedBy: parent.requested_by, parentRunId: parent.id, kind: "delegate",
     budget: { maxModelCostUsd: pb.maxModelCostUsd / 2, maxToolCalls: Math.ceil(pb.maxToolCalls / 2), maxAutonomousExternalWrites: 0 }, result: { delegation_context: context ?? null } });
@@ -414,6 +442,12 @@ export async function tick() {
   const t = now();
   for (const w of all<any>("select * from waits where status='open' and wake_at is not null and wake_at<=?", t)) n += +resumeWait(w.id);
   for (const w of all<any>("select * from waits where status='open' and timeout_at is not null and timeout_at<=?", t)) {
+    if (w.kind === "clarify" || w.kind === "confirm") { // no answer in 72h: drop it rather than guess
+      const r = one<any>("select * from runs where id=?", w.run_id);
+      cancelRun(w.run_id, "system");
+      postMessage(w.room_id, { sender: r.agent_id, runId: r.id, text: `I didn't hear back, so I've set aside: ${J(r.brief)?.goal ?? r.objective}. Just ask again when you're ready.`, targets: replyTargets(w.room_id, r.origin_endpoint_id) });
+      n++; continue;
+    }
     if (w.kind === "approval") {
       exec("update approvals set status='expired' where id=?", w.wake_key.slice(9));
       emit("APPROVAL_EXPIRED", { room_id: w.room_id, run_id: w.run_id, data: { approval_id: w.wake_key.slice(9) } });

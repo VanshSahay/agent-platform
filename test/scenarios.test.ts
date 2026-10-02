@@ -106,7 +106,7 @@ test("AC-M4 recruiting: blocked candidate never contacted, outreach approved, bo
   // Speaker-aware context: James is labeled with his role.
   const { scriptModel, call } = await import("./helpers");
   const seen = scriptModel(call("email.send", { to: ["amanda@nurse.test"], subject: "Amanda BLS", body: "Hi Amanda" }), { text: "ok" });
-  await say(room.id, sarah, "Recruiter, email Amanda about her BLS card");
+  await say(room.id, sarah, "Recruiter, email amanda@nurse.test about her BLS card");
   expect(seen[0].system).toContain("agent_action=blocked");
   expect(seen[0].messages[0].content).toMatch(/\[James \| role=Recruiter\]/);
   expect(J(all<any>("select * from events where type='PERMISSION_DECISION' order by seq desc limit 1")[0].data).decision).toBe("DENY");
