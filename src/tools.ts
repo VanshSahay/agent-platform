@@ -66,7 +66,10 @@ async function assertPublicUrl(raw: string) {
   return u;
 }
 // ponytail: resolve-then-fetch leaves a DNS-rebinding window; pin the resolved IP via a custom agent if that matters.
-const stripHtml = (h: string) => h.replace(/<(script|style)[\s\S]*?<\/\1>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+const ENT: Record<string, string> = { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+const stripHtml = (h: string) => h.replace(/<(script|style)[\s\S]*?<\/\1>/gi, "").replace(/<[^>]+>/g, " ")
+  .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === "#" ? String.fromCodePoint(e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENT[e.toLowerCase()] ?? m)
+  .replace(/\s+/g, " ").trim();
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 
 export const TOOLS: Record<string, ToolDef> = {};
