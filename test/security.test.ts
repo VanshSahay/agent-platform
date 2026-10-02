@@ -33,7 +33,7 @@ test("AC-S1 outside guests can't use workspace connections or approve their own 
   expect(net.to(/gmail/)).toHaveLength(0);
   // A guest-originated approval (non-connection tool) goes to workspace admins, not the guest.
   const room = one<any>("select room_id from room_endpoints").room_id;
-  const run = runsIn(room)[0];
+  const run = rt.createRun({ room: one<any>("select * from rooms where id=?", room), agent: a, objective: "x", requestedBy: runsIn(room)[0].requested_by });
   const ap = rt.requestApproval(run, a, { id: "browser.task", risk: "write_external" }, { task: "x" }, "fp1", false, "test", null);
   expect(ap).toBeTruthy();
   const apr = one<any>("select * from approvals where fingerprint='fp1'");
@@ -186,4 +186,85 @@ test("AC-S12 cross-workspace agents, draft key spend, and email header injection
   await say(room.id, e.id, "send");
   const raw = Buffer.from(net.to(/messages\/send/)[0].body.raw, "base64url").toString();
   expect(raw).not.toMatch(/^Bcc:/m);
+});
+
+test("AC-S13 cancelling while the model is thinking can't be undone by the late answer", async () => {
+  const ellie = user("Ellie"), ws = workspace("W", ellie);
+  const a = customAgent(ws, ellie, ["email-drafting"], {}, "Ava");
+  googleConnection(ws, ellie, [a.id]);
+  const room = rt.privateRoomFor(ellie, a);
+  const { cancelBrief } = await import("../src/intake");
+  scriptModel((r) => { cancelBrief(r.runId!, ellie); return call("email.send", { to: ["sam@example.com"], subject: "s", body: "b" }); });
+  await say(room.id, ellie, "send sam@example.com the notes");
+  const run = runsIn(room.id)[0];
+  expect(one<any>("select status from runs where id=?", run.id).status).toBe("cancelled");
+  expect(pendingApprovals(room.id)).toHaveLength(0);
+  await say(room.id, ellie, "approve");
+  expect(net.to(/messages\/send/)).toHaveLength(0);
+});
+
+test("AC-S14 a change that lands mid-model-call wins: the stale action never runs", async () => {
+  const ellie = user("Ellie"), ws = workspace("W", ellie);
+  const a = customAgent(ws, ellie, ["email-drafting"], {}, "Ava");
+  googleConnection(ws, ellie, [a.id]);
+  const room = rt.privateRoomFor(ellie, a);
+  const { reviseBrief } = await import("../src/intake");
+  let first = true;
+  scriptModel((r) => {
+    if (first) { first = false; reviseBrief(r.runId!, ellie, "actually send it to dana@example.com instead", "web"); return call("email.send", { to: ["sam@example.com"], subject: "s", body: "b" }); }
+    return r.messages.some((m) => m.role === "tool") ? { text: "Sent to Dana." } : call("email.send", { to: ["dana@example.com"], subject: "s", body: "b" });
+  });
+  await say(room.id, ellie, "send sam@example.com the notes");
+  expect(all<any>("select input from approvals").map((x) => J(x.input).to[0])).not.toContain("sam@example.com");
+  await say(room.id, ellie, "go");
+  await say(room.id, ellie, "approve");
+  const to = net.to(/messages\/send/).map((c) => Buffer.from(c.body.raw, "base64url").toString().match(/^To: (.*)$/m)![1]);
+  expect(to).toEqual(["dana@example.com"]);
+});
+
+test("AC-S15 only the agent's owner or an admin can save a learned skill", async () => {
+  const owner = user("Owner"), member = user("Member"), ws = workspace("W", owner, [[member]]);
+  const atlas = installAgent("atlas-research", ws, owner);
+  const room = rt.createRoom({ workspace_id: ws, name: "Team", participation: "manager", members: [{ id: owner, kind: "human" }, { id: member, kind: "human" }, { id: atlas.id, kind: "agent" }] });
+  for (const t of ["solar", "wind", "hydro"]) await say(room.id, member, `Search for the latest news on ${t}`);
+  const offer = all<any>("select data from events where room_id=? and type='message'", room.id).map((e) => J(e.data)).find((d) => d.buttons?.[0]?.data.startsWith("skl:"));
+  const { pressButton } = await import("../src/channels");
+  expect(await pressButton(offer.buttons[0].data, member, room.id, null)).toHaveProperty("error");
+  expect(all("select * from custom_skills")).toHaveLength(0);
+  expect(await pressButton(offer.buttons[0].data, owner, room.id, null)).toEqual({ ok: true });
+  expect(await pressButton("brf:" + offer.buttons[0].data.split(":")[1] + ":bogus", owner, room.id, null)).toHaveProperty("error");
+});
+
+test("AC-S16 a message addressed to another agent is never folded into someone else's pending task", async () => {
+  const ellie = user("Ellie"), ws = workspace("W", ellie);
+  const rec = customAgent(ws, ellie, ["delegation", "reminders"], {}, "Recruiter");
+  const scout = customAgent(ws, ellie, ["web-research"], {}, "Scout");
+  customAgent(ws, ellie, ["web-research"], {}, "Credentialing");
+  const room = rt.createRoom({ workspace_id: ws, name: "G", members: [{ id: ellie, kind: "human" }, { id: rec.id, kind: "agent" }, { id: scout.id, kind: "agent" }] });
+  await say(room.id, ellie, "@Recruiter ask Credentialing to check BLS and remind me in 2 hours");
+  expect(runsIn(room.id)[0].brief_status).toBe("proposed");
+  await say(room.id, ellie, "@Scout search for the latest news on nurse staffing");
+  expect(runsIn(room.id)[0].objective).not.toContain("Scout");
+  expect(runsIn(room.id).some((r) => r.agent_id === scout.id)).toBe(true);
+});
+
+test("AC-S17 unicode file names download; free-time search inputs are bounded; finished tasks can't be 'cancelled' again", async () => {
+  const e = await signup("Ellie");
+  const ag = await api("/v1/agents", e.token, { workspace_id: e.ws, name: "Ava", job: "j", skills: [] });
+  const room = (await api(`/v1/agents/${ag.data.id}/private-room`, e.token, {})).data;
+  const fd = new FormData(); fd.append("file", new File(["hi"], "简历.txt", { type: "text/plain" }));
+  const up: any = await (await realFetch(new URL(`/v1/rooms/${room.id}/files`, server.url), { method: "POST", headers: { authorization: `Bearer ${e.token}` }, body: fd })).json();
+  const dl = await realFetch(new URL(`/v1/files/${up.file_id}`, server.url), { headers: { authorization: `Bearer ${e.token}` } });
+  expect(dl.status).toBe(200);
+  expect(dl.headers.get("content-disposition")).toContain("filename*=UTF-8''%E7%AE%80%E5%8E%86.txt");
+  const { TOOLS } = await import("../src/tools");
+  net.on(/freeBusy/, () => Response.json({ calendars: {} }));
+  const t0 = Date.now();
+  const out = await TOOLS["calendar.find_free_time"].execute({ days: 1e7, duration_minutes: 100000 }, { connection: { id: "c", cred: { access_token: "t" }, account: "a" } } as any);
+  expect(Date.now() - t0).toBeLessThan(500);
+  expect(out.output.duration_minutes).toBe(480);
+  const { cancelBrief } = await import("../src/intake");
+  const run = one<any>("select * from runs limit 1");
+  exec("update runs set status='completed' where id=?", run.id);
+  expect(cancelBrief(run.id, run.requested_by)).toHaveProperty("error");
 });

@@ -132,9 +132,10 @@ function diffBriefs(a: Brief | null, b: Brief) {
 const saveBrief = (runId: string, b: Brief, status: string) => exec("update runs set brief=?, brief_status=? where id=?", S(b), status, runId);
 
 /** Runs at the start of stepRun while brief_status='pending'. Returns 'wait' if the run must stop for the human. */
-export async function intake(run: any, agent: any, room: any): Promise<"continue" | "wait"> {
+export async function intake(run: any, agent: any, room: any, live: () => boolean = () => true): Promise<"continue" | "wait"> {
   const prev: Brief | null = J(run.brief);
   const b = await buildBrief(run, agent, room, prev ?? undefined);
+  if (!live()) return "wait"; // superseded while drafting
   // Answering a clarifying question isn't a change; changing a plan that was proposed or already running is.
   const d = decide(b, { mode: agent.confirm_mode ?? "smart", revised: ["proposed", "auto", "confirmed"].includes((prev as any)?._revisedFrom) });
   const diff = (prev as any)?._revisedFrom === "clarifying" ? [] : diffBriefs(prev, b);
@@ -174,7 +175,10 @@ export function reviseBrief(runId: string, userId: string, text: string, endpoin
   if (run.brief) exec("update runs set brief=json_set(brief, '$._revisedFrom', ?) where id=?", run.brief_status, runId);
   exec("update runs set objective=objective || char(10) || ?, brief_status='pending', origin_endpoint_id=coalesce(?, origin_endpoint_id) where id=?",
     `${run.brief_status === "clarifying" ? "Answer" : "Change"} from ${rt.nameOf(userId)}: ${text}`, endpointId ?? null, runId);
+  exec("update runs set rev=coalesce(rev, 0)+1 where id=?", runId);
   for (const a of all<any>("select id from approvals where run_id=? and status='pending'", runId)) exec("update approvals set status='expired' where id=?", a.id);
+  // An approval for the old requirement that hasn't run yet must not carry over.
+  exec("update approvals set status='superseded' where run_id=? and status='approved' and fingerprint not in (select fingerprint from tool_executions where run_id=?)", runId, runId);
   exec("update waits set status='superseded' where run_id=? and status='open'", runId);
   // Close out tool calls the old requirement asked for, then tell the model what changed.
   for (const c of rt.pendingCalls(runId)) rt.appendToolResult(runId, c, "SUPERSEDED: the requirement changed before this ran; follow the updated brief.");
@@ -188,7 +192,7 @@ export function cancelBrief(runId: string, userId: string) {
   const run = one<any>("select * from runs where id=?", runId);
   if (!run) return { error: "no such task" };
   if (!canDecide(run, userId)) return { error: `only ${rt.nameOf(run.requested_by)} can cancel this` };
-  rt.cancelRun(runId, userId);
+  if (!rt.cancelRun(runId, userId)) return { error: "that task already finished" };
   rt.postMessage(run.room_id, { sender: run.agent_id, runId, text: `Okay — dropped: ${J(run.brief)?.goal ?? run.objective}`, targets: rt.replyTargets(run.room_id, run.origin_endpoint_id) });
   return { ok: true };
 }
@@ -200,9 +204,14 @@ const CHANGE = /^(actually|wait|instead|scratch that|change|make it|update|corre
 /** Route a human message that belongs to an existing task (answer, go, cancel, change). Returns true if consumed. */
 export async function routeFollowup(room: any, senderId: string, text: string, endpointId?: string | null) {
   const t = text.trim();
+  const agents = rt.roomAgents(room.id);
+  const addressed = agents.filter((a) => new RegExp(`(^|[^\\w])@?${a.name.replace(/[^\w]/g, "")}\\b`, "i").test(t)).map((a) => a.id);
+  const group = rt.roomHumanIds(room.id).length > 1 || agents.length > 1;
+  // A message is about a task only if it isn't addressed to a different agent; in groups it must be a bare reply or address the task's agent.
+  const fits = (run: any) => !addressed.some((x) => x !== run.agent_id) && (!group || addressed.includes(run.agent_id) || GO.test(t) || STOP.test(t));
   const waiting = one<any>(`select r.* from runs r join waits w on w.run_id=r.id where r.room_id=? and w.status='open' and w.kind in ('clarify','confirm')
     and (r.requested_by=? or r.requested_by is null) order by w.created_at desc limit 1`, room.id, senderId);
-  if (waiting) {
+  if (waiting && fits(waiting)) {
     if (GO.test(t)) return !("error" in confirmBrief(waiting.id, senderId, endpointId));
     if (STOP.test(t)) return !("error" in cancelBrief(waiting.id, senderId));
     return !("error" in reviseBrief(waiting.id, senderId, t, endpointId)); // answers to questions, or edits to the plan
@@ -210,7 +219,7 @@ export async function routeFollowup(room: any, senderId: string, text: string, e
   // Drift: the requester changes the requirement of work already in flight.
   const active = one<any>(`select * from runs where room_id=? and requested_by=? and parent_run_id is null and brief_status in ('auto','confirmed')
     and status not in ('completed','failed_terminal','cancelled') order by created_at desc limit 1`, room.id, senderId);
-  if (!active) return false;
+  if (!active || !fits(active)) return false;
   const r = await structured<{ is_change: boolean }>("fast", `An agent is working on: "${J(active.brief)?.goal}". Does this new message change or add to that same task's requirements (not a new, separate request)? {"is_change": boolean}`,
     t, () => ({ is_change: CHANGE.test(t) }), room.workspace_id);
   return r.is_change && !("error" in reviseBrief(active.id, senderId, t, endpointId));

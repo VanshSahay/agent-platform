@@ -123,6 +123,11 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-S10 | Rooms with outside guests and runs that read untrusted content can't write workspace memory. | §9.4, §21.2 |
 | AC-S11 | Instances only upgrade to reviewed, published template versions; a version under review doesn't delist the live one. | §18.4, §30 |
 | AC-S12 | Cross-workspace agents, drafting against another workspace's keys, and email header injection are refused. | §21.4, §8.4 |
+| AC-S13 | Cancelling a task while the model is thinking is final: the late answer can't resurrect it or create approvals. | §2.8 |
+| AC-S14 | A requirement change that lands mid-step wins: the stale step stops, approvals for the old requirement are withdrawn, and only the new action runs. | §35.1 |
+| AC-S15 | Only the agent's owner or a workspace admin can save a learned skill; examples come only from that room's member-requested runs. | §18.3, §21.1 |
+| AC-S16 | Messages addressed to another agent are never folded into someone else's pending task. | §15.2 |
+| AC-S17 | Unicode file names download correctly; free-time search inputs are bounded; finished tasks can't be cancelled again. | §21 |
 
 ## Quality gates
 

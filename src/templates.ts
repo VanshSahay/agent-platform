@@ -53,7 +53,7 @@ export function runSignature(toolNames: string[]) { return [...new Set(toolNames
 /** After the same kind of task succeeds 3 times, offer to save it as a skill (once per shape). */
 export function maybeSuggestSkill(run: any) {
   if (!run.signature || run.parent_run_id || run.kind === "schedule") return null;
-  const n = one<any>("select count(*) n from runs where agent_id=? and signature=? and status='completed'", run.agent_id, run.signature).n;
+  const n = one<any>("select count(*) n from runs where agent_id=? and room_id=? and signature=? and status='completed' and requested_by in (select user_id from memberships m where m.workspace_id=runs.workspace_id)", run.agent_id, run.room_id, run.signature).n;
   if (n < 3 || one("select 1 from custom_skills where agent_id=? and signature=?", run.agent_id, run.signature)
     || one("select 1 from events where type='SKILL_SUGGESTED' and actor=? and json_extract(data, '$.signature')=?", run.agent_id, run.signature)) return null;
   emit("SKILL_SUGGESTED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id, data: { signature: run.signature } });
@@ -63,9 +63,14 @@ export function maybeSuggestSkill(run: any) {
 export async function saveSkillFromRun(runId: string, userId: string, name?: string) {
   const run = one<any>("select * from runs where id=?", runId);
   if (!run?.signature) return { error: "that task has no reusable steps" };
+  // Saved skills shape the agent everywhere, so only the agent's creator or a workspace admin may add one.
+  const agent = one<any>("select * from agents where id=?", run.agent_id);
+  const admin = one("select 1 from memberships where workspace_id=? and user_id=? and role in ('owner','admin')", run.workspace_id, userId);
+  if (agent.created_by !== userId && !admin) return { error: "only the agent's owner or a workspace admin can save skills" };
   const existing = one<any>("select * from custom_skills where agent_id=? and signature=?", run.agent_id, run.signature);
   if (existing) return { skill: existing };
-  const examples = all<any>("select objective from runs where agent_id=? and signature=? and status='completed' order by created_at desc limit 5", run.agent_id, run.signature).map((r) => r.objective.split("\n")[0]);
+  // Examples come only from this room's runs requested by workspace members: no private-room leaks, no guest-written text.
+  const examples = all<any>("select objective from runs where agent_id=? and room_id=? and signature=? and status='completed' and requested_by in (select user_id from memberships m where m.workspace_id=runs.workspace_id) order by created_at desc limit 5", run.agent_id, run.room_id, run.signature).map((r) => r.objective.split("\n")[0]);
   const tools = run.signature.split(">");
   const fallback = () => ({
     name: name ?? (J(run.brief)?.goal ?? examples[0]).split(/\s+/).slice(0, 5).join(" "),
@@ -79,7 +84,7 @@ export async function saveSkillFromRun(runId: string, userId: string, name?: str
   emit("SKILL_SAVED", { workspace_id: run.workspace_id, room_id: run.room_id, actor: userId, data: { skill_id: sid, agent_id: run.agent_id, name: name ?? d.name } });
   return { skill: one<any>("select * from custom_skills where id=?", sid) };
 }
-export const customSkills = (agentId: string) => all<any>("select * from custom_skills where agent_id=? order by created_at", agentId).map((s) => ({ ...s, tools: J(s.tools, []) }));
+export const customSkills = (agentId: string) => all<any>("select id, agent_id, name, procedure, tools, created_by, created_at from custom_skills where agent_id=? order by created_at", agentId).map((s) => ({ ...s, tools: J(s.tools, []) }));
 
 const SKILL_STARTERS: Record<string, string> = {
   "web-research": "Research the latest on …", "email-triage": "What needs a reply in my inbox?", "email-drafting": "Email … about …",

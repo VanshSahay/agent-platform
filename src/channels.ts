@@ -282,7 +282,7 @@ export async function pressButton(data: string, userId: string, roomId: string, 
     return rt.decideApproval(objId, userId, action === "approve" ? "approve" : "reject", {}, endpointId);
   }
   if (roomOf("select room_id from runs where id=?") !== roomId) return { error: "that task isn't in this conversation" };
-  if (kind === "brf") return action === "go" ? intake.confirmBrief(objId, userId, endpointId) : intake.cancelBrief(objId, userId);
+  if (kind === "brf") return action === "go" ? intake.confirmBrief(objId, userId, endpointId) : action === "cancel" ? intake.cancelBrief(objId, userId) : { error: "unknown action" };
   if (kind === "skl") {
     if (action !== "save") return { ok: true };
     const r = await tpl.saveSkillFromRun(objId, userId);

@@ -175,15 +175,18 @@ export function addSpent(runId: string, d: { cost?: number; toolCalls?: number; 
   exec("update runs set spent=?, tainted=?, updated_at=? where id=?", S(s), r.tainted || d.tainted ? 1 : 0, now(), runId);
 }
 const setStatus = (runId: string, status: string, extra: { error?: string; result?: any } = {}) => {
-  exec("update runs set status=?, error=coalesce(?, error), result=coalesce(?, result), updated_at=?, completed_at=? where id=?",
-    status, extra.error ?? null, extra.result ? S(extra.result) : null, now(), ["completed", "failed_terminal", "cancelled"].includes(status) ? now() : null, runId);
+  // A finished run stays finished: late writers (an in-flight model call after a cancel) can't resurrect it.
+  return exec(`update runs set status=?, error=coalesce(?, error), result=coalesce(?, result), updated_at=?, completed_at=? where id=? and status not in ('completed','failed_terminal','cancelled')`,
+    status, extra.error ?? null, extra.result ? S(extra.result) : null, now(), ["completed", "failed_terminal", "cancelled"].includes(status) ? now() : null, runId).changes > 0;
 };
 export const appendStep = (runId: string, type: string, data: any) => exec("insert into run_steps (run_id, type, data, ts) values (?,?,?,?)", runId, type, S(data), now());
 export function appendToolResult(runId: string, call: { id: string; name: string }, content: string) {
   appendStep(runId, "tool_result", { callId: call.id, tool: call.name, content });
 }
 
+export const isFinished = (runId: string) => ["completed", "failed_terminal", "cancelled"].includes(one<any>("select status from runs where id=?", runId)?.status);
 export function createWait(run: any, w: { kind: string; reason: string; owner?: string; wake_key?: string; wake_at?: number; timeout_at?: number; on_timeout?: string }) {
+  if (isFinished(run.id)) return undefined;
   const wid = id("wait");
   exec("insert into waits (id, run_id, room_id, kind, reason, owner, wake_key, wake_at, timeout_at, on_timeout, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
     wid, run.id, run.room_id, w.kind, w.reason, w.owner ?? null, w.wake_key ?? null, w.wake_at ?? null, w.timeout_at ?? null, w.on_timeout ?? "resume", now());
@@ -227,6 +230,9 @@ export async function stepRun(runId: string) {
   const claimed = exec("update runs set status='running', updated_at=? where id=? and status='queued'", now(), runId);
   if (!claimed.changes) return; // someone else has it, or it's not runnable
   let run = one<any>("select * from runs where id=?", runId);
+  // After every await: if the run was cancelled or its requirement revised meanwhile, this step is stale — stop without writing.
+  const rev0 = run.rev ?? 0;
+  const live = () => { const r = one<any>("select status, rev from runs where id=?", runId); return r?.status === "running" && (r.rev ?? 0) === rev0; };
   const agent = one<any>("select * from agents where id=?", run.agent_id);
   const room = one<any>("select * from rooms where id=?", run.room_id);
   const budget = J(run.budget, DEFAULT_BUDGET);
@@ -235,14 +241,16 @@ export async function stepRun(runId: string) {
   if (now() - run.created_at > budget.maxWallClockSeconds * 1000) return fail(run, "run exceeded its wall-clock budget");
   // Requirement layer: brief -> clarify/confirm/auto before any tool runs.
   if (run.brief_status === "pending") {
-    if ((await intake.intake(run, agent, room)) === "wait") return;
+    if ((await intake.intake(run, agent, room, live)) === "wait" || !live()) return;
     run = one<any>("select * from runs where id=?", runId);
   }
 
   const runCalls = async (calls: any[], allowed: Set<string>) => {
     for (const c of calls) {
       run = one<any>("select * from runs where id=?", runId);
+      if (!live()) return "wait";
       const r = await executeToolCall(run, agent, room, c, allowed);
+      if (r.kind === "result" && !live()) return "wait"; // keep the audit trail, but don't continue a stale plan
       if (r.kind === "result") { appendToolResult(run.id, c, r.content); if (r.status === "SUCCEEDED") intake.markStep(run.id, c.name); }
       else if (r.kind === "wait") return "wait";
       else { createWait(run, { kind: "retry", reason: `retrying ${c.name}: ${r.reason}`, wake_at: now() + r.delayMs }); return "wait"; }
@@ -278,6 +286,7 @@ export async function stepRun(runId: string) {
       return;
     }
     addSpent(run.id, { cost: res.costUsd, modelCalls: 1 });
+    if (!live()) return; // cancelled or revised while the model was thinking: drop this answer
     appendStep(run.id, "assistant", { text: res.text, toolCalls: res.toolCalls, model: res.model, raw: res.raw });
     emit("MODEL_CALL", { ...base, data: { model: res.model, tool_calls: res.toolCalls.map((t) => t.name), usage: res.usage, cost_usd: res.costUsd } });
     if (!res.toolCalls.length) {
@@ -285,6 +294,7 @@ export async function stepRun(runId: string) {
       const b = J(run.brief);
       if (b?.done_when?.length && ["confirmed", "auto"].includes(run.brief_status) && !run.parent_run_id) {
         const v = await intake.verify(run, res.text);
+        if (!live()) return;
         const checks = (spent.verifications ?? 0) + 1;
         exec("update runs set spent=json_set(spent, '$.verifications', ?) where id=?", checks, run.id);
         emit("RESULT_CHECKED", { ...base, data: { pass: v.pass, missing: v.missing, acknowledged: v.acknowledged } });
@@ -310,7 +320,7 @@ function classify(runId: string, current: string) {
 }
 
 function complete(run: any, agent: any, room: any, text: string) {
-  setStatus(run.id, "completed", { result: { text, ...(J(run.result, {}) ?? {}) } });
+  if (!setStatus(run.id, "completed", { result: { text, ...(J(run.result, {}) ?? {}) } })) return;
   exec("update runs set kind=? where id=?", classify(run.id, run.kind), run.id);
   const used = all<any>("select tool_id from tool_executions where run_id=? and status='succeeded' order by created_at", run.id).map((x) => x.tool_id);
   exec("update runs set signature=? where id=?", runSignature(used) || null, run.id);
@@ -328,7 +338,7 @@ function complete(run: any, agent: any, room: any, text: string) {
 }
 
 function fail(run: any, reason: string) {
-  setStatus(run.id, "failed_terminal", { error: reason });
+  if (!setStatus(run.id, "failed_terminal", { error: reason })) return;
   emit("RUN_FAILED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id, data: { reason } });
   if (run.parent_run_id) signalEvent(`run:${run.id}`, `${nameOf(run.agent_id)} could not finish: ${reason}`);
   else postMessage(run.room_id, { sender: run.agent_id, text: `I couldn't finish that: ${reason}.`, runId: run.id, targets: replyTargets(run.room_id, run.origin_endpoint_id) });
@@ -353,6 +363,7 @@ export function canApprove(a: any, userId: string) {
 }
 
 export function requestApproval(run: any, agent: any, d: any, input: any, fp: string, strong: boolean, reason: string, conn: any) {
+  if (isFinished(run.id)) return undefined;
   const existing = one<any>("select * from approvals where run_id=? and fingerprint=? and status='pending'", run.id, fp);
   if (existing) return one<any>("select id from waits where wake_key=? and status='open'", `approval:${existing.id}`)?.id
     ?? createWait(run, { kind: "approval", reason: `approval: ${existing.summary}`, owner: J(existing.approvers, [])[0], wake_key: `approval:${existing.id}`, timeout_at: now() + 72 * 36e5, on_timeout: "expire" });

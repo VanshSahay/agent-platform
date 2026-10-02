@@ -353,7 +353,8 @@ export const routes: Record<string, any> = {
   "/v1/files/:id": { GET: h((req) => {
     const u = userOf(req), f = one<any>("select * from files where id=?", req.params.id) ?? fail(404, "not found");
     roomFor(f.room_id, u.id);
-    return new Response(f.data, { headers: { "content-type": f.mime, "content-disposition": `attachment; filename="${String(f.name).replace(/"/g, "")}"`, "x-content-type-options": "nosniff" } });
+    const ascii = String(f.name).replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
+    return new Response(f.data, { headers: { "content-type": f.mime, "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(f.name)}`, "x-content-type-options": "nosniff" } });
   }) },
   "/v1/rooms/:id/runs": { POST: h(async (req) => {
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);

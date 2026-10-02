@@ -222,7 +222,9 @@ export function freeSlots(busy: { start: number; end: number }[], from: number, 
 def({
   id: "calendar.find_free_time", description: "Find open meeting slots in working hours over the next days, optionally across attendees' calendars.", risk: "read", idempotency: "safe",
   defaultApproval: "none", requiresConnection: "google", inputSchema: obj({ days: num(), duration_minutes: num(), attendees: { type: "array", items: str() } }),
-  async execute({ days = 5, duration_minutes = 30, attendees = [] }, ctx) {
+  async execute(i, ctx) {
+    const days = Math.min(60, Math.max(1, Math.round(i.days ?? 5))), duration_minutes = Math.min(480, Math.max(5, Math.round(i.duration_minutes ?? 30)));
+    const attendees: string[] = (i.attendees ?? []).slice(0, 20);
     const timeMin = new Date(now()).toISOString(), timeMax = new Date(now() + days * 864e5).toISOString();
     const j: any = await (await call("https://www.googleapis.com/calendar/v3/freeBusy", { method: "POST", headers: await googleToken(ctx),
       body: S({ timeMin, timeMax, items: [{ id: "primary" }, ...attendees.map((id: string) => ({ id }))] }) })).json();
@@ -386,7 +388,7 @@ export function resolveConnection(provider: string, agentId: string, run: any, r
 
 export type GatewayResult =
   | { kind: "result"; content: string; status: string }
-  | { kind: "wait"; waitId: string }
+  | { kind: "wait"; waitId?: string }
   | { kind: "retry"; delayMs: number; reason: string };
 
 export async function executeToolCall(run: any, agent: any, room: any, call: { id: string; name: string; input: any }, allowedTools: Set<string>): Promise<GatewayResult> {
