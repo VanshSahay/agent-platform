@@ -84,7 +84,10 @@ export async function buildBrief(run: any, agent: any, room: any, prev?: Brief):
     .map((e) => `[${rt.nameOf(e.actor)}] ${J(e.data).text}`).join("\n");
   const input = `Agent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => TOOLS[x]).map((x) => `${x} (${TOOLS[x].risk})`).join(", ")}
 Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversation:\n${transcript}\n${prev ? `Previous brief: ${S(prev)}\n` : ""}Request from ${ctx.speaker}: ${run.objective}`;
-  const b = await structured<any>("standard", BRIEF_INSTRUCTION, input, () => heuristicBrief(run.objective, ctx), run.workspace_id);
+  // Short small talk with nothing actionable ("thanks!", "ok cool") doesn't need a model-drafted brief.
+  const quick = heuristicBrief(run.objective, ctx);
+  const smallTalk = !prev && quick.kind === "answer" && !quick.questions.length && run.objective.trim().split(/\s+/).length <= 4 && !run.objective.includes("?");
+  const b = smallTalk ? quick : await structured<any>("standard", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
   const arr = (x: any) => (Array.isArray(x) ? x : []);
   return {
     version: (prev?.version ?? 0) + 1, goal: String(b.goal ?? run.objective), deliverable: String(b.deliverable ?? ""),
