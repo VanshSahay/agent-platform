@@ -26,6 +26,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-B8 | Confirmation is decided by a deterministic policy with a per-agent mode (smart / always / never); a single external write relies on its approval card instead of asking twice. | §19.3 |
 | AC-B9 | Unanswered questions and unconfirmed plans expire after 72h instead of guessing. | §2.8 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
+| AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |
 
 ## Permissions & policy (§19)
@@ -62,6 +63,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-R6 | Wake conditions: time, recurring, timeout, event and state triggers create runs; proactive messages go to the last-used channel. | §37 |
 | AC-R7 | One agent in many rooms: room memory and work state never cross rooms. | §41 B |
 | AC-R8 | Model outage: retry with backoff, then fail terminally with a message. | §8.3 |
+| AC-R10 | Platform-hosted inference stops at the plan's monthly allowance with a clear message; BYOK usage isn't counted. | §22 |
 | AC-R9 | Cancelling a run cancels its waits and pending approvals. | §2.8 |
 
 ## Memory (§9, §15.4)

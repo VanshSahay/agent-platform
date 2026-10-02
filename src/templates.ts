@@ -7,6 +7,16 @@ import { defaultMode } from "./policy";
 import { structured } from "./model";
 import * as rt from "./runtime";
 
+// Plan limits (plan §22.1). ponytail: enforced here from the usage ledger; Stripe becomes a billing sink later.
+// monthlyModelUsd caps platform-hosted inference; BYOK usage isn't counted.
+export const PLANS: Record<string, { agents: number; channels: string[]; monthlyModelUsd: number | null }> = {
+  free: { agents: 2, channels: ["web", "telegram"], monthlyModelUsd: 2 },
+  personal: { agents: 5, channels: ["web", "telegram", "imessage", "email", "whatsapp"], monthlyModelUsd: 20 },
+  pro: { agents: 20, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone"], monthlyModelUsd: 60 },
+  team: { agents: 50, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone", "slack"], monthlyModelUsd: 250 },
+  enterprise: { agents: 1000, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone", "slack"], monthlyModelUsd: null },
+};
+
 export interface Skill { id: string; name: string; tools: string[]; procedure: string }
 export const SKILLS: Record<string, Skill> = Object.fromEntries(([
   ["web-research", "Web research", ["web.search", "web.fetch"], "Search, open the best sources, and answer with cited URLs. Prefer primary sources. Say what you could not verify."],
@@ -28,7 +38,7 @@ export const SKILLS: Record<string, Skill> = Object.fromEntries(([
   ["credential-followup", "Credential follow-up", ["task.create", "task.update", "email.draft", "email.send", "wait.for_reply"], "For each missing document, one task, one owner. Outreach is gated by approval and never to candidates a human has claimed."],
 ] as const).map(([sid, name, tools, procedure]) => [sid, { id: sid, name, tools: [...tools], procedure }]));
 
-export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update"];
+export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update", "files.read"];
 
 export function agentTools(agent: { skills: string | string[] }): Set<string> {
   const skills: string[] = typeof agent.skills === "string" ? J(agent.skills, []) : agent.skills;
@@ -36,7 +46,7 @@ export function agentTools(agent: { skills: string | string[] }): Set<string> {
 }
 
 // ---------- skills learned from repeated work (plan §11.3) ----------
-const NON_SIGNATURE = new Set([...CORE_TOOLS, "plan.update"]);
+const NON_SIGNATURE = new Set(CORE_TOOLS.filter((t) => t !== "files.read"));
 /** The shape of a run: the distinct non-bookkeeping tools it used, in order. */
 export function runSignature(toolNames: string[]) { return [...new Set(toolNames.filter((t) => !NON_SIGNATURE.has(t)))].join(">"); }
 

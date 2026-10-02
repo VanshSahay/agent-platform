@@ -3,12 +3,25 @@ import { all, one, exec, emit, id, now, S, J, seal, unseal, tx } from "./db";
 import * as rt from "./runtime";
 import * as ch from "./channels";
 import * as tpl from "./templates";
+import { PLANS } from "./templates";
 import * as mem from "./memory";
 import * as intake from "./intake";
 import { TOOLS } from "./tools";
 import app from "../public/index.html";
 
 type Req = Request & { params: Record<string, string> };
+/** Text for agents to read: PDFs via unpdf, text-like files as UTF-8; anything else is stored but unreadable. */
+async function extractText(name: string, mime: string, buf: Uint8Array) {
+  try {
+    if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
+      const { extractText: pdf, getDocumentProxy } = await import("unpdf");
+      const { text } = await pdf(await getDocumentProxy(buf), { mergePages: true });
+      return String(text).slice(0, 500_000);
+    }
+    if (/^text\/|json|xml|csv|markdown/.test(mime) || /\.(txt|md|csv|json|html?|xml|ya?ml|log|tsv)$/i.test(name)) return new TextDecoder().decode(buf).slice(0, 500_000);
+  } catch {}
+  return null;
+}
 const json = (d: any, status = 200) => Response.json(d, { status });
 const err = (status: number, error: string) => json({ error }, status);
 class HttpError extends Error { constructor(public status: number, msg: string) { super(msg); } }
@@ -67,14 +80,6 @@ function createWorkspace(name: string, kind: string, ownerId: string) {
   return one<any>("select * from workspaces where id=?", wid);
 }
 
-// Plan limits (plan §22.1). ponytail: enforced counts only; Stripe is a billing sink fed from the usage ledger later.
-const PLANS: Record<string, { agents: number; channels: string[] }> = {
-  free: { agents: 2, channels: ["web", "telegram"] },
-  personal: { agents: 5, channels: ["web", "telegram", "imessage", "email", "whatsapp"] },
-  pro: { agents: 20, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone"] },
-  team: { agents: 50, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone", "slack"] },
-  enterprise: { agents: 1000, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone", "slack"] },
-};
 
 function agentView(a: any) {
   return {
@@ -331,6 +336,25 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/agents/:id/custom-skills/:sid": { DELETE: h((req) => { const u = userOf(req); agentFor(req.params.id, u.id);
     exec("delete from custom_skills where id=? and agent_id=?", req.params.sid, req.params.id); return json({ ok: true }); }) },
+  "/v1/rooms/:id/files": { POST: h(async (req) => {
+    const u = userOf(req), r = roomFor(req.params.id, u.id);
+    const form = await req.formData().catch(() => fail(400, "multipart form with a file is required"));
+    const f = form.get("file") as File | null;
+    if (!f || typeof f === "string") fail(400, "file required");
+    if (f!.size > 15 * 1024 * 1024) fail(413, "files up to 15 MB");
+    const buf = new Uint8Array(await f!.arrayBuffer());
+    const fid = id("fil");
+    exec("insert into files values (?,?,?,?,?,?,?,?,?,?)", fid, r.workspace_id, r.id, f!.name, f!.type || "application/octet-stream", f!.size, buf, await extractText(f!.name, f!.type, buf), u.id, now());
+    const note = String(form.get("text") ?? "").trim();
+    const res = await rt.ingestMessage({ roomId: r.id, senderId: u.id, text: `${note || "Here's a file."}\n📎 ${f!.name} (file_id: ${fid})`, platform: "web" });
+    kick();
+    return json({ file_id: fid, ...res });
+  }) },
+  "/v1/files/:id": { GET: h((req) => {
+    const u = userOf(req), f = one<any>("select * from files where id=?", req.params.id) ?? fail(404, "not found");
+    roomFor(f.room_id, u.id);
+    return new Response(f.data, { headers: { "content-type": f.mime, "content-disposition": `attachment; filename="${String(f.name).replace(/"/g, "")}"`, "x-content-type-options": "nosniff" } });
+  }) },
   "/v1/rooms/:id/runs": { POST: h(async (req) => {
     const u = userOf(req), r = roomFor(req.params.id, u.id), b = await body(req);
     const a = agentFor(b.agent_id, u.id, r.workspace_id);

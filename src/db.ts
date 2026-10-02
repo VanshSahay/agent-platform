@@ -68,6 +68,8 @@ create table if not exists outbox (id text primary key, endpoint_id text, room_i
 
 create table if not exists custom_skills (id text primary key, agent_id text, workspace_id text, name text, procedure text, tools text, example text,
   signature text, created_by text, created_at int);
+create table if not exists files (id text primary key, workspace_id text, room_id text, name text, mime text, size int, data blob, text text,
+  uploaded_by text, created_at int);
 create table if not exists usage (id integer primary key autoincrement, workspace_id text, agent_id text, run_id text, kind text, qty real,
   cost_usd real default 0, byok int default 0, ts int);
 create table if not exists provider_keys (workspace_id text, provider text, key_enc text, primary key (workspace_id, provider));

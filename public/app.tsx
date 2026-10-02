@@ -426,7 +426,7 @@ function Room({ id }: { id: string }) {
               {apr ? <ApprovalCard a={{ ...apr, room_name: null }} onDone={load} />
                 : e.data.brief ? <BriefCard b={e.data.brief} onDone={load} onEdit={edit}
                     live={data.runs.find((r: any) => r.id === e.data.brief.run_id && ["proposed", "clarifying"].includes(r.brief_status) && r.brief?.version === e.data.brief.brief.version)} />
-                : <><div className="text">{e.data.text}</div>
+                : <><div className="text">{fileLinks(e.data.text)}</div>
                   {e.data.buttons?.length > 0 && isAgent && <div className="row mt8">{e.data.buttons.map((b: any) => <button key={b.data} className="btn sm"
                     onClick={async () => { try { await api(`/v1/rooms/${id}/buttons`, { data: b.data }); load(); } catch (x: any) { toast(x.message); } }}>{b.label}</button>)}</div>}</>}
             </div></div>;
@@ -434,7 +434,13 @@ function Room({ id }: { id: string }) {
       </div>
       {data.starters?.length > 0 && events.filter((e) => e.type === "message").length < 4 && <div className="row wrap" style={{ padding: "8px 16px 0", gap: 6 }}>
         <span className="small faint">Try:</span>{data.starters.map((s: string) => <button key={s} className="pill" style={{ cursor: "pointer", border: 0 }} onClick={() => edit(s.replace(/…/g, "").replace(/\s+/g, " ").trim() + (s.includes("…") ? " " : ""))}>{s}</button>)}</div>}
-      <div className="composer"><textarea ref={box} className="input" placeholder={agents.length > 1 || data.room.participation === "mention_only" && data.room.kind === "shared" ? `Message everyone… (mention ${agents.map((a: any) => "@" + a.name).join(", ")} to ask an agent)` : "Message…"} value={text}
+      {data.runs.some((r: any) => ["queued", "running", "retrying"].includes(r.status)) && <div className="small muted" style={{ padding: "4px 20px" }}>
+        {data.runs.filter((r: any) => ["queued", "running", "retrying"].includes(r.status)).map((r: any) => r.agent_name).join(", ")} is working…</div>}
+      <div className="composer"><label className="btn ghost" title="Attach a file" style={{ alignSelf: "center" }}>📎<input type="file" hidden onChange={async (e) => {
+          const f = e.target.files?.[0]; if (!f) return;
+          const fd = new FormData(); fd.append("file", f); fd.append("text", text); setText("");
+          const r = await fetch(`/v1/rooms/${id}/files`, { method: "POST", body: fd }); if (!r.ok) toast((await r.json()).error ?? "upload failed"); load(); e.target.value = ""; }} /></label>
+        <textarea ref={box} className="input" placeholder={agents.length > 1 || data.room.participation === "mention_only" && data.room.kind === "shared" ? `Message everyone… (mention ${agents.map((a: any) => "@" + a.name).join(", ")} to ask an agent)` : "Message…"} value={text}
         onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="btn primary" onClick={send}>Send</button></div>
     </div>
     <aside className="side">
@@ -457,6 +463,10 @@ function Room({ id }: { id: string }) {
     </aside>
     {trace && <Trace id={trace} onClose={() => setTrace(null)} />}
   </div>;
+}
+function fileLinks(text: string) {
+  const parts = text.split(/(📎 [^\n]+ \(file_id: fil_\w+\))/);
+  return parts.map((p, i) => { const m = p.match(/^📎 (.+) \(file_id: (fil_\w+)\)$/); return m ? <a key={i} className="pill accent" href={`/v1/files/${m[2]}`}>📎 {m[1]}</a> : p; });
 }
 function sysText(e: any) {
   const d = e.data;

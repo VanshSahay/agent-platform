@@ -154,6 +154,8 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   if (remember && has("memory.remember"))
     out.push({ name: "memory.remember", input: { text: remember[1], scope: /\b(team|everyone|workspace)\b/i.test(text) ? "workspace" : "room" } });
 
+  const file = text.match(/\(file_id: (fil_\w+)\)/)?.[1];
+  if (file && has("files.read")) out.push({ name: "files.read", input: { file_id: file } });
   const url = text.match(/https?:\/\/\S+/)?.[0];
   if (url && has("web.fetch")) out.push({ name: "web.fetch", input: { url } });
   else if (/\b(search|find|research|look up|compare|options?|hotels?|flights?|prices?|latest|news)\b/.test(t) && !rem && has("web.search"))
@@ -224,6 +226,7 @@ function summarize(tool: string, content: string) {
       return j.slots.length ? `Open ${j.duration_minutes}-minute slots:\n${j.slots.map((s: any) => `• ${new Date(s.start).toLocaleString()}`).join("\n")}` : "No open slots in working hours.";
     if (tool === "contacts.search" && Array.isArray(j.people)) return j.people.length ? `Found: ${j.people.map((p: any) => `${p.name} <${p.emails[0] ?? "no email"}>`).join(", ")}` : "No matching contacts.";
     if (tool === "drive.search" && Array.isArray(j.files)) return j.files.length ? `Found in Drive:\n${j.files.map((f: any) => `• ${f.name} — ${f.webViewLink}`).join("\n")}` : "Nothing matching in Drive.";
+    if (tool === "files.read") return `${j.name}: ${String(j.text).replace(/\s+/g, " ").slice(0, 700)}${j.more ? " …" : ""}`;
     if (tool === "drive.read") return `${j.name} (${j.link}):\n${String(j.text).slice(0, 600)}`;
     if (tool === "calendar.list_events" && Array.isArray(j.events))
       return j.events.length ? `Your upcoming events:\n${j.events.map((e: any) => `• ${e.summary} (${e.start})`).join("\n")}` : "Your calendar is clear.";

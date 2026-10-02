@@ -4,7 +4,7 @@
 // to Temporal when you need multiple workers or > ~50 runs/sec. The run/wait/step model below maps 1:1 onto workflow + signals.
 import { all, one, exec, emit, id, now, S, J, tx } from "./db";
 import { generate } from "./model";
-import { runSignature, maybeSuggestSkill } from "./templates";
+import { runSignature, maybeSuggestSkill, PLANS } from "./templates";
 import { buildContext } from "./context";
 import { executeToolCall, TOOLS } from "./tools";
 import { extractAfterTurn } from "./memory";
@@ -259,6 +259,12 @@ export async function stepRun(runId: string) {
     if (spent.modelCalls >= budget.maxModelCalls) break;
     if (spent.cost >= budget.maxModelCostUsd) return fail(run, `model cost budget ($${budget.maxModelCostUsd}) exhausted`);
     const c = buildContext(run, agent, room);
+    const cap = PLANS[one<any>("select plan from workspaces where id=?", run.workspace_id)?.plan ?? "free"]?.monthlyModelUsd;
+    if (cap != null) {
+      const d = new Date(now()); const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+      const spentMonth = one<any>("select coalesce(sum(cost_usd), 0) s from usage where workspace_id=? and byok=0 and ts>=?", run.workspace_id, monthStart).s;
+      if (spentMonth >= cap) return fail(run, `this workspace has used its $${cap} monthly AI allowance — add your own model key in Settings or upgrade the plan`);
+    }
     let res;
     try {
       res = await generate({ profile: agent.model_profile, system: c.system, messages: c.messages, tools: c.tools,
@@ -466,7 +472,10 @@ export async function tick() {
     n++;
   }
   for (const s of all<any>("select * from schedules where status='active' and next_at is not null and next_at<=?", t)) { fireSchedule(s); n++; }
-  for (const r of all<any>("select id from runs where status='queued' order by created_at")) { await stepRun(r.id); n++; }
+  // Runs step concurrently (a slow model call shouldn't block everyone); stepRun's atomic claim makes this safe.
+  const queued = all<any>("select id from runs where status='queued' order by created_at"), width = Number(process.env.WORKER_CONCURRENCY ?? 4);
+  for (let i = 0; i < queued.length; i += width) await Promise.all(queued.slice(i, i + width).map((r) => stepRun(r.id)));
+  n += queued.length;
   n += await channels.flushOutbox();
   return n;
 }

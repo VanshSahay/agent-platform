@@ -243,3 +243,28 @@ test("AC-EV2 a real run exports as a replayable golden case", async () => {
   const replay = await runCase(fromFile(c));
   expect(replay.pass).toBe(true);
 });
+
+test("AC-F1 files: upload text or PDF into a room, the agent reads it; files are room-scoped", async () => {
+  const { tinyPdf } = await import("./pdf");
+  const e = await signup("Ellie"), m = await signup("Mal");
+  const ag = await api("/v1/agents", { token: e.token, body: { workspace_id: e.ws, name: "Atlas", job: "research", skills: ["web-research"] } });
+  const room = (await api(`/v1/agents/${ag.data.id}/private-room`, { token: e.token, body: {} })).data;
+  const up = async (name: string, type: string, bytes: Uint8Array | string, text: string) => {
+    const fd = new FormData(); fd.append("file", new File([bytes as BlobPart], name, { type })); fd.append("text", text);
+    const r = await realFetch(new URL(`/v1/rooms/${room.id}/files`, server.url), { method: "POST", headers: { authorization: `Bearer ${e.token}` }, body: fd });
+    await settle(); return r.json() as any;
+  };
+  const t = await up("notes.txt", "text/plain", "Q3 revenue was $4.2M, up 18%.", "Summarize this");
+  const last = () => one<any>("select data from events where room_id=? and type='message' and actor=? order by seq desc limit 1", room.id, ag.data.id);
+  expect(J(last().data).text).toContain("Q3 revenue was $4.2M");
+  const p = await up("board.pdf", "application/pdf", tinyPdf("Board approved the Lisbon office"), "What does this say?");
+  expect(J(last().data).text).toContain("Board approved the Lisbon office");
+  expect((await api(`/v1/files/${t.file_id}`, { token: m.token })).status).toBe(404);
+  const dl = await realFetch(new URL(`/v1/files/${p.file_id}`, server.url), { headers: { authorization: `Bearer ${e.token}` } });
+  expect(dl.headers.get("content-type")).toBe("application/pdf");
+  // another room can't read it
+  const other = await api("/v1/rooms", { token: e.token, body: { workspace_id: e.ws, name: "Other", agent_ids: [ag.data.id], participation: "manager" } });
+  scriptModel(call("files.read", { file_id: t.file_id }), (r) => ({ text: r.messages.at(-1)!.content }));
+  await api(`/v1/rooms/${other.data.id}/messages`, { token: e.token, body: { text: "read that file" } }); await settle();
+  expect(J(one<any>("select data from events where room_id=? and type='message' and actor=? order by seq desc limit 1", other.data.id, ag.data.id).data).text).toMatch(/no such file in this room/);
+});

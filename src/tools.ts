@@ -312,6 +312,18 @@ def({
 });
 
 def({
+  id: "files.read", description: "Read the text of a file attached in this room (by file_id). Use offset to page through long files.", risk: "read",
+  idempotency: "safe", defaultApproval: "none", inputSchema: obj({ file_id: str(), offset: num("character offset") }, ["file_id"]),
+  async execute({ file_id, offset = 0 }, ctx) {
+    const f = one<any>("select name, mime, text from files where id=? and room_id=?", file_id, ctx.room.id);
+    if (!f) throw new ToolError("PERMISSION", "no such file in this room");
+    if (!f.text) throw new ToolError("BUSINESS_RULE", `can't read ${f.mime} files yet`);
+    const chunk = f.text.slice(offset, offset + 15000);
+    return { status: "SUCCEEDED", untrusted: true, output: { name: f.name, text: chunk, offset, total: f.text.length, more: offset + 15000 < f.text.length } };
+  },
+});
+
+def({
   id: "plan.update", description: "Update this task's plan: mark a step (1-based) done/skipped, or replace the remaining steps when the plan needs to change.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ step: num("1-based step number"), status: { type: "string", enum: ["done", "skipped", "todo"] }, replace_remaining: { type: "array", items: str() } }),

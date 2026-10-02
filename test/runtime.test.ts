@@ -173,3 +173,16 @@ test("AC-R9 cancelling a run cancels its waits and pending approvals", async () 
   expect(one<any>("select status from runs where id=?", run.id).status).toBe("cancelled");
   expect(pendingApprovals(room.id)).toHaveLength(0);
 });
+
+test("AC-R10 hosted inference stops at the plan's monthly allowance (BYOK isn't counted)", async () => {
+  const a = customAgent(ws, ellie, ["web-research"]);
+  const room = rt.privateRoomFor(ellie, a);
+  exec("update workspaces set plan='free' where id=?", ws);
+  exec("insert into usage (workspace_id, kind, qty, cost_usd, byok, ts) values (?, 'model_input_tokens', 1, 5, 1, ?)", ws, now()); // BYOK: ignored
+  scriptModel({ text: "fine" });
+  await say(room.id, ellie, "hello");
+  expect(lastFrom(room.id, a.id)).toBe("fine");
+  exec("insert into usage (workspace_id, kind, qty, cost_usd, byok, ts) values (?, 'model_input_tokens', 1, 2.5, 0, ?)", ws, now());
+  await say(room.id, ellie, "hello again");
+  expect(lastFrom(room.id, a.id)).toMatch(/used its \$2 monthly AI allowance/);
+});
