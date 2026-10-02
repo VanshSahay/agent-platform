@@ -47,7 +47,8 @@ const PLATFORM: Record<string, string> = { web: "Web", imessage: "iMessage", tel
 // ---------------- auth ----------------
 function QR({ value, size = 168 }: { value: string; size?: number }) {
   const q = qrcode(0, "M"); q.addData(value); q.make();
-  return <div style={{ width: size, height: size, background: "#fff", padding: 8, borderRadius: 10 }} dangerouslySetInnerHTML={{ __html: q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }) }} />;
+  const cell = Math.max(2, Math.floor(size / q.getModuleCount()));
+  return <div style={{ display: "inline-block", flexShrink: 0, lineHeight: 0, background: "#fff", padding: 8, borderRadius: 10 }} dangerouslySetInnerHTML={{ __html: q.createSvgTag(cell, 0) }} />;
 }
 
 function Landing({ onDone }: { onDone: () => void }) {
@@ -377,40 +378,47 @@ function Deploy({ a }: { a: any; reload: () => void }) {
   };
   if (!d) return null;
   const T = (p: string) => d.targets.find((t: any) => t.platform === p);
-  const Status = ({ t }: { t: any }) => t.connected?.length ? <span className="pill ok">Live · {t.connected.length}</span> : t.available ? <span className="pill">Ready</span> : <span className="pill">Not set up</span>;
-  const Connected = ({ t }: { t: any }) => t.connected?.length ? <div className="small mt8">{t.connected.map((c: any) => <div key={c.room_id + c.conv}>✓ {c.is_group ? "Group" : "Direct"} · <a href={`#/rooms/${c.room_id}`} style={{ textDecoration: "underline" }}>{c.room}</a></div>)}</div> : null;
-  const Code = ({ k }: { k: string }) => { const r = codes[k]; if (!r) return null;
-    return <div className="row mt8" style={{ alignItems: "flex-start", gap: 14 }}>{r.link && <QR value={r.link} size={132} />}<div className="col" style={{ gap: 6 }}>
-      <div className="small">{r.instructions}</div><div className="mono" style={{ fontSize: 14 }}>{r.message ?? r.address}</div>
-      {r.link && <a className="btn sm primary" href={r.link}>Open on this device</a>}{r.link && <div className="small faint">Or scan with your phone's camera.</div>}</div></div>; };
-  const Card = ({ p, title, children }: { p: string; title: string; children: ReactNode }) => <div className="card">
-    <div className="row between"><div className="row"><span style={{ fontSize: 20 }}>{PLATFORM_ICON[p]}</span><b>{title}</b></div><Status t={T(p)} /></div>{children}<Connected t={T(p)} /></div>;
   const unavailable = <div className="small muted mt8">Not configured on this platform yet. An admin can add the shared line, or use your own account under Advanced.</div>;
   return <>
     <p className="muted">One tap puts {a.name} where you already talk. Every channel reaches the same agent, memory and work.</p>
     <div className="grid2">
-      <Card p="web" title="Web"><div className="small muted mt8">Always on.</div><div className="row mt8"><a className="btn sm" href={T("web").url.replace(/^.*#/, "#")}>Open chat</a>
-        <button className="btn sm ghost" onClick={() => { navigator.clipboard?.writeText(T("web").url); toast("Link copied"); }}>Copy link</button></div></Card>
-      <Card p="mobile" title="Phone app"><div className="row mt8" style={{ gap: 14, alignItems: "flex-start" }}><QR value={T("mobile").url} size={112} /><div className="small muted">Scan to open {a.name} on your phone, then Share → <b>Add to Home Screen</b> for an app icon.</div></div></Card>
-      <Card p="imessage" title="iMessage">{T("imessage").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("imessage", "dm")}>Text {a.name} from my iPhone</button>
-        <button className="btn sm" onClick={() => get("imessage", "group")}>Add to a group chat</button></div><Code k="imessage:dm" /><Code k="imessage:group" /></> : unavailable}</Card>
-      <Card p="whatsapp" title="WhatsApp">{T("whatsapp").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("whatsapp", "dm")}>Chat on WhatsApp</button></div><Code k="whatsapp:dm" /></> : unavailable}</Card>
-      <Card p="telegram" title="Telegram">{T("telegram").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("telegram", "dm")}>Open in Telegram</button>
-        <button className="btn sm" onClick={() => get("telegram", "group")}>Add to a group</button></div><Code k="telegram:dm" /><Code k="telegram:group" /></> : unavailable}</Card>
-      <Card p="slack" title="Slack">{T("slack").available ? <div className="col mt8">
+      <DeployCard p="web" title="Web" t={T("web")}><div className="small muted mt8">Always on.</div><div className="row mt8"><a className="btn sm" href={T("web").url.replace(/^.*#/, "#")}>Open chat</a>
+        <button className="btn sm ghost" onClick={() => { navigator.clipboard?.writeText(T("web").url); toast("Link copied"); }}>Copy link</button></div></DeployCard>
+      <DeployCard p="mobile" title="Phone app" t={T("mobile")}><div className="row mt8" style={{ gap: 14, alignItems: "flex-start" }}><QR value={T("mobile").url} size={112} /><div className="small muted">Scan to open {a.name} on your phone, then Share → <b>Add to Home Screen</b> for an app icon.</div></div></DeployCard>
+      <DeployCard p="imessage" title="iMessage" t={T("imessage")}>{T("imessage").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("imessage", "dm")}>Text {a.name} from my iPhone</button>
+        <button className="btn sm" onClick={() => get("imessage", "group")}>Add to a group chat</button></div><CodeBox r={codes["imessage:dm"]} /><CodeBox r={codes["imessage:group"]} /></> : unavailable}</DeployCard>
+      <DeployCard p="whatsapp" title="WhatsApp" t={T("whatsapp")}>{T("whatsapp").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("whatsapp", "dm")}>Chat on WhatsApp</button></div><CodeBox r={codes["whatsapp:dm"]} /></> : unavailable}</DeployCard>
+      <DeployCard p="telegram" title="Telegram" t={T("telegram")}>{T("telegram").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("telegram", "dm")}>Open in Telegram</button>
+        <button className="btn sm" onClick={() => get("telegram", "group")}>Add to a group</button></div><CodeBox r={codes["telegram:dm"]} /><CodeBox r={codes["telegram:group"]} /></> : unavailable}</DeployCard>
+      <DeployCard p="slack" title="Slack" t={T("slack")}>{T("slack").available ? <div className="col mt8">
         {T("slack").installed.length ? <><div className="small muted">Installed in {T("slack").installed.map((x: any) => x.team).join(", ")}.</div>
           {chans ? <div className="col">{chans.map((c) => <div key={c.id} className="row"><span className="grow">#{c.name}</span>
             <button className="btn sm" onClick={async () => { try { await api(`/v1/agents/${a.id}/slack/channels`, { identity: c.identity, channel_id: c.id, name: c.name }); toast(`${a.name} joined #${c.name}`); reloadD(); } catch (e: any) { toast(e.message); } }}>Add</button></div>)}</div>
             : <button className="btn sm" onClick={async () => setChans(await api(`/v1/agents/${a.id}/slack/channels`))}>Pick channels…</button>}</> : null}
-        <a className="btn sm primary" style={{ alignSelf: "flex-start" }} href={T("slack").install_url}>{T("slack").installed.length ? "Add to another Slack" : "Add to Slack"}</a></div> : unavailable}</Card>
-      <Card p="email" title="Email">{T("email").available ? <div className="mt8">{T("email").address ? <div className="mono">{T("email").address}</div>
-        : <button className="btn sm primary" onClick={async () => { try { await api(`/v1/agents/${a.id}/deploy/email`, {}); reloadD(); } catch (e: any) { toast(e.message); } }}>Give {a.name} an email address</button>}</div> : unavailable}</Card>
+        <a className="btn sm primary" style={{ alignSelf: "flex-start" }} href={T("slack").install_url}>{T("slack").installed.length ? "Add to another Slack" : "Add to Slack"}</a></div> : unavailable}</DeployCard>
+      <DeployCard p="email" title="Email" t={T("email")}>{T("email").available ? <div className="mt8">{T("email").address ? <div className="mono">{T("email").address}</div>
+        : <button className="btn sm primary" onClick={async () => { try { await api(`/v1/agents/${a.id}/deploy/email`, {}); reloadD(); } catch (e: any) { toast(e.message); } }}>Give {a.name} an email address</button>}</div> : unavailable}</DeployCard>
     </div>
     <h2 style={{ cursor: "pointer" }} onClick={() => setAdv(!adv)}>{adv ? "▾" : "▸"} Advanced: use your own bot, number or line</h2>
     {adv && <ChannelsEditor a={a} reload={reloadD} />}
   </>;
 }
 
+// Top-level so background refreshes don't remount them (which would swap buttons out from under the user).
+function DeployCard({ p, title, t, children }: { p: string; title: string; t: any; children: ReactNode }) {
+  return <div className="card">
+    <div className="row between"><div className="row"><span style={{ fontSize: 20 }}>{PLATFORM_ICON[p]}</span><b>{title}</b></div>
+      {t.connected?.length ? <span className="pill ok">Live · {t.connected.length}</span> : t.available ? <span className="pill">Ready</span> : <span className="pill">Not set up</span>}</div>
+    {children}
+    {t.connected?.length ? <div className="small mt8">{t.connected.map((c: any) => <div key={c.room_id + c.conv}>✓ {c.is_group ? "Group" : "Direct"} · <a href={`#/rooms/${c.room_id}`} style={{ textDecoration: "underline" }}>{c.room}</a></div>)}</div> : null}
+  </div>;
+}
+function CodeBox({ r }: { r: any }) {
+  if (!r) return null;
+  return <div className="row mt8" style={{ alignItems: "flex-start", gap: 14 }}>{r.link && <QR value={r.link} size={132} />}<div className="col" style={{ gap: 6 }}>
+    <div className="small">{r.instructions}</div><div className="mono" style={{ fontSize: 14 }}>{r.message ?? r.address}</div>
+    {r.link && <a className="btn sm primary" href={r.link}>Open on this device</a>}{r.link && <div className="small faint">Or scan with your phone's camera.</div>}</div></div>;
+}
 function SetupChecklist({ a, onMessage }: { a: any; onMessage: () => void }) {
   const { ws } = useCtx();
   const needsGoogle = a.connections_needed.includes("google");

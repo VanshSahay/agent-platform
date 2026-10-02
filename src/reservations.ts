@@ -32,7 +32,7 @@ export function parseDates(text: string, base = now()): string[] {
   if (/\bthis weekend\b/.test(t)) for (const wd of [5, 6]) out.push(ymd(atDay(base, (wd - new Date(base).getDay() + 7) % 7)));
   for (const m of t.matchAll(new RegExp(`\\b(next\\s+)?(${WD.join("|")})s?\\b`, "g"))) {
     let add = (WD.indexOf(m[2]) - new Date(base).getDay() + 7) % 7;
-    if (m[1]) add += add === 0 ? 7 : 0;
+    if (m[1]) add += 7; // "next friday" = the friday of next week (cards always show the concrete date to correct)
     out.push(ymd(atDay(base, add)));
   }
   return [...new Set(out)];
@@ -212,7 +212,7 @@ export function registerReservationTools(def: (d: tools.ToolDef) => void) {
     id: "reservations.book", description: "Book a specific slot returned by reservations.search. Requires approval unless the person pre-approved limits that cover it.",
     risk: "write_external", riskOf: (i) => (Number(i.deposit_per_person ?? 0) > 0 ? "financial" : "write_external"), idempotency: "key_required", defaultApproval: "always",
     inputSchema: obj({ venue_id: str(), venue: str(), site: str(), date: str(), time: str("HH:MM"), party_size: num(), slot_id: str(), deposit_per_person: num(), watch_id: str() }, ["venue_id", "venue", "date", "time", "party_size"]),
-    summarize: (i) => `Book ${i.venue} on ${i.date} at ${i.time} for ${i.party_size}${Number(i.deposit_per_person) > 0 ? ` ($${i.deposit_per_person}/person deposit)` : ""}`,
+    summarize: (i) => `Book ${i.venue}, ${fmtDate(i.date)} at ${fmtTime(i.time)} for ${i.party_size}${Number(i.deposit_per_person) > 0 ? ` ($${i.deposit_per_person}/person deposit)` : ""}`,
     siteLogin: (i) => (String(i.venue_id).startsWith("sb-") ? undefined : `${i.site ?? String(i.venue_id).split(":")[0]}.com`),
     preApproved: (i, run) => standingFor(i, run),
     async execute(i, ctx) { return book({ ...i, __ws: ctx.run.workspace_id, __user: ctx.run.requested_by, __agent: ctx.agent.id }, ctx); },
@@ -240,7 +240,7 @@ export function registerReservationTools(def: (d: tools.ToolDef) => void) {
     id: "reservations.preauthorize", description: "Ask the person to pre-approve booking limits for a watch, so the table can be booked instantly when it opens. Use watch_id 'latest' for the watch just created.",
     risk: "financial", idempotency: "safe", defaultApproval: "always",
     inputSchema: obj({ watch_id: str(), max_deposit_per_person: num(), max_bookings: num() }, ["watch_id"]),
-    summarize: (i) => { const w = watchFor(i.watch_id); const c = J(w?.criteria, {}); return `Pre-approve booking ${c.query ?? "a table"} on ${(c.dates ?? []).join(", ")} ${c.time_from}–${c.time_to} for ${c.party_size}, deposit ≤ $${i.max_deposit_per_person ?? 0}/person, up to ${i.max_bookings ?? 1} booking`; },
+    summarize: (i) => { const w = watchFor(i.watch_id); const c = J(w?.criteria, {}); return `Pre-approve booking ${c.query ?? "a table"} — ${(c.dates ?? []).map(fmtDate).join(", ")}, ${c.time_from ? fmtTime(c.time_from) : ""}–${c.time_to ? fmtTime(c.time_to) : ""}, party of ${c.party_size}${Number(i.max_deposit_per_person ?? 0) > 0 ? `, deposit up to $${i.max_deposit_per_person}/person` : ", no deposit"}, ${i.max_bookings ?? 1} booking`; },
     async execute(i, ctx) {
       const w = watchFor(i.watch_id, ctx.agent.id, ctx.room.id);
       if (!w) throw new tools.ToolError("BUSINESS_RULE", "no such watch in this conversation");

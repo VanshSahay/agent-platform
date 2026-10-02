@@ -210,7 +210,10 @@ function localAgent(req: ModelRequest): Pick<ModelResult, "text" | "toolCalls"> 
       input: { to: [addr], subject: c.objective.match(/about ([^.,!?\n]+)/i)?.[1]?.trim() ?? "Quick follow-up", body: c.objective } }] };
   }
   if (done.length) {
-    const lines = done.map((m) => {
+    // Once something was actually done (sent, booked...), report that — not the lookups that led to it.
+    const isRead = (n?: string) => !!n && (/^(web|contacts|drive)\./.test(n) || /\.(search|list|status|read|list_events|find_free_time)$/.test(n));
+    const acted = done.filter((m) => !isRead(m.toolName) && !m.content.startsWith("DENIED"));
+    const lines = (acted.length && acted.length < done.length ? acted : done).map((m) => {
       if (m.content.startsWith("DENIED")) return `I didn't run ${m.toolName}: ${m.content.slice(8)}`;
       if (m.content.startsWith("REJECTED")) return `${m.toolName} was not approved, so I didn't do it.`;
       return summarize(m.toolName!, m.content);
@@ -231,6 +234,7 @@ function summarize(tool: string, content: string) {
   const body = content.replace(/^<untrusted[^>]*>\n?|\n?<\/untrusted>$/g, "");
   try {
     const j = JSON.parse(body);
+    if (j.simulated) return `🧪 Test mode — would ${String(j.would).charAt(0).toLowerCase()}${String(j.would).slice(1)}. Nothing was sent or booked.`;
     if (extraSummaries[tool]) return extraSummaries[tool](j);
     if (tool === "web.search" && Array.isArray(j.results))
       return `Here are the top results:\n${j.results.slice(0, 3).map((r: any, i: number) => `${i + 1}. ${r.title} — ${r.url}`).join("\n")}`;

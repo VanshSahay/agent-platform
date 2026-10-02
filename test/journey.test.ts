@@ -124,7 +124,7 @@ test("AC-J3 reservations: watch a hot spot, pre-approve limits once, it books th
 
   // A normal booking: options, then a one-tap approval.
   await text("+15557770001", "chat-r", "Book a table at Osteria Nove on Friday for 4 around 8");
-  expect(lastPhoton("chat-r")).toMatch(/Reese wants to: Book Osteria Nove on \d{4}-\d{2}-\d{2} at \d\d:\d\d for 4/);
+  expect(lastPhoton("chat-r")).toMatch(/Reese wants to: Book Osteria Nove, \w{3}, \w{3} \d+ at \d+:\d\d[ap]m for 4/);
   await text("+15557770001", "chat-r", "approve");
   expect(lastPhoton("chat-r")).toMatch(/🎉 Booked: Osteria Nove/);
 
@@ -158,7 +158,7 @@ test("AC-J4 reservations without pre-approval: you get a one-tap card the moment
   const kinjo = SANDBOX_VENUES.find((v) => v.id === "sb-kinjo")!;
   await text("+15557770002", "chat-k", `Watch Kinjo on ${date} for 2 between 7 and 9pm and tell me when something opens`);
   advance(releaseAt(kinjo, date) - now() + 2_000); await settle();
-  expect(lastPhoton("chat-k")).toMatch(/Book Kinjo .* \(\$50\/person deposit\)/); // deposit -> financial -> strong confirmation
+  expect(lastPhoton("chat-k")).toMatch(/Book Kinjo, .* \(\$50\/person deposit\)/); // deposit -> financial -> strong confirmation
   expect(lastPhoton("chat-k")).toMatch(/confirm \w{4}/);
   advance(3 * 60e3); await settle(); // they answer after the table is gone
   const c = lastPhoton("chat-k").match(/confirm (\w{4})/)?.[1] ?? all<any>("select id from approvals where status='pending'")[0].id.slice(-4);
