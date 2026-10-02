@@ -11,7 +11,7 @@ import { structured } from "./model";
 import * as channels from "./channels";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
-const WAIT_STATUS: Record<string, string> = { approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
+const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
   event: "waiting_for_external", agent: "waiting_for_agent", time: "scheduled", retry: "retrying" };
 
 // ---------------- principals ----------------
@@ -128,7 +128,19 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
       respond = r.relevant;
     }
     if (!respond) continue;
-    started.push(createRun({ room, agent: a, objective: i.text, requestedBy: i.senderId, triggerEventId: eventId, originEndpointId: i.endpointId ?? "web", tainted: i.untrusted }).id);
+    // Burst combining (plan §5.2): people text in bursts on messaging channels; fold them into one run.
+    const debounceMs = Number(process.env.DEBOUNCE_MS ?? 1500);
+    const burst = debounceMs > 0 && i.platform && !["web", "phone"].includes(i.platform);
+    const open = burst ? one<any>(`select w.id, w.run_id from waits w join runs r on r.id=w.run_id where w.kind='debounce' and w.status='open'
+      and r.room_id=? and r.agent_id=? and r.requested_by=?`, room.id, a.id, i.senderId) : null;
+    if (open) {
+      exec("update runs set objective=objective || char(10) || ? where id=?", i.text, open.run_id);
+      exec("update waits set wake_at=? where id=?", now() + debounceMs, open.id);
+      continue;
+    }
+    const run = createRun({ room, agent: a, objective: i.text, requestedBy: i.senderId, triggerEventId: eventId, originEndpointId: i.endpointId ?? "web", tainted: i.untrusted });
+    if (burst) createWait(run, { kind: "debounce", reason: "collecting message burst", wake_at: now() + debounceMs });
+    started.push(run.id);
   }
 
   // 4. Memory write pipeline (scoped, with provenance).

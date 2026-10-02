@@ -136,6 +136,8 @@ test("AC-PUB1 discovery lists curated first-party agents; install asks only for 
   const inst = await api("/v1/agent-templates/atlas-research/install", { token: e.token, body: { workspace_id: e.ws, answers: { research_style: "biotech" } } });
   expect(inst.data.agent.instructions).toContain("biotech");
   expect(inst.data.agent.template_version).toBe("1.4.3");
+  const relay = await api("/v1/agent-templates/relay-ops/install", { token: e.token, body: { workspace_id: e.ws } });
+  expect(relay.data.agent.schedules[0]).toMatchObject({ kind: "recurring", spec: { every: "weekdays", hour: 9 } }); // declared proactivity
 });
 
 test("AC-PUB2 fork copies configuration only; publishing is curated; risky manifests are flagged", async () => {

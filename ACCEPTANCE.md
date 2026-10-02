@@ -69,6 +69,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-C6 | Agent-owned mailbox: inbound email maps to a Room, quoted text is stripped, replies thread by subject with an idempotency key. | §6.5 |
 | AC-C7 | Phone: Twilio speech turns run through the same agent and Room; signatures are bound to the public URL. | §6.6 |
 | AC-C8 | Failed deliveries retry and give up after 5 attempts without blocking the run. | §5.3 |
+| AC-C9 | Rapid message bursts on a messaging channel are combined into a single run (debounce). | §5.2 |
 
 ## API, tenancy, public agents (§2.1, §18, §21.4, §22, §34, §38)
 

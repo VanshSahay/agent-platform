@@ -5,6 +5,7 @@ import { all, one, exec, id, now, S, J, tx, emit } from "./db";
 import { TOOLS } from "./tools";
 import { defaultMode } from "./policy";
 import { structured } from "./model";
+import * as rt from "./runtime";
 
 export interface Skill { id: string; name: string; tools: string[]; procedure: string }
 export const SKILLS: Record<string, Skill> = Object.fromEntries(([
@@ -87,7 +88,7 @@ export interface Manifest {
   name: string; slug: string; version: string; publisher: string; tagline: string; avatar?: string; title: string;
   job: string; scope?: string; instructions?: string; skills: string[]; permissions?: Record<string, string>;
   model_profile?: string; channels?: string[]; onboarding?: { id: string; question: string }[];
-  proactivity?: string[]; escalation?: string[]; memory_rules?: string[]; network?: string[]; evals?: string[]; pricing?: string; data_retention?: string;
+  proactivity?: string[]; schedules?: { every: "daily" | "weekdays"; hour: number; objective: string }[]; escalation?: string[]; memory_rules?: string[]; network?: string[]; evals?: string[]; pricing?: string; data_retention?: string;
 }
 
 export function validateManifest(m: Manifest): string[] {
@@ -101,6 +102,8 @@ export function validateManifest(m: Manifest): string[] {
     if (!tools.has(t)) errs.push(`permission for ${t} but no skill provides it`);
     if (!["auto", "first_time", "ask", "always_ask", "never"].includes(mode)) errs.push(`bad permission mode ${mode}`);
   }
+  for (const sc of m.schedules ?? [])
+    if (!["daily", "weekdays"].includes(sc.every) || !(sc.hour >= 0 && sc.hour < 24) || !sc.objective) errs.push("schedules need every (daily|weekdays), hour 0-23 and an objective");
   return errs;
 }
 
@@ -185,6 +188,11 @@ export function install(slug: string, workspaceId: string, userId: string, answe
   const agent = createAgent(workspaceId, userId, { name: m.name, title: m.title, job: m.job, instructions, skills: m.skills, permissions: m.permissions,
     model_profile: m.model_profile, template_id: t.id, template_version: m.version, onboarding: answers, avatar: m.avatar });
   exec("insert into installs values (?,?,?,?,?,?)", id("ins"), t.id, m.version, workspaceId, agent.id, now());
+  // Rule-triggered proactivity (plan §14): declared schedules wake the agent in the installer's private room.
+  if (m.schedules?.length) {
+    const room = rt.privateRoomFor(userId, agent);
+    for (const sc of m.schedules) rt.createSchedule({ agent_id: agent.id, room_id: room.id, kind: "recurring", spec: { every: sc.every, hour: sc.hour }, objective: sc.objective, created_by: userId });
+  }
   return { agent, connections: connectionsNeeded(m.skills), permissions: permissionTable(m.skills, m.permissions) };
 }
 

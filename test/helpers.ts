@@ -53,6 +53,7 @@ export const call = (name: string, input: any, cid = id("call")) => ({ toolCalls
 
 // ---------- world ----------
 export function setup() {
+  process.env.DEBOUNCE_MS = "0";
   openDb(":memory:"); resetClock(); hooks.model = null; net.reset(); fakeGoogle(); seedFirstParty();
 }
 export function user(name: string, email = `${name.toLowerCase()}@example.com`) {

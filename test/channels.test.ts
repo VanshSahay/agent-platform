@@ -133,3 +133,19 @@ test("AC-C8 failed deliveries retry and give up after 5 attempts without blockin
   expect(one<any>("select * from outbox")).toMatchObject({ status: "failed", attempts: 5 });
   expect(runsIn(one<any>("select room_id from room_endpoints").room_id)[0].status).toBe("completed");
 });
+
+test("AC-C9 message bursts on a messaging channel fold into one run", async () => {
+  const { advance } = await import("../src/db");
+  process.env.DEBOUNCE_MS = "1500";
+  const t = channel(agent.id, "telegram");
+  link("telegram", "3", ellie);
+  const seen = scriptModel({ text: "Got all three." });
+  await deliver("telegram", t.id, tg(3, 3, "Ellie", "hey"));
+  await deliver("telegram", t.id, tg(3, 3, "Ellie", "can you look into flights"));
+  await deliver("telegram", t.id, tg(3, 3, "Ellie", "to Tokyo in May"));
+  expect(seen).toHaveLength(0);
+  advance(1600); await rt.drain();
+  expect(all("select * from runs")).toHaveLength(1);
+  expect(seen[0].messages[0].content).toContain("hey\ncan you look into flights\nto Tokyo in May");
+  process.env.DEBOUNCE_MS = "0";
+});
