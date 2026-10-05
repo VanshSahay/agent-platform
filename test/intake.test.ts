@@ -1,8 +1,8 @@
 // Requirement layer: brief -> clarify/confirm/auto -> execute against the brief -> verify.
 import { test, expect, beforeEach } from "bun:test";
-import { one, all, J, exec, advance } from "../src/db";
+import { one, all, J, exec, advance, patchJson } from "../src/db";
 import * as rt from "../src/runtime";
-import { decide, heuristicBrief } from "../src/intake";
+import { decide, heuristicBrief, sideEffects } from "../src/intake";
 import { setup, user, workspace, customAgent, installAgent, googleConnection, say, scriptModel, call, net, pendingApprovals, runsIn, lastFrom, messages, channel, deliver, tg, link, events } from "./helpers";
 
 let ellie: string, ws: string;
@@ -27,7 +27,7 @@ test("AC-B1 every request gets a brief; chit-chat skips it, simple actions auto-
 test("AC-B2 missing essentials trigger one batched question; nothing runs until it's answered", async () => {
   const ava = installAgent("ava-executive-assistant", ws, ellie);
   googleConnection(ws, ellie, [ava.id]);
-  exec("update agents set permissions=json_set(permissions, '$.\"contacts.search\"', 'never') where id=?", ava.id); // no lookup -> must ask
+  patchJson("agents", "permissions", ava.id, (p) => ({ ...p, "contacts.search": "never" })); // no lookup -> must ask
   const room = rt.privateRoomFor(ellie, ava);
   await say(room.id, ellie, "Email Sam about moving our dinner to Friday");
   const run = runsIn(room.id)[0];
@@ -156,4 +156,18 @@ test("AC-K1 repeated successful work is offered as a reusable skill once, and sa
   await say(room.id, ellie, "Search for the latest news on fusion");
   expect(seen[0].system).toContain("[LEARNED_PROCEDURES");
   expect(await pressButton(offer[0].buttons[0].data, ellie, rt.privateRoomFor(user("Other"), atlas).id, null)).toHaveProperty("error"); // room-scoped
+});
+
+test("AC-B10 internal-only work (to-dos, reminders, lists) just runs; outside work and other people still get a plan; the agent knows today's date", async () => {
+  // The brief model calls a to-do and a reminder "side effects"; the planned tools say otherwise.
+  expect(sideEffects(["task.create", "reminder.schedule"], ["Adding a task", "Sending a notification"])).toEqual([]);
+  expect(sideEffects(["email.send", "calendar.create_event"], ["Email Sam", "Add event"])).toHaveLength(2);
+  const b = (plan: string[], side_effects: string[] = []) => ({ kind: "task", questions: [], side_effects, plan: plan.map((tool) => ({ text: tool, tool, status: "todo" })) } as any);
+  expect(decide(b(["task.create", "reminder.schedule", "list.add"]), { mode: "smart", revised: false })).toBe("auto");
+  expect(decide(b(["agent.delegate", "reminder.schedule"]), { mode: "smart", revised: false })).toBe("confirm");
+  expect(decide(b(["email.send", "calendar.create_event"], ["Email Sam", "Add event"]), { mode: "smart", revised: false })).toBe("confirm");
+  const ava = installAgent("ava-executive-assistant", ws, ellie);
+  const seen = scriptModel({ text: "ok" });
+  await say(rt.privateRoomFor(ellie, ava).id, ellie, "what day is it?");
+  expect(seen[0].system).toMatch(/\[CLOCK\]\nNow: \w+day, \w+ \d+, \d{4}/);
 });

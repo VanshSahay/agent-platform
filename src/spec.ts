@@ -1,0 +1,154 @@
+// Agent interpretation layer: a one-line request becomes an explicit Agent Spec the user confirms before anything is deployed —
+// what it understood, the jobs, routines it will run on its own, the gaps it needs filled, its boundaries, how we'll know it works,
+// and rehearsal scenarios that are run in the sandbox before it reaches a real chat.
+import { one, all, J, now } from "./db";
+import { structured, hasAnyModel } from "./model";
+import * as tpl from "./templates";
+import * as rt from "./runtime";
+
+export type Audience = "me" | "group" | "team";
+export interface Routine { every: "daily" | "weekdays" | "weekly"; day?: number; hour: number; objective: string }
+export interface Question { id: string; q: string; why: string; default?: string }
+export interface Scenario { say: string; expect: string }
+export interface AgentSpec {
+  name: string; title: string; avatar: string; audience: Audience; understanding: string; jobs: string[]; routines: Routine[];
+  questions: Question[]; boundaries: string[]; success: string[]; skills: string[]; connections: string[]; rehearsal: Scenario[]; tone: string;
+}
+
+const JOB: Record<string, string> = {
+  "web-research": "Looks things up and answers with sources", "source-verification": "Checks facts against the original source", "monitor-topic": "Watches the topics you care about and reports only real changes",
+  "email-triage": "Sorts your inbox into needs-reply, FYI and ignore", "email-drafting": "Drafts emails in your voice for you to approve", calendar: "Finds times and manages your calendar",
+  "meeting-prep": "Preps you before each meeting", "follow-up-tracking": "Chases people who owe a reply", reminders: "Reminds you (or the group) at the right moment", documents: "Finds and reads your documents",
+  reservations: "Finds tables and books them within limits you approve, watching sold-out spots", "group-buying": "Runs group orders: tally, deadline, who paid", browser: "Uses websites for you when there's no other way",
+  "task-tracking": "Keeps track of who's doing what", delegation: "Hands work to your other agents", "travel-planning": "Plans trips around everyone's preferences", "group-coordination": "Keeps the group on track and sums up status",
+  "candidate-matching": "Matches candidates to roles", "credential-followup": "Chases missing documents", polls: "Runs polls and RSVPs in the chat", "expense-splitting": "Splits costs and says who owes who, to the cent",
+  "shared-lists": "Keeps shared lists like groceries and packing",
+};
+// Gaps worth asking about before deploy, per ability. `skip` = the description already answers it.
+const ASK: Record<string, (Question & { skip?: RegExp })[]> = {
+  reservations: [{ id: "city", q: "Which city or neighborhoods?", why: "so it searches the right places", skip: /\b(in|near|around) [A-Z]/ },
+    { id: "party", q: "Usual party size?", why: "so it doesn't ask every time", default: "2", skip: /\bfor \d+\b|\bparty of\b/i },
+    { id: "budget", q: "Budget per person, and any deposit limit?", why: "it never books outside limits you set", default: "up to $100, no deposits without asking", skip: /\$\d+/ }],
+  "expense-splitting": [{ id: "pay", q: "How does the group pay each other (Venmo/Cash App handles)?", why: "so it can add pay links", skip: /venmo|cash ?app|paypal|zelle/i },
+    { id: "currency", q: "Currency?", why: "for amounts and rounding", default: "USD" }],
+  "group-buying": [{ id: "pay", q: "Where should people pay the organizer (e.g. venmo @name)?", why: "for pay links when an order closes", skip: /venmo|cash ?app|paypal/i }],
+  "monitor-topic": [{ id: "topics", q: "Which topics, sites or products should it watch?", why: "it only reports real changes on these" }],
+  "travel-planning": [{ id: "home", q: "Home airport or city?", why: "for flights and timing" }],
+  calendar: [{ id: "hours", q: "Your working hours?", why: "so it only proposes sensible times", default: "9am–6pm, weekdays" }],
+  "email-drafting": [{ id: "voice", q: "How should your emails sound?", why: "it drafts in your voice", default: "friendly, short, no fluff" }],
+  documents: [{ id: "sources", q: "Which docs should it answer from?", why: "answers stay grounded in your sources" }],
+};
+/** Restate the user's words back to them: "grab me a table for my friends" → "grab you a table for your friends". */
+export const toYou = (t: string) => t.replace(/\b(me|myself)\b/gi, "you").replace(/\bmy\b/gi, "your").replace(/\bmine\b/gi, "yours").replace(/\bI am\b/g, "you are").replace(/\bI'm\b/g, "you're").replace(/\bI\b/g, "you").replace(/\bwe\b/gi, "you").replace(/\bour\b/gi, "your").replace(/\bus\b/gi, "you");
+const WD = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/** Routines stated in plain words: "every morning", "weekdays at 8", "every Friday at 10am". */
+export function routinesFrom(text: string, objective: string): Routine[] {
+  const t = text.toLowerCase(), at = t.match(/\bat (\d{1,2})(?::\d\d)?\s*(am|pm)?\b/);
+  const hour = at ? (Number(at[1]) % 12) + (at[2] === "pm" ? 12 : 0) : /evening|night/.test(t) ? 19 : /afternoon/.test(t) ? 14 : 8;
+  const day = WD.findIndex((d) => new RegExp(`\\b(every|each|on) ${d}s?\\b|\\b${d}s\\b`).test(t));
+  if (day >= 0) return [{ every: "weekly", day, hour, objective }];
+  if (/\b(weekly|every week|each week)\b/.test(t)) return [{ every: "weekly", day: 1, hour, objective }];
+  if (/\b(weekdays?|every workday|monday to friday)\b/.test(t)) return [{ every: "weekdays", hour, objective }];
+  if (/\b(every (morning|day|evening|night)|daily|each (morning|day))\b/.test(t)) return [{ every: "daily", hour, objective }];
+  return [];
+}
+
+function heuristic(description: string, audience: Audience, draft: any): AgentSpec {
+  const skills: string[] = draft.skills;
+  const who = { me: "for you, 1:1", group: "in your group chat, for everyone in it", team: "for your team, in your shared channels" }[audience];
+  const questions = skills.flatMap((s) => ASK[s] ?? []).filter((q) => !q.skip?.test(description)).map(({ skip, ...q }) => q)
+    .filter((q, i, a) => a.findIndex((x) => x.id === q.id) === i).slice(0, 4);
+  const perms = tpl.permissionTable(skills);
+  const asks = perms.filter((p) => p.mode !== "auto" && p.mode !== "never").map((p) => `Asks you before it ${p.description.split(".")[0].replace(/^./, (c) => c.toLowerCase())}`);
+  const starters = [...new Set(skills.map((s) => SAMPLE[s]).filter(Boolean))].slice(0, 3);
+  return {
+    name: draft.name, title: draft.title, audience,
+    avatar: one<any>("select v.manifest from templates t join template_versions v on v.template_id=t.id and v.version=t.published_version where t.name=?", draft.name)?.manifest?.match(/"avatar":\s*"([^"]+)"/)?.[1] ?? "✨",
+    understanding: `You want ${draft.name} to ${toYou(draft.job.replace(/^./, (c: string) => c.toLowerCase()).replace(/\.$/, ""))}, ${who}.`,
+    jobs: skills.map((s) => JOB[s]).filter(Boolean).slice(0, 6),
+    routines: routinesFrom(description, description),
+    questions,
+    boundaries: [...asks.slice(0, 3), ...(skills.some((s) => ["reservations", "group-buying", "expense-splitting"].includes(s)) ? ["Never moves money: it shares pay links and tracks who paid"] : []),
+      audience === "group" ? "Only speaks in the group when someone asks it by name or votes/joins" : "Only acts for people in chats it's added to"],
+    success: audience === "group" ? ["Everyone can use it by name without setup", "No one has to keep a separate spreadsheet or tally"]
+      : audience === "team" ? ["Work gets tracked with an owner and nothing is dropped", "The team asks it instead of pinging each other"]
+      : ["It handles the request end to end, and only asks when it really needs you", "You get a clear result, not a to-do list"],
+    skills, connections: draft.connections ?? tpl.connectionsNeeded(skills),
+    rehearsal: (starters.length ? starters : [description.slice(0, 140)]).map((say) => ({ say, expect: "Does the right thing with its tools, or asks one clear question" })),
+    tone: audience === "group" ? "short, friendly, emoji-light; one message per reply" : "warm and concise",
+  };
+}
+// Concrete first messages used to rehearse each ability in the sandbox.
+const SAMPLE: Record<string, string> = {
+  reservations: "Find a table for 2 this Friday around 8pm", "expense-splitting": "I paid $90 for gas, split with everyone", polls: "Poll: dinner Friday or Saturday?",
+  "shared-lists": "Add milk, eggs and bread to the grocery list", "group-buying": "Let's do a group order of coffee 5lb bags $45 each, closes friday 6pm, venmo @maria",
+  reminders: "Remind me tomorrow to call the landlord", "web-research": "What are the best-reviewed ramen spots near Union Square?", "monitor-topic": "Every morning, check AI news and tell me what changed",
+  calendar: "When am I free for a 30 min call this week?", "email-triage": "What needs a reply in my inbox?", "travel-planning": "Find three hotel options in Lisbon for next weekend",
+  "task-tracking": "Track: Sam books the van, Leo brings the cooler", "meeting-prep": "Prep me for my next meeting",
+};
+
+/** Interpret a plain-words request into an Agent Spec (model when available, deterministic fallback otherwise). */
+export async function interpret(description: string, audience: Audience, workspaceId?: string): Promise<AgentSpec> {
+  const draft = await tpl.draftAgent(description, workspaceId);
+  const base = heuristic(description, audience, draft);
+  const s = await structured<AgentSpec>("standard",
+    `You turn a person's one-line request into a precise spec for a chat agent that will live ${audience === "group" ? "in a group chat" : audience === "team" ? "in a team's channels" : "in their 1:1 texts"}.
+Return JSON with: name (friendly first name), title, avatar (one emoji), understanding (1-2 sentences restating what they want in plain words, including anything implied),
+jobs (3-6 concrete things it will do), routines (things it should do on its own: [{every: "daily"|"weekdays"|"weekly", day?: 0-6 Sunday=0, hour: 0-23, objective}], only if implied),
+questions (max 4 gaps that genuinely change behaviour, each {id, q, why, default?}; don't ask what the request already says), boundaries (what it must never do or must ask first),
+success (2-3 observable signs it's working), skills (subset of [${Object.keys(tpl.SKILLS).join(", ")}]), rehearsal (2-3 realistic first messages {say, expect}), tone.`,
+    description, () => base, workspaceId);
+  // Trust nothing structural from the model: keep only known skills, sane routines, bounded lists.
+  const skills = (s.skills ?? []).filter((x) => tpl.SKILLS[x]);
+  return {
+    ...base, ...s,
+    audience, skills: skills.length ? skills : base.skills, connections: tpl.connectionsNeeded(skills.length ? skills : base.skills),
+    routines: (s.routines ?? []).filter((r) => ["daily", "weekdays", "weekly"].includes(r.every) && r.hour >= 0 && r.hour < 24 && r.objective && (r.every !== "weekly" || (r.day! >= 0 && r.day! < 7))).slice(0, 3),
+    questions: (s.questions ?? []).filter((q) => q?.id && q?.q).slice(0, 4), jobs: (s.jobs ?? base.jobs).slice(0, 6), rehearsal: (s.rehearsal ?? base.rehearsal).filter((r) => r?.say).slice(0, 3),
+  };
+}
+
+/** The confirmed spec + answers become the agent's standing instructions. */
+export function compile(spec: AgentSpec, answers: Record<string, string> = {}) {
+  const facts = spec.questions.map((q) => [q.q, (answers[q.id] ?? "").trim() || q.default]).filter(([, a]) => a);
+  return [`You are ${spec.name}, ${spec.title}. ${spec.understanding}`,
+    `What you do:\n${spec.jobs.map((j) => `- ${j}`).join("\n")}`,
+    facts.length && `What you know about the people you serve:\n${facts.map(([q, a]) => `- ${q} ${a}`).join("\n")}`,
+    `Boundaries:\n${spec.boundaries.map((b) => `- ${b}`).join("\n")}`,
+    `You're doing well when:\n${spec.success.map((b) => `- ${b}`).join("\n")}`,
+    `Tone: ${spec.tone}.`].filter(Boolean).join("\n\n");
+}
+
+/** Run each rehearsal message in the agent's sandbox room and grade what happened. Nothing leaves the platform. */
+export async function rehearse(agent: any, userId: string, room: any) {
+  const spec: AgentSpec | null = J(agent.spec, null);
+  const answers: Record<string, string> = (spec as any)?.answers ?? {};
+  const party = answers.party?.match(/\d+/)?.[0]; // rehearse with what the user told us, not the sample's defaults
+  // Without a spec, rehearse with concrete samples for its abilities, never starters with blanks ("…") filled by placeholder words.
+  const samples = [...new Set((J(agent.skills, []) as string[]).map((s) => SAMPLE[s]).filter(Boolean)), ...tpl.starters(agent).filter((s) => !s.includes("…"))];
+  const scenarios = (spec?.rehearsal?.length ? spec.rehearsal : samples.slice(0, 2).map((say) => ({ say, expect: "Does the right thing with its tools, or asks one clear question" })))
+    .map((sc) => party ? { ...sc, say: sc.say.replace(/\bfor 2\b/, `for ${party}`) } : sc);
+  const out = [];
+  for (const sc of scenarios) {
+    const since = now();
+    const { started } = await rt.ingestMessage({ roomId: room.id, senderId: userId, text: sc.say, platform: "web" });
+    await rt.drain();
+    // A plan that waits for "go" is fine behaviour; confirm it so the rehearsal shows the whole task.
+    for (const rid of started) if (one<any>("select brief_status from runs where id=?", rid)?.brief_status === "proposed") { (await import("./intake")).confirmBrief(rid, userId, null); await rt.drain(); }
+    const replies = all<any>("select data from events where room_id=? and actor=? and type='message' and ts>=? order by seq", room.id, agent.id, since).map((e) => J(e.data).text).filter(Boolean);
+    const tools = [...new Set(all<any>("select data from events where room_id=? and type='TOOL_CALL_REQUESTED' and ts>=?", room.id, since).map((e) => J(e.data).tool))];
+    const failed = started.some((rid) => one<any>("select status from runs where id=?", rid)?.status === "failed_terminal");
+    const approval = !!one("select 1 from approvals where room_id=? and status='pending' and created_at>=?", room.id, since);
+    const reply = replies.join("\n").slice(0, 600);
+    let verdict: "pass" | "warn" | "fail" = failed || !replies.length ? "fail" : tools.length || approval ? "pass" : /^got it\b/i.test(reply) ? "warn" : "pass";
+    let note = failed ? "the task failed" : !replies.length ? "no reply" : approval ? "asked for your approval first, as it should" : tools.length ? `used ${tools.join(", ")}` : verdict === "warn" ? "replied, but didn't do anything yet" : "answered directly";
+    if (hasAnyModel(agent.workspace_id) && verdict !== "fail") {
+      const j = await structured<{ pass: boolean; why: string }>("fast", `Grade an AI agent's reply in a rehearsal. Expected: ${sc.expect}. Return {"pass": boolean, "why": one short sentence}.`,
+        `User: ${sc.say}\nTools used: ${tools.join(", ") || "none"}\nAgent: ${reply}`, () => ({ pass: verdict === "pass", why: note }), agent.workspace_id);
+      verdict = j.pass ? "pass" : "warn"; note = j.why;
+    }
+    out.push({ say: sc.say, expect: sc.expect, reply, tools, verdict, note });
+  }
+  return out;
+}

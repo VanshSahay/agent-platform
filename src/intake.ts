@@ -1,6 +1,6 @@
 // Requirement layer: brief -> (clarify | confirm | auto) -> execute against the brief -> verify before "done".
 // The model drafts the brief; whether to stop and ask is decided deterministically here, never by the model.
-import { one, all, exec, emit, now, S, J } from "./db";
+import { one, all, exec, emit, now, S, J, patchJson, clockLine } from "./db";
 import { structured, plan as heuristicPlan } from "./model";
 import { TOOLS, getTool } from "./tools";
 import { agentTools } from "./templates";
@@ -32,7 +32,7 @@ const DONE_TEXT: Record<string, (i: any) => string> = {
 };
 
 /** Offline brief: deterministic, used without model keys and as the schema-complete fallback for model output. */
-export function heuristicBrief(objective: string, c: { tools: string[]; agents: string[]; speaker?: string; agentName: string; memories: string[] }): Omit<Brief, "version"> {
+export function heuristicBrief(objective: string, c: { tools: string[]; agents: string[]; speaker?: string; agentName: string; memories: string[]; roomId?: string }): Omit<Brief, "version"> {
   const text = objective.replace(/^@?\w+[,:]\s+/, "");
   const steps = heuristicPlan(objective, c);
   const t = text.toLowerCase();
@@ -69,7 +69,7 @@ const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief b
 {"goal": one sentence, "deliverable": what the person gets, "constraints": [hard requirements incl. budgets, dates, people, "don't ..." rules],
  "assumptions": [gaps you will fill with stated defaults or remembered preferences], "questions": [{"q": question, "default": suggested answer or null}] — ONLY questions whose answer would change the outcome and that can't be safely assumed; usually none,
  "side_effects": [each action that reaches outside the platform: sending, booking, creating events, paying],
- "done_when": [2-4 checkable success criteria], "plan": [{"text": step, "tool": tool id or null}] (2-7 steps, using only the listed tools),
+ "done_when": [2-4 checkable success criteria], "plan": [{"text": step in plain words the person would use — never tool names or ids, "tool": tool id or null}] (1-7 steps, using only the listed tools),
  "kind": "answer" (just reply) | "act" (a few tool actions) | "task" (multi-step, waits on people or days) | "schedule" (reminders/recurring)}`;
 
 export async function buildBrief(run: any, agent: any, room: any, prev?: Brief): Promise<Brief> {
@@ -79,16 +79,19 @@ export async function buildBrief(run: any, agent: any, room: any, prev?: Brief):
   const tools = [...agentTools(agent)].filter((t) => perms[t] !== "never" && (!getTool(t)?.requiresConnection || getTool(t)!.connectionId || connected.has(getTool(t)!.requiresConnection!)));
   const memories = retrieve(room, agent.id, run.objective, run.requested_by, 6).map((m) => m.text);
   const ctx = { tools, agents: all<any>("select name from agents where workspace_id=? and status='active'", agent.workspace_id).map((a) => a.name),
-    speaker: rt.nameOf(run.requested_by), agentName: agent.name, memories };
+    speaker: rt.nameOf(run.requested_by), agentName: agent.name, memories, roomId: room.id };
   const transcript = all<any>("select actor, data from events where room_id=? and type='message' order by seq desc limit 8", room.id).reverse()
     .map((e) => `[${rt.nameOf(e.actor)}] ${J(e.data).text}`).join("\n");
-  const input = `Agent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => getTool(x)).map((x) => `${x} (${getTool(x)!.risk})`).join(", ")}
+  const input = `${clockLine()}\nAgent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => getTool(x)).map((x) => `${x} (${getTool(x)!.risk})`).join(", ")}
 Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversation:\n${transcript}\n${prev ? `Previous brief: ${S(prev)}\n` : ""}Request from ${ctx.speaker}: ${run.objective}`;
   // Short small talk with nothing actionable ("thanks!", "ok cool") doesn't need a model-drafted brief.
   const quick = heuristicBrief(run.objective, ctx);
   const smallTalk = !prev && quick.kind === "answer" && !quick.questions.length && run.objective.trim().split(/\s+/).length <= 4 && !run.objective.includes("?");
-  const b = smallTalk ? quick : await structured<any>("standard", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
+  const b = smallTalk ? quick : await structured<any>(String(run.objective ?? "").length < 160 ? "fast" : "standard", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id); // short asks don't need the bigger model to brief
   const arr = (x: any) => (Array.isArray(x) ? x : []);
+  // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is
+  // decided by the tools in the plan: only external writes (send, book, create events, pay) count.
+  b.side_effects = sideEffects(arr(b.plan).map((p: any) => p?.tool).filter(Boolean), arr(b.side_effects));
   return {
     version: (prev?.version ?? 0) + 1, goal: String(b.goal ?? run.objective), deliverable: String(b.deliverable ?? ""),
     constraints: arr(b.constraints).map(String), assumptions: arr(b.assumptions).map(String), side_effects: arr(b.side_effects).map(String),
@@ -96,6 +99,11 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     questions: arr(b.questions).map((q: any) => (typeof q === "string" ? { q } : { q: String(q.q), default: q.default ?? undefined })).filter((q: any) => q.q),
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
   };
+}
+
+/** Planned tools decide what counts as a side effect: none of them writes outside the platform → nothing to sign off. */
+export function sideEffects(planTools: string[], claimed: any[]) {
+  return planTools.length && !planTools.some((t) => WRITE_RISKS.includes(getTool(t)?.risk ?? "")) ? [] : claimed;
 }
 
 /** Deterministic confirmation policy. */
@@ -106,7 +114,10 @@ export function decide(b: Brief, o: { mode: string; revised: boolean }): Decisio
   if (o.mode === "never") return "auto";
   if (o.revised && b.side_effects.length) return "confirm"; // requirement changed mid-flight: re-confirm before acting
   // A single external write is already gated by its own approval card (which shows the exact action); don't ask twice.
-  if (b.kind === "task" || b.side_effects.length >= 2) return "confirm";
+  // Multi-step work that reaches outside (external writes, other agents, waiting on people) shows the plan first;
+  // internal-only work (to-dos, reminders, lists, notes) just happens.
+  const involvesOthers = b.plan.some((p) => p.tool === "agent.delegate" || p.tool === "wait.for_reply");
+  if (b.side_effects.length >= 2 || (b.kind === "task" && (b.side_effects.length || involvesOthers))) return "confirm";
   return "auto";
 }
 
@@ -115,9 +126,11 @@ export function renderBrief(b: Brief, d: Decision, diff?: string[]) {
   if (d === "clarify")
     return `Before I start — ${b.goal}\n${b.questions.map((q, i) => `${i + 1}. ${q.q}${q.default ? ` (default: ${q.default})` : ""}`).join("\n")}\n` +
       (b.questions.every((q) => q.default) ? `Reply with answers, or "go" to use the defaults.` : "Reply with the answers.");
-  return `${diff?.length ? `Updated plan (${diff.join("; ")}).\n` : "Here's what I'll do: "}${b.goal}` + L("Deliverable", b.deliverable ? [b.deliverable] : []) +
-    L("Constraints", b.constraints) + L("Assuming", b.assumptions) + L("Will do (each needs your approval)", b.side_effects) + L("Done when", b.done_when) +
-    (b.plan.length ? `\nPlan:\n${b.plan.map((p, i) => `${i + 1}. ${p.text}`).join("\n")}` : "") + `\nReply "go" to start, or tell me what to change.`;
+  // Reads like a text from a person: what I'll do, what I'm assuming, what I'll check with you first. The full brief
+  // (deliverable, constraints, done-when) still drives the run and shows in the app's run view.
+  return `${diff?.length ? `Updated plan (${diff.join("; ")}).\n` : ""}${b.goal}` +
+    (b.plan.length ? `\nPlan:\n${b.plan.map((p, i) => `${i + 1}. ${p.text}`).join("\n")}` : "") +
+    L("Assuming", b.assumptions) + L("I'll check with you before", b.side_effects) + `\nReply "go" to start, or tell me what to change.`;
 }
 
 function diffBriefs(a: Brief | null, b: Brief) {
@@ -175,7 +188,7 @@ export function reviseBrief(runId: string, userId: string, text: string, endpoin
   const run = one<any>("select * from runs where id=?", runId);
   if (!run || ["completed", "failed_terminal", "cancelled"].includes(run.status)) return { error: "that task is finished" };
   if (!canDecide(run, userId)) return { error: `only ${rt.nameOf(run.requested_by)} can change this task` };
-  if (run.brief) exec("update runs set brief=json_set(brief, '$._revisedFrom', ?) where id=?", run.brief_status, runId);
+  if (run.brief) patchJson("runs", "brief", runId, (b) => ({ ...b, _revisedFrom: run.brief_status }));
   exec("update runs set objective=objective || char(10) || ?, brief_status='pending', origin_endpoint_id=coalesce(?, origin_endpoint_id) where id=?",
     `${run.brief_status === "clarifying" ? "Answer" : "Change"} from ${rt.nameOf(userId)}: ${text}`, endpointId ?? null, runId);
   exec("update runs set rev=coalesce(rev, 0)+1 where id=?", runId);
@@ -186,7 +199,7 @@ export function reviseBrief(runId: string, userId: string, text: string, endpoin
   // Close out tool calls the old requirement asked for, then tell the model what changed.
   for (const c of rt.pendingCalls(runId)) rt.appendToolResult(runId, c, "SUPERSEDED: the requirement changed before this ran; follow the updated brief.");
   if (["auto", "confirmed"].includes(run.brief_status)) rt.appendStep(runId, "signal", { text: `Requirement changed by ${rt.nameOf(userId)}: ${text}` });
-  exec("update runs set status='queued' where id=?", runId);
+  rt.requeue(runId);
   emit("BRIEF_REVISED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: runId, actor: userId, data: { text } });
   return { ok: true };
 }
