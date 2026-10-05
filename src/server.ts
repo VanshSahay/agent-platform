@@ -1,6 +1,6 @@
 // HTTP API (plan §34) + webhooks + web app.
 import { randomBytes, createHash } from "node:crypto";
-import { all, one, exec, emit, id, now, S, J, seal, unseal, tx, patchJson } from "./db";
+import { all, one, exec, emit, id, now, S, J, seal, unseal, tx, patchJson, setTz } from "./db";
 import * as rt from "./runtime";
 import * as ch from "./channels";
 import * as tpl from "./templates";
@@ -173,6 +173,7 @@ export const routes: Record<string, any> = {
   ...browserRoutes, // live-browser website logins (src/browser.ts)
   "/v1/health": { GET: () => json({ ok: true }) },
 
+  "/v1/me/tz": { POST: h(async (req) => { const u = userOf(req), b = await body(req); if (!setTz(u.id, String(b.tz ?? ""))) fail(400, "unknown time zone"); return json({ tz: b.tz }); }) },
   "/v1/auth/config": { GET: h(() => json({ clerk: clerkOn() ? clerkPublishableKey() : null })) },
   "/v1/auth/clerk": { POST: h(async (req) => {
     if (!clerkOn()) fail(404, "Clerk sign-in is not enabled");
@@ -226,7 +227,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/me": { GET: h((req) => {
     const u = userOf(req);
-    return json({ user: { id: u.id, name: u.name, email: u.email, platform_admin: admins().includes(u.email) },
+    return json({ user: { id: u.id, name: u.name, email: u.email, tz: u.tz ?? null, platform_admin: admins().includes(u.email) },
       workspaces: all<any>("select w.*, m.role, m.title from workspaces w join memberships m on m.workspace_id=w.id where m.user_id=? and w.kind!='trial' order by w.created_at", u.id),
       identities: all<any>("select platform, external_user_id, verified, display_name from external_identities where user_id=?", u.id) });
   }) },

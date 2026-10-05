@@ -1053,6 +1053,8 @@ function App() {
   const toast = (s: string) => { setMsg(s); setTimeout(() => setMsg(""), 2600); };
   const setWs = (w: string) => { localStorage.setItem("ws", w); setWsState(w); };
   useEffect(() => { if (me && !me.workspaces.find((w: any) => w.id === ws)) setWs(me.workspaces[0]?.id); }, [me]);
+  // Reminders and "Saturday 7pm" happen in your zone: the browser knows it.
+  useEffect(() => { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (me && tz && me.user.tz !== tz) api("/v1/me/tz", { tz }).catch(() => {}); }, [me?.user?.id]);
   const [home] = useApi<any>(me && ws ? `/v1/home?workspace=${ws}` : null, 5000);
   useEffect(() => { document.querySelector(".main")?.scrollTo(0, 0); }, [path]);
   // A template picked on the landing page before signing up gets installed right after.

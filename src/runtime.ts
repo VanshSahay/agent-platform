@@ -3,7 +3,7 @@
 // ponytail: a SQLite-backed run queue + timer table instead of Temporal; one worker process. Move RunWorkflow/RoomWorkflow
 // to Temporal when you need multiple workers or > ~50 runs/sec. The run/wait/step model below maps 1:1 onto workflow + signals.
 import * as billing from "./billing";
-import { all, one, exec, emit, id, now, S, J, tx, recordUsage, patchJson } from "./db";
+import { all, one, exec, emit, id, now, S, J, tx, recordUsage, patchJson, serverTz, zoned, fromZoned } from "./db";
 import { generate } from "./model";
 import { runSignature, maybeSuggestSkill, PLANS } from "./templates";
 import { buildContext } from "./context";
@@ -507,10 +507,17 @@ export function routeProfile(agent: any, run: any) {
 }
 
 // ---------------- schedules / wake conditions (plan §37) ----------------
-function nextRecurring(spec: { every: string; hour: number; day?: number }, after: number) {
-  const d = new Date(after); d.setMinutes(0, 0, 0); d.setHours(spec.hour);
-  while (+d <= after || (spec.every === "weekdays" && (d.getDay() === 0 || d.getDay() === 6)) || (spec.every === "weekly" && d.getDay() !== (spec.day ?? 1))) d.setDate(d.getDate() + 1);
-  return +d;
+const DAYS: Record<string, number[]> = { daily: [0, 1, 2, 3, 4, 5, 6], weekdays: [1, 2, 3, 4, 5], weekends: [0, 6] };
+/** Next fire time after `after`. spec: {interval_minutes} | {every: daily|weekdays|weekends|weekly, days?: [0-6], day?, hour, minute?, tz?}. */
+export function nextRecurring(spec: { every?: string; hour?: number; minute?: number; day?: number; days?: number[]; interval_minutes?: number; tz?: string }, after: number) {
+  if (spec.interval_minutes) return after + Math.max(15, spec.interval_minutes) * 6e4;
+  const tz = spec.tz ?? serverTz(), days = spec.days?.length ? spec.days : spec.every === "weekly" ? [spec.day ?? 1] : DAYS[spec.every ?? "daily"] ?? DAYS.daily;
+  const z = zoned(after, tz);
+  for (let k = 0; k < 8; k++) {
+    const t = fromZoned(z.y, z.mo, z.d + k, spec.hour ?? 9, spec.minute ?? 0, tz);
+    if (t > after && days.includes(zoned(t, tz).dow)) return t;
+  }
+  return after + 864e5;
 }
 export function createSchedule(s: { agent_id: string; room_id: string; kind: string; spec: any; objective: string; created_by?: string | null }) {
   const sid = id("sch");

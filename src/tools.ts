@@ -1,5 +1,5 @@
 // Tool contract + Tool Gateway (plan §10). Every call: schema validation -> policy -> approval -> credential resolution -> idempotent execute -> audit.
-import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage } from "./db";
+import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage, tzOf, setTz, zoned, fromZoned, fmtLocal } from "./db";
 import { evaluatePolicy, type Risk } from "./policy";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -104,6 +104,14 @@ export async function runBrowser(task: string, start_url: string | undefined, ct
     let parsed: any = null; try { parsed = JSON.parse(r.text.match(/\{[\s\S]*\}/)?.[0] ?? ""); } catch {}
     return { status: r.isError ? "failed" : "succeeded", output: parsed ?? r.text.slice(0, 20000), via: m.conn.label };
   }
+  if (!process.env.BROWSER_TASK_URL && process.env.BROWSERBASE_API_KEY) { // built-in runner (src/browser-agent.ts)
+    const { runBrowserTask } = await import("./browser-agent");
+    recordUsage({ workspace_id: ctx.run.workspace_id, agent_id: ctx.agent.id, run_id: ctx.run.id, kind: "browser_tasks", qty: 1 });
+    const site = ctx.siteLogin?.site;
+    const r = await runBrowserTask({ task, startUrl: start_url ?? (site ? `https://${site}` : undefined), workspaceId: ctx.run.workspace_id, agentId: ctx.agent.id, runId: ctx.run.id,
+      allowedDomains: site ? [site] : undefined, secrets: ctx.siteLogin ? { username: ctx.siteLogin.username, password: ctx.siteLogin.password } : undefined, deadlineMs: BROWSER_TIMEOUT() - 20_000 });
+    return { ...r, output: r.result };
+  }
   if (process.env.BROWSER_TASK_URL) {
     const r = await call(process.env.BROWSER_TASK_URL, { method: "POST", write: true, timeoutMs: BROWSER_TIMEOUT(), headers: { "content-type": "application/json", "idempotency-key": ctx.idempotencyKey,
       authorization: `Bearer ${process.env.BROWSER_TASK_KEY ?? ""}` }, body: S({ task, start_url, secrets: ctx.siteLogin ? { username: ctx.siteLogin.username, password: ctx.siteLogin.password } : undefined,
@@ -118,7 +126,6 @@ export async function runBrowser(task: string, start_url: string | undefined, ct
 async function runOnLogin(task: string, start_url: string | undefined, ctx: ToolCtx, login: BrowserLogin) {
   const m = browserMcp(ctx.agent.id), mcpProps = m && (J(m.conn.config, {}).tools ?? []).find((t: any) => t.name === m.tool)?.inputSchema?.properties;
   const useMcp = !!mcpProps?.contextId, http = process.env.BROWSER_TASK_URL;
-  if (!useMcp && !http) throw new ToolError("BUSINESS_RULE", `connect a browser runner (Connections → MCP server that accepts a Browserbase contextId, or BROWSER_TASK_URL) to use the ${login.site} login`);
   if (!useMcp && !process.env.BROWSERBASE_API_KEY) throw new ToolError("BUSINESS_RULE", "Browserbase isn't set up on this server (BROWSERBASE_API_KEY)");
   const record = (session_id: string | null, status: string) => {
     const bid = id("bbs");
@@ -139,24 +146,34 @@ async function runOnLogin(task: string, start_url: string | undefined, ctx: Tool
       return { status: r.isError ? "failed" : "succeeded", output: parsed ?? r.text.slice(0, 20000), via: m!.conn.label };
     }
     const probe = loginProbe(login.site, login.config);
-    // keepAlive only when the probe and the task share the session; otherwise it ends when the runner disconnects.
-    const session_id = await bb.createSession({ contextId: login.context_id, persist: true, keepAlive: !!probe, timeoutSec: 900 })
+    // keepAlive only when an HTTP runner's probe and task use separate connections; otherwise the session ends on disconnect.
+    const session_id = await bb.createSession({ contextId: login.context_id, persist: true, keepAlive: !!probe && !!http, timeoutSec: 900 })
       .catch((e: any) => { throw new ToolError("BUSINESS_RULE", `couldn't start a browser session: ${e.message}`); });
     const replay_url = bb.replayUrl(session_id), end = record(session_id, "running"), browserbase = { context_id: login.context_id, session_id };
-    const runner = async (body: any, key: string, write: boolean) => (await call(http!, { method: "POST", write, timeoutMs: BROWSER_TIMEOUT(), headers: { "content-type": "application/json", "idempotency-key": key,
+    // Built-in runner unless an HTTP runner is configured: same probe → task flow, on this session.
+    // (The built-in runner does the logged-out pre-flight on the task's own connection: sessions without keepAlive end on disconnect.)
+    const builtin = async (body: any) => {
+      const { runBrowserTask } = await import("./browser-agent");
+      const r = await runBrowserTask({ task: body.task, startUrl: body.start_url ?? `https://${login.site}`, sessionId: session_id, allowedDomains: [login.site], probe: probe ?? undefined,
+        workspaceId: ctx.run.workspace_id, agentId: ctx.agent.id, runId: ctx.run.id, deadlineMs: BROWSER_TIMEOUT() - 20_000 });
+      return { ...r, output: r.result };
+    };
+    const runner = async (body: any, key: string, write: boolean) => !http ? builtin(body) : (await call(http!, { method: "POST", write, timeoutMs: BROWSER_TIMEOUT(), headers: { "content-type": "application/json", "idempotency-key": key,
       authorization: `Bearer ${process.env.BROWSER_TASK_KEY ?? ""}` }, body: S({ ...body, allowed_domains: [login.site], browserbase }) })).json();
     let status = "failed";
     try {
-      if (probe) { // pre-flight: the runner opens probe.url and reports where it landed ({url, title}); we never attempt a login
+      const expired = () => {
+        status = "logged_out";
+        exec("update connections set status='needs_reauth' where id=?", login.id);
+        emit("CONNECTION_NEEDS_REAUTH", { workspace_id: ctx.run.workspace_id, room_id: ctx.run.room_id, run_id: ctx.run.id, data: { connection_id: login.id, site: login.site, replay_url } });
+        return new ToolError("BUSINESS_RULE", `the ${login.site} login has expired. The owner needs to reconnect it (Connections → ${login.site} → Reconnect); the task was not run. Replay: ${replay_url}`);
+      };
+      if (probe && http) { // pre-flight: the runner opens probe.url and reports where it landed ({url, title}); we never attempt a login
         const p: any = await runner({ probe: { url: probe.url } }, `${ctx.idempotencyKey}:probe`, false);
-        if (probe.pattern.test(`${p?.url ?? p?.output?.url ?? ""} ${p?.title ?? p?.output?.title ?? ""}`)) {
-          status = "logged_out";
-          exec("update connections set status='needs_reauth' where id=?", login.id);
-          emit("CONNECTION_NEEDS_REAUTH", { workspace_id: ctx.run.workspace_id, room_id: ctx.run.room_id, run_id: ctx.run.id, data: { connection_id: login.id, site: login.site, replay_url } });
-          throw new ToolError("BUSINESS_RULE", `the ${login.site} login has expired. The owner needs to reconnect it (Connections → ${login.site} → Reconnect); the task was not run. Replay: ${replay_url}`);
-        }
+        if (probe.pattern.test(`${p?.url ?? p?.output?.url ?? ""} ${p?.title ?? p?.output?.title ?? ""}`)) throw expired();
       }
       const j: any = await runner({ task, start_url }, ctx.idempotencyKey, true);
+      if (j?.status === "logged_out") throw expired(); // built-in runner: same check, on the task's own connection
       status = j?.status === "succeeded" ? "completed" : j?.status ?? "unknown";
       return { ...j, replay_url };
     } catch (e: any) {
@@ -256,7 +273,7 @@ def({
   siteLogin: (i) => i.site ?? (i.start_url ? hostOf(i.start_url) : undefined),
   async execute({ task, start_url }, ctx) {
     const j = await runBrowser(task, start_url, ctx);
-    if (j) return { status: j.status === "succeeded" ? "SUCCEEDED" : j.status === "partial" ? "PARTIAL" : j.status === "failed" ? "FAILED" : "UNKNOWN", untrusted: true, output: j };
+    if (j) return { status: j.status === "succeeded" ? "SUCCEEDED" : ["partial", "needs_confirmation", "blocked"].includes(j.status) ? "PARTIAL" : j.status === "failed" ? "FAILED" : "UNKNOWN", untrusted: true, output: j };
     if (!start_url) throw new ToolError("BUSINESS_RULE", "browser runtime not configured; provide start_url for read-only mode");
     const out = await TOOLS["web.fetch"].execute({ url: start_url }, { ...ctx, siteLogin: undefined });
     return { ...out, status: "PARTIAL", output: { note: "read-only browser fallback", ...out.output } };
@@ -399,13 +416,32 @@ def({
 });
 
 def({
-  id: "reminder.schedule", description: "Schedule a reminder or recurring wake-up for this room. The agent wakes at that time with the text as its objective.",
+  id: "reminder.schedule", description: "Schedule a one-off reminder or a recurring wake-up for this room, in the requester's time zone. The agent wakes then with the text as its objective. One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes for intervals (e.g. 180 = every 3 hours). Confirm the returned next time back to the person.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
-  inputSchema: obj({ text: str(), in_minutes: num(), at: str("ISO datetime"), recurring: { type: "string", enum: ["daily", "weekdays"] }, hour: num("hour of day for recurring") }, ["text"]),
+  inputSchema: obj({ text: str(), in_minutes: num(), at: str("ISO datetime, with offset if known"), recurring: { type: "string", enum: ["daily", "weekdays", "weekends", "weekly"] },
+    days: { type: "array", items: { type: "string", enum: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] } }, time: str("HH:MM, 24h, local"), hour: num("hour of day (if no time)"), every_minutes: num("repeat interval, minimum 15") }, ["text"]),
   async execute(i, ctx) {
-    const s = rt.createSchedule({ agent_id: ctx.agent.id, room_id: ctx.room.id, created_by: ctx.run.requested_by, objective: i.text,
-      kind: i.recurring ? "recurring" : "time", spec: i.recurring ? { every: i.recurring, hour: i.hour ?? 9 } : { at: i.at ? Date.parse(i.at) : now() + (i.in_minutes ?? 60) * 6e4 } });
-    return { status: "SUCCEEDED", output: { schedule_id: s.id, next_at: s.next_at, text: i.text } };
+    const tz = tzOf(ctx.run.requested_by);
+    const [hh, mm] = String(i.time ?? "").match(/^(\d{1,2}):(\d{2})$/)?.slice(1).map(Number) ?? [i.hour ?? 9, 0];
+    const days = (i.days ?? []).map((d: string) => ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(String(d).slice(0, 3).toLowerCase())).filter((d: number) => d >= 0);
+    const recurring = !!(i.recurring || days.length || i.every_minutes);
+    // "at" without an offset is wall-clock time in the person's zone, not the server's.
+    const at = i.at ? (/[zZ]|[+-]\d\d:?\d\d$/.test(i.at) ? Date.parse(i.at) : (() => { const m = String(i.at).match(/(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)/); return m ? fromZoned(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], tz) : Date.parse(i.at); })()) : now() + (i.in_minutes ?? 60) * 6e4;
+    if (!recurring && !(at > now())) throw new ToolError("BUSINESS_RULE", "that time is in the past; pick a future time");
+    const spec = i.every_minutes ? { interval_minutes: Math.max(15, Number(i.every_minutes)) }
+      : recurring ? { every: i.recurring ?? "daily", ...(days.length ? { days } : {}), ...(i.recurring === "weekly" && !days.length ? { day: zoned(now(), tz).dow } : {}), hour: hh, minute: mm, tz }
+      : { at };
+    const s = rt.createSchedule({ agent_id: ctx.agent.id, room_id: ctx.room.id, created_by: ctx.run.requested_by, objective: i.text, kind: recurring ? "recurring" : "time", spec });
+    return { status: "SUCCEEDED", output: { schedule_id: s.id, next: fmtLocal(s.next_at, tz), time_zone: tz, repeats: recurring, text: i.text } };
+  },
+});
+
+def({
+  id: "settings.timezone", description: "Set the requester's time zone (IANA name, e.g. America/Los_Angeles) when they tell you where they are or which zone they're in. Reminders and times use it.",
+  risk: "write_internal", idempotency: "safe", defaultApproval: "none", inputSchema: obj({ tz: str("IANA zone, e.g. America/New_York") }, ["tz"]),
+  async execute({ tz }, ctx) {
+    if (!ctx.run.requested_by || !setTz(ctx.run.requested_by, tz)) throw new ToolError("BUSINESS_RULE", `unknown time zone "${tz}"; use an IANA name like America/Chicago`);
+    return { status: "SUCCEEDED", output: { tz, now_there: fmtLocal(now(), tz) } };
   },
 });
 

@@ -7,8 +7,14 @@ import { assertPublicUrl } from "./tools";
 
 const API = "https://api.browserbase.com/v1";
 
-async function bbCall<T = any>(path: string, init: RequestInit = {}): Promise<T> {
+async function bbCall<T = any>(path: string, init: RequestInit = {}, tries = 4): Promise<T> {
   const r = await fetch(`${API}${path}`, { ...init, headers: { "X-BB-API-Key": process.env.BROWSERBASE_API_KEY ?? "", "content-type": "application/json" }, signal: AbortSignal.timeout(20000) });
+  // Plans cap new sessions per minute (free: 5/min): wait as long as Browserbase says, then retry.
+  if (r.status === 429 && tries > 1) {
+    const wait = Number((await r.text()).match(/in (\d+) seconds/)?.[1] ?? 15);
+    await new Promise((res) => setTimeout(res, Math.min(60, wait + 1) * 1000));
+    return bbCall<T>(path, init, tries - 1);
+  }
   // Browserbase's own message matters ("plan does not include keepAlive" vs "invalid uuid" need different fixes).
   if (!r.ok) throw new Error(`Browserbase ${init.method ?? "GET"} ${path} →${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json() as Promise<T>;
@@ -22,6 +28,10 @@ export const bb = {
       // ~1:1 with the embed: wide viewports shrink login fields to unusable inside the iframe.
       browserSettings: { context: { id: o.contextId, persist: o.persist ?? true }, viewport: o.viewport ?? { width: 1024, height: 700 } },
       keepAlive: o.keepAlive ?? false, timeout: o.timeoutSec ?? 900 }) })).id,
+  /** A fresh browser with no saved profile (public sites, no login). */
+  createPlainSession: async (timeoutSec = 600) => (await bbCall<{ id: string }>("/sessions", { method: "POST", body: S({ timeout: timeoutSec, browserSettings: { viewport: { width: 1280, height: 900 } } }) })).id,
+  /** The CDP WebSocket for a running session. */
+  connectUrl: async (sessionId: string) => (await bbCall<{ connectUrl: string }>(`/sessions/${sessionId}`)).connectUrl,
   liveViewUrl: async (sessionId: string) => (await bbCall<{ debuggerFullscreenUrl: string }>(`/sessions/${sessionId}/debug`)).debuggerFullscreenUrl,
   /** Ends the session: the Context is written back and billing stops. */
   releaseSession: (sessionId: string) => bbCall(`/sessions/${sessionId}`, { method: "POST", body: S({ status: "REQUEST_RELEASE" }) }),

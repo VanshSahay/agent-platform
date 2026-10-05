@@ -1,6 +1,6 @@
 // Requirement layer: brief -> (clarify | confirm | auto) -> execute against the brief -> verify before "done".
 // The model drafts the brief; whether to stop and ask is decided deterministically here, never by the model.
-import { one, all, exec, emit, now, S, J, patchJson, clockLine } from "./db";
+import { one, all, exec, emit, now, S, J, patchJson, clockLine, tzOf } from "./db";
 import { structured, plan as heuristicPlan } from "./model";
 import { TOOLS, getTool } from "./tools";
 import { agentTools } from "./templates";
@@ -82,7 +82,7 @@ export async function buildBrief(run: any, agent: any, room: any, prev?: Brief):
     speaker: rt.nameOf(run.requested_by), agentName: agent.name, memories, roomId: room.id };
   const transcript = all<any>("select actor, data from events where room_id=? and type='message' order by seq desc limit 8", room.id).reverse()
     .map((e) => `[${rt.nameOf(e.actor)}] ${J(e.data).text}`).join("\n");
-  const input = `${clockLine()}\nAgent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => getTool(x)).map((x) => `${x} (${getTool(x)!.risk})`).join(", ")}
+  const input = `${clockLine(undefined, tzOf(run.requested_by))}\nAgent: ${agent.name} — ${agent.job}\nTools: ${tools.filter((x) => getTool(x)).map((x) => `${x} (${getTool(x)!.risk})`).join(", ")}
 Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversation:\n${transcript}\n${prev ? `Previous brief: ${S(prev)}\n` : ""}Request from ${ctx.speaker}: ${run.objective}`;
   // Short small talk with nothing actionable ("thanks!", "ok cool") doesn't need a model-drafted brief.
   const quick = heuristicBrief(run.objective, ctx);

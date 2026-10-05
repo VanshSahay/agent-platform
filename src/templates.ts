@@ -40,7 +40,7 @@ export const SKILLS: Record<string, Skill> = Object.fromEntries(([
   ["credential-followup", "Credential follow-up", ["task.create", "task.update", "email.draft", "email.send", "wait.for_reply"], "For each missing document, one task, one owner. Outreach is gated by approval and never to candidates a human has claimed."],
 ] as const).map(([sid, name, tools, procedure]) => [sid, { id: sid, name, tools: [...tools], procedure }]));
 
-export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update", "files.read"];
+export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update", "files.read", "settings.timezone"];
 
 export function agentTools(agent: { skills: string | string[]; id?: string }): Set<string> {
   const skills: string[] = typeof agent.skills === "string" ? J(agent.skills, []) : agent.skills;

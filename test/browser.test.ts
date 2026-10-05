@@ -164,7 +164,7 @@ test("AC-BR5 one Browserbase session per login: concurrent tasks wait until the 
   expect(net.to(/browserbase\.com\/v1\/sessions$/)[1].body.keepAlive).toBe(false);
 });
 
-test("AC-BR6 stored site logins still work when there's no live login; MCP browser servers get the contextId; no runner is a clear failure", async () => {
+test("AC-BR6 stored site logins still work when there's no live login; MCP browser servers get the contextId; with no external runner the built-in one drives the session", async () => {
   // site_login fallback: secrets to the HTTP runner, no Browserbase
   const pw = id("con");
   exec("insert into connections (id, workspace_id, owner_id, visibility, provider, label, account, cred_enc, config, created_at) values (?,?,?,?,?,?,?,?,?,?)",
@@ -194,12 +194,36 @@ test("AC-BR6 stored site logins still work when there's no live login; MCP brows
   expect(lastFrom(room.id, agent.id)).toContain("OT-1");
   expect(one<any>("select * from browser_sessions where purpose='task'")).toMatchObject({ connection_id: login.id, status: "completed" });
 
-  // No runner at all: a clear failure, not a signed-out read-only fallback
+  // No external runner: the built-in runner drives the login's own session over CDP, step by step, and stops before booking
   exec("delete from connection_grants where connection_id=?", mcp); delete process.env.BROWSER_TASK_URL;
-  scriptModel(call("browser.task", { task: "book again", site: "opentable.com", start_url: "https://opentable.com/" }), (r) => ({ text: r.messages.at(-1)!.content }));
+  const page = fakeBrowser({ url: "https://www.opentable.com/r/osteria", title: "Osteria Nove", elements: ['[1] button "7:00 PM"', '[2] button "Complete reservation"'], text: "Party of 2 · Sat" });
+  scriptModel(call("browser.task", { task: "book Osteria Nove for 2 at 7pm Saturday", site: "opentable.com", start_url: "https://www.opentable.com/r/osteria" }),
+    (r) => { expect(r.system).toContain("Never complete an irreversible final step"); expect(r.messages[0].content).toContain('[1] button "7:00 PM"'); return call("click", { i: 1 }); },
+    (r) => { expect(r.messages[0].content).toContain('clicked [1]'); return call("done", { status: "needs_confirmation", result: "Osteria Nove, Sat 7:00 PM for 2 — ready to confirm" }); },
+    (r) => ({ text: r.messages.at(-1)!.content }));
   await say(room.id, ellie, "again");
-  expect(lastFrom(room.id, agent.id)).toMatch(/FAILED: connect a browser runner/);
+  expect(all<any>("select data from events where room_id=? and type='message' and actor=?", room.id, agent.id).map((e) => J(e.data).text).join("\n")).toContain("ready to confirm");
+  expect(page.seen).toContain("Input.dispatchMouseEvent"); // a real click, not a scripted DOM call
+  expect(page.seen.filter((m) => m === "Page.navigate").length).toBeGreaterThanOrEqual(1);
+  expect(all<any>("select * from browser_sessions where purpose='task' order by created_at").at(-1)).toMatchObject({ connection_id: login.id, status: "needs_confirmation" });
+  page.stop();
 });
+
+/** A fake Chrome speaking CDP: one page whose observation is fixed; records every method called. */
+function fakeBrowser(view: { url: string; title: string; elements: string[]; text: string }) {
+  const seen: string[] = [];
+  const srv = Bun.serve({ port: 0, fetch(req, s) { return s.upgrade(req) ? undefined : new Response("no"); }, websocket: { message(w, raw) {
+    const m = JSON.parse(String(raw)); seen.push(m.method);
+    const ex = String(m.params?.expression ?? "");
+    const value = ex === "document.readyState" ? "complete" : ex.includes("data-agent-i") && ex.includes("innerText") && ex.startsWith("(() => {\n  const sel") ? view
+      : ex.includes("getBoundingClientRect") ? { x: 10, y: 10, label: "7:00 PM" } : ex.startsWith("({url") ? { url: view.url, title: view.title } : ex === "location.href" ? view.url : true;
+    const result = m.method === "Target.getTargets" ? { targetInfos: [{ type: "page", targetId: "T1" }] } : m.method === "Target.attachToTarget" ? { sessionId: "S1" }
+      : m.method === "Runtime.evaluate" ? { result: { value } } : {};
+    w.send(JSON.stringify({ id: m.id, result }));
+  } } });
+  cdpUrl = `ws://localhost:${srv.port}`;
+  return { seen, stop: () => srv.stop(true) };
+}
 
 test("AC-BR7 the live view opens the site's login page for the user (CDP: find the tab, attach, navigate, detach; never close the browser)", async () => {
   const seen: string[] = [];

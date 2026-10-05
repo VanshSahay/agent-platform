@@ -108,7 +108,7 @@ create table if not exists credit_ledger (id text primary key, workspace_id text
 const COLUMN_MIGRATIONS = [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
     ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"], ["agents", "spec", "text"],
     ["outbox", "claimed_at", "int"], ["room_endpoints", "reply_token", "text"], ["room_endpoints", "undeliverable", "int default 0"],
-    ["workspaces", "ai_mode", "text default 'credits'"], ["workspaces", "ai_models", "text default '{}'"], ["workspaces", "credit_usd", "real default 0"], ["workspaces", "allowance_month", "text"], ["workspaces", "allowance_used", "real default 0"], ["users", "clerk_id", "text"]];
+    ["workspaces", "ai_mode", "text default 'credits'"], ["workspaces", "ai_models", "text default '{}'"], ["workspaces", "credit_usd", "real default 0"], ["workspaces", "allowance_month", "text"], ["workspaces", "allowance_used", "real default 0"], ["users", "clerk_id", "text"], ["users", "tz", "text"]];
 
 let pgReady = false;
 /** Postgres: DATABASE_URL. Tests pass ":memory:" for a fresh database — on Postgres that truncates every table instead. */
@@ -130,8 +130,26 @@ function openPg(url: string, fresh: boolean) {
 /** The current moment as a model should see it: weekday, date, local time, zone and UTC offset. Without this, models
  *  guess the year and can't resolve "Saturday" or "a week before Nov 3". Zone: DEFAULT_TZ, else the server's.
  *  ponytail: one zone for everyone; per-user zones when users span time zones. */
-export function clockLine(t = now()) {
-  const tz = process.env.DEFAULT_TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone, d = new Date(t);
+export const serverTz = () => process.env.DEFAULT_TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** A person's time zone: what they told us (or their browser did), else the platform default. */
+export function tzOf(userId?: string | null) { return (userId && one<any>("select tz from users where id=?", userId)?.tz) || serverTz(); }
+const validTz = (tz: string) => { try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; } };
+export function setTz(userId: string, tz: string) { if (!validTz(tz)) return false; exec("update users set tz=? where id=?", tz, userId); return true; }
+/** Wall-clock parts of an instant in a zone. */
+export function zoned(t: number, tz: string) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short" })
+    .formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+  return { y: +p.year, mo: +p.month - 1, d: +p.day, h: +p.hour, mi: +p.minute, s: +p.second, dow: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday) };
+}
+/** The instant when it's y-mo-d h:mi on the wall clock in tz (DST-correct: re-checks the offset at the result). */
+export function fromZoned(y: number, mo: number, d: number, h: number, mi: number, tz: string) {
+  let t = Date.UTC(y, mo, d, h, mi);
+  for (let i = 0; i < 2; i++) { const z = zoned(t, tz); t += Date.UTC(y, mo, d, h, mi) - Date.UTC(z.y, z.mo, z.d, z.h, z.mi); }
+  return t;
+}
+export const fmtLocal = (t: number, tz: string) => new Date(t).toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+export function clockLine(t = now(), tzIn?: string) {
+  const tz = tzIn ?? serverTz(), d = new Date(t);
   const local = d.toLocaleString("en-US", { timeZone: tz, weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
   const off = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" }).formatToParts(d).find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") || "+00:00";
   return `Now: ${local} (${tz}, UTC${off}). Write datetimes for tools as ISO 8601 with this offset, e.g. 2026-10-27T09:00:00${off}.`;

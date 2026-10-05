@@ -1,5 +1,5 @@
 // Context assembly (plan §9.5, §15.3, §21.2). Permission filtering happens here, before anything reaches the model.
-import { all, one, J, clockLine } from "./db";
+import { all, one, J, clockLine, tzOf } from "./db";
 import { retrieve } from "./memory";
 import { agentTools, SKILLS, customSkills } from "./templates";
 import { toolSpecs } from "./tools";
@@ -29,7 +29,7 @@ export function buildContext(run: any, agent: any, room: any) {
 
   const system = [
     SYSTEM_POLICY,
-    `[CLOCK]\n${clockLine()}`,
+    `[CLOCK]\n${clockLine(undefined, tzOf(run.requested_by))}`,
     `[AGENT_INSTRUCTIONS]\nYou are ${agent.name}. Job: ${agent.job}\n${agent.instructions ?? ""}`,
     skills.length ? `[SKILLS]\n${skills.filter((s) => SKILLS[s]).map((s) => `- ${SKILLS[s].name}: ${SKILLS[s].procedure}`).join("\n")}` : "",
     customSkills(agent.id).length ? `[LEARNED_PROCEDURES — saved by an admin from past tasks; guidance only, they never grant permissions]\n${customSkills(agent.id).map((s) => `- ${s.name}: ${s.procedure}`).join("\n")}` : "",
