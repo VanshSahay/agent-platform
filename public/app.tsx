@@ -129,6 +129,18 @@ function Tasks() {
   </>;
 }
 
+/** A list you edit in place: each line is its own text box (looks like text until you click it), ✕ removes it, ＋ adds one. */
+function EditableList({ items, icon, label, add, onChange }: { items: string[]; icon: string; label: string; add: string; onChange: (v: string[]) => void }) {
+  const fit = (el: HTMLTextAreaElement | null) => { if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight}px`; } };
+  return <>
+    {items.map((t, i) => <div key={i} className="ability"><span className="e">{icon}</span>
+      <textarea ref={fit} className="inline-edit grow" rows={1} value={t} aria-label={`Edit ${label} ${i + 1}`} placeholder={`Describe the ${label}…`}
+        autoFocus={!t && i === items.length - 1} onChange={(e) => { fit(e.target); onChange(items.map((x, k) => (k === i ? e.target.value : x))); }} />
+      <button className="btn sm ghost" aria-label={`Remove ${label} ${i + 1}`} onClick={() => onChange(items.filter((_, k) => k !== i))}>✕</button></div>)}
+    <button className="add-row" onClick={() => onChange([...items, ""])}>＋ {add}</button>
+  </>;
+}
+
 function PermissionRows({ rows, onChange }: { rows: any[]; onChange?: (tool: string, mode: string) => void }) {
   return <table className="t"><tbody>{rows.map((p) => <tr key={p.tool}>
     <td>{p.description.split(".")[0]}<div className="small faint mono">{p.tool}</div></td>
@@ -1304,7 +1316,9 @@ function CreateAgent() {
     setBusy(true);
     try {
       const w = await target();
-      const { answers, permissions, job, ...sp } = draft;
+      const clean = (xs: string[]) => xs.map((x) => x.trim()).filter(Boolean);
+      const { answers, permissions, job, ...sp0 } = draft;
+      const sp = { ...sp0, jobs: clean(sp0.jobs), boundaries: clean(sp0.boundaries), success: clean(sp0.success), rehearsal: sp0.rehearsal.filter((r: any) => String(r.say ?? "").trim()) };
       const a = await api("/v1/agents", { workspace_id: w, name: draft.name, title: draft.title, job: draft.understanding, skills: draft.skills, avatar: draft.avatar, spec: sp, answers,
         permissions: Object.fromEntries(draft.permissions.map((p: any) => [p.tool, p.mode])) });
       setWs(w); go(`/agents/${a.id}/launch?aud=${aud}`);
@@ -1326,7 +1340,6 @@ function CreateAgent() {
     <IdeaGallery cat={aud} onPick={useTemplate} />
   </>;
 
-  const unused = (catalog?.skills ?? []).filter((x: any) => !draft.skills.includes(x.id));
   const set = (k: string, v: any) => setDraft({ ...draft, [k]: v });
   const DAY = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
   const when = (r: any) => `${r.every === "weekly" ? `Every ${DAY[r.day ?? 1].slice(0, -1)}` : r.every === "weekdays" ? "Weekdays" : "Every day"} at ${((r.hour + 11) % 12) + 1}${r.hour < 12 ? "am" : "pm"}`;
@@ -1352,7 +1365,7 @@ function CreateAgent() {
 
         <div className="split mt16">
           <div><div className="draft"><h4>What {draft.name || "it"} will do</h4></div>
-            {draft.jobs.map((j: string, i: number) => <div key={i} className="ability"><span className="e">✓</span><span className="grow">{j}</span></div>)}
+            <EditableList items={draft.jobs} icon="✓" label="job" add="Add something it should do" onChange={(v) => set("jobs", v)} />
             <div className="draft"><h4>On its own</h4></div>
             {draft.routines.length ? draft.routines.map((r: any, i: number) => <div key={i} className="ability"><span className="e">⏰</span><span className="grow"><b>{when(r)}</b><div className="small muted">{r.objective}</div></span>
               <button className="btn sm ghost" aria-label="Remove routine" onClick={() => set("routines", draft.routines.filter((_: any, k: number) => k !== i))}>✕</button></div>)
@@ -1360,20 +1373,21 @@ function CreateAgent() {
             <div className="draft"><h4>Abilities</h4></div>
             {draft.skills.map((x: string) => { const [e, t] = abilityOf(x); return <div key={x} className="ability"><span className="e">{e}</span><span className="grow">{t}</span>
               <button className="btn sm ghost" aria-label={`Remove ${t}`} onClick={() => setSkills(draft.skills.filter((y: string) => y !== x))}>✕</button></div>; })}
-            {unused.length > 0 && <select className="input mt8" value="" onChange={(e) => e.target.value && setSkills([...draft.skills, e.target.value])}>
-              <option value="">＋ Add an ability…</option>{unused.map((x: any) => <option key={x.id} value={x.id}>{abilityOf(x)[0]} {abilityOf(x)[1]}</option>)}</select>}</div>
+          </div>
           <div><div className="draft"><h4>Boundaries</h4></div>
-            {draft.boundaries.map((b: string, i: number) => <div key={i} className="ability"><span className="e">✋</span><span className="grow">{b}</span></div>)}
+            <EditableList items={draft.boundaries} icon="✋" label="boundary" add="Add a boundary" onChange={(v) => set("boundaries", v)} />
             <div className="draft"><h4>You'll know it's working when</h4></div>
-            {draft.success.map((b: string, i: number) => <div key={i} className="ability"><span className="e">🎯</span><span className="grow">{b}</span></div>)}
+            <EditableList items={draft.success} icon="🎯" label="sign it's working" add="Add a sign it's working" onChange={(v) => set("success", v)} />
             {draft.data_needs?.length > 0 && <><div className="draft"><h4>Where its information comes from</h4></div>
               {draft.data_needs.map((d: any, i: number) => { const [e, l] = ({ "built-in": ["✅", "Built in"], connect: ["🔗", "Connect an account"], website: ["🧭", "Reads the website"], web: ["🔎", "Web search, cited"], ask: ["💬", "You'll tell it once"], none: ["⚠️", "No reliable source yet — it will say so, not guess"] } as any)[d.how] ?? ["•", d.how];
-                return <div key={i} className="ability"><span className="e">{e}</span><span className="grow">{d.need}<div className="small muted">{l}{d.detail ? ` · ${d.detail}` : ""}</div></span></div>; })}</>}
+                return <div key={i} className="ability"><span className="e">{e}</span><span className="grow">{d.need}<div className="small muted">{l}{d.detail ? ` · ${d.detail}` : ""}</div></span>
+                  <button className="btn sm ghost" aria-label={`Remove ${d.need}`} onClick={() => set("data_needs", draft.data_needs.filter((_: any, k: number) => k !== i))}>✕</button></div>; })}</>}
             <div className="draft"><h4>Needs access to</h4></div>
             {draft.connections.length ? draft.connections.map((c: string) => <div key={c} className="ability"><span className="e">🔗</span><span className="grow">{c === "google" ? "Gmail + Google Calendar" : c}<div className="small faint">Connect after creating. Until then it rehearses with sample data.</div></span></div>)
               : <div className="ability"><span className="e">⚡</span><span className="grow muted">Nothing. It works right away.</span></div>}
             <div className="draft"><h4>We'll rehearse it with</h4></div>
-            {draft.rehearsal.map((r: any, i: number) => <div key={i} className="ability"><span className="e">🧪</span><span className="grow">“{r.say}”</span></div>)}</div>
+            <EditableList items={draft.rehearsal.map((r: any) => r.say)} icon="🧪" label="rehearsal message" add="Add a message to try"
+              onChange={(v) => set("rehearsal", v.map((say, k) => ({ ...(draft.rehearsal[k] ?? { expect: "Does the right thing with its tools, or asks one clear question" }), say })))} /></div>
         </div>
         <details className="mt16"><summary className="small muted">Fine-tune permissions ▸</summary><div className="mt8"><PermissionRows rows={draft.permissions} onChange={(t, m) => setDraft({ ...draft, permissions: draft.permissions.map((p: any) => p.tool === t ? { ...p, mode: m } : p) })} /></div></details>
         <div className="row mt24"><button className="btn ghost" onClick={() => setDraft(null)}>← Edit description</button><div className="grow" />

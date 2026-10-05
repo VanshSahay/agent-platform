@@ -573,3 +573,10 @@ table.t td, table.t th { border-top: 1.5px solid var(--line); }
 .rtable th, .rtable td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
 .rtable th { background: var(--sunken); font-weight: 700; } .rtable tr:last-child td { border-bottom: 0; }
 @media (prefers-color-scheme: dark) { .lchip { background: transparent; color: inherit; border-color: currentColor; } .lchip:hover { color: #111; } }
+
+/* Editable lists on the agent draft: text until you click it */
+.inline-edit { font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; margin: -1px 0 0 -8px; resize: none; overflow: hidden; line-height: 1.45; min-height: 34px; }
+.inline-edit:hover { background: var(--sunken); }
+.inline-edit:focus { background: var(--panel); border-color: var(--line-strong); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.add-row { display: block; width: 100%; text-align: left; margin-top: 6px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 10px; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+.add-row:hover { color: var(--text); border-color: var(--accent); }
