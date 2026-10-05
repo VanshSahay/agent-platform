@@ -1,9 +1,9 @@
 {
   "name": "Recruiter",
   "slug": "recruiter-healthcare",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "platform",
-  "avatar": "🩺",
+  "avatar": "\ud83e\ude7a",
   "category": "team",
   "title": "Healthcare Recruiter",
   "tagline": "Matches travel nurses to jobs and chases credentials.",
@@ -42,6 +42,7 @@
   "starters": [
     "Which placements are at risk this week?",
     "Take care of the BLS follow-ups",
-    "Don't contact … — I'm handling them"
-  ]
+    "Don't contact \u2026 \u2014 I'm handling them"
+  ],
+  "status": "beta"
 }

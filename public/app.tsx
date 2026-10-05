@@ -735,13 +735,16 @@ function IdeaGallery({ cat: cat0 = "all", onPick, anonymous }: { cat?: Aud | "al
   const [list] = useApi<any[]>("/v1/agent-templates");
   const [cat, setCat] = useState<Aud | "all">(cat0);
   useEffect(() => setCat(cat0), [cat0]);
-  const shown = (list ?? []).filter((t) => cat === "all" || CAT_OF(t) === cat);
+  const shown = (list ?? []).filter((t) => cat === "all" || CAT_OF(t) === cat).sort((a, b) => Number(a.manifest.status === "beta") - Number(b.manifest.status === "beta")); // proven first
   return <>
     <div className="seg" style={{ marginBottom: 14 }}>{([["all", "All"], ["me", "For you"], ["group", "For group chats"], ["team", "For teams"]] as const).map(([k, l]) =>
       <button key={k} className={cat === k ? "on" : ""} onClick={() => setCat(k)}>{l}</button>)}</div>
     <div className="grid3">{shown.map((t, i) => <div key={t.id} className="card hover idea rise" style={{ animationDelay: `${Math.min(i, 12) * 30}ms` }}>
       <div className="top"><div className="avatar lg">{t.manifest.avatar ?? t.name[0]}</div><div className="grow"><h3>{t.name}</h3><div className="small muted">{t.manifest.title}</div></div></div>
       <div className="tag">{t.tagline}</div>
+      {t.manifest.status === "beta"
+        ? <div className="small muted" title="Works, but not every job it advertises has passed our end-to-end checks yet"><span className="pill warn">Beta</span> may not finish every job yet</div>
+        : t.manifest.proven_note ? <div className="small muted"><span className="pill ok">Proven</span> {t.manifest.proven_note}</div> : <div className="small muted"><span className="pill ok">Proven</span> every job tested end to end</div>}
       <div className="row between"><div className="where">{(t.manifest.channels ?? ["web"]).filter((c: string) => PICON[c]).slice(0, 5).map((c: string) => <PMark key={c} p={c} size="sm" />)}</div>
         <div className="row" style={{ gap: 6 }}><a className="btn sm ghost" href={`#/discover/${t.slug}`}>Try</a><button className="btn sm primary" onClick={() => onPick(t)}>{anonymous ? "Use" : "Add"}</button></div></div>
     </div>)}</div>

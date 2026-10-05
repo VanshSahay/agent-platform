@@ -1,9 +1,9 @@
 {
   "name": "Max",
   "slug": "max-meeting-notes",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "📝",
+  "avatar": "\ud83d\udcdd",
   "category": "team",
   "title": "Meeting Notes & Follow-ups",
   "tagline": "Turns meetings into action items with owners, then chases them.",
@@ -30,5 +30,6 @@
     "Remind me tomorrow to send the meeting recap"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

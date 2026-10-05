@@ -1,9 +1,9 @@
 {
   "name": "Ollie",
   "slug": "ollie-life-admin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "🗂️",
+  "avatar": "\ud83d\uddc2\ufe0f",
   "category": "personal",
   "title": "Life Admin Assistant",
   "tagline": "Never miss a bill, renewal or appointment again.",
@@ -30,5 +30,7 @@
     "Follow up on the insurance claim"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "proven",
+  "proven_note": "Reminders and to-dos are proven; calendar needs Google."
 }

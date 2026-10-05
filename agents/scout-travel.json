@@ -1,9 +1,9 @@
 {
   "name": "Scout",
   "slug": "scout-travel",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "platform",
-  "avatar": "✈️",
+  "avatar": "\u2708\ufe0f",
   "category": "personal",
   "title": "Travel Planner",
   "tagline": "Plans trips, compares options and coordinates groups.",
@@ -45,8 +45,9 @@
     "no_booking_without_approval"
   ],
   "starters": [
-    "Find three hotel options in … for … under $…/night",
-    "Compare flights from … to … in …",
-    "Remind us 2 weeks before the trip to …"
-  ]
+    "Find three hotel options in \u2026 for \u2026 under $\u2026/night",
+    "Compare flights from \u2026 to \u2026 in \u2026",
+    "Remind us 2 weeks before the trip to \u2026"
+  ],
+  "status": "beta"
 }

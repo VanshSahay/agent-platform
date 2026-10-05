@@ -1,9 +1,9 @@
 {
   "name": "Sage",
   "slug": "sage-study-buddy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "🦉",
+  "avatar": "\ud83e\udd89",
   "category": "personal",
   "title": "Study Buddy",
   "tagline": "Explains, quizzes you and keeps your study plan on track.",
@@ -28,5 +28,6 @@
     "Remember my biology exam is on December 12"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

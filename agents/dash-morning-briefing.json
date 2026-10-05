@@ -1,7 +1,7 @@
 {
   "name": "Dash",
   "slug": "dash-morning-briefing",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
   "avatar": "\u2600\ufe0f",
   "category": "personal",
@@ -45,5 +45,6 @@
     "Every morning at 7, send me a briefing"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

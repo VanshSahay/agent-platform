@@ -1,9 +1,9 @@
 {
   "name": "Coach",
   "slug": "coach-accountability",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "💪",
+  "avatar": "\ud83d\udcaa",
   "category": "personal",
   "title": "Habit & Fitness Coach",
   "tagline": "Keeps you (and your crew) showing up.",
@@ -30,5 +30,6 @@
     "Poll: who's in for a 7am run Saturday?"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

@@ -1,9 +1,9 @@
 {
   "name": "Plans",
   "slug": "plans-party-planner",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "🎉",
+  "avatar": "\ud83c\udf89",
   "category": "group",
   "title": "Event Planner",
   "tagline": "Polls the group, tracks RSVPs and who's bringing what.",
@@ -31,5 +31,6 @@
     "Add chips, salsa and drinks to the bring list"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "proven"
 }

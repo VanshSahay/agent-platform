@@ -1,9 +1,9 @@
 {
   "name": "Echo",
   "slug": "echo-content",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "📣",
+  "avatar": "\ud83d\udce3",
   "category": "team",
   "title": "Content Drafter",
   "tagline": "Drafts posts from what's happening in your space.",
@@ -28,5 +28,6 @@
     "Remember our brand voice is warm and a little witty"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

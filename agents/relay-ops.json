@@ -1,9 +1,9 @@
 {
   "name": "Relay",
   "slug": "relay-ops",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "platform",
-  "avatar": "📋",
+  "avatar": "\ud83d\udccb",
   "category": "team",
   "title": "Team Operations Coordinator",
   "tagline": "Keeps a team process moving across people and tools.",
@@ -47,7 +47,8 @@
   ],
   "starters": [
     "What's the status?",
-    "Take care of the … follow-ups",
-    "Remind the team every weekday at 9 to …"
-  ]
+    "Take care of the \u2026 follow-ups",
+    "Remind the team every weekday at 9 to \u2026"
+  ],
+  "status": "beta"
 }

@@ -1,9 +1,9 @@
 {
   "name": "Ava",
   "slug": "ava-executive-assistant",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "publisher": "platform",
-  "avatar": "💼",
+  "avatar": "\ud83d\udcbc",
   "category": "personal",
   "title": "Executive Assistant",
   "tagline": "Handles inbox, calendar, meeting prep and follow-ups.",
@@ -72,7 +72,9 @@
   "starters": [
     "What's on my calendar this week?",
     "When am I free for a 30 min call this week?",
-    "Email … about …",
-    "Remind me tomorrow to …"
-  ]
+    "Email \u2026 about \u2026",
+    "Remind me tomorrow to \u2026"
+  ],
+  "status": "proven",
+  "proven_note": "Calendar, reminders and email (with your approval) are proven end to end; other abilities are beta."
 }

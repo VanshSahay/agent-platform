@@ -1,9 +1,9 @@
 {
   "name": "Juno",
   "slug": "juno-support",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "💬",
+  "avatar": "\ud83d\udcac",
   "category": "team",
   "title": "Support Agent",
   "tagline": "Answers customer questions from your docs and escalates the rest.",
@@ -33,5 +33,6 @@
     "Remember that refunds over $100 need a manager's OK"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

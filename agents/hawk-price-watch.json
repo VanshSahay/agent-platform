@@ -1,7 +1,7 @@
 {
   "name": "Hawk",
   "slug": "hawk-price-watch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
   "avatar": "\ud83e\udd85",
   "category": "personal",
@@ -36,5 +36,6 @@
     "Remember my Dyson V15 target is $450"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

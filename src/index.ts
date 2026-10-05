@@ -1,7 +1,7 @@
 import { openDb, dialect } from "./db";
 import { seedFirstParty } from "./templates";
 import { recover, engine } from "./runtime";
-import { serve, worker } from "./server";
+import { serve, worker, checkAlerts } from "./server";
 import { ensureSharedIdentities } from "./channels";
 import { startPhoton } from "./photon";
 
@@ -32,4 +32,5 @@ if (engine.temporal()) {
 const server = serve();
 await startPhoton();
 setInterval(worker, 1000); // inbound, outbox, schedules, watches (and run steps, on the local engine)
+setInterval(() => checkAlerts().catch((e) => console.error("[alert] check failed", e.message)), 5 * 60_000);
 console.log(`Agent platform running at ${server.url} (${dialect}, ${engine.temporal() ? "temporal" : "local"} engine)`);

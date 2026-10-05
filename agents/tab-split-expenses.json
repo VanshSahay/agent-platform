@@ -1,9 +1,9 @@
 {
   "name": "Tab",
   "slug": "tab-split-expenses",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "🧾",
+  "avatar": "\ud83e\uddfe",
   "category": "group",
   "title": "Expense Splitter",
   "tagline": "Splits the bill in your group chat: who owes who, to the cent.",
@@ -29,5 +29,6 @@
     "Who owes what?"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "proven"
 }

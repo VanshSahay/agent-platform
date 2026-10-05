@@ -270,3 +270,18 @@ test("AC-R15 sports scores come from the scoreboard feed: finals with scores, up
   expect(braves.map((g: any) => g.away.team)).toEqual(["Braves"]);
   await expect(TOOLS["sports.scores"].execute({ league: "cricket" }, { run: {} } as any)).rejects.toThrow(/unknown league/);
 });
+
+test("AC-JOB1 job contracts: a reminder 'done' with nothing behind it is sent back once, then flagged honestly; outcomes are recorded", async () => {
+  const a = customAgent(ws, ellie, ["reminders"], {}, "Ollie");
+  const room = rt.privateRoomFor(ellie, a);
+  const seen = scriptModel({ text: "All set for 5pm!" }, { text: "All set for 5pm!" });
+  await say(room.id, ellie, "remind me at 5pm to stretch");
+  expect(seen[1].messages.some((m) => m.content.includes("nothing shows it was done"))).toBe(true);
+  expect(lastFrom(room.id, a.id)).toMatch(/All set for 5pm![\s\S]*Heads up: I couldn't confirm this actually happened/);
+  expect(events("JOB_OUTCOME").at(-1).data).toMatchObject({ job: "reminder", ok: false });
+  expect(all("select 1 from schedules where room_id=?", room.id)).toHaveLength(0);
+  // With the tool actually called, it's proven
+  scriptModel(call("reminder.schedule", { text: "stretch", in_minutes: 60 }), { text: "Done — 5:00 PM." });
+  await say(room.id, ellie, "remind me in an hour to stretch");
+  expect(events("JOB_OUTCOME").at(-1).data).toMatchObject({ job: "reminder", ok: true, evidence: "reminder.schedule succeeded" });
+});

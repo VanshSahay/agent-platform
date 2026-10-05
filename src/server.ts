@@ -101,6 +101,46 @@ function testRoom(userId: string, a: any) {
       members: [{ id: userId, kind: "human" }, { id: a.id, kind: "agent" }, ...sampleFriends(a)] });
 }
 
+/** What's stuck or failed right now (operator view + alerter). */
+export async function healthReport() {
+    const { photonStatus } = await import("./photon");
+    const count = (sql: string, ...p: any[]) => one<any>(sql, ...p)?.n ?? 0;
+    const oldestQueued = one<any>("select min(created_at) t from runs where status='queued'")?.t;
+    const problems = all<any>("select o.id, o.status, o.error, o.attempts, o.created_at, e.platform, e.external_conversation_id conv from outbox o left join room_endpoints e on e.id=o.endpoint_id where o.status in ('failed','unconfirmed') order by o.created_at desc limit 20");
+    const report = {
+      imessage: photonStatus,
+      outbox: { queued: count("select count(*) n from outbox where status='queued'"), sending: count("select count(*) n from outbox where status='sending'"),
+        failed: count("select count(*) n from outbox where status='failed'"), unconfirmed: count("select count(*) n from outbox where status='unconfirmed'") },
+      inbound: { queued: count("select count(*) n from inbound_events where status='queued'"), errors_24h: count("select count(*) n from inbound_events where status='error' and received_at>?", now() - 864e5) },
+      runs: { queued: count("select count(*) n from runs where status='queued'"), oldest_queued_s: oldestQueued ? Math.round((now() - oldestQueued) / 1000) : 0,
+        running: count("select count(*) n from runs where status='running'"), failed_24h: count("select count(*) n from runs where status='failed_terminal' and updated_at>?", now() - 864e5),
+        waiting_on_people: count("select count(*) n from runs where status='waiting_for_human'") },
+      jobs_24h: all<any>("select json_extract(data, '$.job') job, sum(case when cast(json_extract(data, '$.ok') as text) in ('1','true') then 1 else 0 end) ok, count(*) n from events where type='JOB_OUTCOME' and ts>? group by 1", now() - 864e5),
+      problems,
+    };
+    const alerts = [
+      report.imessage.enabled && !report.imessage.connected && "iMessage line is disconnected",
+      report.imessage.enabled && report.imessage.mode === "stream" && report.imessage.last_event_at && now() - report.imessage.last_event_at > 6 * 36e5 && "no iMessage traffic for 6h — check the line",
+      report.outbox.failed + report.outbox.unconfirmed > 0 && `${report.outbox.failed + report.outbox.unconfirmed} outgoing messages failed or unconfirmed`,
+      report.runs.oldest_queued_s > 120 && `requests waiting ${report.runs.oldest_queued_s}s to start — is the worker running?`,
+      report.inbound.errors_24h > 0 && `${report.inbound.errors_24h} inbound messages failed to process (24h)`,
+    ].filter(Boolean);
+    return { ok: !alerts.length, alerts, ...report };
+}
+
+// Alerts reach a person: every 5 minutes, a new alert (not one already sent in the last hour) is emailed to ALERT_EMAIL via Resend.
+const alerted = new Map<string, number>();
+export async function checkAlerts() {
+  const r = await healthReport();
+  const fresh = r.alerts.filter((a: any) => Date.now() - (alerted.get(String(a).replace(/\d+/g, "#")) ?? 0) > 36e5) as string[];
+  if (!fresh.length) return;
+  for (const a of fresh) alerted.set(a.replace(/\d+/g, "#"), Date.now());
+  console.error(`[alert] ${fresh.join(" | ")}`);
+  if (process.env.ALERT_EMAIL && process.env.RESEND_API_KEY)
+    await fetch("https://api.resend.com/emails", { method: "POST", headers: { authorization: `Bearer ${process.env.RESEND_API_KEY}`, "content-type": "application/json" },
+      body: S({ from: process.env.ALERT_FROM ?? "onboarding@resend.dev", to: process.env.ALERT_EMAIL, subject: `[agents] ${fresh[0]}`, text: `${fresh.join("\n")}\n\n${pub()}/v1/admin/health` }) }).catch(() => {});
+}
+
 /** What a running agent is doing right now, in words ("searching “Lisbon hotels”", "reading booking.com"). */
 function activityOf(runId: string) {
   const e = one<any>("select data from events where run_id=? and type='TOOL_CALL_REQUESTED' order by seq desc limit 1", runId);
@@ -196,6 +236,11 @@ const h = (fn: (req: Req) => Promise<Response> | Response) => async (req: Req) =
 export const routes: Record<string, any> = {
   ...browserRoutes, // live-browser website logins (src/browser.ts)
   "/v1/health": { GET: () => json({ ok: true }) },
+  // Operator view: what's stuck or failed right now. Platform admins only (it shows cross-workspace counts).
+  "/v1/admin/health": { GET: h(async (req) => {
+    const u = userOf(req); if (!admins().includes(String(u.email).toLowerCase())) fail(403, "platform admins only");
+    return json(await healthReport());
+  }) },
 
   "/v1/webhooks/photon": { POST: async (req: Request) => (await import("./photon")).photonWebhook(req) },
   "/v1/me/tz": { POST: h(async (req) => { const u = userOf(req), b = await body(req); if (!setTz(u.id, String(b.tz ?? ""))) fail(400, "unknown time zone"); return json({ tz: b.tz }); }) },

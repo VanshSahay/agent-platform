@@ -1,9 +1,9 @@
 {
   "name": "Roomie",
   "slug": "roomie-household",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "🏠",
+  "avatar": "\ud83c\udfe0",
   "category": "group",
   "title": "Household Manager",
   "tagline": "Chores, groceries and shared bills for your place.",
@@ -31,5 +31,6 @@
     "What's on the grocery list?"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "proven"
 }

@@ -298,3 +298,17 @@ test("AC-A8 Clerk sign-in: token traded for a session; links by verified email; 
     expect((await api("/v1/auth/clerk", { body: { token: "user_new" } })).data.user.id).toBe(b.data.user.id);
   } finally { delete process.env.CLERK_SECRET_KEY; delete process.env.CLERK_PUBLISHABLE_KEY; }
 });
+
+test("AC-OP1 operator health: admins only; shows failed/unconfirmed messages, stuck queues and job outcomes as alerts", async () => {
+  const admin = await signup("Admin"), bob = await signup("Bob");
+  exec("update users set email='admin@example.com' where id=?", admin.id);
+  expect((await api("/v1/admin/health", { token: bob.token })).status).toBe(403);
+  let h = (await api("/v1/admin/health", { token: admin.token })).data;
+  expect(h.ok).toBe(true);
+  exec("insert into outbox (id, endpoint_id, room_id, event_id, payload, status, error, created_at) values ('o1', null, null, null, '{}', 'unconfirmed', 'send was interrupted', ?)", Date.now());
+  exec("insert into runs (id, workspace_id, room_id, agent_id, objective, kind, status, created_at, updated_at, spent) values ('r_old', ?, null, null, 'x', 'act', 'queued', ?, ?, '{}')", admin.ws, Date.now() - 10 * 60e3, Date.now());
+  h = (await api("/v1/admin/health", { token: admin.token })).data;
+  expect(h.ok).toBe(false);
+  expect(h.alerts.join(" ")).toMatch(/1 outgoing messages failed or unconfirmed[\s\S]*waiting \d+s to start/);
+  expect(h.problems[0]).toMatchObject({ id: "o1", status: "unconfirmed" });
+});

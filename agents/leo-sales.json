@@ -1,9 +1,9 @@
 {
   "name": "Leo",
   "slug": "leo-sales",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "📈",
+  "avatar": "\ud83d\udcc8",
   "category": "team",
   "title": "Sales Prospector",
   "tagline": "Researches prospects and drafts outreach you'd actually send.",
@@ -30,5 +30,6 @@
     "Follow up with Acme next week"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }

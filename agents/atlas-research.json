@@ -1,9 +1,9 @@
 {
   "name": "Atlas",
   "slug": "atlas-research",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "publisher": "platform",
-  "avatar": "🔭",
+  "avatar": "\ud83d\udd2d",
   "category": "personal",
   "title": "Research Analyst",
   "tagline": "Maintains research briefs and monitors topics.",
@@ -48,8 +48,9 @@
     "novelty_detection"
   ],
   "starters": [
-    "Research the latest on …",
-    "Find three options for …",
-    "Every morning, check the news on … and tell me what changed"
-  ]
+    "Research the latest on \u2026",
+    "Find three options for \u2026",
+    "Every morning, check the news on \u2026 and tell me what changed"
+  ],
+  "status": "beta"
 }

@@ -1,9 +1,9 @@
 {
   "name": "Chef",
   "slug": "chef-meal-planner",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "platform",
-  "avatar": "🍳",
+  "avatar": "\ud83c\udf73",
   "category": "group",
   "title": "Meal Planner",
   "tagline": "Plans the week's meals and keeps one shared grocery list.",
@@ -31,5 +31,6 @@
     "Poll: tacos or curry for Thursday?"
   ],
   "network": [],
-  "evals": []
+  "evals": [],
+  "status": "beta"
 }
