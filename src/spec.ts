@@ -14,6 +14,8 @@ export interface AgentSpec {
   name: string; title: string; avatar: string; audience: Audience; understanding: string; jobs: string[]; routines: Routine[];
   questions: Question[]; boundaries: string[]; success: string[]; skills: string[]; connections: string[]; rehearsal: Scenario[]; tone: string;
   data_needs?: DataNeed[];
+  notes?: string;          // free-form standing instructions (e.g. a catalog agent's own), kept verbatim
+  answers?: Record<string, string>;
 }
 /** Where each fact the agent depends on comes from. Anything without a real source is said out loud, never guessed. */
 export type DataHow = "built-in" | "connect" | "website" | "web" | "ask" | "none";
@@ -149,6 +151,7 @@ export function compile(spec: AgentSpec, answers: Record<string, string> = {}) {
     `What you do:\n${spec.jobs.map((j) => `- ${j}`).join("\n")}`,
     facts.length && `What you know about the people you serve:\n${facts.map(([q, a]) => `- ${q} ${a}`).join("\n")}`,
     `Boundaries:\n${spec.boundaries.map((b) => `- ${b}`).join("\n")}`,
+    spec.notes?.trim() && `Also:\n${spec.notes.trim()}`,
     spec.data_needs?.length && `Where your information comes from (never guess what isn't covered):\n${spec.data_needs.map((d) => `- ${d.need}: ${{ "built-in": "use your built-in tool", connect: "needs a connected account — if it isn't connected, say so", website: "read it from the site with the browser", web: "search the web and cite sources; flag what's unverified", ask: "ask the people once, then remember it", none: "no reliable source yet — say you can't check it and call data.missing" }[d.how]}${d.detail ? ` (${d.detail})` : ""}`).join("\n")}`,
     `You're doing well when:\n${spec.success.map((b) => `- ${b}`).join("\n")}`,
     `Tone: ${spec.tone}.`].filter(Boolean).join("\n\n");
@@ -196,4 +199,43 @@ export async function rehearse(agent: any, userId: string, room: any) {
     out.push({ say: sc.say, expect: sc.expect, reply, tools, verdict, note });
   }
   return out;
+}
+
+
+// ---------------- editing an agent after it exists ----------------
+/** The agent's editable spec: its saved one, or (catalog/older agents) one rebuilt from its fields, keeping its instructions verbatim. */
+export function fromAgent(agent: any): AgentSpec {
+  const saved: AgentSpec | null = J(agent.spec, null);
+  const skills: string[] = J(agent.skills, []);
+  const routines = all<any>("select spec, objective from schedules where agent_id=? and status='active' and kind='recurring'", agent.id).map((r) => {
+    const sp = J(r.spec, {}); return { every: sp.days?.length ? "weekly" : sp.every ?? "daily", ...(sp.days?.length ? { day: sp.days[0] } : sp.day != null ? { day: sp.day } : {}), hour: sp.hour ?? 9, objective: r.objective } as Routine; });
+  if (saved) return { ...saved, name: agent.name, avatar: agent.avatar ?? saved.avatar, skills, routines };
+  return { name: agent.name, title: agent.title ?? "", avatar: agent.avatar ?? "🤖", audience: "me", understanding: agent.job, jobs: skills.map((k) => JOB[k]).filter(Boolean),
+    routines, questions: [], boundaries: [], success: [], skills, connections: tpl.connectionsNeeded(skills), rehearsal: [], tone: "", notes: agent.instructions ?? "", answers: {} };
+}
+
+/** Apply a plain-language change ("be shorter", "never text after 10pm") to a spec. Returns the new spec + what changed; saves nothing. */
+export async function revise(current: AgentSpec, change: string, workspaceId?: string): Promise<{ spec: AgentSpec; summary: string[] }> {
+  const fallback = () => {
+    // Offline: a rule-like change becomes a boundary, anything else a standing note — never lost, always visible.
+    const rule = /\b(never|don'?t|do not|always|only|stop|no more|must)\b/i.test(change);
+    return { spec: rule ? { ...current, boundaries: [...current.boundaries, change.trim()] } : { ...current, notes: `${current.notes ?? ""}\n${change.trim()}`.trim() }, summary: [rule ? `New rule: ${change.trim()}` : `New instruction: ${change.trim()}`] };
+  };
+  const r = await structured<any>("fast", `You edit an AI chat agent's spec. Apply the person's requested change to the JSON spec and return {"spec": <the full updated spec, same shape>, "summary": [short plain-language bullets of exactly what changed]}.
+Change only what they asked. Keys: name, title, avatar (emoji), understanding, jobs [], routines [{every: daily|weekdays|weekly, day?: 0-6, hour: 0-23, objective}], boundaries [], success [], skills (subset of [${Object.keys(tpl.SKILLS).join(", ")}]), tone, notes, data_needs [{need, how, detail}].`,
+    `Current spec:\n${JSON.stringify({ ...current, rehearsal: undefined, questions: undefined, answers: undefined, connections: undefined })}\n\nRequested change: ${change}`, () => null, workspaceId);
+  if (!r?.spec || typeof r.spec !== "object") return fallback();
+  return { spec: sanitize({ ...current, ...r.spec, answers: current.answers, questions: current.questions, rehearsal: current.rehearsal }), summary: (Array.isArray(r.summary) ? r.summary : []).map(String).slice(0, 8) };
+}
+
+/** Trust nothing structural from an edit: known skills only, sane routines, bounded lists, data needs re-resolved. */
+export function sanitize(sp: AgentSpec): AgentSpec {
+  const list = (x: any, n: number) => (Array.isArray(x) ? x : []).map((v) => String(v).trim()).filter(Boolean).slice(0, n);
+  const data = resolveDataNeeds(sp.data_needs ?? [], (sp.skills ?? []).filter((x) => tpl.SKILLS[x]));
+  const skills = data.skills.length ? data.skills : ["web-research"];
+  return { ...sp, name: String(sp.name || "Agent").slice(0, 40), title: String(sp.title ?? "").slice(0, 80), avatar: [...String(sp.avatar || "🤖")].slice(0, 2).join(""),
+    understanding: String(sp.understanding ?? "").slice(0, 600), jobs: list(sp.jobs, 8), boundaries: list(sp.boundaries, 12), success: list(sp.success, 5), tone: String(sp.tone ?? "").slice(0, 200),
+    notes: String(sp.notes ?? "").slice(0, 4000), skills, connections: tpl.connectionsNeeded(skills), data_needs: data.needs,
+    routines: (sp.routines ?? []).filter((r: any) => ["daily", "weekdays", "weekly"].includes(r?.every) && r.hour >= 0 && r.hour < 24 && r.objective && (r.every !== "weekly" || (r.day >= 0 && r.day < 7))).slice(0, 5)
+      .map((r: any) => ({ every: r.every, hour: Math.round(r.hour), ...(r.every === "weekly" ? { day: r.day } : {}), objective: String(r.objective).slice(0, 300) })) };
 }

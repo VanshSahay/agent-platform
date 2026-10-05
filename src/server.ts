@@ -1,6 +1,6 @@
 // HTTP API (plan §34) + webhooks + web app.
 import { randomBytes, createHash } from "node:crypto";
-import { all, one, exec, emit, id, now, S, J, seal, unseal, tx, patchJson, setTz } from "./db";
+import { all, one, exec, emit, id, now, S, J, seal, unseal, tx, patchJson, setTz, tzOf } from "./db";
 import * as rt from "./runtime";
 import * as ch from "./channels";
 import * as tpl from "./templates";
@@ -467,6 +467,28 @@ export const routes: Record<string, any> = {
     limit(`interpret:${u.id}`, 20);
     return json(await spec.interpret(String(b.description).slice(0, 2000), ["me", "group", "team"].includes(b.audience) ? b.audience : "me", b.workspace_id));
   }) },
+  // Edit how an agent behaves after it exists: read its spec, preview a plain-language change, save (recompiles everything).
+  "/v1/agents/:id/spec": {
+    GET: h((req) => { const u = userOf(req), a = agentFor(req.params.id, u.id); return json(spec.fromAgent(a)); }),
+    PUT: h(async (req) => {
+      const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req);
+      if (!b.spec || typeof b.spec !== "object") fail(400, "spec required");
+      const sp = spec.sanitize({ ...spec.fromAgent(a), ...b.spec });
+      exec("update agents set name=?, avatar=?, job=?, instructions=?, skills=?, spec=? where id=?", sp.name, sp.avatar, sp.understanding || a.job, spec.compile(sp, sp.answers ?? {}), S(sp.skills), S(sp), a.id);
+      // Routines are the agent's own recurring work (not people's reminders): replace them with the edited list.
+      exec("update schedules set status='cancelled' where agent_id=? and kind='recurring' and status='active' and json_extract(spec, '$.deliver') is null", a.id);
+      const room = rt.privateRoomFor(u.id, a);
+      for (const r of sp.routines) rt.createSchedule({ agent_id: a.id, room_id: room.id, kind: "recurring", spec: { every: r.every, hour: r.hour, ...(r.every === "weekly" ? { day: r.day ?? 1 } : {}), tz: tzOf(u.id) }, objective: r.objective, created_by: u.id });
+      emit("AGENT_EDITED", { workspace_id: a.workspace_id, actor: u.id, data: { agent_id: a.id, summary: Array.isArray(b.summary) ? b.summary.slice(0, 8) : [] } });
+      return json(agentView(one<any>("select * from agents where id=?", a.id)));
+    }),
+  },
+  "/v1/agents/:id/revise": { POST: h(async (req) => {
+    const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req);
+    if (!String(b.change ?? "").trim()) fail(400, "say what to change");
+    limit(`revise:${u.id}`, 30);
+    return json(await spec.revise(b.spec && typeof b.spec === "object" ? spec.sanitize(b.spec) : spec.fromAgent(a), String(b.change).slice(0, 1000), a.workspace_id));
+  }) },
   "/v1/agents/:id/rehearse": { POST: h(async (req) => {
     const u = userOf(req), a = agentFor(req.params.id, u.id);
     limit(`rehearse:${u.id}`, 10);
@@ -500,6 +522,9 @@ export const routes: Record<string, any> = {
     }
     if (!["imessage", "whatsapp", "telegram", "slack"].includes(p)) fail(400, "unknown platform");
     const ident = p === "slack" ? null : ch.sharedIdentity(p) ?? fail(501, `${p} isn't set up on this platform yet`);
+    // A line people can't text is worse than none: refuse a placeholder instead of handing out a broken "Open Messages" link.
+    if ((p === "imessage" || p === "whatsapp") && !/^\+?[1-9]\d{7,14}$/.test(String(ident?.address ?? "").replace(/[\s()-]/g, "")))
+      fail(501, `the ${p === "imessage" ? "iMessage" : "WhatsApp"} line's phone number isn't set (SHARED_${p.toUpperCase()}_${p === "imessage" ? "LINE" : "NUMBER"} must be a real number like +14155550123)`);
     const code = ch.createDeployCode(a.id, u.id, p, kind);
     const addr = ident?.address ?? "";
     const msg = `${kind === "group" ? "join" : "start"} ${code}`;

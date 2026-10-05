@@ -312,3 +312,30 @@ test("AC-OP1 operator health: admins only; shows failed/unconfirmed messages, st
   expect(h.alerts.join(" ")).toMatch(/1 outgoing messages failed or unconfirmed[\s\S]*waiting \d+s to start/);
   expect(h.problems[0]).toMatchObject({ id: "o1", status: "unconfirmed" });
 });
+
+test("AC-ED1 edit how an agent behaves: plain-language change previewed (not saved), then saved — instructions, skills, data sources and routines recompile", async () => {
+  const e = await signup("Edie");
+  const inst = (await api(`/v1/agent-templates/hawk-price-watch/install`, { token: e.token, body: { workspace_id: e.ws } })).data;
+  const id = inst.agent.id;
+  const sp = (await api(`/v1/agents/${id}/spec`, { token: e.token })).data;
+  expect(sp.notes).toContain("When someone asks you to watch a product"); // a catalog agent's own instructions are kept, editable
+  expect(sp.routines[0]).toMatchObject({ every: "daily", hour: 9 });
+  // Preview: nothing saved yet (offline: a rule-like change becomes a rule)
+  const prev = (await api(`/v1/agents/${id}/revise`, { token: e.token, body: { change: "never message us after 10pm" } })).data;
+  expect(prev.summary[0]).toMatch(/never message us after 10pm/);
+  expect(one<any>("select instructions from agents where id=?", id).instructions).not.toContain("after 10pm");
+  // Save the previewed spec plus direct edits: name, a new data need, a routine moved to weekdays 8am
+  const edited = { ...prev.spec, name: "Hawkeye", data_needs: [{ need: "Live stock prices for our watchlist", how: "web" }], routines: [{ every: "weekdays", hour: 8, objective: "Check our watchlist for moves over 5%" }] };
+  const saved = (await api(`/v1/agents/${id}/spec`, { token: e.token, body: { spec: edited }, method: "PUT" })).data;
+  expect(saved.name).toBe("Hawkeye");
+  const a = one<any>("select * from agents where id=?", id);
+  expect(a.instructions).toMatch(/never message us after 10pm[\s\S]*Where your information comes from[\s\S]*Live stock prices[^\n]*built-in tool/);
+  expect(J(a.skills)).toContain("market-data"); // built-in data source brought its skill
+  const sch = all<any>("select * from schedules where agent_id=? and status='active' and kind='recurring'", id);
+  expect(sch).toHaveLength(1);
+  expect(J(sch[0].spec)).toMatchObject({ every: "weekdays", hour: 8 });
+  expect(sch[0].objective).toMatch(/moves over 5%/);
+  // Someone else can't read or edit it
+  const other = await signup("Oscar");
+  expect((await api(`/v1/agents/${id}/spec`, { token: other.token })).status).toBeGreaterThanOrEqual(400);
+});

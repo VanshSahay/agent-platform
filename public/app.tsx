@@ -161,6 +161,63 @@ function AddTo({ agent }: { agent: any }) {
       {rooms?.filter((r) => r.kind === "shared").map((r) => <a key={r.id} className="row" style={{ padding: 6, cursor: "pointer" }} onClick={async () => { await api(`/v1/rooms/${r.id}/members`, { agent_id: agent.id }); toast(`Added to ${r.name}`); setOpen(false); }}>◇ {r.name}</a>)}
       <a className="row small muted" style={{ padding: 6 }} href="#/rooms">+ New chat</a></div>}</div>;
 }
+/** Edit how an agent behaves: say the change in plain words (previewed before saving) or edit any part directly. */
+function BehaviorEditor({ a, reload }: { a: any; reload: () => void }) {
+  const { toast } = useCtx();
+  const [saved, setSaved] = useState<any>(null), [d, setD] = useState<any>(null), [change, setChange] = useState(""), [summary, setSummary] = useState<string[] | null>(null), [busy, setBusy] = useState("");
+  const load = async () => { const sp = await api(`/v1/agents/${a.id}/spec`); setSaved(sp); setD(sp); setSummary(null); };
+  useEffect(() => { load(); }, [a.id]);
+  if (!d) return <div className="card muted">Loading…</div>;
+  const dirty = JSON.stringify(d) !== JSON.stringify(saved);
+  const set = (k: string, v: any) => setD({ ...d, [k]: v });
+  const preview = async () => { setBusy("preview"); try { const r = await api(`/v1/agents/${a.id}/revise`, { change, spec: d }); setD(r.spec); setSummary(r.summary.length ? r.summary : ["Updated."]); } catch (e: any) { toast(e.message); } finally { setBusy(""); } };
+  const save = async () => { setBusy("save"); try { await api(`/v1/agents/${a.id}/spec`, { spec: d, summary }, "PUT"); toast(`${d.name} updated — it behaves this way from its next message`); setChange(""); await load(); reload(); } catch (e: any) { toast(e.message); } finally { setBusy(""); } };
+  const List = ({ k, label, hint, placeholder }: { k: string; label: string; hint?: string; placeholder: string }) => <div className="mt16"><div className="draft"><h4>{label}</h4></div>
+    {hint && <div className="small muted" style={{ marginBottom: 6 }}>{hint}</div>}
+    {(d[k] ?? []).map((x: string, i: number) => <div key={i} className="row" style={{ gap: 6, marginBottom: 6 }}>
+      <input className="input grow" value={x} onChange={(e) => set(k, d[k].map((y: string, j: number) => (j === i ? e.target.value : y)))} />
+      <button className="btn sm ghost" aria-label={`Remove from ${label}`} onClick={() => set(k, d[k].filter((_: any, j: number) => j !== i))}>✕</button></div>)}
+    <button className="btn sm ghost" onClick={() => set(k, [...(d[k] ?? []), ""])}>＋ {placeholder}</button></div>;
+  const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return <>
+    <div className="card col">
+      <h3 style={{ margin: 0 }}>Tell {d.name} what to change</h3>
+      <p className="small muted" style={{ margin: 0 }}>Plain words. You'll see exactly what changes before anything is saved.</p>
+      <textarea className="input" rows={2} value={change} placeholder={`e.g. "keep replies under 3 lines", "never text after 10pm", "every weekday at 8am send us the top movers"`} onChange={(e) => setChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && change.trim()) preview(); }} />
+      <div className="row" style={{ gap: 8 }}><button className="btn primary" disabled={!change.trim() || !!busy} onClick={preview}>{busy === "preview" ? "Working it out…" : "Preview change"}</button></div>
+      {summary && <div className="rcard"><div className="rcard-t">What will change</div><ul style={{ margin: 0, paddingLeft: 18 }}>{summary.map((x, i) => <li key={i}>{x}</li>)}</ul>
+        <div className="row" style={{ gap: 8 }}><button className="btn primary" disabled={!!busy} onClick={save}>{busy === "save" ? "Saving…" : "Save change"}</button><button className="btn ghost" onClick={() => { setD(saved); setSummary(null); }}>Discard</button></div></div>}
+    </div>
+
+    <div className="card col mt16">
+      <div className="row" style={{ gap: 10 }}>
+        <label className="field" style={{ width: 80 }}>Emoji<input className="input" value={d.avatar} onChange={(e) => set("avatar", e.target.value)} /></label>
+        <label className="field grow">Name<input className="input" value={d.name} onChange={(e) => set("name", e.target.value)} /></label></div>
+      <label className="field">Its job, in a sentence or two<textarea className="input" rows={2} value={d.understanding} onChange={(e) => set("understanding", e.target.value)} /></label>
+      <label className="field">Personality & tone<input className="input" value={d.tone ?? ""} placeholder="e.g. upbeat, brief, a little funny" onChange={(e) => set("tone", e.target.value)} /></label>
+      <List k="jobs" label="What it does" placeholder="Add a job" />
+      <List k="boundaries" label="Rules it follows" hint="Things it must never do, or must ask first." placeholder="Add a rule" />
+      <div className="mt16"><div className="draft"><h4>Routines</h4></div><div className="small muted" style={{ marginBottom: 6 }}>Work it does on its own, on a schedule.</div>
+        {(d.routines ?? []).map((r: any, i: number) => { const up = (x: any) => set("routines", d.routines.map((y: any, j: number) => (j === i ? { ...y, ...x } : y)));
+          return <div key={i} className="row wrap" style={{ gap: 6, marginBottom: 6 }}>
+            <select className="input" style={{ width: "auto" }} value={r.every} onChange={(e) => up({ every: e.target.value, ...(e.target.value === "weekly" ? { day: r.day ?? 1 } : {}) })}>
+              <option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select>
+            {r.every === "weekly" && <select className="input" style={{ width: "auto" }} value={r.day ?? 1} onChange={(e) => up({ day: Number(e.target.value) })}>{DAYS.map((x, j) => <option key={j} value={j}>{x}</option>)}</select>}
+            <select className="input" style={{ width: "auto" }} value={r.hour} onChange={(e) => up({ hour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`}</option>)}</select>
+            <input className="input grow" style={{ minWidth: 180 }} value={r.objective} placeholder="What to do" onChange={(e) => up({ objective: e.target.value })} />
+            <button className="btn sm ghost" aria-label="Remove routine" onClick={() => set("routines", d.routines.filter((_: any, j: number) => j !== i))}>✕</button></div>; })}
+        <button className="btn sm ghost" onClick={() => set("routines", [...(d.routines ?? []), { every: "daily", hour: 9, objective: "" }])}>＋ Add a routine</button></div>
+      <label className="field mt16">Anything else it should know<textarea className="input" rows={4} value={d.notes ?? ""} placeholder="Standing instructions, in plain words" onChange={(e) => set("notes", e.target.value)} /></label>
+      {d.data_needs?.length > 0 && <div className="mt16"><div className="draft"><h4>Where its information comes from</h4></div>
+        {d.data_needs.map((n: any, i: number) => <div key={i} className="ability"><span className="e">{({ "built-in": "✅", connect: "🔗", website: "🧭", web: "🔎", ask: "💬", none: "⚠️" } as any)[n.how] ?? "•"}</span><span className="grow">{n.need}<div className="small muted">{n.detail}</div></span></div>)}</div>}
+      <div className="row mt16" style={{ gap: 8, position: "sticky", bottom: 8 }}>
+        <button className="btn primary" disabled={!dirty || !!busy} onClick={save}>{busy === "save" ? "Saving…" : dirty ? "Save changes" : "Saved"}</button>
+        {dirty && <button className="btn ghost" onClick={() => { setD(saved); setSummary(null); }}>Discard</button>}</div>
+    </div>
+  </>;
+}
+
 function JobEditor({ a, patch }: any) {
   const [f, setF] = useState({ name: a.name, job: a.job, instructions: a.instructions ?? "" });
   return <div className="card col">
@@ -1392,7 +1449,7 @@ function ChatPicker({ a, kind: k0 = "dm", prefer }: { a: any; kind?: "dm" | "gro
   const Code = () => code && <span className="code-pill">{code.message}<button className="btn sm ghost" onClick={() => copy(code.message)}>Copy</button></span>;
   const waiting = code && !done && <div className="waiting mt16"><span className="dot live" />Waiting for your message<span className="dots"><span /><span /><span /></span></div>;
   const steps: Record<string, ReactNode> = {
-    imessage: kind === "dm" ? <><div>On your iPhone, tap <b>Open Messages</b>{!phone && " — or scan the code with your camera"}.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away. Text it anytime, like a friend.</div></>
+    imessage: kind === "dm" ? <><div>On your iPhone, tap <b>Open Messages</b>{!phone && " — or scan the code with your camera"}. Or text <b className="mono">{addr}</b> yourself.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away. Text it anytime, like a friend.</div></>
       : <><div>Open your group chat in Messages and add <b>{addr}</b> to the group.</div><div>Send this in the group: <Code /></div><div>Ask by name — “{name}, …” — and {name} answers everyone.</div></>,
     whatsapp: <><div>Tap <b>Open WhatsApp</b>{!phone && " — or scan the code with your phone"}.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away.</div></>,
     telegram: kind === "dm" ? <><div>Tap <b>Open Telegram</b>{!phone && " — or scan the code"}.</div><div>Press <b>Start</b>.</div><div>{name} says hi. That's it.</div></>
@@ -1441,7 +1498,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
   const { toast } = useCtx();
   const [a, reload] = useApi<any>(`/v1/agents/${id}`, 6000);
   if (!a) return null;
-  const tabs = [["overview", "Overview"], ["test", "Try it"], ["deploy", "Add to a chat"], ["skills", "Abilities"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"]];
+  const tabs = [["overview", "Overview"], ["skills", "Behavior"], ["test", "Try it"], ["deploy", "Add to a chat"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"]];
   const sect = ({ job: "skills", connections: "skills", permissions: "skills", channels: "deploy", schedule: "settings" } as any)[tab] ?? tab;
   const message = async () => { const r = await api(`/v1/agents/${id}/private-room`, {}); go(`/rooms/${r.id}`); };
   const patch = async (b: any) => { try { await api(`/v1/agents/${id}`, b, "PATCH"); toast("Saved"); reload(); } catch (e: any) { toast(e.message); } };
@@ -1452,7 +1509,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
       <div className="body"><div className="row wrap" style={{ alignItems: "flex-start", gap: 16 }}>
         <div className="avatar xl">{a.avatar}</div>
         <div className="grow" style={{ minWidth: 200 }}><h1 style={{ fontSize: 26 }}>{a.name}</h1><div className="row small muted"><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}{titleOf(a) && <> · {titleOf(a)}</>}</div></div>
-        <div className="row"><button className="btn" onClick={message}>Open chat</button><a className="btn grad" href={`#/agents/${id}/deploy`}>Add to a chat</a></div></div>
+        <div className="row"><a className="btn" href={`#/agents/${id}/skills`}>✎ Edit</a><button className="btn" onClick={message}>Open chat</button><a className="btn grad" href={`#/agents/${id}/deploy`}>Add to a chat</a></div></div>
         <p className="mt16" style={{ marginBottom: 0 }}>{a.job}</p>
         <div className="row wrap small muted mt8">{lives.length ? <>Live in {lives.map((p: string) => <span key={p} className="row" style={{ gap: 5 }}><PMark p={p} size="sm" />{PLATFORM[p]}</span>)}</> : "Not in any chat yet."}</div>
       </div></div>
@@ -1470,7 +1527,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
         </div></div></>}
     {sect === "test" && <TestPanel a={a} />}
     {sect === "deploy" && <ChatPicker a={a} />}
-    {sect === "skills" && <><JobEditor a={a} patch={patch} /><h2>Abilities</h2><SkillsEditor a={a} patch={patch} /><h2>Accounts it can use</h2><AgentConnections a={a} reload={reload} />
+    {sect === "skills" && <><BehaviorEditor a={a} reload={reload} /><h2>Abilities</h2><SkillsEditor a={a} patch={patch} /><h2>Accounts it can use</h2><AgentConnections a={a} reload={reload} />
       <h2>Permissions</h2><div className="card"><PermissionRows rows={a.permission_table} onChange={(t, m) => patch({ permissions: { [t]: m } })} /><p className="small faint mt8">Enforced by the platform before every action. The agent can't change them.</p></div></>}
     {sect === "memory" && <MemoryList agent={a.id} agentName={a.name} />}
     {sect === "activity" && <Activity agent={a.id} />}
