@@ -109,7 +109,7 @@ test("AC-T7 run budgets stop runaway agents", async () => {
   await say(room.id, ellie, "search forever");
   const run = runsIn(room.id)[0];
   expect(run.status).toBe("failed_terminal");
-  expect(J(run.spent).modelCalls).toBeLessThanOrEqual(12);
+  expect(J(run.spent).modelCalls).toBeLessThanOrEqual(J(run.budget).maxModelCalls); // the agent's depth sets the cap (12–32)
   expect(lastFrom(room.id, agent.id)).toMatch(/couldn't finish/);
 });
 

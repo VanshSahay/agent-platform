@@ -5,6 +5,7 @@ import { one, all, J, now } from "./db";
 import { structured, hasAnyModel } from "./model";
 import * as tpl from "./templates";
 import * as rt from "./runtime";
+import { assessDepth, depthInstructions, type Depth } from "./depth";
 
 export type Audience = "me" | "group" | "team";
 export interface Routine { every: "daily" | "weekdays" | "weekly"; day?: number; hour: number; objective: string }
@@ -14,6 +15,7 @@ export interface AgentSpec {
   name: string; title: string; avatar: string; audience: Audience; understanding: string; jobs: string[]; routines: Routine[];
   questions: Question[]; boundaries: string[]; success: string[]; skills: string[]; connections: string[]; rehearsal: Scenario[]; tone: string;
   data_needs?: DataNeed[];
+  depth?: Depth;           // how hard it works: decided from its jobs before deploying (src/depth.ts)
   notes?: string;          // free-form standing instructions (e.g. a catalog agent's own), kept verbatim
   answers?: Record<string, string>;
 }
@@ -136,8 +138,9 @@ rehearsal (2-3 realistic first messages a PERSON would send it {say, expect}; "s
   // Trust nothing structural from the model: keep only known skills, sane routines, bounded lists.
   const data = resolveDataNeeds((s as any).data_needs ?? [], (s.skills ?? []).filter((x) => tpl.SKILLS[x]));
   const skills = data.skills;
+  const jobs = ((s.jobs ?? base.jobs) as string[]).slice(0, 6);
   return {
-    ...base, ...s, data_needs: data.needs,
+    ...base, ...s, data_needs: data.needs, depth: assessDepth(jobs, s.routines ?? []),
     audience, skills: skills.length ? skills : base.skills, connections: tpl.connectionsNeeded(skills.length ? skills : base.skills),
     routines: (s.routines ?? []).filter((r) => ["daily", "weekdays", "weekly"].includes(r.every) && r.hour >= 0 && r.hour < 24 && r.objective && (r.every !== "weekly" || (r.day! >= 0 && r.day! < 7))).slice(0, 3),
     questions: (s.questions ?? []).filter((q) => q?.id && q?.q).slice(0, 4), jobs: (s.jobs ?? base.jobs).slice(0, 6), rehearsal: (s.rehearsal ?? base.rehearsal).filter((r) => r?.say).slice(0, 3),
@@ -152,6 +155,7 @@ export function compile(spec: AgentSpec, answers: Record<string, string> = {}) {
     facts.length && `What you know about the people you serve:\n${facts.map(([q, a]) => `- ${q} ${a}`).join("\n")}`,
     `Boundaries:\n${spec.boundaries.map((b) => `- ${b}`).join("\n")}`,
     spec.notes?.trim() && `Also:\n${spec.notes.trim()}`,
+    spec.depth && depthInstructions(spec.depth),
     spec.data_needs?.length && `Where your information comes from (never guess what isn't covered):\n${spec.data_needs.map((d) => `- ${d.need}: ${{ "built-in": "use your built-in tool", connect: "needs a connected account — if it isn't connected, say so", website: "read it from the site with the browser", web: "search the web and cite sources; flag what's unverified", ask: "ask the people once, then remember it", none: "no reliable source yet — say you can't check it and call data.missing" }[d.how]}${d.detail ? ` (${d.detail})` : ""}`).join("\n")}`,
     `You're doing well when:\n${spec.success.map((b) => `- ${b}`).join("\n")}`,
     `Tone: ${spec.tone}.`].filter(Boolean).join("\n\n");
@@ -236,6 +240,7 @@ export function sanitize(sp: AgentSpec): AgentSpec {
   return { ...sp, name: String(sp.name || "Agent").slice(0, 40), title: String(sp.title ?? "").slice(0, 80), avatar: [...String(sp.avatar || "🤖")].slice(0, 2).join(""),
     understanding: String(sp.understanding ?? "").slice(0, 600), jobs: list(sp.jobs, 8), boundaries: list(sp.boundaries, 12), success: list(sp.success, 5), tone: String(sp.tone ?? "").slice(0, 200),
     notes: String(sp.notes ?? "").slice(0, 4000), skills, connections: tpl.connectionsNeeded(skills), data_needs: data.needs,
+    depth: assessDepth(list(sp.jobs, 8), sp.routines ?? [], sp.depth?.overridden && ["light", "standard", "deep"].includes(sp.depth.level) ? sp.depth.level : undefined),
     routines: (sp.routines ?? []).filter((r: any) => ["daily", "weekdays", "weekly"].includes(r?.every) && r.hour >= 0 && r.hour < 24 && r.objective && (r.every !== "weekly" || (r.day >= 0 && r.day < 7))).slice(0, 5)
       .map((r: any) => ({ every: r.every, hour: Math.round(r.hour), ...(r.every === "weekly" ? { day: r.day } : {}), objective: String(r.objective).slice(0, 300) })) };
 }

@@ -48,6 +48,8 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-B9 | Unanswered questions and unconfirmed plans expire after 72h instead of guessing. | §2.8 |
 | AC-B10 | Internal-only work (to-dos, reminders, lists) runs without asking "go"; plans that write outside, delegate or wait on people still show first. Every agent and brief prompt carries the current date, time and zone. | §3.4 |
 | AC-B11 | Planning layer: every request gets an effort (quick/standard/deep), a model tier and a tool budget; real work gets an immediate reply; a request that has to wait is acknowledged at once; long runs post one progress note; past the budget the agent is told to wrap up, and past twice the budget (+2) it is told to answer and gets no tools. | §3.4, §7 |
+| AC-DP1 | Depth is decided before deploy from the agent's jobs: each job gets an effort with a reason, the agent's level (light/standard/deep) is its deepest job, an override sticks, and cost estimates scale with depth. Internal: not shown to people. | §3.4 |
+| AC-DP2 | At run time the agent's depth caps every request: a light agent never runs deep and stays within its tool/model budget; a deep agent gets the research tier and the larger budget. Catalog agents get a depth from their job and skills. | §3.4, §7.5 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |

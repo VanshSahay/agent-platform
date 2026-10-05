@@ -182,12 +182,18 @@ function notifyQueued(runId: string) { if (engine.temporal()) engine.onQueued?.(
 /** A run became runnable again (resumed, revised, retried). */
 export function requeue(runId: string) { setStatus(runId, "queued"); }
 
+/** Run limits from the agent's depth (decided before deploy): deep agents get room to research, light ones stay small. */
+function depthBudget(agent: any) {
+  if (!agent?.id) return {};
+  const d = intake.depthOf(agent);
+  return { maxToolCalls: d.max_tool_calls, maxModelCalls: d.max_model_calls };
+}
 export function createRun(r: { room: any; agent: any; objective: string; requestedBy?: string | null; triggerEventId?: string | null; originEndpointId?: string | null;
   kind?: string; parentRunId?: string; budget?: Partial<typeof DEFAULT_BUDGET>; tainted?: boolean; result?: any; intake?: boolean }) {
   const rid = id("run");
   exec(`insert into runs (id, workspace_id, room_id, agent_id, objective, kind, status, requested_by, parent_run_id, trigger_event_id, origin_endpoint_id, budget, spent, tainted, result, created_at, updated_at)
     values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, rid, r.room.workspace_id, r.room.id, r.agent.id, r.objective, r.kind ?? "respond", "queued", r.requestedBy ?? null,
-    r.parentRunId ?? null, r.triggerEventId ?? null, r.originEndpointId ?? null, S({ ...DEFAULT_BUDGET, ...r.budget }), S({ cost: 0, toolCalls: 0, externalWrites: 0, modelCalls: 0 }),
+    r.parentRunId ?? null, r.triggerEventId ?? null, r.originEndpointId ?? null, S({ ...DEFAULT_BUDGET, ...depthBudget(r.agent), ...r.budget }), S({ cost: 0, toolCalls: 0, externalWrites: 0, modelCalls: 0 }),
     r.tainted ? 1 : 0, r.result ? S(r.result) : null, now(), now());
   if (r.intake) exec("update runs set brief_status='pending' where id=?", rid);
   emit("RUN_STARTED", { workspace_id: r.room.workspace_id, room_id: r.room.id, run_id: rid, actor: r.agent.id, data: { objective: r.objective, requested_by: r.requestedBy, kind: r.kind ?? "respond" } });

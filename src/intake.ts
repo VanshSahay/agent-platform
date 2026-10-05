@@ -1,9 +1,10 @@
 // Requirement layer: brief -> (clarify | confirm | auto) -> execute against the brief -> verify before "done".
 // The model drafts the brief; whether to stop and ask is decided deterministically here, never by the model.
 import { one, all, exec, emit, now, S, J, patchJson, clockLine, tzOf } from "./db";
+import { clampEffort, assessDepth, type Depth } from "./depth";
 import { structured, plan as heuristicPlan } from "./model";
 import { TOOLS, getTool } from "./tools";
-import { agentTools } from "./templates";
+import { agentTools, SKILLS } from "./templates";
 import { retrieve } from "./memory";
 import * as rt from "./runtime";
 
@@ -18,19 +19,28 @@ export interface Brief {
 export type Effort = "quick" | "standard" | "deep";
 const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [5, 10], deep: [8, 16] }; // [min, max] tool calls
 const DEEP = /\b(research|compare|comparison|analy[sz]e|itinerary|plan (a|an|our|my|the) (trip|vacation|holiday|wedding|party|event)|deep dive|options for|best .* (for|in)|pros and cons)\b/i;
+/** The agent's depth: decided when it was designed (spec), or — catalog/older agents — from its job and abilities. */
+export function depthOf(agent: any): Depth {
+  const saved = J(agent?.spec, null)?.depth;
+  if (saved) return saved;
+  const skills: string[] = J(agent?.skills, []);
+  return assessDepth([String(agent?.job ?? ""), ...skills.map((k) => SKILLS[k]?.name ?? k)]);
+}
 /** When the planner didn't write one: never leave the chat silent while real work runs. */
 export const defaultAck = (b: Pick<Brief, "effort">) => b.effort === "deep" ? "On it — this needs some digging. I'll send what I find in a couple of minutes." : "On it — back in a minute.";
 /** Deterministic part of the plan: effort, tool budget and model tier from the drafted brief (the model's guess is a hint, clamped). */
-export function planWork(b: Omit<Brief, "version">, objective: string): Pick<Brief, "effort" | "tool_budget" | "profile"> {
+export function planWork(b: Omit<Brief, "version">, objective: string, depth?: Depth | null): Pick<Brief, "effort" | "tool_budget" | "profile"> {
   const toolSteps = b.plan.filter((p) => p.tool).length;
   let effort: Effort = (["quick", "standard", "deep"] as Effort[]).includes(b.effort as Effort) ? b.effort! : b.kind === "answer" && !toolSteps ? "quick" : "standard";
   if (DEEP.test(objective) || toolSteps >= 4) effort = "deep";
   if (effort === "quick" && toolSteps > 1) effort = "standard";
-  const [lo, hi] = BUDGET[effort];
-  const tool_budget = Math.max(lo, Math.min(hi, Number(b.tool_budget) || (effort === "deep" ? 12 : effort === "standard" ? 6 : 2)));
+  effort = clampEffort(effort, depth); // the agent's depth, decided before deploy, caps every request
+  const [lo, hi0] = BUDGET[effort];
+  const hi = depth ? (effort === "deep" && depth.level === "deep" ? depth.max_tool_calls : Math.min(hi0, depth.max_tool_calls)) : hi0;
+  const tool_budget = Math.max(Math.min(lo, hi), Math.min(hi, Number(b.tool_budget) || (effort === "deep" ? 12 : effort === "standard" ? 6 : 2)));
   // The cheap model only answers; anything that may call tools runs on standard (a live test showed the cheap model narrating
   // "I'll book it" instead of calling the tool). Deep work gets the research tier. Failures escalate further at run time.
-  const profile = effort === "quick" && !toolSteps && !b.side_effects.length ? "fast" : effort === "deep" ? "research-standard" : "standard";
+  const profile = effort === "quick" && !toolSteps && !b.side_effects.length ? "fast" : effort === "deep" ? (depth?.models.deep ?? "research-standard") : "standard";
   return { effort, tool_budget, profile };
 }
 export type Decision = "skip" | "auto" | "clarify" | "confirm";
@@ -131,7 +141,7 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
     effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined,
   };
-  return { ...draft, ...planWork(draft as Brief, String(run.objective ?? "")) } as Brief;
+  return { ...draft, ...planWork(draft as Brief, String(run.objective ?? ""), depthOf(agent)) } as Brief;
 }
 
 /** Planned tools decide what counts as a side effect: none of them writes outside the platform → nothing to sign off. */

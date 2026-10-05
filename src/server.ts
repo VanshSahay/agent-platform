@@ -9,6 +9,7 @@ import * as mem from "./memory";
 import * as intake from "./intake";
 import * as billing from "./billing";
 import { extractText } from "./media";
+import { assessDepth } from "./depth";
 import * as spec from "./spec";
 import { browserRoutes, bb } from "./browser";
 import { PROVIDERS, platformKey } from "./model";
@@ -430,7 +431,8 @@ export const routes: Record<string, any> = {
       if (!b.name || !b.job) fail(400, "name and job required");
       const skills = (b.skills ?? []).filter((s: string) => tpl.SKILLS[s]);
       // A confirmed Agent Spec compiles into standing instructions; its routines become schedules.
-      const sp: spec.AgentSpec | null = b.spec && typeof b.spec === "object" ? { ...b.spec, skills } : null;
+      const sp: spec.AgentSpec | null = b.spec && typeof b.spec === "object"
+        ? { ...b.spec, skills, depth: assessDepth(b.spec.jobs ?? [], b.spec.routines ?? [], b.spec.depth?.overridden ? b.spec.depth.level : undefined) } : null;
       const answers = Object.fromEntries(Object.entries(b.answers ?? {}).filter(([, v]) => typeof v === "string").map(([k, v]) => [k, String(v).slice(0, 300)]));
       const a = tpl.createAgent(b.workspace_id, u.id, { name: b.name, title: b.title, job: b.job, instructions: sp ? spec.compile(sp, answers) : b.instructions, skills, permissions: b.permissions, model_profile: b.model_profile,
         avatar: typeof b.avatar === "string" && [...b.avatar].length <= 4 ? b.avatar : undefined });
