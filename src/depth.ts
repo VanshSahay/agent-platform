@@ -7,9 +7,22 @@ import { priceOf, openDefault, MARKUP } from "./billing";
 import type { Effort } from "./intake";
 
 export type Level = "light" | "standard" | "deep";
+/** Specialist kinds and the tools each may use. A specialist only ever gets the ones its agent already has. */
+export const SPECIALISTS: Record<string, string[]> = {
+  research: ["web.search", "web.fetch", "market.quote", "market.history", "weather.forecast", "sports.scores", "drive.search", "drive.read", "files.read"],
+  calendar: ["calendar.list_events", "calendar.find_free_time", "contacts.search", "email.search"],
+  browser: ["browser.task", "web.fetch"],
+};
+// Which kind of look-up a job involves — two different kinds, or deep work, is what makes parallel specialists worth it.
+const KIND_OF: [string, RegExp][] = [
+  ["research", /\b(research|compar|analy|find|search|look up|news|prices?|options|recommend|itinerar|trip|venues?|restaurants?|hotels?)/i],
+  ["calendar", /\b(calendar|schedul|meetings?|availability|free time|a time|contacts?|inbox|e-?mails?)\b/i],
+  ["browser", /\b(websites?|online|book(ing)?s?|reserv|forms?|portal|checkout|order)\b/i],
+];
 export interface JobDepth { job: string; effort: Effort; why: string }
 export interface Depth {
   level: Level; jobs: JobDepth[]; why: string; overridden?: boolean;
+  specialists: boolean;                 // may this agent split a request into parallel specialists? (each request still decides)
   max_tool_calls: number; max_model_calls: number; cross_check: boolean;
   models: Record<Effort, string>;
   est_cost_usd: Record<Effort, number>; reply_time: Record<Effort, string>;
@@ -56,8 +69,11 @@ export function assessDepth(jobs: string[], routines: { objective: string }[] = 
     : top === "deep" ? `Most requests are quick, but ${deepOnes.slice(0, 2).join(" and ")} need${deepOnes.length === 1 ? "s" : ""} real research — so it can go deep when asked, and stays fast otherwise.`
     : top === "standard" ? "Its jobs need a few lookups or actions, but no long research runs."
     : "Everything it does is quick: lists, reminders, tallies and lookups. It answers in seconds and costs almost nothing.";
+  // Parallel specialists cost more model calls; worth it only for deep work or jobs spanning different kinds of look-up. Never light.
+  const kinds = new Set(all.flatMap((j) => KIND_OF.filter(([, re]) => re.test(j)).map(([k]) => k)));
+  const specialists = level !== "light" && (level === "deep" || kinds.size >= 2);
   return {
-    level, jobs: per, why, ...(forced ? { overridden: true } : {}),
+    level, jobs: per, why, specialists, ...(forced ? { overridden: true } : {}),
     max_tool_calls: cap.max_tool_calls, max_model_calls: cap.max_model_calls, cross_check: cap.cross_check,
     models: { quick: "fast", standard: "standard", deep: level === "deep" ? "research-standard" : "standard" },
     est_cost_usd: { quick: estimate("quick"), standard: estimate("standard"), deep: estimate("deep") },

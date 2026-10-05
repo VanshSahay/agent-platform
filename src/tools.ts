@@ -611,14 +611,16 @@ function describeRepeat(sp: any) {
 }
 
 def({
-  id: "reminder.schedule", description: "Set a reminder or a recurring job for this chat, in the requester's time zone. deliver=\"message\" (default) sends the text word for word at that time — use it for plain reminders (\"call mom\", \"pay rent\"). deliver=\"task\" wakes you to do work then (a briefing, a price check). One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes. Confirm the returned next time back to the person.",
+  id: "reminder.schedule", description: "Set a reminder or a recurring job for this chat, in the requester's time zone. deliver=\"message\" (default) sends the text word for word at that time — use it for plain reminders (\"call mom\", \"pay rent\"). deliver=\"task\" wakes you to do work then (a briefing, a price check). unless_reply_from=email makes it a follow-up: at that time the platform checks Gmail and only reminds if that person hasn't written since now (\"remind me if Dana hasn't replied by Friday\"). One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes. Confirm the returned next time back to the person.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
-  inputSchema: obj({ text: str("what to send / do"), deliver: { type: "string", enum: ["message", "task"] }, ...WHEN }, ["text"]),
+  inputSchema: obj({ text: str("what to send / do"), deliver: { type: "string", enum: ["message", "task"] }, unless_reply_from: str("email address: skip the reminder if they write first"), ...WHEN }, ["text"]),
   async execute(i, ctx) {
     const tz = tzOf(ctx.run.requested_by), { kind, spec } = whenSpec(i, tz);
+    const follow = i.unless_reply_from ? { unless_reply_from: String(i.unless_reply_from).toLowerCase(), since: now() } : {};
     const s = rt.createSchedule({ agent_id: ctx.agent.id, room_id: ctx.room.id, created_by: ctx.run.requested_by, objective: i.text, kind,
-      spec: { ...spec, deliver: i.deliver === "task" ? "task" : "message", endpoint_id: ctx.run.origin_endpoint_id ?? null } });
-    return { status: "SUCCEEDED", output: { reminder_id: s.id.slice(-6), next: fmtLocal(s.next_at, tz), time_zone: tz, repeats: kind === "recurring", text: i.text } };
+      spec: { ...spec, deliver: i.deliver === "task" ? "task" : "message", endpoint_id: ctx.run.origin_endpoint_id ?? null, ...follow } });
+    return { status: "SUCCEEDED", output: { reminder_id: s.id.slice(-6), next: fmtLocal(s.next_at, tz), time_zone: tz, repeats: kind === "recurring", text: i.text,
+      ...(i.unless_reply_from ? { only_if_no_reply_from: i.unless_reply_from } : {}) } };
   },
 });
 
@@ -746,6 +748,19 @@ def({
 });
 
 def({
+  id: "specialists.run", description: "Split independent look-ups into parallel specialists and wait for all of them (e.g. research venues while checking the calendar). Kinds: research (web + data), calendar (calendar, contacts, inbox look-ups), browser (a website with no API). Each gets only the objective + context you give, only its kind's tools, and can't send, book or change anything; each returns {finding, sources, proposed_actions, unresolved_questions}. You check them against each other, take any action yourself, and answer. Don't use it for a single quick look-up.",
+  risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ tasks: { type: "array", items: obj({ specialist: { type: "string", enum: ["research", "calendar", "browser"] }, objective: str(), context: str("only what this part needs") }, ["specialist", "objective"]) } }, ["tasks"]),
+  async execute(i, ctx) {
+    const r = rt.runSpecialists(ctx.run, i.tasks ?? []);
+    if ("error" in r) throw new ToolError("BUSINESS_RULE", r.error!);
+    const started = r.children.filter((c: any) => c.child_run_id);
+    if (!started.length) throw new ToolError("BUSINESS_RULE", r.children.map((c: any) => c.error).join("; ") || "no tasks given");
+    return { status: "SUCCEEDED", output: { started: r.children }, wait: { kind: "agent", reason: `waiting for ${started.length} specialist${started.length > 1 ? "s" : ""}`, wake_key: `children:${ctx.run.id}` } };
+  },
+});
+
+def({
   id: "wait.for_reply", description: "Pause this task until an email arrives from an address (or any new message in this room), with a timeout.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ from_email: str(), timeout_hours: num() }),
@@ -783,6 +798,18 @@ export function resolveConnection(provider: string, agentId: string, run: any, r
     where c.workspace_id=? and c.provider=? and c.status!='revoked'`, agentId, run.workspace_id, provider);
   const score = (c: any) => (c.granted ? 8 : 0) + (c.owner_id === run.requested_by ? 4 : 0) + (c.visibility === "workspace" ? 2 : 0) + (roomHumans.includes(c.owner_id) ? 1 : 0);
   return rows.sort((a, b) => score(b) - score(a))[0] ?? null;
+}
+
+/** Has `from` emailed the agent's Google account since `since`? true / false, or null when we can't tell (no connection, Gmail down). */
+export async function repliedSince(agent: any, room: any, requestedBy: string | null, from: string, since: number): Promise<boolean | null> {
+  const run = { workspace_id: agent.workspace_id, requested_by: requestedBy, room_id: room.id };
+  const c = resolveConnection("google", agent.id, run, rt.roomHumanIds(room.id));
+  if (!c || c.status !== "active") return null;
+  try {
+    const h = await googleToken({ run, agent, room, idempotencyKey: "", connection: { id: c.id, cred: unseal(c.cred_enc), account: c.account } });
+    const r = await call(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(`from:${from} after:${Math.floor(since / 1000)}`)}&maxResults=1`, { headers: h });
+    return ((await r.json()) as any).messages?.length > 0;
+  } catch { return null; }
 }
 
 export type GatewayResult =

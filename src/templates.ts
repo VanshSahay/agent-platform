@@ -1,4 +1,5 @@
 // Skills, Agent Templates (versioned manifests), install / fork / publish / review (plan §2.3, §2.7, §18).
+import { assessDepth, SPECIALISTS } from "./depth";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { all, one, exec, id, now, S, J, tx, emit } from "./db";
@@ -50,7 +51,13 @@ export function agentTools(agent: { skills: string | string[]; id?: string }): S
   // MCP servers granted to this agent contribute their tools.
   const mcp = agent.id ? all<any>("select c.id, c.config from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.provider='mcp' and c.status='active'", agent.id)
     .flatMap((c) => (J(c.config, {}).tools ?? []).filter((t: any) => typeof t?.name === "string" && t.name).map((t: any) => `mcp.${c.id.slice(4, 10)}.${t.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}`)) : [];
-  return new Set([...CORE_TOOLS, ...skills.flatMap((s) => SKILLS[s]?.tools ?? []), ...mcp]);
+  const tools = new Set([...CORE_TOOLS, ...skills.flatMap((s) => SKILLS[s]?.tools ?? []), ...mcp]);
+  // Parallel specialists: only where the agent's depth (decided from its jobs before deploy) says splitting work is worth it,
+  // and only with look-up tools to hand out. Each specialist gets a subset of these same tools.
+  const d = (agent as any).spec ? J((agent as any).spec, null)?.depth : null;
+  const allowed = d ? (d.specialists ?? d.level === "deep") : (agent as any).job !== undefined && assessDepth([String((agent as any).job ?? ""), ...skills.map((s) => SKILLS[s]?.name ?? s)]).specialists;
+  if (allowed && Object.values(SPECIALISTS).flat().some((t) => tools.has(t))) tools.add("specialists.run");
+  return tools;
 }
 
 // ---------- skills learned from repeated work (plan §11.3) ----------

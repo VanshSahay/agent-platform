@@ -18,7 +18,7 @@ export const CONTRACTS: Record<JobKind, Contract> = {
     done: ["reminder.schedule", "reminder.update", "reminder.cancel"], read: ["reminder.list"] },
   email: { match: /\b(e-?mails?|inbox|reply to .+@|draft (a|an|the)?\s*(note|message|reply)|send .+@)\b/i, tools: ["email.send", "email.draft", "email.search"], needs: "google", label: "handle that email",
     done: ["email.send", "email.draft"], read: ["email.search"], pendingApproval: ["email.send"] },
-  calendar: { match: /\b(calendar|my (agenda|schedule)|my (day|week|morning|afternoon) (look|looking)|am i (free|busy)|free (time|slots?)|when am i free|(my|any) meetings? (today|tomorrow|this week)|what'?s on my (calendar|schedule|plate) (today|tomorrow|this week)|(schedule|book|set up) (a|an) (meeting|call))\b/i,
+  calendar: { match: /\b(calendar|my (agenda|schedule)|my (day|week|morning|afternoon) (look|looking)|am i (free|busy)|free (time|slots?)|when am i free|(my|any) meetings? (today|tomorrow|this week)|what'?s on my (calendar|schedule|plate) (today|tomorrow|this week)|(schedule|book|set up) (a|an) (meeting|call)|find (a )?time|a time that works)\b/i,
     tools: ["calendar.list_events", "calendar.find_free_time"], needs: "google", label: "check your calendar",
     done: ["calendar.create_event", "calendar.cancel_event"], read: ["calendar.list_events", "calendar.find_free_time"], pendingApproval: ["calendar.create_event", "calendar.cancel_event"] },
   // Group jobs: the outcome is the shared record itself (the ledger, the list, the poll).
@@ -47,7 +47,7 @@ export const wantsRead = (job: JobKind, text: string) => !WRITE[job].test(text);
  *  "Remind me about my meeting" is a reminder only: calendar counts alongside a reminder only when the calendar is named. */
 export function detectJobs(text: string): JobKind[] {
   const kinds = (Object.keys(CONTRACTS) as JobKind[]).filter((k) => CONTRACTS[k].match.test(text));
-  return kinds.includes("reminder") && !/\b(calendar|am i (free|busy)|free (time|slots?))\b/i.test(text) ? kinds.filter((k) => k !== "calendar") : kinds;
+  return kinds.includes("reminder") && !/\b(calendar|am i (free|busy)|free (time|slots?)|find (a )?time|a time that works)\b/i.test(text) ? kinds.filter((k) => k !== "calendar") : kinds;
 }
 export const detectJob = (text: string): JobKind | null => detectJobs(text)[0] ?? null;
 
@@ -88,7 +88,8 @@ export function outcome(run: any, reply: string): Outcome {
   asks = asks.filter((a) => [...CONTRACTS[a.job].done, ...CONTRACTS[a.job].read].some((t) => has.has(t)));
   const kinds = asks.map((a) => a.job);
   if (!kinds.length) return { job: null, ok: true, evidence: "" };
-  const calls = all<any>("select data from events where run_id=? and type in ('TOOL_CALL_COMPLETED','TOOL_CALL_FAILED')", run.id).map((e) => J(e.data, {}));
+  // A specialist's reads count as evidence for its parent (they can't write, so changes are always the parent's own).
+  const calls = all<any>("select data from events where run_id in (select id from runs where id=? or parent_run_id=?) and type in ('TOOL_CALL_COMPLETED','TOOL_CALL_FAILED')", run.id, run.id).map((e) => J(e.data, {}));
   const waiting = !!one("select 1 from waits where run_id=? and status='open'", run.id);
   const asked = /\?\s*$/.test(reply.trim());
   const per = asks.map(({ job, read }) => {

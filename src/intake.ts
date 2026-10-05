@@ -1,7 +1,7 @@
 // Requirement layer: brief -> (clarify | confirm | auto) -> execute against the brief -> verify before "done".
 // The model drafts the brief; whether to stop and ask is decided deterministically here, never by the model.
 import { one, all, exec, emit, now, S, J, patchJson, clockLine, tzOf } from "./db";
-import { clampEffort, assessDepth, type Depth } from "./depth";
+import { clampEffort, assessDepth, SPECIALISTS, type Depth } from "./depth";
 import { structured, plan as heuristicPlan } from "./model";
 import { TOOLS, getTool } from "./tools";
 import { agentTools, SKILLS } from "./templates";
@@ -15,6 +15,7 @@ export interface Brief {
   kind: "answer" | "act" | "task" | "schedule";
   // Planning layer: how much work this is, which model tier runs it, how many tool calls it deserves, and what to say right away.
   effort?: Effort; tool_budget?: number; profile?: string; ack?: string;
+  split?: { specialist: string; objective: string; context?: string }[]; // independent parts run in parallel by specialists
 }
 export type Effort = "quick" | "standard" | "deep";
 const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [5, 10], deep: [8, 16] }; // [min, max] tool calls
@@ -29,7 +30,7 @@ export function depthOf(agent: any): Depth {
 /** When the planner didn't write one: never leave the chat silent while real work runs. */
 export const defaultAck = (b: Pick<Brief, "effort">) => b.effort === "deep" ? "On it — this needs some digging. I'll send what I find in a couple of minutes." : "On it — back in a minute.";
 /** Deterministic part of the plan: effort, tool budget and model tier from the drafted brief (the model's guess is a hint, clamped). */
-export function planWork(b: Omit<Brief, "version">, objective: string, depth?: Depth | null): Pick<Brief, "effort" | "tool_budget" | "profile"> {
+export function planWork(b: Omit<Brief, "version">, objective: string, depth?: Depth | null): Pick<Brief, "effort" | "tool_budget" | "profile" | "split"> {
   const toolSteps = b.plan.filter((p) => p.tool).length;
   let effort: Effort = (["quick", "standard", "deep"] as Effort[]).includes(b.effort as Effort) ? b.effort! : b.kind === "answer" && !toolSteps ? "quick" : "standard";
   if (DEEP.test(objective) || toolSteps >= 4) effort = "deep";
@@ -41,7 +42,12 @@ export function planWork(b: Omit<Brief, "version">, objective: string, depth?: D
   // The cheap model only answers; anything that may call tools runs on standard (a live test showed the cheap model narrating
   // "I'll book it" instead of calling the tool). Deep work gets the research tier. Failures escalate further at run time.
   const profile = effort === "quick" && !toolSteps && !b.side_effects.length ? "fast" : effort === "deep" ? (depth?.models.deep ?? "research-standard") : "standard";
-  return { effort, tool_budget, profile };
+  // Split only if the agent's depth allows specialists, the request isn't quick, and there really are 2+ independent parts.
+  const parts = (Array.isArray(b.split) ? b.split : []).filter((p: any) => p && SPECIALISTS[p.specialist] && String(p.objective ?? "").trim()).slice(0, 4)
+    .map((p: any) => ({ specialist: String(p.specialist), objective: String(p.objective).slice(0, 400), ...(p.context ? { context: String(p.context).slice(0, 600) } : {}) }));
+  const may = depth?.specialists ?? depth?.level === "deep"; // depths saved before this field existed: deep agents only
+  const split = may && effort !== "quick" && parts.length >= 2 ? parts : undefined;
+  return { effort, tool_budget, profile, split };
 }
 export type Decision = "skip" | "auto" | "clarify" | "confirm";
 
@@ -85,12 +91,17 @@ export function heuristicBrief(objective: string, c: { tools: string[]; agents: 
     ...steps.filter((s) => DONE_TEXT[s.name] && !(count && s.name === "web.search")).map((s) => DONE_TEXT[s.name](s.input)),
   ])];
   const plan: PlanStep[] = steps.map((s) => ({ text: STEP_TEXT[s.name]?.(s.input) ?? s.name, tool: s.name, status: "todo" }));
+  // Offline planner's split: look-ups of different kinds (web research + calendar) are independent; same-kind ones aren't worth it.
+  const kindOf = (t: string) => Object.keys(SPECIALISTS).find((k) => SPECIALISTS[k].includes(t) && getTool(t)?.risk === "read");
+  const byKind = new Map<string, string[]>();
+  for (const s of steps) { const k = kindOf(s.name); if (k) byKind.set(k, [...(byKind.get(k) ?? []), STEP_TEXT[s.name]?.(s.input) ?? s.name]); }
+  const split = byKind.size >= 2 ? [...byKind].map(([specialist, what]) => ({ specialist, objective: `${what.join("; ")} — for: ${text.slice(0, 200)}` })) : [];
   const names = steps.map((s) => s.name);
   const kind = !steps.length ? "answer" : names.includes("wait.for_reply") || names.includes("agent.delegate") || steps.length >= 3 ? "task"
     : names.includes("reminder.schedule") ? "schedule" : "act";
   return {
     goal: text.split("\n")[0].split(/(?<=[.!?])\s/)[0].slice(0, 200), deliverable: done_when[0] ?? (kind === "answer" ? "A reply" : "The requested change"),
-    constraints, assumptions, questions, done_when, plan, kind,
+    constraints, assumptions, questions, done_when, plan, kind, split,
     side_effects: steps.filter((s) => { const d = getTool(s.name); return d && WRITE_RISKS.includes(d.riskOf?.(s.input) ?? d.risk); }).map((s) => getTool(s.name)!.summarize?.(s.input) ?? s.name),
   };
 }
@@ -101,6 +112,7 @@ const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief b
  "side_effects": [each action that reaches outside the platform: sending, booking, creating events, paying],
  "effort": "quick" (answer from what you know or one lookup) | "standard" (a few tool calls) | "deep" (research, comparisons, multi-step plans),
  "tool_budget": how many tool calls a careful person would need (quick 1-2, standard 3-6, deep 8-14),
+ "split": [] — or, ONLY when the request contains 2–4 independent look-ups that could run at the same time (e.g. researching venues AND checking calendars, or comparing three cities), one entry per part: {"specialist": "research" | "calendar" | "browser", "objective": "what that part must find, self-contained"}. Never split a single look-up, a quick answer, anything that sends/books/changes something, or steps where one needs the other's result,
  "ack": for standard/deep work, ONE short chat line sent immediately, in the agent's voice, saying what you're doing and any key assumption (e.g. "On it — looking at Lisbon hotels for Oct 10–12, I'll send 3 options in a minute."); "" for quick answers,
  "done_when": [2-4 checkable success criteria], "plan": [{"text": step in plain words the person would use — never tool names or ids, "tool": tool id or null}] (1-7 steps, using only the listed tools),
  "kind": "answer" (just reply) | "act" (a few tool actions) | "task" (multi-step, waits on people or days) | "schedule" (reminders/recurring)}`;
@@ -139,7 +151,7 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     done_when: arr(b.done_when).map(String), kind: ["answer", "act", "task", "schedule"].includes(b.kind) ? b.kind : "act",
     questions: arr(b.questions).map((q: any) => (typeof q === "string" ? { q } : { q: String(q.q), default: q.default ?? undefined })).filter((q: any) => q.q),
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
-    effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined,
+    effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined, split: b.split,
   };
   return { ...draft, ...planWork(draft as Brief, String(run.objective ?? ""), depthOf(agent)) } as Brief;
 }
@@ -244,6 +256,7 @@ export function reviseBrief(runId: string, userId: string, text: string, endpoin
   // An approval for the old requirement that hasn't run yet must not carry over.
   exec("update approvals set status='superseded' where run_id=? and status='approved' and fingerprint not in (select fingerprint from tool_executions where run_id=?)", runId, runId);
   exec("update waits set status='superseded' where run_id=? and status='open'", runId);
+  rt.cancelChildren(runId, userId); // specialists working on the old requirement stop
   // Close out tool calls the old requirement asked for, then tell the model what changed.
   for (const c of rt.pendingCalls(runId)) rt.appendToolResult(runId, c, "SUPERSEDED: the requirement changed before this ran; follow the updated brief.");
   if (["auto", "confirmed"].includes(run.brief_status)) rt.appendStep(runId, "signal", { text: `Requirement changed by ${rt.nameOf(userId)}: ${text}` });

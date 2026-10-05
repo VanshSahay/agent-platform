@@ -130,3 +130,54 @@ test("AC-AVA3 email: exact draft shown, approval bound to that exact draft, sent
   expect(sent().at(-1)).toMatch(/not sure that went through[\s\S]*check/);
   expect(one<any>("select status from tool_executions where tool_id='email.send' order by created_at desc").status).toBe("unknown");
 });
+
+test("AC-AVA4 the Dana journey: finds Dana, reads free time, shows the exact email; a changed instruction replaces the draft; survives a restart; sends once with a verified id; Friday's follow-up checks Gmail itself", async () => {
+  googleConnection(ws, ellie, [ava.id]);
+  net.on(/people:searchContacts/, () => Response.json({ results: [{ person: { names: [{ displayName: "Dana Kim" }], emailAddresses: [{ value: "dana@example.com" }] } }] }));
+  net.on(/calendar\/v3\/freeBusy/, () => Response.json({ calendars: { primary: { busy: [] } } }));
+  const gmail: any[] = [];
+  net.on(/gmail\.googleapis\.com\/.*\/messages\/send/, (_r, b) => { gmail.push(b); return Response.json({ id: `gm${gmail.length}` }); });
+  net.on(/messages\?q=from%3A/, (r) => Response.json({ messages: /from%3Asam/.test(r.url) ? [{ id: "r1" }] : [] })); // Sam replied, Dana didn't
+
+  const draft = (day: string) => call("email.send", { to: ["dana@example.com"], subject: "Meeting next week", body: `Hi Dana, does ${day} work for a 30-minute catch-up?` });
+  scriptModel(call("contacts.search", { query: "Dana" }), call("calendar.find_free_time", { days: 7, duration_minutes: 30 }),
+    call("reminder.schedule", { text: "Dana hasn't replied about next week's meeting", days: ["fri"], time: "09:00", unless_reply_from: "dana@example.com" }),
+    draft("Tuesday at 10am"), { text: "Sent." });
+  await text("Find a time with Dana next week, draft the email, and remind me if she hasn't replied by Friday");
+  if (/go/i.test(sent().at(-1) ?? "") && !one("select 1 from approvals where status='pending'")) await text("go");
+  const first = one<any>("select * from approvals where status='pending'");
+  expect(first.tool_id).toBe("email.send");
+  expect(sent().some((t) => /dana@example\.com/.test(t) && /Tuesday at 10am/.test(t))).toBe(true);   // the exact draft, before anything is sent
+  expect(gmail).toHaveLength(0);
+
+  // Changed instruction: the Tuesday draft can never be sent; the Wednesday one needs its own approval
+  scriptModel(draft("Wednesday at 2pm"), { text: "Sent." });
+  await text("actually make it Wednesday at 2pm instead");
+  if (!one("select 1 from approvals where status='pending'")) await text("go");
+  expect(one<any>("select status from approvals where id=?", first.id).status).not.toBe("pending");
+  const second = one<any>("select * from approvals where status='pending'");
+  expect(J(second.input).body).toContain("Wednesday at 2pm");
+
+  // Restart: the waiting run and its approval survive
+  rt.recover();
+  expect(one<any>("select status from approvals where id=?", second.id).status).toBe("pending");
+  await text("approve");
+  expect(gmail).toHaveLength(1);
+  expect(Buffer.from(gmail[0].raw, "base64url").toString()).toMatch(/To: dana@example\.com[\s\S]*Wednesday at 2pm/);
+  expect(Buffer.from(gmail[0].raw, "base64url").toString()).not.toContain("Tuesday");
+  expect(sent().at(-1)).not.toMatch(/Not fully done/);                                                 // the plan matched the ask; nothing spurious flagged
+  // Every action it reports is proven: calendar read, the email sent, the follow-up set
+  const proof = outcomes().filter((o: any) => o.status === "done").flatMap((o: any) => o.jobs ?? []).map((j: any) => `${j.job}:${j.evidence}`);
+  expect(proof).toEqual(expect.arrayContaining(["email:email.send succeeded", "reminder:reminder.schedule succeeded", "calendar:calendar.find_free_time succeeded"]));
+
+  // A second follow-up for Sam, who does reply
+  scriptModel(call("reminder.schedule", { text: "Sam hasn't replied", days: ["fri"], time: "09:00", unless_reply_from: "sam@example.com" }), { text: "Will do." });
+  await text("remind me friday 9am if sam hasn't replied");
+  // Friday 9am: Dana's follow-up fires (Gmail shows no reply); Sam's is skipped (he replied)
+  const before = sent().length;
+  for (let d = 0; d < 7; d++) { advance(864e5); await rt.drain(); }
+  const fired = sent().slice(before);
+  expect(fired.filter((t) => /Dana hasn't replied/.test(t))).toEqual(["⏰ Dana hasn't replied about next week's meeting\n(No reply from dana@example.com yet.)"]);
+  expect(fired.some((t) => /Sam hasn't replied/.test(t))).toBe(false);
+  expect(events("REMINDER_SKIPPED").map((e) => e.data.reason)).toEqual(["sam@example.com replied"]);
+});

@@ -172,7 +172,8 @@ export const extraSummaries: Record<string, (j: any) => string> = {};
 
 export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName" | "roomId">) {
   for (const p of extraPlanners) { const r = p(text, c); if (r.exclusive && r.steps.length) return r.steps; }
-  const t = text.toLowerCase(), has = (n: string) => c.tools.includes(n), out: { name: string; input: any }[] = [];
+  // One line: a follow-up correction is appended on a new line, and "$"-anchored patterns (reminders) must still see the whole ask.
+  const t = text.toLowerCase().replace(/\s*\n+\s*/g, " "), has = (n: string) => c.tools.includes(n), out: { name: string; input: any }[] = [];
   const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g)?.at(-1); // latest wins (follow-up corrections append)
   const subjectOf = () => text.match(/about (.+?)(?=\s+(?:and|then|on my|to my|in my|by|before|after|for)\b|[.,!?\n]|$)/i)?.[1]?.trim() ?? "Quick follow-up";
   const dontContact = text.match(/(?:don'?t|do not) (?:contact|email|message|text|reach out to) ([A-Z][a-z]+)/);
@@ -201,7 +202,7 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   if (file && has("files.read")) out.push({ name: "files.read", input: { file_id: file } });
   const url = text.match(/https?:\/\/\S+/)?.[0];
   if (url && has("web.fetch")) out.push({ name: "web.fetch", input: { url } });
-  else if (/\b(search|find|research|look up|compare|options?|hotels?|flights?|prices?|latest|news)\b/.test(t) && !rem && has("web.search"))
+  else if (/\b(search|find|research|look up|compare|options?|hotels?|flights?|prices?|latest|news)\b/.test(t) && !/\bfind (a )?time\b/.test(t) && !rem && has("web.search"))
     out.push({ name: "web.search", input: { query: text.replace(/^@?\w+[,:]\s*/, "").slice(0, 200) } });
 
   // Live data tools (sports, markets, weather): the offline planner picks the obvious call.

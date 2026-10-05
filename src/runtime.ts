@@ -5,9 +5,9 @@
 import * as billing from "./billing";
 import { all, one, exec, emit, id, now, S, J, tx, recordUsage, patchJson, serverTz, zoned, fromZoned } from "./db";
 import { generate } from "./model";
-import { runSignature, maybeSuggestSkill, PLANS } from "./templates";
+import { runSignature, maybeSuggestSkill, PLANS, agentTools } from "./templates";
 import { buildContext } from "./context";
-import { executeToolCall, TOOLS, getTool } from "./tools";
+import { executeToolCall, TOOLS, getTool, repliedSince } from "./tools";
 import { extractAfterTurn, retrieve } from "./memory";
 import { structured } from "./model";
 import * as channels from "./channels";
@@ -162,7 +162,7 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
       exec("update waits set wake_at=? where id=?", now() + debounceMs, open.id);
       continue;
     }
-    const busy = one<any>("select objective from runs where room_id=? and agent_id=? and status in ('queued','running','retrying') order by created_at limit 1", room.id, a.id);
+    const busy = one<any>("select objective from runs where room_id=? and agent_id=? and status in ('queued','running','retrying') and kind<>'delegate' order by created_at limit 1", room.id, a.id);
     const run = createRun({ room, agent: a, objective: i.text, requestedBy: i.senderId, triggerEventId: eventId, originEndpointId: i.endpointId ?? "web", tainted: i.untrusted, intake: true });
     // Already working on something in this chat: say so now instead of going silent until it's this request's turn.
     if (busy) postMessage(room.id, { sender: a.id, runId: run.id, text: `Got it — I'll get to that right after “${String(busy.objective).split("\n")[0].slice(0, 60)}”.`, targets: replyTargets(room.id, i.endpointId ?? "web") });
@@ -236,6 +236,7 @@ export function createWait(run: any, w: { kind: string; reason: string; owner?: 
   setStatus(run.id, WAIT_STATUS[w.kind] ?? "waiting_for_external");
   emit("RUN_WAITING", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, data: { wait_id: wid, kind: w.kind, reason: w.reason, owner: w.owner } });
   if (w.kind === "event") intake.progressNote(one<any>("select * from runs where id=?", run.id), w.reason);
+  if (w.wake_key?.startsWith("children:")) settleSpecialists(run.id); // they may all have finished already
   return wid;
 }
 
@@ -256,7 +257,7 @@ export function resumeWait(waitId: string, signal?: string) {
 export function signalEvent(key: string, text: string) {
   let n = 0;
   for (const w of all<any>("select id from waits where status='open' and wake_key=?", key)) n += +resumeWait(w.id, text);
-  for (const s of all<any>("select * from schedules where status='active' and kind='event' and json_extract(spec, '$.wake_key')=?", key)) { fireSchedule(s, text); n++; }
+  for (const s of all<any>("select * from schedules where status='active' and kind='event' and json_extract(spec, '$.wake_key')=?", key)) { void fireSchedule(s, text); n++; } // event-triggered: no await inside, runs now
   return n;
 }
 
@@ -298,6 +299,17 @@ async function stepRunInner(runId: string) {
     if (miss) { exec("update runs set brief_status='skipped' where id=?", run.id); jobs.recordOutcome(run, { job: miss.job, ok: false, evidence: "missing connection" }); return complete(run, agent, room, miss.message); }
     if ((await intake.intake(run, agent, room, live)) === "wait" || !live()) return;
     run = one<any>("select * from runs where id=?", runId);
+  }
+  // The planner judged this request to split into independent look-ups: start them together, wait, then answer from all of them.
+  const split = J(run.brief, null)?.split;
+  if (split?.length >= 2 && !run.parent_run_id && !J(run.spent, {}).splitStarted && ["auto", "confirmed"].includes(run.brief_status)) {
+    patchJson("runs", "spent", run.id, (x) => ({ ...x, splitStarted: 1 }));
+    const r = runSpecialists(run, split);
+    if (!("error" in r) && r.children.some((c: any) => c.child_run_id)) {
+      appendStep(run.id, "signal", { text: `[PLAN] This request was split into ${r.children.length} parallel specialists: ${r.children.map((c: any) => `${c.specialist}: ${c.objective}`).join(" | ")}. Their results arrive together.` });
+      createWait(run, { kind: "agent", reason: "waiting for specialists", wake_key: `children:${run.id}` });
+      return;
+    }
   }
 
   const runCalls = async (calls: any[], allowed: Set<string>) => {
@@ -454,7 +466,7 @@ export function ungroundedFigures(run: any, text: string): string[] {
   const figs = [...new Set(String(text).match(FIGURE) ?? [])].filter((f) => num(f) > 0);
   if (!figs.length) return [];
   const seen = [
-    ...all<any>("select data from run_steps where run_id=? and type='tool_result'", run.id).map((r) => J(r.data, {}).content ?? ""),
+    ...all<any>("select data from run_steps where run_id in (select id from runs where id=? or parent_run_id=?) and type in ('tool_result','signal')", run.id, run.id).map((r) => J(r.data, {}).content ?? J(r.data, {}).text ?? ""),
     ...all<any>("select data from events where room_id=? and type='message' order by seq desc limit 40", run.room_id).map((r) => J(r.data, {}).text ?? ""),
     String(run.objective ?? ""), ...retrieve(one<any>("select * from rooms where id=?", run.room_id), run.agent_id, run.objective, run.requested_by, 20).map((m: any) => m.text),
   ].join(" ");
@@ -494,7 +506,8 @@ function complete(run: any, agent: any, room: any, text: string) {
   emit("RUN_COMPLETED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { text: text.slice(0, 500) } });
   if (run.parent_run_id) {
     // Typed handoff back to the parent (plan §16.2); the child's text is not posted to the room.
-    signalEvent(`run:${run.id}`, `${agent.name} finished the delegated task. Result: ${text}`);
+    if (J(run.result, {})?.specialist) { patchJson("runs", "result", run.id, (r) => ({ ...r, output: specialistOutput(text) })); settleSpecialists(run.parent_run_id); }
+    else signalEvent(`run:${run.id}`, `${agent.name} finished the delegated task. Result: ${text}`);
     return;
   }
   if (text.trim()) postMessage(room.id, { sender: agent.id, text, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id) });
@@ -507,7 +520,8 @@ function complete(run: any, agent: any, room: any, text: string) {
 function fail(run: any, reason: string) {
   if (!setStatus(run.id, "failed_terminal", { error: reason })) return;
   emit("RUN_FAILED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id, data: { reason } });
-  if (run.parent_run_id) signalEvent(`run:${run.id}`, `${nameOf(run.agent_id)} could not finish: ${reason}`);
+  if (run.parent_run_id && J(run.result, {})?.specialist) settleSpecialists(run.parent_run_id);
+  else if (run.parent_run_id) signalEvent(`run:${run.id}`, `${nameOf(run.agent_id)} could not finish: ${reason}`);
   else postMessage(run.room_id, { sender: run.agent_id, text: `I couldn't finish that: ${plainReason(reason)}`, runId: run.id, targets: replyTargets(run.room_id, run.origin_endpoint_id) });
 }
 /** What a person should read when a run fails. Provider internals (status codes, URLs, key names) stay in the run log. */
@@ -525,6 +539,7 @@ export function cancelRun(runId: string, by: string) {
   exec("update approvals set status='expired' where run_id=? and status='pending'", runId);
   setStatus(runId, "cancelled");
   emit("RUN_CANCELLED", { workspace_id: r.workspace_id, room_id: r.room_id, run_id: runId, actor: by });
+  cancelChildren(runId, by);
   return true;
 }
 
@@ -593,6 +608,53 @@ export function updateTask(taskId: string, roomId: string, u: { status?: string;
   return one<any>("select * from tasks where id=?", taskId);
 }
 
+// ---------------- specialists: bounded parallel work (Ava stays the owner) ----------------
+export { SPECIALISTS } from "./depth";
+import { SPECIALISTS } from "./depth";
+export const SPECIALIST_OUTPUT = `When done, reply with only this JSON: {"finding": "what you found, plainly", "sources": ["url or tool + what it showed"], "proposed_actions": ["anything the owner should do or approve — you can't send, book or change anything"], "unresolved_questions": ["what you couldn't find out"]}`;
+const TERMINAL_RUN = ["completed", "failed_terminal", "cancelled"];
+
+/** Start up to 4 specialist child runs of the same agent. Each gets only its objective (+ the context given), its kind's tools,
+ *  a share of what's left of the parent's budget, and no autonomous external writes. The parent waits for all of them. */
+export function runSpecialists(parent: any, tasks: { specialist: string; objective: string; context?: string }[]) {
+  if (parent.parent_run_id) return { error: "a specialist can't start more specialists" };
+  const agent = one<any>("select * from agents where id=?", parent.agent_id), room = one<any>("select * from rooms where id=?", parent.room_id);
+  const have = agentTools(agent), pb = J(parent.budget, DEFAULT_BUDGET), ps = J(parent.spent, {});
+  const list = tasks.slice(0, 4), n = list.length + 1; // the parent keeps a share for its own answer
+  const share = { maxModelCostUsd: Math.max(0.01, (pb.maxModelCostUsd - (ps.cost ?? 0)) / n), maxToolCalls: Math.max(1, Math.floor((pb.maxToolCalls - (ps.toolCalls ?? 0)) / n)),
+    maxModelCalls: Math.max(3, Math.floor(pb.maxModelCalls / 2)), maxAutonomousExternalWrites: 0 };
+  const children = list.map((t) => {
+    const allowed = (SPECIALISTS[t.specialist] ?? []).filter((x) => have.has(x));
+    if (!allowed.length) return { specialist: t.specialist, error: `this agent has no ${t.specialist} tools` };
+    const child = createRun({ room, agent, objective: String(t.objective), requestedBy: parent.requested_by, parentRunId: parent.id, kind: "delegate", budget: share,
+      result: { delegation_context: t.context ?? null, specialist: t.specialist, allowed_tools: allowed } });
+    return { specialist: t.specialist, objective: t.objective, child_run_id: child.id };
+  });
+  emit("SPECIALISTS_STARTED", { workspace_id: parent.workspace_id, room_id: parent.room_id, run_id: parent.id, actor: agent.id, data: { children, share } });
+  return { children };
+}
+/** Typed result from a specialist's reply (tolerates plain text). */
+export function specialistOutput(text: string) {
+  let o: any = null;
+  try { o = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? "null"); } catch {}
+  const arr = (x: any) => (Array.isArray(x) ? x.map(String).slice(0, 10) : []);
+  return { finding: String(o?.finding ?? text).slice(0, 3000), sources: o ? arr(o.sources) : (text.match(/https?:\/\/\S+/g) ?? []).slice(0, 10),
+    proposed_actions: arr(o?.proposed_actions), unresolved_questions: arr(o?.unresolved_questions) };
+}
+/** When every specialist of a run has finished (or failed, or was cancelled), hand the parent all results at once. */
+function settleSpecialists(parentId: string) {
+  const kids = all<any>("select * from runs where parent_run_id=? and json_extract(result, '$.specialist') is not null", parentId);
+  if (!kids.length || kids.some((k) => !TERMINAL_RUN.includes(k.status))) return;
+  const results = kids.map((k) => ({ specialist: J(k.result).specialist, objective: k.objective, status: k.status === "completed" ? "done" : k.status === "cancelled" ? "cancelled" : `failed: ${k.error ?? ""}`,
+    ...(J(k.result).output ?? {}) }));
+  emit("SPECIALISTS_FINISHED", { room_id: kids[0].room_id, run_id: parentId, data: { results: results.map((r) => ({ specialist: r.specialist, status: r.status })) } });
+  signalEvent(`children:${parentId}`, `[SPECIALIST_RESULTS] Check these against each other before you rely on them; you own the answer and any action.\n${S(results)}`);
+}
+function cancelChildren(parentId: string, by: string) {
+  for (const c of all<any>("select id from runs where parent_run_id=? and status not in ('completed','failed_terminal','cancelled')", parentId)) cancelRun(c.id, by);
+}
+export { cancelChildren };
+
 // ---------------- delegation (plan §16) ----------------
 export function delegate(parent: any, agentName: string, objective: string, context?: string) {
   const from = one<any>("select * from agents where id=?", parent.agent_id);
@@ -645,17 +707,25 @@ export function createSchedule(s: { agent_id: string; room_id: string; kind: str
   emit("SCHEDULE_CREATED", { room_id: s.room_id, actor: s.agent_id, data: { schedule_id: sid, kind: s.kind, next_at, objective: s.objective } });
   return one<any>("select * from schedules where id=?", sid);
 }
-function fireSchedule(s: any, eventText?: string) {
+async function fireSchedule(s: any, eventText?: string) {
   const room = one<any>("select * from rooms where id=?", s.room_id), agent = one<any>("select * from agents where id=?", s.agent_id);
   if (!room || !agent || agent.status !== "active") return;
   const spec = J(s.spec, {});
+  // Advance first: the Gmail check below awaits, and the next tick must not fire this again meanwhile.
+  if (s.kind === "recurring") exec("update schedules set next_at=? where id=?", nextRecurring(spec, now()), s.id);
+  else if (s.kind === "time") exec("update schedules set status='done' where id=?", s.id);
   if (spec.deliver === "message" && !eventText) {
     // A plain reminder is delivered word for word, to the chat it was asked in — no model in the loop, so it can't be garbled or lost.
-    const ev = postMessage(room.id, { sender: agent.id, text: `⏰ ${s.objective}`, targets: replyTargets(room.id, spec.endpoint_id ?? null) });
+    // A follow-up ("…if Dana hasn't replied") checks Gmail itself: replied = skip; can't tell = remind, and say so.
+    let text = `⏰ ${s.objective}`;
+    if (spec.unless_reply_from) {
+      const replied = await repliedSince(agent, room, s.created_by, spec.unless_reply_from, spec.since ?? s.created_at);
+      if (replied) { emit("REMINDER_SKIPPED", { room_id: room.id, actor: agent.id, data: { schedule_id: s.id, reason: `${spec.unless_reply_from} replied` } }); return; }
+      text = replied === false ? `⏰ ${s.objective}\n(No reply from ${spec.unless_reply_from} yet.)` : `⏰ ${s.objective}\n(I couldn't check whether ${spec.unless_reply_from} replied — worth a look.)`;
+    }
+    const ev = postMessage(room.id, { sender: agent.id, text, targets: replyTargets(room.id, spec.endpoint_id ?? null) });
     emit("REMINDER_SENT", { room_id: room.id, actor: agent.id, data: { schedule_id: s.id, event_id: ev, endpoint_id: spec.endpoint_id ?? null } });
   } else createRun({ room, agent, objective: eventText ? `${s.objective}\n(Triggered by: ${eventText})` : s.objective, requestedBy: s.created_by, kind: "schedule" });
-  if (s.kind === "recurring") exec("update schedules set next_at=? where id=?", nextRecurring(J(s.spec), now()), s.id);
-  else if (s.kind === "time") exec("update schedules set status='done' where id=?", s.id);
 }
 
 // ---------------- worker ----------------
@@ -693,7 +763,7 @@ export async function advanceRun(runId: string) {
   if (!r) return { done: true, status: "missing" };
   if (r.status === "running" && r.updated_at < now() - 15 * 6e4) setStatus(runId, "queued"); // a worker died mid-step: Temporal retried us
   r = one<any>("select * from runs where id=?", runId);
-  const busy = r.status === "queued" && one("select 1 from runs where agent_id=? and room_id=? and status='running' and id<>?", r.agent_id, r.room_id, r.id)
+  const busy = r.status === "queued" && r.kind !== "delegate" && one("select 1 from runs where agent_id=? and room_id=? and status='running' and kind<>'delegate' and id<>?", r.agent_id, r.room_id, r.id)
     || one("select 1 from runs where agent_id=? and room_id=? and status='queued' and created_at<? and id<>?", r.agent_id, r.room_id, r.created_at, r.id);
   if (r.status === "queued" && !busy) await stepRun(runId);
   r = one<any>("select * from runs where id=?", runId);
@@ -705,7 +775,7 @@ export async function tick() {
   let n = await channels.processInbound();
   const t = now();
   n += processDueWaits();
-  for (const s of all<any>("select * from schedules where status='active' and next_at is not null and next_at<=?", t)) { fireSchedule(s); n++; }
+  for (const s of all<any>("select * from schedules where status='active' and next_at is not null and next_at<=?", t)) { await fireSchedule(s); n++; }
   n += await reservations.checkWatches();
   n += await orders.checkOrders();
   n += await groupkit.checkPolls();
@@ -714,8 +784,10 @@ export async function tick() {
   // Lease: a run 'running' for 15+ minutes belongs to a dead worker — requeue it (tool fingerprints prevent double writes).
   exec("update runs set status='queued' where status='running' and updated_at<?", t - 15 * 6e4);
   // One run at a time per agent per conversation, in arrival order (a reply can't overtake the request it depends on).
-  const busy = new Set(all<any>("select agent_id || room_id k from runs where status='running'").map((r) => r.k));
-  const queued = all<any>("select id, agent_id || room_id k from runs where status='queued' order by created_at").filter((r) => !busy.has(r.k) && busy.add(r.k));
+  // Specialist children are independent of each other: each is its own lane.
+  const lane = "agent_id || room_id || case when kind='delegate' then id else '' end";
+  const busy = new Set(all<any>(`select ${lane} k from runs where status='running'`).map((r) => r.k));
+  const queued = all<any>(`select id, ${lane} k from runs where status='queued' order by created_at`).filter((r) => !busy.has(r.k) && busy.add(r.k));
   const width = Number(process.env.WORKER_CONCURRENCY ?? 4);
   for (let i = 0; i < queued.length; i += width) await Promise.all(queued.slice(i, i + width).map((r) => stepRun(r.id)));
   n += queued.length;

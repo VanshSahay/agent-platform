@@ -4,7 +4,7 @@ import { retrieve } from "./memory";
 import { agentTools, SKILLS, customSkills } from "./templates";
 import { toolSpecs } from "./tools";
 import type { Msg, LocalCtx } from "./model";
-import { nameOf, roleOf } from "./runtime";
+import { nameOf, roleOf, SPECIALIST_OUTPUT } from "./runtime";
 import { briefContext } from "./intake";
 
 const SYSTEM_POLICY = `[SYSTEM_POLICY]
@@ -25,7 +25,8 @@ const SYSTEM_POLICY = `[SYSTEM_POLICY]
 - Facts need sources. Prices, percentages, availability, scores, dates of events and "X just happened" must come from a tool result in this conversation (say where and as of when). If you don't have a tool that can get it, say you can't check that yet and what would let you (e.g. connecting a data source). Never invent or estimate numbers, and don't treat numbers in a message as verified unless a tool confirms them.`;
 
 export function buildContext(run: any, agent: any, room: any) {
-  const tools = agentTools(agent);
+  const only: string[] | undefined = J(run.result, {})?.allowed_tools; // a specialist: its kind's tools, nothing else
+  const tools = only ? new Set([...agentTools(agent)].filter((t) => only.includes(t))) : agentTools(agent);
   const skills: string[] = J(agent.skills, []);
   const members = all<any>("select * from room_members where room_id=?", room.id);
   const tasks = all<any>("select * from tasks where room_id=? and status!='done' order by created_at", room.id);
@@ -59,7 +60,10 @@ export function buildContext(run: any, agent: any, room: any) {
   if (isChild) {
     const parent = one<any>("select agent_id from runs where id=?", run.parent_run_id);
     const ctx = J(run.result, {})?.delegation_context;
-    messages.push({ role: "user", content: `[DELEGATED_TASK from ${nameOf(parent?.agent_id)}]\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}` });
+    const spec = J(run.result, {})?.specialist;
+    messages.push({ role: "user", content: spec
+      ? `[SPECIALIST_TASK — ${spec}] You're working one part of a bigger request for ${nameOf(parent?.agent_id)}, who answers the person. Do only this, with your tools:\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}\n${SPECIALIST_OUTPUT}`
+      : `[DELEGATED_TASK from ${nameOf(parent?.agent_id)}]\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}` });
   } else {
     const trigger = run.trigger_event_id ? one<any>("select seq from events where id=?", run.trigger_event_id) : null;
     const recent = all<any>(`select * from events where room_id=? and type='message' ${trigger ? "and seq < ?" : ""} order by seq desc limit 30`,
