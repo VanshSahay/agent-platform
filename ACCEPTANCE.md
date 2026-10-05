@@ -30,7 +30,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-BR3 | browser.task on a granted live login (preferred over a stored password) still needs approval, passes only the Browserbase context to the runner, and records the session with a replay link the agent and trace can show. | §10, §11.2 |
 | AC-BR4 | A logged-out pre-flight marks the live login needs_reauth and does not run the task; later calls are denied until the owner reconnects. | §11.2, §35 |
 | AC-BR5 | One Browserbase session per login at a time: a concurrent task starts only after the first session is released and the Context has synced. | §35 |
-| AC-BR6 | Stored site logins keep working without a live login; MCP browser servers get the contextId; a live login with no browser runner fails clearly. | §11.2 |
+| AC-BR6 | Stored site logins work without a live login; MCP browser servers get the contextId; with no external runner the built-in runner drives the login's session over CDP (real clicks/typing, stays on the site, stops before irreversible steps, records a replay). | §29 |
 | AC-BR7 | Starting a live login opens the site's login page in the live view over CDP (find the tab, attach, navigate, detach; never close the browser), since the fullscreen live view has no address bar. | §11.2 |
 
 ## Requirement layer: brief → confirm → execute → verify
@@ -94,6 +94,8 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-IM4 | One 1:1 thread on a shared line can hold several of the person's agents: a second deploy code adds rather than replaces, "@Name" switches and sticks, "agents" lists them, and every agent's messages (reminders, results) still arrive in the thread, labeled. | §6 |
 | AC-IM5 | Photos are described (text in them transcribed), voice notes transcribed and files read, then handled as ordinary messages; the bytes are kept for files.read; without a media model the agent says plainly it can't see/hear it. | §6 |
 | AC-IM6 | The chat shows "…is typing" while the agent works (iMessage, Telegram), and a server restart doesn't strand replies: chats are looked up again by id. | §6 |
+| AC-SC1 | Recurring schedules support specific days, minutes, weekends and intervals (min 15 min), computed in the person's time zone and correct across daylight-saving changes. | §37 |
+| AC-SC2 | Agents schedule in the requester's zone ("Mon/Wed/Fri 7:30", "every 3 hours", wall-clock times), confirm the exact next time, and learn a person's zone from chat (invalid zones refused); the web app sets it from the browser. | §37 |
 | AC-R9 | Cancelling a run cancels its waits and pending approvals. | §2.8 |
 
 ## Memory (§9, §15.4)
