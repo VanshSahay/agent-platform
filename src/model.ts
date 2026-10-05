@@ -14,6 +14,7 @@ export interface ModelRequest {
 }
 export interface ModelResult { text: string; toolCalls: ToolCall[]; model: string; usage: { input: number; output: number }; costUsd: number; byok: boolean; raw?: any }
 
+export const isProduction = () => process.env.NODE_ENV === "production" || process.env.PRODUCTION === "1";
 // Tests swap the model for a scripted one.
 export const hooks: { model: null | ((req: ModelRequest) => Partial<ModelResult>) } = { model: null };
 
@@ -140,6 +141,8 @@ export async function generate(req: ModelRequest): Promise<ModelResult> {
   }
   if (errors.length) throw new Error(`all models failed: ${errors.join("; ")}`);
   if (req.workspaceId && billing.aiSettings(req.workspaceId).mode === "byok") throw new Error("no model key for this workspace — add one in Settings → AI, or switch to platform credits");
+  // Production never passes the offline keyword planner off as an agent: fail loudly instead (demo/dev/tests keep it).
+  if (isProduction()) throw new Error("no AI model is configured (set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY)");
   if (!warned) { console.warn("[model] no provider keys configured; using offline heuristic model"); warned = true; }
   return { ...localAgent(req), model: "local:heuristic", usage: { input: 0, output: 0 }, costUsd: 0, byok: false };
 }

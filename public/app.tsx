@@ -1344,13 +1344,14 @@ function Rehearsal({ a }: { a: any }) {
   const [res, setRes] = useState<any[] | null>(null), [busy, setBusy] = useState(false);
   const run = async () => { setBusy(true); try { setRes((await api(`/v1/agents/${a.id}/rehearse`, {})).results); } catch (e: any) { toast(e.message); } finally { setBusy(false); } };
   useEffect(() => { run(); }, [a.id]);
-  const mark = { pass: ["✓", "ok"], warn: ["!", "warn"], fail: ["✕", "bad"] } as Record<string, [string, string]>;
+  const mark = { pass: ["✓", "ok"], warn: ["!", "warn"], fail: ["✕", "bad"], unchecked: ["?", "warn"] } as Record<string, [string, string]>;
   const passed = res?.filter((r) => r.verdict === "pass").length ?? 0;
   return <div className="card">
     <div className="row between"><b>{busy || !res ? "Rehearsing…" : `${passed} of ${res.length} went as expected`}</b><button className="btn sm" disabled={busy} onClick={run}>Run again</button></div>
     {busy && !res && <div className="waiting mt8"><span className="dot live" />Running each scenario in the sandbox<span className="dots"><span /><span /><span /></span></div>}
     {res?.map((r, i) => <div key={i} className="ability"><span className={`pill ${mark[r.verdict][1]}`} style={{ minWidth: 22, justifyContent: "center" }}>{mark[r.verdict][0]}</span>
       <div className="grow"><div><b>“{r.say}”</b></div><div className="small muted" style={{ whiteSpace: "pre-wrap" }}>{r.reply ? r.reply.slice(0, 220) : "—"}</div><div className="small faint">{r.note}</div></div></div>)}
+    {res && res.some((r) => r.verdict === "unchecked") && <div className="small muted mt8">“?” means nothing proved the job was done and no AI model was available to review the reply — it is not counted as passing.</div>}
     {res && passed < res.length && <div className="small muted mt8">Not quite right? Go back to the agent's Abilities tab, or tell it in the chat below. It learns from corrections.</div>}
   </div>;
 }

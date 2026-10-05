@@ -1,7 +1,7 @@
 // Channel layer (plan §5, §6, §20). External chats are interfaces into a Room, never the source of truth.
 // Webhook -> verify -> dedupe -> persist -> 200. A worker later normalizes, resolves identities/rooms and signals the runtime.
 import { createHmac, timingSafeEqual, randomInt, randomBytes } from "node:crypto";
-import { all, one, exec, id, now, S, J, seal, unseal, emit, recordUsage, patchJson } from "./db";
+import { all, one, exec, id, now, S, J, seal, unseal, emit, recordUsage, patchJson, tx } from "./db";
 import * as rt from "./runtime";
 import * as intake from "./intake";
 import * as tpl from "./templates";
@@ -300,7 +300,7 @@ function redeemDeploy(code: string, e: InboundEvent, ident: any): { ok: true; ag
     }
     return { ok: true, agent, ep, group: true }; // posting a group code links nobody's identity
   }
-  linkIdentityTo(e.provider, e.senderId, c.user_id, null);
+  if (!linkIdentityTo(e.provider, e.senderId, c.user_id, null)) return { error: "This number is already linked to a different account. Unlink it there first." };
   const room = rt.privateRoomFor(c.user_id, agent);
   if (ep && ep.agent_id && ep.agent_id !== agent.id && one("select 1 from agents where id=? and status!='deleted'", ep.agent_id)) {
     // This thread already talks to another agent: add this one alongside (its own route) and make it the current one.
@@ -578,14 +578,22 @@ export function linkIdentity(platform: string, externalId: string, code: string,
   const c = one<any>("select * from link_codes where code=? and expires_at>?", code, now());
   if (!c) return false;
   exec("delete from link_codes where code=?", code);
-  try { return linkIdentityTo(platform, externalId, c.user_id, ident); } catch { return false; } // already another real account's
+  return linkIdentityTo(platform, externalId, c.user_id, ident); // false: the number already belongs to another real account
 }
-function linkIdentityTo(platform: string, externalId: string, userId: string, ident?: any) {
-  const c = { user_id: userId };
+/** Bind an external identity (phone, handle) to a user. Refuses — before writing anything — when it already belongs to a
+ *  different real (non-guest) account; a guest is folded into the user. All-or-nothing. */
+function linkIdentityTo(platform: string, externalId: string, userId: string, ident?: any): boolean {
   const old = one<any>("select * from external_identities where platform=? and external_user_id=?", platform, externalId);
+  if (old && old.user_id !== userId && !one<any>("select guest from users where id=?", old.user_id)?.guest) {
+    emit("IDENTITY_LINK_REFUSED", { actor: userId, data: { platform, owner: old.user_id } });
+    return false;
+  }
+  tx(() => foldIdentity(platform, externalId, userId, old, ident));
+  return true;
+}
+function foldIdentity(platform: string, externalId: string, userId: string, old: any, ident?: any) {
+  const c = { user_id: userId };
   exec("insert or replace into external_identities (platform, external_user_id, user_id, verified, display_name) values (?,?,?,1,?)", platform, externalId, c.user_id, old?.display_name ?? null);
-  if (old && old.user_id !== c.user_id && !one<any>("select guest from users where id=?", old.user_id)?.guest)
-    throw new Error("identity belongs to another account");
   if (old && old.user_id !== c.user_id) {
     // Fold the guest into the real user: DM endpoints re-point to the user's own private Room; group memberships move over.
     if (ident?.agent_id) {
@@ -603,7 +611,6 @@ function linkIdentityTo(platform: string, externalId: string, userId: string, id
     }
   }
   emit("IDENTITY_LINKED", { actor: c.user_id, data: { platform, external_user_id: externalId } });
-  return true;
 }
 
 // ---------------- outbound ----------------

@@ -175,12 +175,23 @@ export async function rehearse(agent: any, userId: string, room: any) {
     const failed = started.some((rid) => one<any>("select status from runs where id=?", rid)?.status === "failed_terminal");
     const approval = !!one("select 1 from approvals where room_id=? and status='pending' and created_at>=?", room.id, since);
     const reply = replies.join("\n").slice(0, 600);
-    let verdict: "pass" | "warn" | "fail" = failed || !replies.length ? "fail" : tools.length || approval ? "pass" : /^got it\b/i.test(reply) ? "warn" : "pass";
-    let note = failed ? "the task failed" : !replies.length ? "no reply" : approval ? "asked for your approval first, as it should" : tools.length ? `used ${tools.join(", ")}` : verdict === "warn" ? "replied, but didn't do anything yet" : "answered directly";
-    if (hasAnyModel(agent.workspace_id) && verdict !== "fail") {
-      const j = await structured<{ pass: boolean; why: string }>("fast", `Grade an AI agent's reply in a rehearsal. Expected: ${sc.expect}. Return {"pass": boolean, "why": one short sentence}.`,
-        `User: ${sc.say}\nTools used: ${tools.join(", ") || "none"}\nAgent: ${reply}`, () => ({ pass: verdict === "pass", why: note }), agent.workspace_id);
-      verdict = j.pass ? "pass" : "warn"; note = j.why;
+    // Evidence, not vibes: a tool that actually succeeded, or an approval correctly requested. "Attempted" doesn't count.
+    const done = [...new Set(all<any>("select data from events where room_id=? and type='TOOL_CALL_COMPLETED' and ts>=?", room.id, since).map((e) => J(e.data, {}))
+      .filter((d) => /^SUCCEEDED|PARTIAL$/.test(String(d.status ?? ""))).map((d) => d.tool))];
+    const leaked = /DSML|<tool_call|<function[=\s]/i.test(reply);
+    let verdict: "pass" | "fail" | "unchecked", note: string;
+    if (failed || !replies.length || leaked) { verdict = "fail"; note = failed ? "the task failed" : !replies.length ? "no reply" : "sent raw tool markup instead of an answer"; }
+    else {
+      const evidence = approval ? "asked for your approval first, as it should" : done.length ? `did it: ${done.join(", ")}` : "";
+      // The grader: a real model judging against the expectation. Unavailable → null, which is never a pass by itself.
+      const j = hasAnyModel(agent.workspace_id)
+        ? await structured<{ pass: boolean | null; why: string }>("fast", `Grade an AI agent's reply in a rehearsal. Expected: ${sc.expect}. Fail it if it claims to have done something the tool list doesn't show, invents facts, or ignores the request. Return {"pass": boolean, "why": one short sentence}.`,
+            `User: ${sc.say}\nTools that succeeded: ${done.join(", ") || "none"}\nApproval requested: ${approval}\nAgent: ${reply}`, () => ({ pass: null, why: "" }), agent.workspace_id)
+        : { pass: null, why: "" };
+      if (j.pass === false) { verdict = "fail"; note = j.why || "didn't do what was expected"; }
+      else if (j.pass === true) { verdict = "pass"; note = j.why || evidence; }
+      else if (evidence) { verdict = "pass"; note = `${evidence} (reply not reviewed — no grading model)`; }
+      else { verdict = "unchecked"; note = "replied, but nothing proves it did the job and no grading model is available"; }
     }
     out.push({ say: sc.say, expect: sc.expect, reply, tools, verdict, note });
   }

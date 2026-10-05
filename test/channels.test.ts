@@ -149,3 +149,19 @@ test("AC-C9 message bursts on a messaging channel fold into one run", async () =
   expect(seen[0].messages[0].content).toContain("hey\ncan you look into flights\nto Tokyo in May");
   process.env.DEBOUNCE_MS = "0";
 });
+
+test("AC-S31 a number that belongs to another real account can't be taken over with a link code: refused before any write, owner unchanged", async () => {
+  const t = channel(agent.id, "telegram");
+  link("telegram", "555", ellie); // Ellie's phone
+  const mallory = user("Mallory");
+  const code = createLinkCode(mallory);
+  await deliver("telegram", t.id, tg(555, 555, "Ellie", `link ${code}`)); // someone with Mallory's code, from Ellie's number
+  expect(one<any>("select user_id from external_identities where platform='telegram' and external_user_id='555'").user_id).toBe(ellie);
+  expect(all("select 1 from events where type='IDENTITY_LINK_REFUSED'")).toHaveLength(1);
+  expect(all("select 1 from events where type='IDENTITY_LINKED'")).toHaveLength(0);
+  // A guest number still links normally
+  await deliver("telegram", t.id, tg(777, 777, "Guest", "hi"));
+  const code2 = createLinkCode(mallory);
+  await deliver("telegram", t.id, tg(777, 777, "Guest", `link ${code2}`));
+  expect(one<any>("select user_id from external_identities where platform='telegram' and external_user_id='777'").user_id).toBe(mallory);
+});

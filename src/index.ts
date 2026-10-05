@@ -5,6 +5,16 @@ import { serve, worker } from "./server";
 import { ensureSharedIdentities } from "./channels";
 import { startPhoton } from "./photon";
 
+// Production readiness: refuse to start half-configured rather than serve fake agents or lose secrets.
+if (process.env.NODE_ENV === "production" || process.env.PRODUCTION === "1") {
+  const missing = [
+    !(process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY) && "a model key (OPENROUTER_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY)",
+    !process.env.MASTER_KEY && "MASTER_KEY (encrypts stored credentials)",
+    !process.env.DATABASE_URL && "DATABASE_URL (Postgres)",
+    !process.env.PUBLIC_URL && "PUBLIC_URL (public https address for webhooks and sign-in)",
+  ].filter(Boolean);
+  if (missing.length) { console.error(`[boot] not starting — production needs:\n  - ${missing.join("\n  - ")}`); process.exit(1); }
+}
 openDb();
 seedFirstParty();
 ensureSharedIdentities();

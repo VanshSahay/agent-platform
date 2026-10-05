@@ -249,7 +249,10 @@ export async function runScenario(s: Scenario) {
   const all_ = [...results, ...judged];
   const infra = all<any>("select data from events where room_id=? and type in ('RUN_FAILED','MODEL_ERROR','RUN_RETRY')", room.id).map((e) => e.data).join(" ")
     .match(/\b(402|401|insufficient|requires more credits|Missing Authentication)\b/i)?.[0];
-  return { id: s.id, suite: s.suite, agent: s.agent, channel: s.channel, group: !!s.group, pass: all_.every((r) => r.pass), infra: infra ? `model provider refused (${infra})` : undefined, results: all_,
+  // pass | fail | not_evaluated (hard checks passed but the judge couldn't run: never counted as a pass)
+  const failed = all_.some((r) => !r.pass && r.kind !== "not_evaluated"), unjudged = all_.some((r) => r.kind === "not_evaluated");
+  const status = failed ? "fail" : unjudged ? "not_evaluated" : "pass";
+  return { id: s.id, suite: s.suite, agent: s.agent, channel: s.channel, group: !!s.group, status, pass: status === "pass", infra: infra ? `model provider refused (${infra})` : undefined, results: all_,
     transcript, tools: tools.map((t) => t.tool), cost_usd: +cost.toFixed(5), seconds: Math.round((Date.now() - t0) / 1000) };
 }
 
@@ -258,7 +261,7 @@ async function judge(s: Scenario, w: World) {
   const rubric = [...s.rubric, ...(s.rubric.length ? GLOBAL_RUBRIC.filter((r) => s.group || !/group chat/.test(r)) : [])];
   if (!rubric.length || process.env.EVAL_JUDGE === "off") return [];
   const key = process.env.OPENROUTER_API_KEY;
-  if (!key) return rubric.map((label) => ({ kind: "judge", label, pass: true, why: "skipped: no OPENROUTER_API_KEY" }));
+  if (!key) return [{ kind: "not_evaluated", label: "judge unavailable", pass: false, why: "no OPENROUTER_API_KEY" }];
   const approvals = all<any>("select tool_id, status, decided_by from approvals where room_id=?", w.room.id).map((a) => `${a.tool_id}: ${a.status}${a.decided_by ? ` by ${rt.nameOf(a.decided_by)}` : ""}`);
   const execs = all<any>("select te.tool_id, te.status from tool_executions te join runs r on r.id=te.run_id where r.room_id=?", w.room.id).map((e) => `${e.tool_id}: ${e.status}`);
   const prompt = `You grade an AI agent deployed in a ${s.group ? "group chat" : "1:1 chat"} on ${s.channel}. The agent is "${w.agent.name}" (${w.agent.job}). Owner: ${s.people[0]}.
@@ -285,7 +288,7 @@ Return JSON: {"results":[{"n":1,"pass":true,"why":"<one short sentence>"}, ...]}
     return rubric.map((label, i) => { const x = out.find((o) => o.n === i + 1); return { kind: "judge", label, pass: !!x?.pass, why: x?.why ?? "no verdict" }; });
   } catch (e: any) {
     // Out of model credit / bad key is an infrastructure problem, not an agent failure: report it, don't score it.
-    if (/^40[12]\b/.test(e.message)) return [{ kind: "infra", label: "judge unavailable", pass: true, why: e.message }];
+    if (/^40[12]\b/.test(e.message)) return [{ kind: "not_evaluated", label: "judge unavailable", pass: false, why: e.message }];
     return rubric.map((label) => ({ kind: "judge", label, pass: false, why: `judge error: ${e.message}` }));
   }
 }

@@ -1,0 +1,15 @@
+# Never ship local secrets, data or build junk into an image.
+.env
+.env.*
+!.env.example
+agent/
+node_modules
+.pgdata
+.temporal
+data.sqlite*
+photon.sqlite*
+reports
+*.log
+.git
+.claude
+*.tmp.*

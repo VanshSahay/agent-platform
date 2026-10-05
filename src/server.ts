@@ -97,7 +97,8 @@ function takeState(req: Request, provider: string, state: string | null) {
 function testRoom(userId: string, a: any) {
   return one<any>(`select r.* from rooms r join room_members m on m.room_id=r.id where r.mode='test' and r.status='active' and m.principal_id=? and exists
       (select 1 from room_members x where x.room_id=r.id and x.principal_id=?)`, userId, a.id)
-    ?? rt.createRoom({ workspace_id: a.workspace_id, name: `Test · ${a.name}`, kind: "private", participation: "manager", mode: "test", members: [{ id: userId, kind: "human" }, { id: a.id, kind: "agent" }] });
+    ?? rt.createRoom({ workspace_id: a.workspace_id, name: `Test · ${a.name}`, kind: "private", participation: "manager", mode: "test",
+      members: [{ id: userId, kind: "human" }, { id: a.id, kind: "agent" }, ...sampleFriends(a)] });
 }
 
 /** What a running agent is doing right now, in words ("searching “Lisbon hotels”", "reading booking.com"). */
@@ -111,6 +112,13 @@ function activityOf(runId: string) {
   if (tool === "browser.task") return `using a browser${input.site ? ` on ${input.site}` : ""}`;
   if (tool === "plan.update") return "planning";
   return (getTool(tool)?.summarize?.(input) ?? tool ?? "working").toString().replace(/^./, (c: string) => c.toLowerCase()).slice(0, 80);
+}
+
+/** Group agents rehearse in a chat with a couple of sample friends, so "split it with everyone" or "poll the group" can really work. */
+function sampleFriends(a: any): { id: string; kind: "human" }[] {
+  const group = J(a.spec, {})?.audience === "group" || one<any>("select 1 from installs i join template_versions tv on tv.template_id=i.template_id and tv.version=i.version where i.agent_id=? and json_extract(tv.manifest, '$.category')='group'", a.id);
+  if (!group) return [];
+  return ["Sam", "Leo"].map((name) => { const uid = id("usr"); exec("insert into users (id, name, guest, created_at) values (?,?,1,?)", uid, `${name} (sample)`, now()); return { id: uid, kind: "human" as const }; });
 }
 
 function aiView(ws: string) {
