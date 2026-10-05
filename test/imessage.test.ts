@@ -4,7 +4,7 @@ import { test, expect, beforeEach } from "bun:test";
 import { one, all, J, exec } from "../src/db";
 import * as rt from "../src/runtime";
 import * as ch from "../src/channels";
-import { setup, user, workspace, installAgent, googleConnection, scriptModel, call, net, deliver, imsg, SECRETS, channel, tg, link } from "./helpers";
+import { setup, user, workspace, installAgent, customAgent, googleConnection, scriptModel, call, net, deliver, imsg, SECRETS, channel, tg, link } from "./helpers";
 
 let ellie: string, ws: string;
 const LINE = "chi_shared_imessage";
@@ -157,4 +157,52 @@ test("AC-IM7 Photon shared pool (no fixed number): the agent texts you first; YE
     srv.stop(true);
     void ava;
   } finally { Object.assign(photon, real); process.env.SHARED_IMESSAGE_LINE = saved; }
+});
+
+test("AC-IM8 one number for everything: a known person's first text finds their agent (@Name or their only one, else it asks); in a group '@Pip' from Pip's owner brings Pip in with no code; a friend's '@Chef' brings Chef in on its own Room; guests reach only agents already there; the agent knows owner / teammate / guest", async () => {
+  const pip = customAgent(ws, ellie, [], {}, "Pip"), ava = customAgent(ws, ellie, [], {}, "Ava");
+  const ELLIE = "+15551110000", SAM = "+15552220000", STRANGER = "+15553330000";
+  link("imessage", ELLIE, ellie);
+
+  // First DM, two agents: it asks which; "@Ava …" binds the thread to Ava and Ava answers
+  await text("chat-ellie", ELLIE, "hey");
+  expect(sent("chat-ellie").at(-1)).toMatch(/Which agent\? You have Pip, Ava/);
+  scriptModel({ text: "Morning! Nothing on yet." });
+  await text("chat-ellie", ELLIE, "@Ava what's on today?");
+  expect(sent("chat-ellie").at(-1)).toBe("Morning! Nothing on yet.");
+  expect(one<any>("select agent_id from room_endpoints where external_conversation_id='chat-ellie'").agent_id).toBe(ava.id);
+  // A number nobody linked gets the how-to, not an agent
+  await text("chat-x", STRANGER, "hello?");
+  expect(sent("chat-x").at(-1)).toMatch(/open it on the platform → Deploy/);
+
+  // Group: small talk before any agent → silence; a guest's "@Pip" → how-to (they can't bring Ellie's agent in)
+  await text("grp", SAM, "lol who added this number", true);
+  expect(sent("grp")).toHaveLength(0);
+  await text("grp", SAM, "@Pip hi", true);
+  expect(sent("grp").at(-1)).toMatch(/Its owner can text "@Name …"/);
+  expect(one("select 1 from room_endpoints where external_conversation_id like 'grp%'")).toBeFalsy();
+
+  // Ellie: "@Pip …" → Pip joins (no code) and answers; the model is told it's her agent
+  let seen = scriptModel({ text: "On it — Friday works for everyone so far." });
+  await text("grp", ELLIE, "@Pip when are we all free?", true);
+  expect(sent("grp").at(-1)).toMatch(/Friday works/);
+  expect(seen[0].messages[0].content).toMatch(/\[CURRENT_REQUEST from Ellie \| your owner\]/);
+  // Now Sam can use Pip — as a guest
+  seen = scriptModel({ text: "You're welcome!" });
+  await text("grp", SAM, "@pip thanks", true);
+  expect(seen[0].messages[0].content).toMatch(/\[CURRENT_REQUEST from someone \(…0000\) \| guest — not on your team\]/);
+
+  // Sam has his own account and agent: "@Chef" brings Chef in on Sam's own Room on the same chat; Pip stays quiet
+  const sam = user("Sam"), sws = workspace("Sam's", sam), chef = customAgent(sws, sam, [], {}, "Chef");
+  exec("delete from external_identities where external_user_id=?", SAM); exec("update users set name='Sam' where id=?", sam);
+  link("imessage", SAM, sam);
+  scriptModel({ text: "Try a lemon pasta." });
+  const before = sent("grp").length;
+  await text("grp", SAM, "@Chef dinner idea?", true);
+  const eps = all<any>("select * from room_endpoints where external_conversation_id like 'grp%' order by external_conversation_id");
+  expect(eps.map((x) => x.external_conversation_id)).toEqual(["grp", `grp~${chef.id}`]);
+  expect(one<any>("select workspace_id from rooms where id=?", eps[1].room_id).workspace_id).toBe(sws);
+  expect(sent("grp").slice(before)).toEqual(["Chef: Try a lemon pasta."]);                  // labeled: two agents share the chat
+  expect(all("select 1 from events where room_id=? and type='message' and json_extract(data,'$.text')='@Chef dinner idea?'", eps[0].room_id)).toHaveLength(1); // Pip's Room heard it
+  expect(all<any>("select * from runs where room_id=? and agent_id=?", eps[0].room_id, pip.id)).toHaveLength(2); // ...but Pip didn't answer it (its 2 runs are the two @Pip messages)
 });

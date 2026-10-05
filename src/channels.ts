@@ -303,19 +303,8 @@ function redeemDeploy(code: string, e: InboundEvent, ident: any): { ok: true; ag
   }
   exec("update deploy_codes set used_at=? where code=?", now(), code);
   let ep = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
-  if (e.isGroup) {
-    // Whoever posts the code in a group is linked to the code's owner only for DMs; group senders stay as they are.
-    if (ep) {
-      const room = one<any>("select * from rooms where id=?", ep.room_id);
-      if (room.workspace_id !== agent.workspace_id) return { error: "This group is already connected to another workspace." };
-      rt.addMember(room.id, agent.id, "agent");
-    } else {
-      const room = rt.createRoom({ workspace_id: agent.workspace_id, name: `${PLATFORM_NAME[e.provider] ?? e.provider} group`, kind: "shared", participation: "mention_only",
-        members: [{ id: c.user_id, kind: "human" }, { id: agent.id, kind: "agent" }] });
-      ep = attachEndpoint(room.id, e.provider, e.conversationId, ident.id, true, agent.id);
-    }
-    return { ok: true, agent, ep, group: true }; // posting a group code links nobody's identity
-  }
+  // Whoever posts a group code is linked to nobody: group senders stay as they are.
+  if (e.isGroup) return { ok: true, agent, ep: joinGroup(e, ident, agent, c.user_id), group: true };
   if (!linkIdentityTo(e.provider, e.senderId, c.user_id, null)) return { error: "This number is already linked to a different account. Unlink it there first." };
   const room = rt.privateRoomFor(c.user_id, agent);
   if (ep && ep.agent_id && ep.agent_id !== agent.id && one("select 1 from agents where id=? and status!='deleted'", ep.agent_id)) {
@@ -433,9 +422,13 @@ async function processEvent(e: InboundEvent, ident: any) {
   if (!ident.agent_id && e.provider === "email" && !byToken) { if (!alias) return; e.conversationId = `${e.senderId}|${alias.email_alias}`; }
   const existing = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
   // A shared line's 1:1 thread can hold several of the person's agents: "@Ava …" switches (and sticks), "agents" lists them.
-  const dm = !ident.agent_id && existing && !e.isGroup && e.provider !== "email" && e.type === "message" ? dmThread(e, ident, existing) : null;
+  const shared = !ident.agent_id && e.provider !== "email" && e.type === "message";
+  const groupEps = shared && e.isGroup ? groupRoutes(e, ident) : [];
+  const first = shared && !e.isGroup && !existing && !(process.env.IMESSAGE_MODE === "local" && e.provider === "imessage") && !/^\/?(start|join|link)\b|^(yes|y|stop)\b/i.test(e.text.trim()) ? firstDm(e, ident) : null;
+  const dm = first?.ep ? { ep: first.ep } : shared && existing && !e.isGroup ? dmThread(e, ident, existing) : null;
   // Shared lines carry no agent: the conversation's binding (or the email recipient alias) decides.
-  const agentId = ident.agent_id ?? alias?.id ?? dm?.ep.agent_id ?? existing?.agent_id ?? (existing ? rt.roomAgents(existing.room_id)[0]?.id : null);
+  const anchor = existing ?? groupEps[0];
+  const agentId = ident.agent_id ?? alias?.id ?? dm?.ep.agent_id ?? anchor?.agent_id ?? (anchor ? rt.roomAgents(anchor.room_id)[0]?.id : null);
   const senderId = resolveSender(e.provider, e.senderId, e.senderName);
   const raw = (text: string) => ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), existing ?? { external_conversation_id: e.conversationId, is_group: e.isGroup ? 1 : 0, config: "{}" },
     { text, agentName: one<any>("select name from agents where id=?", agentId)?.name ?? "Agents" }, id("idem"));
@@ -462,12 +455,16 @@ async function processEvent(e: InboundEvent, ident: any) {
     rt.postMessage(r.ep.room_id, { sender: r.agent.id, text: hello, targets: [r.ep.id] });
     return;
   }
+  if (first?.note) return raw(first.note);
   if (!agentId) {
     if (process.env.IMESSAGE_MODE === "local" && e.provider === "imessage") return; // a personal Apple ID: never auto-reply to people's own texts
+    if (e.isGroup && !named(e.text).length) return; // group small talk before any agent is here: stay quiet
     // Unbound conversation on a shared line: explain once a day how to connect, don't guess an agent.
     if (!one("select 1 from events where type='SHARED_LINE_HELP' and json_extract(data, '$.conv')=? and ts>?", `${e.provider}:${e.conversationId}`, now() - 864e5)) {
       emit("SHARED_LINE_HELP", { data: { conv: `${e.provider}:${e.conversationId}` } });
-      return raw("Hi! To talk to an agent here, open it on the platform → Deploy, and tap the button for this app (or send the code it shows).");
+      return raw(e.isGroup
+        ? "I don't know that agent here yet. Its owner can text \"@Name …\" in this group from the number linked to their account (or send the join code from Deploy)."
+        : "Hi! To talk to an agent here, open it on the platform → Deploy, and tap the button for this app (or send the code it shows).");
     }
     return;
   }
@@ -514,7 +511,7 @@ async function processEvent(e: InboundEvent, ident: any) {
     if (agentId && rt.signalEvent(`email:${ws}:${e.senderId}`, `Email from ${e.senderName} <${e.senderId}> — ${e.subject ?? ""}\n<untrusted origin="EMAIL">${e.text}</untrusted>`)) return;
   }
 
-  const ep = dm?.ep ?? resolveRoom(e, ident, senderId, agentId);
+  const ep = dm?.ep ?? anchor ?? resolveRoom(e, ident, senderId, agentId);
   if (e.subject) patchJson("room_endpoints", "config", ep.id, (c) => ({ ...c, subject: e.subject }));
   const room = one<any>("select * from rooms where id=?", ep.room_id);
   learnName(senderId, e.text);
@@ -524,8 +521,59 @@ async function processEvent(e: InboundEvent, ident: any) {
     e.text = [e.text, ...said].filter(Boolean).join("\n");
   }
   if (!e.text.trim()) return;
-  await rt.ingestMessage({ roomId: ep.room_id, senderId, text: e.text, platform: e.provider, endpointId: ep.id, externalId: e.providerEventId,
-    untrusted: !isMember(room.workspace_id, senderId) }); // external contacts are untrusted (plan §21.1)
+  // A group with several people's agents: every Room on the chat hears it; each agent answers by its own Room's rules.
+  for (const r of groupEps.length ? groupEps : [ep]) {
+    const ws = one<any>("select workspace_id from rooms where id=?", r.room_id).workspace_id;
+    await rt.ingestMessage({ roomId: r.room_id, senderId, text: e.text, platform: e.provider, endpointId: r.id, externalId: e.providerEventId,
+      untrusted: !isMember(ws, senderId) }); // external contacts are untrusted (plan §21.1)
+  }
+}
+
+/** The account behind a phone/handle — only a real (linked) one, never a guest. */
+const linkedUser = (platform: string, externalId: string): string | undefined =>
+  one<any>("select x.user_id from external_identities x join users u on u.id=x.user_id where x.platform=? and x.external_user_id=? and u.guest=0", platform, externalId)?.user_id;
+const agentsOf = (userId: string) =>
+  all<any>("select a.* from agents a join memberships m on m.workspace_id=a.workspace_id where m.user_id=? and a.status='active' order by a.created_at", userId);
+const named = (text: string) => [...text.matchAll(/(?:^|[^\w])@([\w-]+)/g)].map((m) => m[1].toLowerCase());
+
+/** Put an agent in a group chat on the shared line. Agents from one workspace share one Room for the chat; another
+ *  workspace's agents (a friend's) get their own Room on the same chat (`conv~agt_x`), so nobody's memory or work crosses. */
+function joinGroup(e: InboundEvent, ident: any, agent: any, byUser: string) {
+  const eps = threadEps(ident.id, e.conversationId);
+  const same = eps.find((x) => one<any>("select workspace_id from rooms where id=?", x.room_id)?.workspace_id === agent.workspace_id);
+  if (same) { rt.addMember(same.room_id, agent.id, "agent"); return same; }
+  const room = rt.createRoom({ workspace_id: agent.workspace_id, name: `${PLATFORM_NAME[e.provider] ?? e.provider} group`, kind: "shared", participation: "mention_only",
+    members: [{ id: byUser, kind: "human" }, { id: agent.id, kind: "agent" }] });
+  return attachEndpoint(room.id, e.provider, eps.length ? `${e.conversationId}~${agent.id}` : e.conversationId, ident.id, true, agent.id);
+}
+
+/** Group on the shared line: "@Pip …" from Pip's owner or a teammate brings Pip in — no join code. Guests can only
+ *  reach agents already here. Returns every route on this chat (each workspace's Room hears the group). */
+function groupRoutes(e: InboundEvent, ident: any) {
+  const here = new Set(threadEps(ident.id, e.conversationId).flatMap((x) => rt.roomAgents(x.room_id).map((a) => a.name.toLowerCase())));
+  const want = named(e.text).filter((n) => !here.has(n));
+  const user = want.length ? linkedUser(e.provider, e.senderId) : undefined;
+  if (user) for (const n of new Set(want)) {
+    const agent = agentsOf(user).find((a) => a.name.toLowerCase() === n);
+    if (!agent) continue;
+    joinGroup(e, ident, agent, user);
+    emit("AGENT_DEPLOYED", { workspace_id: agent.workspace_id, actor: agent.id, data: { platform: e.provider, group: true, by: "mention" } });
+  }
+  return threadEps(ident.id, e.conversationId);
+}
+
+/** First text in a new 1:1 thread from a known person: "@Ava …" (or "Ava, …") goes to Ava; one agent = that one; several = ask. */
+function firstDm(e: InboundEvent, ident: any): { ep?: any; note?: string } | null {
+  const user = linkedUser(e.provider, e.senderId);
+  if (!user) return null;
+  const mine = agentsOf(user);
+  if (!mine.length) return { note: `You don't have an agent yet. Make one at ${(process.env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/$/, "")} and text me here.` };
+  const want = [...named(e.text), e.text.trim().match(/^([\w-]+)[,:]\s/)?.[1]?.toLowerCase()].filter(Boolean);
+  const agent = mine.find((a) => want.includes(a.name.toLowerCase())) ?? (mine.length === 1 ? mine[0] : null);
+  if (!agent) return { note: `Hi! Which agent? You have ${mine.map((a) => a.name).join(", ")}. Start your message with @Name — e.g. "@${mine[0].name} what's on today?"` };
+  const ep = attachEndpoint(rt.privateRoomFor(user, agent).id, e.provider, e.conversationId, ident.id, false, agent.id);
+  patchJson("room_endpoints", "config", ep.id, (c) => ({ ...c, current: agent.id }));
+  return { ep };
 }
 
 const threadEps = (identId: string, conv: string) =>
