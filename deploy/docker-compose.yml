@@ -1,0 +1,30 @@
+# Production shape on one box: Postgres, Temporal (+ UI), the API server and two workers.
+# Secrets come from ../.env.production (never commit it): MASTER_KEY, OPENROUTER_API_KEY, RESEND_API_KEY, BROWSERBASE_API_KEY, …
+services:
+  postgres:
+    image: postgres:16
+    environment: { POSTGRES_USER: agents, POSTGRES_PASSWORD: agents, POSTGRES_DB: agents }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U agents"], interval: 5s, retries: 20 }
+  temporal:
+    image: temporalio/auto-setup:1.28
+    depends_on: { postgres: { condition: service_healthy } }
+    environment: { DB: postgres12, DB_PORT: 5432, POSTGRES_USER: agents, POSTGRES_PWD: agents, POSTGRES_SEEDS: postgres }
+  temporal-ui:
+    image: temporalio/ui:2.36.0
+    depends_on: [temporal]
+    environment: { TEMPORAL_ADDRESS: temporal:7233 }
+    ports: ["8233:8080"]
+  server:
+    build: { context: .., dockerfile: deploy/Dockerfile.server }
+    depends_on: [temporal]
+    env_file: ../.env.production
+    environment: { DATABASE_URL: postgres://agents:agents@postgres:5432/agents, TEMPORAL_ADDRESS: "temporal:7233" }
+    ports: ["3000:3000"]
+  worker:
+    build: { context: .., dockerfile: deploy/Dockerfile.worker }
+    depends_on: [temporal]
+    env_file: ../.env.production
+    environment: { DATABASE_URL: postgres://agents:agents@postgres:5432/agents, TEMPORAL_ADDRESS: "temporal:7233" }
+    deploy: { replicas: 2 }
+volumes: { pgdata: {} }
