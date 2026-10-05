@@ -937,7 +937,7 @@ function Story() {
       <div className="st-tiles">{["imessage", "whatsapp", "telegram", "slack", "web", "email"].map((x, i) =>
         <span key={x} className={`gm-tile p-${x} ${i === 0 && reached(.6) ? "st-live" : ""}`} style={{ "--tilt": "0deg" } as any}><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden>{PICON[x]}</svg>{i === 0 && reached(.6) && <i>✓</i>}</span>)}</div>
       <div className={`st-note ${reached(.65) ? "" : "st-hidden"}`}>Tab joined “Ski trip 🏔”</div></div>,
-    <PhoneMock key="l" count={Math.max(1, Math.ceil(local * 7.5))} />,
+    <PhoneMock key="l" count={Math.max(1, Math.ceil(local * (IM_THREAD.length + .5)))} />,
   ];
   return <div className="story" ref={ref} style={{ height: `${n * 85 + 15}vh` }}>
     <div className="story-pin">
@@ -950,14 +950,48 @@ function Story() {
   </div>;
 }
 
+// A faithful iMessage group chat. Agents reply from the shared line (saved as the "Agents" contact), so each message starts with
+// the agent's name — exactly what people see on their phones.
+type IMsg = { from: string; text: string; tapback?: string };
+const IM_THREAD: IMsg[] = [
+  { from: "Maya", text: "Tab, I paid $240 for the cabin 🏔" },
+  { from: "Agents", text: "Tab: Got it — $240 split 4 ways, $60 each. Sam, Leo and Jess each owe Maya $60." },
+  { from: "me", text: "Plans, poll: dinner Friday or Saturday?" },
+  { from: "Agents", text: "Plans: 📊 Dinner night?\n1. Friday\n2. Saturday\nJust reply with a number." },
+  { from: "Sam", text: "2" },
+  { from: "Leo", text: "2!" },
+  { from: "Maya", text: "saturday 🙌" },
+  { from: "Agents", text: "Plans: Saturday it is — 3 votes to 0 🎉", tapback: "❤️" },
+];
+const IM_FACE: Record<string, string> = { Maya: "M", Sam: "S", Leo: "L", Agents: "✦" };
 function PhoneMock({ count }: { count?: number }) {
-  const msgs: [string, string, string?][] = [["them", "Tab, I paid $240 for the cabin 🏔", "Maya"], ["bot", "Got it — $240 split 4 ways, $60 each.\nSam, Leo and you each owe Maya $60.", "Tab 🧾"],
-    ["me", "Plans, poll: dinner Friday or Saturday?"], ["bot", "📊 Dinner night?\n1. Friday\n2. Saturday\nJust reply with a number.", "Plans 🎉"], ["them", "2", "Sam"], ["them", "2!", "Leo"], ["bot", "Saturday it is — 3 votes to 0 🎉", "Plans 🎉"]];
-  return <div className="phone" aria-hidden><div className="scr">
-    <div className="hd"><div className="faces">{[["M", "#ff7a45"], ["S", "#3b82f6"], ["L", "#ffe14d"], ["✦", "#c6f432"]].map(([c, bg]) => <span key={c} style={{ background: bg }}>{c}</span>)}</div><div className="small" style={{ fontWeight: 700 }}>Ski trip 🏔</div><div className="small faint">Maya, Sam, Leo, Tab, Plans</div></div>
-    <div className="thread">{msgs.slice(0, count ?? msgs.length).map(([k, t, who], i) => <div key={i} style={{ display: "contents" }}>
-      {who && k !== "me" && (i === 0 || msgs[i - 1][2] !== who) && <div className="who-s">{who}</div>}
-      <div className={`bub ${k}`} style={{ animationDelay: count == null ? `${i * 0.35}s` : "0s" }}>{t}</div></div>)}</div>
+  const shown = IM_THREAD.slice(0, count ?? IM_THREAD.length);
+  const lastMine = shown.map((m) => m.from).lastIndexOf("me");
+  return <div className="phone ios" aria-hidden><div className="scr">
+    <div className="ios-status"><span>9:41</span><i className="ios-island" /><span className="ios-icons">
+      <svg width="17" height="11" viewBox="0 0 17 11"><rect x="0" y="7" width="3" height="4" rx="1" /><rect x="4.5" y="5" width="3" height="6" rx="1" /><rect x="9" y="2.5" width="3" height="8.5" rx="1" /><rect x="13.5" y="0" width="3" height="11" rx="1" /></svg>
+      <svg width="15" height="11" viewBox="0 0 15 11"><path d="M7.5 2.2c2.1 0 4 .8 5.4 2.2l1.1-1.1A9.2 9.2 0 0 0 7.5.6 9.2 9.2 0 0 0 1 3.3l1.1 1.1a7.6 7.6 0 0 1 5.4-2.2Zm0 3.2c1.2 0 2.3.5 3.1 1.3l1.1-1.1a5.9 5.9 0 0 0-8.4 0l1.1 1.1c.8-.8 1.9-1.3 3.1-1.3Zm0 3.2c-.4 0-.8.2-1.1.5L7.5 10.2 8.6 9.1a1.6 1.6 0 0 0-1.1-.5Z" /></svg>
+      <span className="ios-batt"><i /></span></span></div>
+    <div className="ios-hd">
+      <span className="ios-back"><svg width="11" height="18" viewBox="0 0 11 18"><path d="M9.5 1.5 2 9l7.5 7.5" fill="none" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg><b>12</b></span>
+      <div className="ios-faces">{["M", "S", "L", "✦"].map((c) => <span key={c}>{c}</span>)}</div>
+      <div className="ios-name">Ski trip 🏔 <svg width="6" height="10" viewBox="0 0 6 10"><path d="m1 1 4 4-4 4" fill="none" strokeWidth="1.5" strokeLinecap="round" /></svg></div>
+    </div>
+    <div className="ios-thread">
+      <div className="ios-stamp"><b>iMessage</b><br />Today 7:41 PM</div>
+      {shown.map((m, i) => {
+        const mine = m.from === "me", firstOfRun = i === 0 || shown[i - 1].from !== m.from, lastOfRun = i === shown.length - 1 || shown[i + 1]?.from !== m.from;
+        return <div key={i} className={`ios-row ${mine ? "me" : "them"}${lastOfRun ? " tail" : ""}`} style={{ animationDelay: count == null ? `${i * 0.35}s` : "0s" }}>
+          {!mine && firstOfRun && <div className="ios-who">{m.from}</div>}
+          <div className="ios-line">
+            {!mine && <span className={`ios-av${lastOfRun ? "" : " ghost"}`}>{IM_FACE[m.from]}</span>}
+            <div className="ios-bub">{m.text}{m.tapback && <span className="ios-tap">{m.tapback}</span>}</div>
+          </div>
+          {mine && i === lastMine && <div className="ios-receipt">Delivered</div>}
+        </div>;
+      })}
+    </div>
+    <div className="ios-compose"><span className="ios-plus">+</span><span className="ios-field">iMessage<svg width="12" height="16" viewBox="0 0 12 16"><rect x="3.5" y="1" width="5" height="9" rx="2.5" /><path d="M1 7.5a5 5 0 0 0 10 0M6 12.5V15" fill="none" strokeWidth="1.4" strokeLinecap="round" /></svg></span></div>
   </div></div>;
 }
 
@@ -1013,6 +1047,11 @@ function Landing({ onDone }: { onDone: () => void }) {
 const clerkLook = {
   variables: { colorPrimary: "#111", colorText: "#111", colorBackground: "#fff", fontFamily: "Inter, -apple-system, sans-serif", borderRadius: "12px" },
   elements: { cardBox: { border: "2px solid #111", boxShadow: "6px 6px 0 #c6f432" }, formButtonPrimary: { background: "#111", boxShadow: "0 3px 0 #c6f432", fontWeight: 700, textTransform: "none" } },
+};
+// Our words on Clerk's screens (the dashboard's application name still shows in Clerk's emails).
+const clerkText = {
+  signIn: { start: { title: "Sign in to agents", titleCombined: "Continue to agents", subtitle: "Build an agent, then drop it in your group chat.", subtitleCombined: "Build an agent, then drop it in your group chat." } },
+  signUp: { start: { title: "Create your agents account", subtitle: "Takes a minute." } },
 };
 /** Clerk signed in but the API has no session yet (fresh sign-in, or back from a Google redirect): trade the Clerk token for one. */
 function ClerkBridge({ need, onSynced }: { need: boolean; onSynced: () => void }) {
@@ -1486,5 +1525,5 @@ function TemplatePage({ slug, anonymous }: { slug: string; anonymous?: boolean }
 fetch("/v1/auth/config").then((r) => r.json()).catch(() => ({})).then((c: any) => {
   CLERK_KEY = c.clerk ?? null;
   createRoot(document.getElementById("root")!).render(CLERK_KEY
-    ? <ClerkProvider publishableKey={CLERK_KEY} appearance={clerkLook as any} afterSignOutUrl="/"><App /></ClerkProvider> : <App />);
+    ? <ClerkProvider publishableKey={CLERK_KEY} appearance={clerkLook as any} localization={clerkText as any} afterSignOutUrl="/"><App /></ClerkProvider> : <App />);
 });

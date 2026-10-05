@@ -508,3 +508,47 @@ a.card:hover, .card.hover:hover { transform: translate(-2px, -2px); box-shadow: 
 .dot.live { background: var(--lime); }
 .success .big { background: var(--lime); color: #111; border: 2px solid var(--ink); }
 table.t td, table.t th { border-top: 1.5px solid var(--line); }
+
+/* ---------- iMessage, as it really looks (iOS light) ---------- */
+.phone.ios { background: #111; border: 0; border-radius: 48px; padding: 9px; box-shadow: 8px 8px 0 var(--ink, #111), 0 0 0 2px #2b2b2e inset; }
+.phone.ios .scr { background: #fff; border: 0; border-radius: 40px; overflow: hidden; display: flex; flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; color: #000; -webkit-font-smoothing: antialiased; }
+.ios-status { display: flex; align-items: center; justify-content: space-between; padding: 12px 22px 2px 26px; font: 600 13px/1 -apple-system, "SF Pro Text", sans-serif; height: 34px; }
+.ios-island { width: 82px; height: 24px; background: #000; border-radius: 14px; }
+.ios-icons { display: flex; gap: 5px; align-items: center; } .ios-icons svg { fill: #000; }
+.ios-batt { width: 22px; height: 11px; border: 1.2px solid rgba(0,0,0,.4); border-radius: 3.5px; padding: 1px; position: relative; }
+.ios-batt i { display: block; height: 100%; width: 80%; background: #000; border-radius: 1.5px; }
+.ios-batt::after { content: ""; position: absolute; right: -3.5px; top: 3px; width: 1.5px; height: 4px; background: rgba(0,0,0,.4); border-radius: 0 1px 1px 0; }
+.ios-hd { position: relative; text-align: center; padding: 4px 0 8px; background: rgba(249,249,249,.94); border-bottom: .5px solid rgba(0,0,0,.18); }
+.ios-back { position: absolute; left: 10px; top: 14px; display: flex; align-items: center; gap: 3px; } .ios-back svg { stroke: #007aff; }
+.ios-back b { background: #007aff; color: #fff; font: 600 11px/1 -apple-system, sans-serif; border-radius: 10px; padding: 3px 6px; }
+.ios-faces { display: flex; justify-content: center; margin: 2px 0 3px; }
+.ios-faces span, .ios-av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font: 600 13px/1 -apple-system, sans-serif;
+  background: linear-gradient(180deg, #a5abb8, #858994); }
+.ios-faces span { margin: 0 -5px; border: 2px solid #f9f9f9; width: 32px; height: 32px; }
+.ios-name { font: 400 11.5px/1.2 -apple-system, sans-serif; color: #000; display: inline-flex; gap: 4px; align-items: center; } .ios-name svg { stroke: #8e8e93; }
+.ios-thread { flex: 1; padding: 6px 10px 8px; display: flex; flex-direction: column; min-height: 360px; font-size: 14.5px; line-height: 1.28; }
+.ios-stamp { text-align: center; color: #8e8e93; font-size: 10.5px; margin: 6px 0 8px; } .ios-stamp b { font-weight: 600; }
+.ios-row { display: flex; flex-direction: column; margin-top: 2px; animation: rise .45s var(--ease, ease) both; }
+.ios-row.tail { margin-bottom: 6px; }
+.ios-row.me { align-items: flex-end; }
+.ios-who { font-size: 10.5px; color: #8e8e93; margin: 4px 0 1px 46px; }
+.ios-line { display: flex; align-items: flex-end; gap: 6px; max-width: 100%; }
+.ios-av { width: 28px; height: 28px; font-size: 12px; flex: none; } .ios-av.ghost { visibility: hidden; }
+.ios-bub { position: relative; padding: 7px 12px 8px; border-radius: 18px; max-width: 230px; white-space: pre-line; overflow-wrap: anywhere; }
+.ios-row.them .ios-bub { background: #e9e9eb; color: #000; }
+.ios-row.me .ios-bub { background: #0b84fe; color: #fff; max-width: 220px; }
+/* the tails: a bubble-colored curl, then a white cut-out */
+.ios-row.tail .ios-bub::before, .ios-row.tail .ios-bub::after { content: ""; position: absolute; bottom: 0; height: 20px; }
+.ios-row.them.tail .ios-bub::before { left: -7px; width: 20px; background: #e9e9eb; border-bottom-right-radius: 16px; }
+.ios-row.them.tail .ios-bub::after { left: -10px; width: 10px; background: #fff; border-bottom-right-radius: 10px; }
+.ios-row.me.tail .ios-bub::before { right: -7px; width: 20px; background: #0b84fe; border-bottom-left-radius: 16px; }
+.ios-row.me.tail .ios-bub::after { right: -10px; width: 10px; background: #fff; border-bottom-left-radius: 10px; }
+.ios-tap { position: absolute; top: -14px; right: -10px; background: #e9e9eb; border: 2px solid #fff; border-radius: 50%; width: 26px; height: 26px; display: grid; place-items: center; font-size: 12px; }
+.ios-receipt { font-size: 10.5px; color: #8e8e93; margin: 2px 4px 0 0; font-weight: 500; }
+.ios-compose { display: flex; align-items: center; gap: 8px; padding: 6px 10px 18px; }
+.ios-plus { width: 30px; height: 30px; border-radius: 50%; background: #e9e9eb; color: #8e8e93; display: grid; place-items: center; font: 400 22px/1 -apple-system, sans-serif; }
+.ios-field { flex: 1; display: flex; justify-content: space-between; align-items: center; border: 1px solid #d1d1d6; border-radius: 18px; padding: 6px 12px; color: #c7c7cc; font-size: 14px; }
+.ios-field svg { fill: #8e8e93; stroke: #8e8e93; }
+.story .phone.ios { width: 300px; } .story .ios-thread { min-height: 330px; }
+@media (max-width: 720px) { .story .phone.ios { width: 270px; } .story .ios-thread { min-height: 280px; } }
