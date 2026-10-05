@@ -232,7 +232,7 @@ def({
   inputSchema: obj({ query: str("search query") }, ["query"]),
   async execute({ query }) {
     // First configured provider that answers wins: Exa (built for agents), Brave (independent index), Serper (Google's results),
-    // Tavily; then keyless DuckDuckGo (no SLA, and it bot-checks automated traffic: set a key for real use). Each failure falls through, so one outage doesn't blind every agent.
+    // Tavily, Browserbase (same key as the browser); then keyless DuckDuckGo (no SLA, and it bot-checks automated traffic: set a key for real use). Each failure falls through, so one outage doesn't blind every agent.
     const tried: string[] = [];
     for (const [name, run] of SEARCH_PROVIDERS) {
       if (!run.enabled()) continue;
@@ -280,6 +280,10 @@ const SEARCH_PROVIDERS: [string, { enabled: () => boolean; search: (q: string) =
   ["tavily", { enabled: () => !!process.env.TAVILY_API_KEY, search: async (q) => {
     const j: any = await (await call("https://api.tavily.com/search", { method: "POST", headers: { authorization: `Bearer ${process.env.TAVILY_API_KEY}`, "content-type": "application/json" }, body: S({ query: q, max_results: 6 }) })).json();
     return (j.results ?? []).map((x: any) => ({ title: x.title, url: x.url, snippet: x.content ?? "" })); } }],
+  ["browserbase", { enabled: () => !!process.env.BROWSERBASE_API_KEY, search: async (q) => {
+    const j: any = await (await call("https://api.browserbase.com/v1/search", { method: "POST", headers: { "x-bb-api-key": process.env.BROWSERBASE_API_KEY!, "content-type": "application/json" },
+      body: S({ query: q.slice(0, 200), numResults: 6 }) })).json();
+    return (j.results ?? []).map((x: any) => ({ title: x.title, url: x.url, snippet: [x.author, x.publishedDate?.slice(0, 10)].filter(Boolean).join(" · ") })); } }],
   ["duckduckgo", { enabled: () => true, search: (q) => ddg(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
     /class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g) }],
 ];

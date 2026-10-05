@@ -161,7 +161,10 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
       exec("update waits set wake_at=? where id=?", now() + debounceMs, open.id);
       continue;
     }
+    const busy = one<any>("select objective from runs where room_id=? and agent_id=? and status in ('queued','running','retrying') order by created_at limit 1", room.id, a.id);
     const run = createRun({ room, agent: a, objective: i.text, requestedBy: i.senderId, triggerEventId: eventId, originEndpointId: i.endpointId ?? "web", tainted: i.untrusted, intake: true });
+    // Already working on something in this chat: say so now instead of going silent until it's this request's turn.
+    if (busy) postMessage(room.id, { sender: a.id, runId: run.id, text: `Got it — I'll get to that right after “${String(busy.objective).split("\n")[0].slice(0, 60)}”.`, targets: replyTargets(room.id, i.endpointId ?? "web") });
     if (burst) createWait(run, { kind: "debounce", reason: "collecting message burst", wake_at: now() + debounceMs });
     started.push(run.id);
   }
@@ -311,7 +314,10 @@ async function stepRunInner(runId: string) {
     let res;
     try {
       channels.typing(run.origin_endpoint_id); // "…is typing" in the chat this came from while the model works
-      res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: c.tools,
+      // Past twice the plan's tool budget the model gets no tools: it has to answer with what it has.
+      const overBudget = (spent.toolCalls ?? 0) >= toolBudget(run.id) * 2;
+      progressNote(run, agent, room);
+      res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: overBudget ? [] : c.tools,
         workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || !!spent.unbackedRetries || i >= budget.maxModelCalls - 2 });
     } catch (e: any) {
       const errs = (spent.modelErrors ?? 0) + 1;
@@ -356,6 +362,20 @@ async function stepRunInner(runId: string) {
   return fail(run, "step limit reached without finishing");
 }
 
+/** Long work gets one "still on it" with what's been done so far, so a chat never just goes quiet. */
+function progressNote(run: any, agent: any, room: any) {
+  const spent = J(run.spent, {});
+  if (spent.progressNoted || run.parent_run_id || now() - run.created_at < Number(process.env.PROGRESS_NOTE_MS ?? 75_000)) return;
+  patchJson("runs", "spent", run.id, (x) => ({ ...x, progressNoted: 1 }));
+  const tools = all<any>("select json_extract(data, '$.tool') t from events where run_id=? and type='TOOL_CALL_REQUESTED'", run.id).map((r) => r.t);
+  const n = (t: string) => tools.filter((x) => x === t).length;
+  const did = [n("web.search") && `${n("web.search")} searches`, n("web.fetch") && `${n("web.fetch")} pages read`, n("browser.task") && "a site checked"].filter(Boolean).join(", ");
+  postMessage(room.id, { sender: agent.id, runId: run.id, text: `Still on it${did ? ` — ${did} so far` : ""}. Wrapping up shortly.`, targets: replyTargets(room.id, run.origin_endpoint_id) });
+}
+
+/** The plan's tool budget for this run (intake.planWork), else a default. */
+function toolBudget(runId: string) { return Number(J(one<any>("select brief from runs where id=?", runId)?.brief, {})?.tool_budget) || Number(process.env.WRAP_UP_TOOL_CALLS ?? 12); }
+
 /** Keeps research from spiralling (a live run made 20+ searches for "three hotel options"): once, after WRAP_UP_TOOL_CALLS tool
  *  calls, tell the model to answer with what it has; and when search keeps coming back empty, say so instead of letting it retry. */
 function wrapUpNudge(runId: string) {
@@ -365,7 +385,7 @@ function wrapUpNudge(runId: string) {
   if (searchDown && !spent.searchDownNoted) {
     patchJson("runs", "spent", runId, (x) => ({ ...x, searchDownNoted: 1 }));
     appendStep(runId, "signal", { text: "[CHECK] Web search isn't returning results right now. Don't keep searching: answer from what you already found (open pages you have links for if needed) and say what you couldn't verify." });
-  } else if ((spent.toolCalls ?? 0) >= Number(process.env.WRAP_UP_TOOL_CALLS ?? 12) && !spent.wrapUpNoted) {
+  } else if ((spent.toolCalls ?? 0) >= toolBudget(runId) && !spent.wrapUpNoted) {
     patchJson("runs", "spent", runId, (x) => ({ ...x, wrapUpNoted: 1 }));
     appendStep(runId, "signal", { text: "[CHECK] You've gathered plenty. Stop researching and answer now with the best of what you have — concrete options with links — and say plainly what's unverified (e.g. live prices)." });
   }
@@ -515,6 +535,7 @@ export function delegate(parent: any, agentName: string, objective: string, cont
 export function routeProfile(agent: any, run: any) {
   if (agent.model_profile && agent.model_profile !== "standard") return agent.model_profile;
   const brief = J(run.brief, null), steps = brief?.plan?.length ?? 0, o = String(run.objective ?? "");
+  if (brief?.profile && run.kind !== "schedule") return brief.profile; // the planning layer already chose (intake.planWork)
   if (brief?.kind === "research" || steps >= 4 || /\b(research|compare|analy[sz]e|itinerary|plan (a|our|my) trip|deep dive)\b/i.test(o)) return "research-standard";
   // The cheap tier only answers small talk; anything that may call tools runs on standard (a live test showed the cheap
   // model narrating "I'll book it, reply approve" instead of calling the tool).

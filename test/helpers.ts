@@ -31,7 +31,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
   net.calls.push({ method: req.method, url: req.url, body, headers: Object.fromEntries(req.headers) });
   if (/api\.anthropic\.com|api\.openai\.com/.test(req.url) || (process.env.KEEP_MODEL_KEYS && /openrouter\.ai\/api|api\.typesafe\.ai/.test(req.url))) return realFetch(input, init); // real models (and JEV) pass through (evals)
   // Live evals: public web reads are real (search + page fetches); anything that writes or talks to an integration stays faked.
-  if (process.env.EVAL_LIVE_WEB && (/duckduckgo\.com/.test(req.url) || (req.method === "GET" && !INTEGRATIONS.test(req.url)))) return realFetch(input, init);
+  if (process.env.EVAL_LIVE_WEB && (/duckduckgo\.com|api\.browserbase\.com\/v1\/search/.test(req.url) || (req.method === "GET" && !INTEGRATIONS.test(req.url)))) return realFetch(input, init);
   const r = net.routes.find((x) => x.re.test(req.url));
   if (r) return r.fn(req, body);
   return Response.json({ ok: true, id: id("ext"), result: { message_id: 1 }, messages: [{ id: "wamid.1" }], ts: "1.0" });

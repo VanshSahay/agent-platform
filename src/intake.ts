@@ -12,6 +12,24 @@ export interface Brief {
   version: number; goal: string; deliverable: string; constraints: string[]; assumptions: string[];
   questions: { q: string; default?: string }[]; side_effects: string[]; done_when: string[]; plan: PlanStep[];
   kind: "answer" | "act" | "task" | "schedule";
+  // Planning layer: how much work this is, which model tier runs it, how many tool calls it deserves, and what to say right away.
+  effort?: Effort; tool_budget?: number; profile?: string; ack?: string;
+}
+export type Effort = "quick" | "standard" | "deep";
+const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [3, 8], deep: [8, 16] }; // [min, max] tool calls
+const DEEP = /\b(research|compare|comparison|analy[sz]e|itinerary|plan (a|an|our|my|the) (trip|vacation|holiday|wedding|party|event)|deep dive|options for|best .* (for|in)|pros and cons)\b/i;
+/** Deterministic part of the plan: effort, tool budget and model tier from the drafted brief (the model's guess is a hint, clamped). */
+export function planWork(b: Omit<Brief, "version">, objective: string): Pick<Brief, "effort" | "tool_budget" | "profile"> {
+  const toolSteps = b.plan.filter((p) => p.tool).length;
+  let effort: Effort = (["quick", "standard", "deep"] as Effort[]).includes(b.effort as Effort) ? b.effort! : b.kind === "answer" && !toolSteps ? "quick" : "standard";
+  if (DEEP.test(objective) || toolSteps >= 4) effort = "deep";
+  if (effort === "quick" && toolSteps > 1) effort = "standard";
+  const [lo, hi] = BUDGET[effort];
+  const tool_budget = Math.max(lo, Math.min(hi, Number(b.tool_budget) || (effort === "deep" ? 12 : effort === "standard" ? 6 : 2)));
+  // The cheap model only answers; anything that may call tools runs on standard (a live test showed the cheap model narrating
+  // "I'll book it" instead of calling the tool). Deep work gets the research tier. Failures escalate further at run time.
+  const profile = effort === "quick" && !toolSteps && !b.side_effects.length ? "fast" : effort === "deep" ? "research-standard" : "standard";
+  return { effort, tool_budget, profile };
 }
 export type Decision = "skip" | "auto" | "clarify" | "confirm";
 
@@ -69,6 +87,9 @@ const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief b
 {"goal": one sentence, "deliverable": what the person gets, "constraints": [hard requirements incl. budgets, dates, people, "don't ..." rules],
  "assumptions": [gaps you will fill with stated defaults or remembered preferences], "questions": [{"q": question, "default": suggested answer or null}] — ONLY questions whose answer would change the outcome and that can't be safely assumed; usually none,
  "side_effects": [each action that reaches outside the platform: sending, booking, creating events, paying],
+ "effort": "quick" (answer from what you know or one lookup) | "standard" (a few tool calls) | "deep" (research, comparisons, multi-step plans),
+ "tool_budget": how many tool calls a careful person would need (quick 1-2, standard 3-6, deep 8-14),
+ "ack": for standard/deep work, ONE short chat line sent immediately, in the agent's voice, saying what you're doing and any key assumption (e.g. "On it — looking at Lisbon hotels for Oct 10–12, I'll send 3 options in a minute."); "" for quick answers,
  "done_when": [2-4 checkable success criteria], "plan": [{"text": step in plain words the person would use — never tool names or ids, "tool": tool id or null}] (1-7 steps, using only the listed tools),
  "kind": "answer" (just reply) | "act" (a few tool actions) | "task" (multi-step, waits on people or days) | "schedule" (reminders/recurring)}`;
 
@@ -92,13 +113,15 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is
   // decided by the tools in the plan: only external writes (send, book, create events, pay) count.
   b.side_effects = sideEffects(arr(b.plan).map((p: any) => p?.tool).filter(Boolean), arr(b.side_effects));
-  return {
+  const draft = {
     version: (prev?.version ?? 0) + 1, goal: String(b.goal ?? run.objective), deliverable: String(b.deliverable ?? ""),
     constraints: arr(b.constraints).map(String), assumptions: arr(b.assumptions).map(String), side_effects: arr(b.side_effects).map(String),
     done_when: arr(b.done_when).map(String), kind: ["answer", "act", "task", "schedule"].includes(b.kind) ? b.kind : "act",
     questions: arr(b.questions).map((q: any) => (typeof q === "string" ? { q } : { q: String(q.q), default: q.default ?? undefined })).filter((q: any) => q.q),
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
+    effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined,
   };
+  return { ...draft, ...planWork(draft as Brief, String(run.objective ?? "")) } as Brief;
 }
 
 /** Planned tools decide what counts as a side effect: none of them writes outside the platform → nothing to sign off. */
@@ -156,7 +179,12 @@ export async function intake(run: any, agent: any, room: any, live: () => boolea
   const d = decide(b, { mode: agent.confirm_mode ?? "smart", revised: ["proposed", "auto", "confirmed"].includes((prev as any)?._revisedFrom) });
   const diff = (prev as any)?._revisedFrom === "clarifying" ? [] : diffBriefs(prev, b);
   emit("BRIEF_PROPOSED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { brief: b, decision: d, diff } });
-  if (d === "skip" || d === "auto") { saveBrief(run.id, b, d === "skip" ? "skipped" : "auto"); return "continue"; }
+  if (d === "skip" || d === "auto") {
+    saveBrief(run.id, b, d === "skip" ? "skipped" : "auto");
+    // Anything beyond a quick answer gets a reply right away, so nobody stares at silence while the agent works.
+    if (d === "auto" && b.effort !== "quick" && b.ack) rt.postMessage(room.id, { sender: agent.id, runId: run.id, text: b.ack, targets: rt.replyTargets(room.id, run.origin_endpoint_id) });
+    return "continue";
+  }
   saveBrief(run.id, b, d === "clarify" ? "clarifying" : "proposed");
   const buttons = d === "confirm" ? [{ label: "Go", data: `brf:${run.id}:go` }, { label: "Cancel", data: `brf:${run.id}:cancel` }]
     : b.questions.every((q) => q.default) ? [{ label: "Use defaults", data: `brf:${run.id}:go` }] : [];

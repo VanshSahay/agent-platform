@@ -171,3 +171,28 @@ test("AC-B10 internal-only work (to-dos, reminders, lists) just runs; outside wo
   await say(rt.privateRoomFor(ellie, ava).id, ellie, "what day is it?");
   expect(seen[0].system).toMatch(/\[CLOCK\]\nNow: \w+day, \w+ \d+, \d{4}/);
 });
+
+test("AC-B11 planning layer: effort, model tier and tool budget per request; an immediate reply for real work; a queued request is acknowledged; over budget the model must answer", async () => {
+  const { planWork } = await import("../src/intake");
+  const base = { goal: "", deliverable: "", constraints: [], assumptions: [], questions: [], side_effects: [], done_when: [] } as any;
+  expect(planWork({ ...base, kind: "answer", plan: [] }, "thanks, what's 2+2?")).toEqual({ effort: "quick", tool_budget: 2, profile: "fast" });
+  expect(planWork({ ...base, kind: "act", plan: [{ text: "search", tool: "web.search" }], tool_budget: 40 }, "find the hours for Lupa")).toMatchObject({ effort: "standard", profile: "standard", tool_budget: 8 });
+  expect(planWork({ ...base, kind: "act", plan: [{ text: "s", tool: "web.search" }] }, "help me plan a trip to Sedona at Thanksgiving")).toMatchObject({ effort: "deep", profile: "research-standard" });
+  expect(planWork({ ...base, kind: "answer", effort: "quick", plan: [{ text: "a", tool: "web.search" }, { text: "b", tool: "web.fetch" }] }, "x").effort).toBe("standard");
+
+  // A running task + a new request in the same chat: the second is acknowledged right away
+  const scout = installAgent("scout-travel", ws, ellie), room = rt.privateRoomFor(ellie, scout);
+  exec("insert into runs (id, workspace_id, room_id, agent_id, objective, kind, status, created_at, updated_at, spent) values ('run_busy',?,?,?,'Find hotels in Lisbon','act','running',?,?,'{}')", ws, room.id, scout.id, Date.now(), Date.now());
+  await rt.ingestMessage({ roomId: room.id, senderId: ellie, text: "also plan Sedona for Thanksgiving", platform: "web" });
+  expect(lastFrom(room.id, scout.id)).toMatch(/Got it — I'll get to that right after “Find hotels in Lisbon”/);
+  exec("update runs set status='completed' where id='run_busy'");
+
+  // Over twice its budget, the model gets no tools and must answer
+  const seen = scriptModel(...Array.from({ length: 6 }, (_, i) => call("web.search", { query: `lisbon weather ${i}` })), { text: "Here's what I found." });
+  exec("delete from runs where room_id=?", room.id);
+  await say(room.id, ellie, "what's the weather like in Lisbon in October?");
+  const r = runsIn(room.id).at(-1);
+  const budget = brief(r.id).tool_budget;
+  expect(seen.filter((q) => !q.tools?.length).length).toBeGreaterThanOrEqual(1);
+  expect(seen.findIndex((q) => !q.tools?.length)).toBeLessThanOrEqual(budget * 2 + 1);
+});
