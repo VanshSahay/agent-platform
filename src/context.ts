@@ -14,8 +14,8 @@ const SYSTEM_POLICY = `[SYSTEM_POLICY]
 - To do something (book, send, schedule, create, cancel, order), CALL THE TOOL in this turn. When an action needs approval the platform asks the right person automatically — never ask the user to "reply approve" yourself, and never promise an action ("I'll book…") without calling its tool.
 - Address people by name. Several humans may be speaking; each message is labeled with its speaker.
 - Tasks marked agent_action=blocked are owned by a human: do not act on them or contact their subject.
-- Keep replies short and channel-friendly (no tables unless asked).
-- People shown as "someone (…1234)" haven't told you their name. If you need to address them or track something for them (orders, votes, who owes what), ask once what to call them; when they answer "I'm Maria" the platform learns it.`;
+- People shown as "someone (…1234)" haven't told you their name. If you need to address them or track something for them (orders, votes, who owes what), ask once what to call them; when they answer "I'm Maria" the platform learns it.
+- Replies are chat messages: lead with the answer, keep it short (about 150 words unless they asked for detail). For options, 2–3 lines each with one link. No headings, tables or long preambles; they've already been told you're on it.`;
 
 export function buildContext(run: any, agent: any, room: any) {
   const tools = agentTools(agent);

@@ -9,6 +9,7 @@ export interface ToolSpec { name: string; description: string; input_schema: any
 export interface ModelRequest {
   profile: string; system: string; messages: Msg[]; tools?: ToolSpec[];
   workspaceId?: string; agentId?: string; runId?: string; escalate?: boolean; maxTokens?: number;
+  reasoning?: "off" | "low" | "default"; // hidden "thinking": off for planning/quick answers (10x faster), low for routine tool use
   ctx?: LocalCtx; // structured context, used by the offline heuristic model
 }
 export interface ModelResult { text: string; toolCalls: ToolCall[]; model: string; usage: { input: number; output: number }; costUsd: number; byok: boolean; raw?: any }
@@ -74,6 +75,12 @@ async function callAnthropic(model: string, key: string, req: ModelRequest) {
 }
 
 /** Any OpenAI-compatible Chat Completions API: OpenAI, OpenRouter (open-source models), Together, Groq, Ollama, vLLM… */
+/** Reasoning per tier (measured: the fast model took 11s and ~1,100 tokens to plan one request with thinking on, 1.6s and ~110 off).
+ *  Escalations keep the model's default: that's when thinking pays for itself. */
+function thinking(req: ModelRequest) {
+  const mode = req.reasoning ?? (req.escalate ? "default" : req.profile === "fast" ? "off" : req.profile === "standard" ? "low" : "default");
+  return mode === "off" ? { reasoning: { enabled: false } } : mode === "low" ? { reasoning: { effort: "low" } } : {};
+}
 async function callOpenAI(provider: string, model: string, k: { key: string; base?: string }, req: ModelRequest) {
   const base = (k.base ?? BASE[provider]).replace(/\/$/, "");
   if (provider === "custom" && !process.env.ALLOW_PRIVATE_MODEL_URLS) await (await import("./tools")).assertPublicUrl(base); // admin-supplied URL: no SSRF into our network
@@ -89,7 +96,7 @@ async function callOpenAI(provider: string, model: string, k: { key: string; bas
     headers: { ...(k.key ? { authorization: `Bearer ${k.key}` } : {}), "content-type": "application/json", ...(provider === "openrouter" ? { "x-title": "agents" } : {}) },
     body: JSON.stringify({ model, messages, max_tokens: req.maxTokens ?? 4096, ...(req.tools?.length ? { tools: req.tools.map((t) => ({ type: "function", function: { name: wire(t.name), description: t.description, parameters: t.input_schema } })) } : {}),
       // OpenRouter: report real cost, and only route to providers that support every parameter we send (tool calling).
-      ...(provider === "openrouter" ? { usage: { include: true }, ...(req.tools?.length ? { provider: { require_parameters: true } } : {}) } : {}) }),
+      ...(provider === "openrouter" ? { usage: { include: true }, ...(req.tools?.length ? { provider: { require_parameters: true } } : {}), ...thinking(req) } : {}) }),
   });
   if (!r.ok) throw new Error(`${provider} ${r.status}: ${(await r.text()).slice(0, 300)}`);
   const j: any = await r.json(), msg = j.choices?.[0]?.message;
@@ -141,7 +148,7 @@ export async function generate(req: ModelRequest): Promise<ModelResult> {
 export async function structured<T>(profile: string, instruction: string, input: string, fallback: () => T, workspaceId?: string): Promise<T> {
   if (hooks.model || !hasAnyModel(workspaceId)) return fallback();
   try {
-    const r = await generate({ profile, workspaceId, system: `${instruction}\nRespond with a single JSON object and nothing else.`, messages: [{ role: "user", content: input }], maxTokens: 2000 });
+    const r = await generate({ profile, workspaceId, system: `${instruction}\nRespond with a single JSON object and nothing else.`, messages: [{ role: "user", content: input }], maxTokens: 2000, reasoning: "off" });
     const m = r.text.match(/\{[\s\S]*\}/);
     return m ? { ...fallback(), ...JSON.parse(m[0]) } : fallback();
   } catch { return fallback(); }

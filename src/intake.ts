@@ -18,6 +18,8 @@ export interface Brief {
 export type Effort = "quick" | "standard" | "deep";
 const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [3, 8], deep: [8, 16] }; // [min, max] tool calls
 const DEEP = /\b(research|compare|comparison|analy[sz]e|itinerary|plan (a|an|our|my|the) (trip|vacation|holiday|wedding|party|event)|deep dive|options for|best .* (for|in)|pros and cons)\b/i;
+/** When the planner didn't write one: never leave the chat silent while real work runs. */
+export const defaultAck = (b: Pick<Brief, "effort">) => b.effort === "deep" ? "On it — this needs some digging. I'll send what I find in a couple of minutes." : "On it — back in a minute.";
 /** Deterministic part of the plan: effort, tool budget and model tier from the drafted brief (the model's guess is a hint, clamped). */
 export function planWork(b: Omit<Brief, "version">, objective: string): Pick<Brief, "effort" | "tool_budget" | "profile"> {
   const toolSteps = b.plan.filter((p) => p.tool).length;
@@ -182,7 +184,7 @@ export async function intake(run: any, agent: any, room: any, live: () => boolea
   if (d === "skip" || d === "auto") {
     saveBrief(run.id, b, d === "skip" ? "skipped" : "auto");
     // Anything beyond a quick answer gets a reply right away, so nobody stares at silence while the agent works.
-    if (d === "auto" && b.effort !== "quick" && b.ack) rt.postMessage(room.id, { sender: agent.id, runId: run.id, text: b.ack, targets: rt.replyTargets(room.id, run.origin_endpoint_id) });
+    if (d === "auto" && b.effort !== "quick") rt.postMessage(room.id, { sender: agent.id, runId: run.id, text: b.ack || defaultAck(b), targets: rt.replyTargets(room.id, run.origin_endpoint_id) });
     return "continue";
   }
   saveBrief(run.id, b, d === "clarify" ? "clarifying" : "proposed");

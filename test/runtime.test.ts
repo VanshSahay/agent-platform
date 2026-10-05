@@ -17,8 +17,8 @@ test("AC-R1 every run leaves an append-only, explainable trace", async () => {
   await say(room.id, ellie, "find hotels");
   const run = runsIn(room.id)[0];
   const types = all<any>("select type from events where run_id=? order by seq", run.id).map((e) => e.type);
-  expect(types).toEqual(["RUN_STARTED", "BRIEF_PROPOSED", "MODEL_CALL", "TOOL_CALL_REQUESTED", "PERMISSION_DECISION", "TOOL_CALL_COMPLETED", "MODEL_CALL", "RESULT_CHECKED", "RUN_COMPLETED", "message"]);
-  const reply = all<any>("select id from events where run_id=? and type='message'", run.id)[0];
+  expect(types).toEqual(["RUN_STARTED", "BRIEF_PROPOSED", "message", "MODEL_CALL", "TOOL_CALL_REQUESTED", "PERMISSION_DECISION", "TOOL_CALL_COMPLETED", "MODEL_CALL", "RESULT_CHECKED", "RUN_COMPLETED", "message"]);
+  const reply = all<any>("select id from events where run_id=? and type='message'", run.id).at(-1); // [0] is the immediate "on it"
   const t = rt.trace(reply.id)!;
   expect(t.trigger).toMatchObject({ text: "find hotels", by: "Ellie" });
   expect(t.tool_executions[0].tool_id).toBe("web.search");
