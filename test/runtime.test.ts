@@ -285,3 +285,36 @@ test("AC-JOB1 job contracts: a reminder 'done' with nothing behind it is sent ba
   await say(room.id, ellie, "remind me in an hour to stretch");
   expect(events("JOB_OUTCOME").at(-1).data).toMatchObject({ job: "reminder", ok: true, evidence: "reminder.schedule succeeded" });
 });
+
+test("AC-JOB2 job contracts check each requested action: calendar + reminder in one message are both proven; a search doesn't prove a send; a question back is 'asked' (not done) and the answer's run carries the job", async () => {
+  const a = customAgent(ws, ellie, ["reminders", "calendar", "email-triage", "email-drafting"], {}, "Ava");
+  googleConnection(ws, ellie, [a.id]);
+  net.on(/calendar\/v3\/calendars\/primary\/events\?/, () => Response.json({ items: [] }));
+  net.on(/gmail\.googleapis\.com\/.*\/messages\?/, () => Response.json({ messages: [] }));
+  const room = rt.privateRoomFor(ellie, a);
+  const out = () => events("JOB_OUTCOME").at(-1).data;
+
+  // Two jobs, only one done → sent back naming the missing one; then both done
+  let seen = scriptModel(call("reminder.schedule", { text: "prep", time: "17:00" }), { text: "Reminder set." }, call("calendar.list_events", { from: "tomorrow" }), { text: "Tomorrow is clear; reminder set for 5." });
+  await say(room.id, ellie, "check my calendar for tomorrow and remind me at 5pm to prep");
+  expect(seen.some((q) => q.messages.some((m) => /needs calendar \(no calendar\.list_events call\)/.test(m.content)))).toBe(true);
+  expect(out()).toMatchObject({ ok: true, status: "done", jobs: [{ job: "reminder", status: "done" }, { job: "calendar", status: "done" }] });
+
+  // "Email Sam …" proven only by a send/draft — a successful search isn't it
+  seen = scriptModel(call("email.search", { query: "from:sam" }), { text: "Emailed Sam." }, { text: "Emailed Sam." });
+  await say(room.id, ellie, "email sam@example.com that I'm running late");
+  expect(seen.some((q) => q.messages.some((m) => m.content.includes("nothing shows it was done")))).toBe(true);
+  expect(out()).toMatchObject({ job: "email", ok: false, status: "failed" });
+  // ...while a question about the inbox is proven by the search
+  scriptModel(call("email.search", { query: "from:sam" }), { text: "Nothing from Sam today." });
+  await say(room.id, ellie, "any emails from sam today?");
+  expect(out()).toMatchObject({ job: "email", ok: true, status: "done", evidence: "email.search succeeded" });
+
+  // A question back is not "done"; the answer's run inherits the reminder job and must prove it
+  scriptModel({ text: "Sure — what time?" });
+  await say(room.id, ellie, "remind me to call mom");
+  expect(out()).toMatchObject({ job: "reminder", ok: false, status: "asked" });
+  scriptModel(call("reminder.schedule", { text: "call mom", time: "18:00" }), { text: "Set for 6pm." });
+  await say(room.id, ellie, "6pm");
+  expect(out()).toMatchObject({ job: "reminder", ok: true, status: "done", evidence: "reminder.schedule succeeded" });
+});

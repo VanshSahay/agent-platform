@@ -988,7 +988,6 @@ export const routes: Record<string, any> = {
     if (turns >= 6) return json({ trial_id: trialId, limit_reached: true, messages: [] });
     if (b.text) {
       const { eventId, started } = await rt.ingestMessage({ roomId: room.id, senderId: userId, text: String(b.text).slice(0, 2000), platform: "web" });
-      for (const rid of started) exec("update runs set budget=? where id=?", S({ ...rt.DEFAULT_BUDGET, maxModelCostUsd: 0.1, maxToolCalls: 4, maxAutonomousExternalWrites: 0 }), rid);
       for (let i = 0; i < 8 && started.some((r) => one<any>("select status from runs where id=?", r)?.status === "queued"); i++) await rt.tick();
     }
     const messages = all<any>("select actor, data, ts from events where room_id=? and type='message' order by seq", room.id).map((e) => ({ from: e.actor === userId ? "you" : agent.name, text: J(e.data).text }));

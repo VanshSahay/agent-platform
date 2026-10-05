@@ -1,10 +1,10 @@
 // Depth is decided before deploy from the agent's jobs, shown with costs, overridable, and it caps every request at run time.
 import { test, expect, beforeEach } from "bun:test";
-import { one, J, exec } from "../src/db";
+import { one, all, J, exec } from "../src/db";
 import * as rt from "../src/runtime";
 import { assessDepth, classifyJob, clampEffort } from "../src/depth";
 import { planWork } from "../src/intake";
-import { setup, user, workspace, customAgent, say, scriptModel, runsIn } from "./helpers";
+import { setup, user, workspace, customAgent, say, scriptModel, call, runsIn, lastFrom } from "./helpers";
 
 let ellie: string, ws: string;
 beforeEach(() => { setup(); ellie = user("Ellie"); ws = workspace("Home", ellie); });
@@ -46,4 +46,19 @@ test("AC-DP2 at run time the agent's depth caps every request: a light agent nev
   const run = runsIn(room.id).at(-1);
   expect(J(run.brief).effort).not.toBe("deep");
   expect(J(run.budget)).toMatchObject({ maxToolCalls: 4, maxModelCalls: 6 });
+});
+
+test("AC-DP3 at the agent's tool cap the run is told to answer and loses its tools — it answers instead of burning model calls on refused tools", async () => {
+  const a = customAgent(ws, ellie, ["web-research"], {}, "Scout");
+  exec("update agents set spec=? where id=?", JSON.stringify({ name: "Scout", jobs: ["Keep the list"], depth: assessDepth(["Keep the list"]) }), a.id);
+  const room = rt.privateRoomFor(ellie, a);
+  const seen = scriptModel((r) => r.tools?.length ? call("web.search", { query: `q${r.messages.length}` }) : { text: "Here's what I found so far." });
+  await say(room.id, ellie, "find me news about the harbor festival");
+  const run = runsIn(room.id).at(-1);
+  expect(J(run.spent).toolCalls).toBe(4);                                         // light agent: cap of 4
+  const final = seen.find((q) => !q.tools?.length)!;
+  expect(final.messages.some((m) => m.content.includes("tools are off"))).toBe(true);
+  expect(run.status).not.toBe("failed_terminal");
+  expect(lastFrom(room.id, a.id)).toMatch(/^Here's what I found so far\.[\s\S]*Not fully done/);     // the answer, flagged — not "I couldn't finish"
+  expect(J(run.spent).modelCalls).toBeLessThanOrEqual(6);
 });

@@ -183,6 +183,9 @@ function notifyQueued(runId: string) { if (engine.temporal()) engine.onQueued?.(
 export function requeue(runId: string) { setStatus(runId, "queued"); }
 
 /** Run limits from the agent's depth (decided before deploy): deep agents get room to research, light ones stay small. */
+/** Anonymous trials: small, read-only. Set when the run is created, so no engine can step it with the full budget first. */
+export const TRIAL_BUDGET = { maxModelCostUsd: 0.1, maxToolCalls: 4, maxAutonomousExternalWrites: 0 };
+const isTrial = (room: any) => one<any>("select kind from workspaces where id=?", room?.workspace_id)?.kind === "trial";
 function depthBudget(agent: any) {
   if (!agent?.id) return {};
   const d = intake.depthOf(agent);
@@ -193,7 +196,7 @@ export function createRun(r: { room: any; agent: any; objective: string; request
   const rid = id("run");
   exec(`insert into runs (id, workspace_id, room_id, agent_id, objective, kind, status, requested_by, parent_run_id, trigger_event_id, origin_endpoint_id, budget, spent, tainted, result, created_at, updated_at)
     values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, rid, r.room.workspace_id, r.room.id, r.agent.id, r.objective, r.kind ?? "respond", "queued", r.requestedBy ?? null,
-    r.parentRunId ?? null, r.triggerEventId ?? null, r.originEndpointId ?? null, S({ ...DEFAULT_BUDGET, ...depthBudget(r.agent), ...r.budget }), S({ cost: 0, toolCalls: 0, externalWrites: 0, modelCalls: 0 }),
+    r.parentRunId ?? null, r.triggerEventId ?? null, r.originEndpointId ?? null, S({ ...DEFAULT_BUDGET, ...depthBudget(r.agent), ...(isTrial(r.room) ? TRIAL_BUDGET : {}), ...r.budget }), S({ cost: 0, toolCalls: 0, externalWrites: 0, modelCalls: 0 }),
     r.tainted ? 1 : 0, r.result ? S(r.result) : null, now(), now());
   if (r.intake) exec("update runs set brief_status='pending' where id=?", rid);
   emit("RUN_STARTED", { workspace_id: r.room.workspace_id, room_id: r.room.id, run_id: rid, actor: r.agent.id, data: { objective: r.objective, requested_by: r.requestedBy, kind: r.kind ?? "respond" } });
@@ -325,7 +328,8 @@ async function stepRunInner(runId: string) {
     try {
       channels.typing(run.origin_endpoint_id); // "…is typing" in the chat this came from while the model works
       // Past twice the plan's tool budget (+2) the model gets no tools and is told plainly to answer with what it has.
-      const overBudget = (spent.toolCalls ?? 0) >= toolBudget(run.id) * 2 + 2;
+      // At the tool cap the tools refuse anyway — that's the moment to say "answer now", not after a dozen refusals.
+      const overBudget = (spent.toolCalls ?? 0) >= Math.min(toolBudget(run.id) * 2 + 2, budget.maxToolCalls);
       if (overBudget && !spent.finalCallNoted) {
         patchJson("runs", "spent", run.id, (x) => ({ ...x, finalCallNoted: 1 }));
         appendStep(run.id, "signal", { text: "[CHECK] Research time is up and tools are off. Write your final answer to the person now, in plain text, from what you already found. Do not write tool calls." });
@@ -377,15 +381,20 @@ async function stepRunInner(runId: string) {
         appendStep(run.id, "signal", { text: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed. Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` });
         continue;
       }
+      // A "try again" only helps if there's room to try: tools still on and a model call left. Otherwise deliver, flagged.
+      // ponytail: covers the contract and result checks; the other one-shot checks belong in one completion gate (architecture review #1).
+      const canRetry = !J(one<any>("select spent from runs where id=?", run.id).spent, {}).finalCallNoted
+        && budget.maxModelCalls - (J(one<any>("select spent from runs where id=?", run.id).spent, {}).modelCalls ?? 0) >= 1;
       // Contracted jobs (calendar, reminder, email) need evidence in our records, not just a confident reply.
       const job = jobs.outcome(run, res.text);
-      if (!job.ok && !spent.contractRetry && !run.parent_run_id) {
+      if (job.status === "failed" && !spent.contractRetry && !run.parent_run_id && canRetry) {
         patchJson("runs", "spent", run.id, (x) => ({ ...x, contractRetry: 1 }));
-        appendStep(run.id, "signal", { text: `[CHECK] This request is a ${job.job} job, but nothing shows it was done (${job.evidence}). Call the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.` });
+        const missing = (job.jobs ?? []).filter((j) => j.status === "failed").map((j) => `${j.job} (${j.evidence})`).join(", ");
+        appendStep(run.id, "signal", { text: `[CHECK] This request needs ${missing}, but nothing shows it was done. Do each part with the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.` });
         continue;
       }
       jobs.recordOutcome(run, job);
-      if (!job.ok && !run.parent_run_id && !/couldn'?t|can'?t|unable|wasn'?t able|not able/i.test(res.text))
+      if (job.status === "failed" && !run.parent_run_id && !/couldn'?t|can'?t|unable|wasn'?t able|not able/i.test(res.text))
         res.text = `${res.text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
       // Don't claim "done" until the result is checked against the brief's success criteria.
       const b = J(run.brief);
@@ -395,7 +404,7 @@ async function stepRunInner(runId: string) {
         const checks = (spent.verifications ?? 0) + 1;
         patchJson("runs", "spent", run.id, (s) => ({ ...s, verifications: checks }));
         emit("RESULT_CHECKED", { ...base, data: { pass: v.pass, missing: v.missing, acknowledged: v.acknowledged } });
-        if (!v.pass && !v.acknowledged && checks < 2) {
+        if (!v.pass && !v.acknowledged && checks < 2 && canRetry) {
           appendStep(run.id, "signal", { text: `[CHECK] Not done yet. Still missing: ${v.missing.join("; ")}. Keep working, or explain exactly what's blocking it.` });
           continue;
         }

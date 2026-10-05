@@ -1,30 +1,39 @@
 # Production shape on one box: Postgres, Temporal (+ UI), the API server and two workers.
 # Secrets come from ../.env.production (never commit it): MASTER_KEY, OPENROUTER_API_KEY, RESEND_API_KEY, BROWSERBASE_API_KEY, …
+# The database password comes from deploy/.env (never commit it): POSTGRES_PASSWORD=<long random>. Compose refuses to start without it.
+# Temporal UI listens on localhost only: reach it with `ssh -L 8233:localhost:8233 <box>`.
+# Backups: a daily pg_dump into the `backups` volume, 14 days kept. Prove they restore with deploy/restore-check.sh.
 services:
   postgres:
     image: postgres:16
-    environment: { POSTGRES_USER: agents, POSTGRES_PASSWORD: agents, POSTGRES_DB: agents }
+    environment: { POSTGRES_USER: agents, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}", POSTGRES_DB: agents }
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U agents"], interval: 5s, retries: 20 }
   temporal:
     image: temporalio/auto-setup:1.28
     depends_on: { postgres: { condition: service_healthy } }
-    environment: { DB: postgres12, DB_PORT: 5432, POSTGRES_USER: agents, POSTGRES_PWD: agents, POSTGRES_SEEDS: postgres }
+    environment: { DB: postgres12, DB_PORT: 5432, POSTGRES_USER: agents, POSTGRES_PWD: "${POSTGRES_PASSWORD}", POSTGRES_SEEDS: postgres }
   temporal-ui:
     image: temporalio/ui:2.36.0
     depends_on: [temporal]
     environment: { TEMPORAL_ADDRESS: temporal:7233 }
-    ports: ["8233:8080"]
+    ports: ["127.0.0.1:8233:8080"]
   server:
     build: { context: .., dockerfile: deploy/Dockerfile.server }
     depends_on: [temporal]
     env_file: ../.env.production
-    environment: { DATABASE_URL: postgres://agents:agents@postgres:5432/agents, TEMPORAL_ADDRESS: "temporal:7233" }
+    environment: { DATABASE_URL: "postgres://agents:${POSTGRES_PASSWORD}@postgres:5432/agents", TEMPORAL_ADDRESS: "temporal:7233" }
     ports: ["3000:3000"]
   worker:
     build: { context: .., dockerfile: deploy/Dockerfile.worker }
     depends_on: [temporal]
     env_file: ../.env.production
-    environment: { DATABASE_URL: postgres://agents:agents@postgres:5432/agents, TEMPORAL_ADDRESS: "temporal:7233" }
+    environment: { DATABASE_URL: "postgres://agents:${POSTGRES_PASSWORD}@postgres:5432/agents", TEMPORAL_ADDRESS: "temporal:7233" }
     deploy: { replicas: 2 }
-volumes: { pgdata: {} }
+  backup:
+    image: postgres:16
+    depends_on: { postgres: { condition: service_healthy } }
+    environment: { PGPASSWORD: "${POSTGRES_PASSWORD}" }
+    volumes: [backups:/backups]
+    entrypoint: ["sh", "-c", "while true; do pg_dump -h postgres -U agents -Fc agents > /backups/agents-$$(date +%F).dump && find /backups -name '*.dump' -mtime +14 -delete; sleep 86400; done"]
+volumes: { pgdata: {}, backups: {} }

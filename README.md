@@ -2,6 +2,12 @@
 
 Create an agent by describing what you need, give it tools, memory and permissions, then talk to the same persistent agent from web, iMessage, Telegram, Slack, WhatsApp, email and phone — privately, in groups, or alongside other agents.
 
+> **Status: prototype for a controlled iMessage pilot.** What's proven, and how:
+> - **Proven by tests and job contracts:** Ava's calendar, reminder and email jobs; group expenses, lists and polls (each request is checked against our own records, per action).
+> - **Has a 30-request release eval, but no clean run on the current commit yet:** Ava. Channel and Google side effects in that eval are simulated.
+> - **Beta:** other catalog agents (specs, tools and rehearsals; no per-job success conditions yet).
+> - **Not yet proven on real phones:** iMessage. Step 4 below says which line supports what.
+
 Built from `agent_platform_product_technical_plan.md`. The five primitives — **Workspace, Agent, Room, Connection, Run** — are first-class, and external chats are interfaces into a Room, never the source of truth.
 
 ## The user journey
@@ -10,7 +16,9 @@ Built from `agent_platform_product_technical_plan.md`. The five primitives — *
 2. **Describe the agent**, for yourself or for a team (pick an existing team or create one inline). The draft shows the job, skills, connections needed and default permissions.
 3. **Test it** (Agent → Test). A live chat in test mode: plans, approvals and tools all run, but nothing leaves the platform. Emails aren't sent, tables aren't booked, and accounts you haven't connected return sample data.
 4. **Deploy in one tap** (Agent → Deploy):
-   - **iMessage**, DM or group: "Text Ava from my iPhone" opens Messages with `start 12345678` prefilled; for groups, add the line and send `join 12345678`.
+   - **iMessage:** depends on the line.
+     - **Dedicated number (Photon Business), or this Mac's Messages app (`IMESSAGE_MODE=local`):** DMs and groups both work. Text the number, or add it to a group and say "@Ava …" (your number must be linked to your account first).
+     - **Photon's shared pool (Free/Pro, no fixed number):** DMs only. The agent texts you first and you reply YES. Groups need a dedicated number.
    - **WhatsApp:** a `wa.me` link.
    - **Telegram:** a `t.me` deep link, for DMs or groups.
    - **Slack:** "Add to Slack" (OAuth), then pick channels.

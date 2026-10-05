@@ -186,10 +186,14 @@ export async function rehearse(agent: any, userId: string, room: any) {
     const done = [...new Set(all<any>("select data from events where room_id=? and type='TOOL_CALL_COMPLETED' and ts>=?", room.id, since).map((e) => J(e.data, {}))
       .filter((d) => /^SUCCEEDED|PARTIAL$/.test(String(d.status ?? ""))).map((d) => d.tool))];
     const leaked = /DSML|<tool_call|<function[=\s]/i.test(reply);
+    // A contracted job (calendar, reminder, email) has its own proof: the right tool for what was asked, per action.
+    const job = J(one<any>("select data from events where room_id=? and type='JOB_OUTCOME' and ts>=? order by seq desc limit 1", room.id, since)?.data, null);
     let verdict: "pass" | "fail" | "unchecked", note: string;
     if (failed || !replies.length || leaked) { verdict = "fail"; note = failed ? "the task failed" : !replies.length ? "no reply" : "sent raw tool markup instead of an answer"; }
+    else if (job?.status === "failed") { verdict = "fail"; note = `didn't actually do it: ${job.evidence}`; }
     else {
-      const evidence = approval ? "asked for your approval first, as it should" : done.length ? `did it: ${done.join(", ")}` : "";
+      // Without a grading model, only proof of the asked-for outcome passes: an approval, or a proven job. Any successful tool isn't enough.
+      const evidence = approval ? "asked for your approval first, as it should" : job?.ok ? `did it: ${job.evidence}` : "";
       // The grader: a real model judging against the expectation. Unavailable → null, which is never a pass by itself.
       const j = hasAnyModel(agent.workspace_id)
         ? await structured<{ pass: boolean | null; why: string }>("fast", `Grade an AI agent's reply in a rehearsal. Expected: ${sc.expect}. Fail it if it claims to have done something the tool list doesn't show, invents facts, or ignores the request. Return {"pass": boolean, "why": one short sentence}.`,
@@ -198,7 +202,7 @@ export async function rehearse(agent: any, userId: string, room: any) {
       if (j.pass === false) { verdict = "fail"; note = j.why || "didn't do what was expected"; }
       else if (j.pass === true) { verdict = "pass"; note = j.why || evidence; }
       else if (evidence) { verdict = "pass"; note = `${evidence} (reply not reviewed — no grading model)`; }
-      else { verdict = "unchecked"; note = "replied, but nothing proves it did the job and no grading model is available"; }
+      else { verdict = "unchecked"; note = done.length ? `used ${done.join(", ")}, but nothing proves it did what was asked and no grading model is available` : "replied, but nothing proves it did the job and no grading model is available"; }
     }
     out.push({ say: sc.say, expect: sc.expect, reply, tools, verdict, note });
   }
