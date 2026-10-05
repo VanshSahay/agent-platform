@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
+import { Rich } from "./rich";
 import { ClerkProvider, SignIn, useAuth } from "@clerk/react";
 
 // Set at boot from /v1/auth/config: Clerk's publishable key when the server has Clerk on, else null (built-in sign-in).
@@ -283,7 +284,7 @@ function Room({ id, compact }: { id: string; compact?: boolean }) {
               {apr ? <ApprovalCard a={{ ...apr, room_name: null }} onDone={load} />
                 : e.data.brief ? <BriefCard b={e.data.brief} onDone={load} onEdit={edit}
                     live={data.runs.find((r: any) => r.id === e.data.brief.run_id && ["proposed", "clarifying"].includes(r.brief_status) && r.brief?.version === e.data.brief.brief.version)} />
-                : <><div className="text">{fileLinks(e.data.text)}</div>
+                : <><div className="text">{isAgent ? <Rich text={e.data.text} /> : fileLinks(e.data.text)}</div>
                   {e.data.buttons?.length > 0 && isAgent && <div className="row mt8">{e.data.buttons.map((b: any) => <button key={b.data} className="btn sm"
                     onClick={async () => { try { await api(`/v1/rooms/${id}/buttons`, { data: b.data }); load(); } catch (x: any) { toast(x.message); } }}>{b.label}</button>)}</div>}</>}
             </div></div>;
@@ -322,6 +323,14 @@ function Room({ id, compact }: { id: string; compact?: boolean }) {
     {trace && <Trace id={trace} onClose={() => setTrace(null)} />}
   </div>;
 }
+/** What's happening while an agent is drafted (~5-10s), instead of a bare "Building…". */
+function BuildingSteps() {
+  const steps = ["Reading your request", "Figuring out its jobs", "Finding data sources", "Writing test scenarios"];
+  const [i, setI] = useState(0);
+  useEffect(() => { const t = setInterval(() => setI((x) => Math.min(x + 1, steps.length - 1)), 2200); return () => clearInterval(t); }, []);
+  return <span>{steps[i]}…</span>;
+}
+
 function fileLinks(text: string) {
   const parts = text.split(/(📎 [^\n]+ \(file_id: fil_\w+\))/);
   return parts.map((p, i) => { const m = p.match(/^📎 (.+) \(file_id: (fil_\w+)\)$/); return m ? <a key={i} className="pill accent" href={`/v1/files/${m[2]}`}>📎 {m[1]}</a> : p; });
@@ -711,7 +720,7 @@ function DescribeBox({ value, onChange, onSubmit, audience = "me", busy, cta = "
     <textarea value={value} aria-label="Describe what your agent should do" placeholder={ex} onChange={(e) => onChange(e.target.value)}
       onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onSubmit(); if (e.key === "Tab" && !value) { e.preventDefault(); onChange(ex); } }} />
     <div className="bar"><span className="small faint grow">{value ? "⌘↵ to build" : "Press Tab to use the example"}</span>
-      <button className="btn grad lg" disabled={!value.trim() || busy} onClick={onSubmit}>{busy ? "Building…" : cta} →</button></div>
+      <button className="btn grad lg" disabled={!value.trim() || busy} onClick={onSubmit}>{busy ? <BuildingSteps /> : cta} →</button></div>
   </div>;
 }
 
@@ -1297,6 +1306,9 @@ function CreateAgent() {
             {draft.boundaries.map((b: string, i: number) => <div key={i} className="ability"><span className="e">✋</span><span className="grow">{b}</span></div>)}
             <div className="draft"><h4>You'll know it's working when</h4></div>
             {draft.success.map((b: string, i: number) => <div key={i} className="ability"><span className="e">🎯</span><span className="grow">{b}</span></div>)}
+            {draft.data_needs?.length > 0 && <><div className="draft"><h4>Where its information comes from</h4></div>
+              {draft.data_needs.map((d: any, i: number) => { const [e, l] = ({ "built-in": ["✅", "Built in"], connect: ["🔗", "Connect an account"], website: ["🧭", "Reads the website"], web: ["🔎", "Web search, cited"], ask: ["💬", "You'll tell it once"], none: ["⚠️", "No reliable source yet — it will say so, not guess"] } as any)[d.how] ?? ["•", d.how];
+                return <div key={i} className="ability"><span className="e">{e}</span><span className="grow">{d.need}<div className="small muted">{l}{d.detail ? ` · ${d.detail}` : ""}</div></span></div>; })}</>}
             <div className="draft"><h4>Needs access to</h4></div>
             {draft.connections.length ? draft.connections.map((c: string) => <div key={c} className="ability"><span className="e">🔗</span><span className="grow">{c === "google" ? "Gmail + Google Calendar" : c}<div className="small faint">Connect after creating. Until then it rehearses with sample data.</div></span></div>)
               : <div className="ability"><span className="e">⚡</span><span className="grow muted">Nothing. It works right away.</span></div>}
@@ -1442,6 +1454,9 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
       </div></div>
     <div className="tabs">{tabs.map(([t, l]) => <a key={t} className={t === sect ? "on" : ""} href={`#/agents/${id}/${t}`}>{l}</a>)}</div>
     {sect === "overview" && <><SetupChecklist a={a} onMessage={message} />
+      {a.data_gaps?.length > 0 && <div className="card mt16"><h3 style={{ margin: 0 }}>Couldn't find data for</h3>
+        <p className="small muted" style={{ margin: "4px 0 10px" }}>People asked {a.name} for these and it had no reliable source, so it said so instead of guessing. Connect a source (Connections → MCP) to cover them.</p>
+        {a.data_gaps.map((g: any) => <div key={g.need} className="ability"><span className="e">⚠️</span><span className="grow">{g.need}<div className="small muted">{g.category} · asked {g.n}×</div></span></div>)}</div>}
       <div className="split">
         <div className="card"><div className="small muted">What it can do</div><div className="mt8">{a.skills.map((s: string) => { const [e, t] = abilityOf(s); return <div key={s} className="ability"><span className="e">{e}</span><span>{t}</span></div>; })}</div></div>
         <div className="col" style={{ gap: 12 }}>

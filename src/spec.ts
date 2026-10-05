@@ -13,6 +13,35 @@ export interface Scenario { say: string; expect: string }
 export interface AgentSpec {
   name: string; title: string; avatar: string; audience: Audience; understanding: string; jobs: string[]; routines: Routine[];
   questions: Question[]; boundaries: string[]; success: string[]; skills: string[]; connections: string[]; rehearsal: Scenario[]; tone: string;
+  data_needs?: DataNeed[];
+}
+/** Where each fact the agent depends on comes from. Anything without a real source is said out loud, never guessed. */
+export type DataHow = "built-in" | "connect" | "website" | "web" | "ask" | "none";
+export interface DataNeed { need: string; how: DataHow; detail: string }
+// What the platform can actually source, and the skill that brings it.
+const DATA_CATALOG: { re: RegExp; how: DataHow; detail: string; skill?: string }[] = [
+  { re: /stock|share|ticker|portfolio|crypto|bitcoin|etf|index|market|currenc|exchange rate|fx/i, how: "built-in", detail: "Live market quotes and price history (Yahoo Finance; Finnhub if connected)", skill: "market-data" },
+  { re: /weather|forecast|rain|temperature/i, how: "built-in", detail: "Weather forecasts (Open-Meteo)", skill: "weather" },
+  { re: /restaurant|table|reservation/i, how: "built-in", detail: "Restaurant search and booking (OpenTable/Resy through your login)", skill: "reservations" },
+  { re: /email|inbox|calendar|meeting|contact/i, how: "connect", detail: "Connect Google (Gmail + Calendar)" },
+  { re: /news|headline|article|review|price of|product|hotel|flight|event|ticket/i, how: "web", detail: "Web search + reading the source pages (cited, may be unverified)", skill: "web-research" },
+];
+const DATA_HOWS: DataHow[] = ["built-in", "connect", "website", "web", "ask", "none"];
+export function resolveDataNeeds(needs: any[], skills: string[]): { needs: DataNeed[]; skills: string[] } {
+  const out: DataNeed[] = [], add = new Set(skills);
+  for (const n of (Array.isArray(needs) ? needs : []).slice(0, 6)) {
+    const need = String(n?.need ?? "").trim(); if (!need) continue;
+    const hit = DATA_CATALOG.find((c) => c.re.test(need));
+    // Only the catalog can say "built in" (the model can't invent tools). It upgrades guesses like "web"/"none" to a real built-in
+    // source, but "ask" (only the people know: their holdings) and "connect" (their accounts) stay as the model said.
+    const said: DataHow = DATA_HOWS.includes(n?.how) ? n.how : "none";
+    const how: DataHow = said === "ask" || said === "connect" ? said : hit?.how === "built-in" ? "built-in" : said === "built-in" ? (hit?.how ?? "web") : said;
+    if (how === "built-in" && hit?.skill) add.add(hit.skill);
+    if (how === "web") add.add("web-research");
+    if (how === "website") add.add("browser");
+    out.push({ need, how, detail: String((how === hit?.how ? hit?.detail : n?.detail) ?? hit?.detail ?? "").slice(0, 160) });
+  }
+  return { needs: out, skills: [...add].filter((x) => tpl.SKILLS[x]) };
 }
 
 const JOB: Record<string, string> = {
@@ -92,17 +121,20 @@ const SAMPLE: Record<string, string> = {
 export async function interpret(description: string, audience: Audience, workspaceId?: string): Promise<AgentSpec> {
   const draft = await tpl.draftAgent(description, workspaceId);
   const base = heuristic(description, audience, draft);
-  const s = await structured<AgentSpec>("standard",
+  const s = await structured<AgentSpec>("fast", // reasoning off: ~8s instead of ~16s on standard, same JSON quality
     `You turn a person's one-line request into a precise spec for a chat agent that will live ${audience === "group" ? "in a group chat" : audience === "team" ? "in a team's channels" : "in their 1:1 texts"}.
 Return JSON with: name (friendly first name), title, avatar (one emoji), understanding (1-2 sentences restating what they want in plain words, including anything implied),
 jobs (3-6 concrete things it will do), routines (things it should do on its own: [{every: "daily"|"weekdays"|"weekly", day?: 0-6 Sunday=0, hour: 0-23, objective}], only if implied),
 questions (max 4 gaps that genuinely change behaviour, each {id, q, why, default?}; don't ask what the request already says), boundaries (what it must never do or must ask first),
-success (2-3 observable signs it's working), skills (subset of [${Object.keys(tpl.SKILLS).join(", ")}]), rehearsal (2-3 realistic first messages {say, expect}), tone.`,
+success (2-3 observable signs it's working), skills (subset of [${Object.keys(tpl.SKILLS).join(", ")}]),
+data_needs (the facts its jobs depend on, each {need, how, detail}: how = "built-in" (live market quotes, weather, restaurant booking, web search are built in) | "connect" (needs an account connected: Gmail/Calendar, Slack, or an API via MCP) | "website" (read or operate a specific site in a browser) | "web" (general web search, cited, may be unverified) | "ask" (only the people know it, e.g. what's in their portfolio — ask once, then remember) | "none" (no reliable source: say so)),
+rehearsal (2-3 realistic first messages a PERSON would send it {say, expect}; "say" must not contain invented prices, news or facts), tone.`,
     description, () => base, workspaceId);
   // Trust nothing structural from the model: keep only known skills, sane routines, bounded lists.
-  const skills = (s.skills ?? []).filter((x) => tpl.SKILLS[x]);
+  const data = resolveDataNeeds((s as any).data_needs ?? [], (s.skills ?? []).filter((x) => tpl.SKILLS[x]));
+  const skills = data.skills;
   return {
-    ...base, ...s,
+    ...base, ...s, data_needs: data.needs,
     audience, skills: skills.length ? skills : base.skills, connections: tpl.connectionsNeeded(skills.length ? skills : base.skills),
     routines: (s.routines ?? []).filter((r) => ["daily", "weekdays", "weekly"].includes(r.every) && r.hour >= 0 && r.hour < 24 && r.objective && (r.every !== "weekly" || (r.day! >= 0 && r.day! < 7))).slice(0, 3),
     questions: (s.questions ?? []).filter((q) => q?.id && q?.q).slice(0, 4), jobs: (s.jobs ?? base.jobs).slice(0, 6), rehearsal: (s.rehearsal ?? base.rehearsal).filter((r) => r?.say).slice(0, 3),
@@ -116,6 +148,7 @@ export function compile(spec: AgentSpec, answers: Record<string, string> = {}) {
     `What you do:\n${spec.jobs.map((j) => `- ${j}`).join("\n")}`,
     facts.length && `What you know about the people you serve:\n${facts.map(([q, a]) => `- ${q} ${a}`).join("\n")}`,
     `Boundaries:\n${spec.boundaries.map((b) => `- ${b}`).join("\n")}`,
+    spec.data_needs?.length && `Where your information comes from (never guess what isn't covered):\n${spec.data_needs.map((d) => `- ${d.need}: ${{ "built-in": "use your built-in tool", connect: "needs a connected account — if it isn't connected, say so", website: "read it from the site with the browser", web: "search the web and cite sources; flag what's unverified", ask: "ask the people once, then remember it", none: "no reliable source yet — say you can't check it and call data.missing" }[d.how]}${d.detail ? ` (${d.detail})` : ""}`).join("\n")}`,
     `You're doing well when:\n${spec.success.map((b) => `- ${b}`).join("\n")}`,
     `Tone: ${spec.tone}.`].filter(Boolean).join("\n\n");
 }

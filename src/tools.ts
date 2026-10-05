@@ -289,6 +289,73 @@ const SEARCH_PROVIDERS: [string, { enabled: () => boolean; search: (q: string) =
 ];
 
 def({
+  id: "data.missing", description: "Record that you can't get data the person needs (no tool, connection or reliable source for it). Then tell them plainly what you couldn't check and what would let you (connecting a source, or them telling you).",
+  risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ need: str("what data, e.g. 'live flight prices LGA→PHX'"), category: str("e.g. flights, stocks, restaurants, sports, real estate"), why: str("why the available tools can't get it") }, ["need"]),
+  async execute(i, ctx) {
+    emit("DATA_GAP", { workspace_id: ctx.run.workspace_id, room_id: ctx.run.room_id, run_id: ctx.run.id, actor: ctx.agent.id, data: { need: String(i.need).slice(0, 200), category: String(i.category ?? "other").toLowerCase().slice(0, 40), why: String(i.why ?? "").slice(0, 300) } });
+    return { status: "SUCCEEDED", output: { recorded: true, tell_them: "Say what you couldn't verify, give anything you could source (with sources), and offer the next step." } };
+  },
+});
+
+// ---------- real data for common asks (so agents quote sources instead of guessing) ----------
+const yahooChart = async (symbol: string, range = "5d", interval = "1d") => {
+  const r = await call(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`, { headers: { "user-agent": "Mozilla/5.0" } });
+  const res = (await r.json() as any)?.chart?.result?.[0];
+  if (!res?.meta?.regularMarketPrice) throw new ToolError("BUSINESS_RULE", `no market data for "${symbol}" (check the ticker: e.g. NVDA, BTC-USD, EURUSD=X, ^GSPC)`);
+  return res;
+};
+const pct = (a: number, b: number) => (b ? Math.round(((a - b) / b) * 10000) / 100 : null);
+def({
+  id: "market.quote", description: "Live price for stocks, ETFs, indices (^GSPC), crypto (BTC-USD) and FX pairs (EURUSD=X): price, change since previous close, and the time it's as of. Use this for any price or move; never estimate one.",
+  risk: "read", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ symbols: { type: "array", items: str("ticker, e.g. NVDA"), description: "up to 10 tickers" } }, ["symbols"]),
+  async execute({ symbols }) {
+    const out: any[] = [];
+    for (const raw of (symbols ?? []).slice(0, 10)) {
+      const sym = String(raw).trim().toUpperCase();
+      try {
+        if (process.env.FINNHUB_API_KEY && /^[A-Z.]+$/.test(sym)) { // official, real-time US quotes
+          const q: any = await (await call(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${process.env.FINNHUB_API_KEY}`)).json();
+          if (q?.c) { out.push({ symbol: sym, price: q.c, previous_close: q.pc, change: Math.round((q.c - q.pc) * 100) / 100, change_pct: q.dp, as_of: new Date(q.t * 1000).toISOString(), source: "Finnhub" }); continue; }
+        }
+        const m = (await yahooChart(sym, "1d", "1d")).meta; // 1-day range: chartPreviousClose is yesterday's close
+        out.push({ symbol: m.symbol, name: m.shortName ?? m.longName, price: m.regularMarketPrice, currency: m.currency, previous_close: m.chartPreviousClose ?? m.previousClose,
+          change: Math.round((m.regularMarketPrice - (m.chartPreviousClose ?? m.previousClose)) * 100) / 100, change_pct: pct(m.regularMarketPrice, m.chartPreviousClose ?? m.previousClose),
+          as_of: new Date(m.regularMarketTime * 1000).toISOString(), market_state: m.marketState, source: "Yahoo Finance (unofficial, may be delayed)" });
+      } catch (e: any) { out.push({ symbol: sym, error: e.message }); }
+    }
+    return { status: out.some((x) => x.price) ? "SUCCEEDED" : "FAILED", output: { quotes: out } };
+  },
+});
+def({
+  id: "market.history", description: "Daily closing prices for one ticker over a range (5d, 1mo, 3mo, 6mo, 1y, 5y), with the total change. Use for 'how has X done' questions.",
+  risk: "read", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ symbol: str(), range: { type: "string", enum: ["5d", "1mo", "3mo", "6mo", "1y", "5y"] } }, ["symbol"]),
+  async execute({ symbol, range = "1mo" }) {
+    const r = await yahooChart(String(symbol).toUpperCase(), range, range === "5y" ? "1wk" : "1d");
+    const closes = (r.timestamp ?? []).map((t: number, i: number) => ({ date: new Date(t * 1000).toISOString().slice(0, 10), close: r.indicators?.quote?.[0]?.close?.[i] })).filter((x: any) => x.close != null);
+    const first = closes[0]?.close, last = closes.at(-1)?.close;
+    return { status: "SUCCEEDED", output: { symbol: r.meta.symbol, range, change_pct: pct(last, first), first, last, closes: closes.slice(-60).map((c: any) => ({ ...c, close: Math.round(c.close * 100) / 100 })), source: "Yahoo Finance (unofficial)" } };
+  },
+});
+def({
+  id: "weather.forecast", description: "Weather forecast for a place (Open-Meteo): daily highs/lows, rain chance and conditions for up to 14 days.",
+  risk: "read", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ place: str("city, e.g. Lisbon"), days: num("1-14") }, ["place"]),
+  async execute({ place, days = 5 }) {
+    const g: any = await (await call(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(place)}&count=1`)).json();
+    const loc = g.results?.[0];
+    if (!loc) throw new ToolError("BUSINESS_RULE", `couldn't find "${place}"`);
+    const f: any = await (await call(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&temperature_unit=${["US", "LR", "LY"].includes(loc.country_code) ? "fahrenheit" : "celsius"}&timezone=auto&forecast_days=${Math.min(14, Math.max(1, days))}`)).json();
+    const W: Record<number, string> = { 0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "cloudy", 45: "fog", 48: "fog", 51: "drizzle", 61: "rain", 63: "rain", 65: "heavy rain", 71: "snow", 73: "snow", 75: "heavy snow", 80: "showers", 81: "showers", 82: "heavy showers", 95: "thunderstorms" };
+    const d = f.daily ?? {};
+    return { status: "SUCCEEDED", output: { place: `${loc.name}, ${loc.country}`, unit: f.daily_units?.temperature_2m_max, source: "Open-Meteo",
+      days: (d.time ?? []).map((t: string, i: number) => ({ date: t, high: d.temperature_2m_max[i], low: d.temperature_2m_min[i], rain_chance: d.precipitation_probability_max?.[i], sky: W[d.weather_code?.[i]] ?? "mixed" })) } };
+  },
+});
+
+def({
   id: "web.fetch", description: "Fetch a public web page and return its readable text.", risk: "read", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ url: str() }, ["url"]),
   async execute({ url }) {

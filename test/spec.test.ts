@@ -60,3 +60,17 @@ test("AC-SP3 a confirmed spec + answers compile into instructions and schedules;
   expect(all<any>("select * from outbox")).toHaveLength(0);
   expect(one<any>("select mode from rooms r join events e on e.room_id=r.id where e.type='TOOL_CALL_REQUESTED' limit 1").mode).toBe("test");
 });
+
+test("AC-SP4 data needs resolve to real sources: built-in wins (and adds its skill), people-only facts are asked once, the rest is said out loud", async () => {
+  const { resolveDataNeeds, compile } = await import("../src/spec");
+  const r = resolveDataNeeds([
+    { need: "Live prices for the stocks in our portfolio", how: "web" },     // model guessed web; we have it built in
+    { need: "Which stocks and how many shares we hold", how: "ask" },
+    { need: "Analyst price targets", how: "none" },
+    { need: "Weather on the trip", how: "built-in" },
+  ], ["reminders"]);
+  expect(r.needs.map((n) => n.how)).toEqual(["built-in", "ask", "none", "built-in"]);
+  expect(r.skills).toEqual(expect.arrayContaining(["reminders", "market-data", "weather"]));
+  const text = compile({ name: "Pip", title: "Portfolio watcher", avatar: "📈", audience: "group", understanding: "Watches our stocks.", jobs: ["Watch prices"], routines: [], questions: [], boundaries: ["Never trades"], success: [], skills: r.skills, connections: [], rehearsal: [], tone: "plain", data_needs: r.needs } as any);
+  expect(text).toMatch(/Where your information comes from[\s\S]*Live prices[^\n]*built-in tool[\s\S]*ask the people once[\s\S]*call data\.missing/);
+});

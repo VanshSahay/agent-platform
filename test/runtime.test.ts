@@ -243,3 +243,18 @@ test("AC-R13 a reply containing raw tool-call markup is never sent: one retry on
   await say(room.id, ellie, "and barcelona?");
   expect(messages(room.id).filter((m) => m.actor === a.id).map((m) => m.text).join("\n")).not.toMatch(/DSML/);
 });
+
+test("AC-R14 grounding: figures with no source get one 'cite or drop' retry; sourced and calculated figures pass; missing data is recorded", async () => {
+  const a = customAgent(ws, ellie, ["web-research"]);
+  const room = rt.privateRoomFor(ellie, a);
+  // Made up: nothing in this conversation says $250 or 6.1%
+  const seen = scriptModel({ text: "NVDA is at $250.10, up 6.1% today." }, call("data.missing", { need: "live NVDA price", category: "stocks" }), { text: "I can't check live prices yet — connect a market data source and I'll track it." });
+  await say(room.id, ellie, "how's nvidia doing today");
+  expect(events("UNGROUNDED_FIGURES")[0].data.figures).toEqual(["$250.10", "6.1%"]);
+  expect(seen[1].messages.some((m) => m.content.includes("don't appear in any tool result"))).toBe(true);
+  expect(events("DATA_GAP")[0].data).toMatchObject({ need: "live NVDA price", category: "stocks" });
+  expect(lastFrom(room.id, a.id)).toMatch(/can't check live prices/);
+  // Sourced from a tool result (within rounding), or given by the person: no retry
+  expect(rt.ungroundedFigures({ id: "none", room_id: room.id, objective: "I paid $240 for the cabin", agent_id: a.id }, "You paid $240, so $60 each... wait")).toEqual(["$60"]);
+  expect(rt.ungroundedFigures({ id: "none", room_id: room.id, objective: "I paid $240 for the cabin", agent_id: a.id }, "Got it: $240 for the cabin.")).toEqual([]);
+});

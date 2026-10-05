@@ -8,7 +8,7 @@ import { generate } from "./model";
 import { runSignature, maybeSuggestSkill, PLANS } from "./templates";
 import { buildContext } from "./context";
 import { executeToolCall, TOOLS, getTool } from "./tools";
-import { extractAfterTurn } from "./memory";
+import { extractAfterTurn, retrieve } from "./memory";
 import { structured } from "./model";
 import * as channels from "./channels";
 import * as intake from "./intake";
@@ -346,6 +346,16 @@ async function stepRunInner(runId: string) {
       }
       res.text = res.text.replace(TOOL_MARKUP_BLOCK, "").trim() || "I found results but couldn't finish writing them up — ask me again and I'll send them.";
     }
+    if (!res.toolCalls.length && !spent.groundRetry) {
+      // Figures (prices, %, amounts) that appear nowhere in this conversation's tool results, messages or memory: cite or drop.
+      const loose = ungroundedFigures(run, res.text);
+      if (loose.length) {
+        patchJson("runs", "spent", run.id, (x) => ({ ...x, groundRetry: 1 }));
+        emit("UNGROUNDED_FIGURES", { ...base, data: { figures: loose, model: res.model } });
+        appendStep(run.id, "signal", { text: `[CHECK] These figures don't appear in any tool result, message or memory here: ${loose.join(", ")}. Get them with a tool and cite the source, or remove them. If you calculated one from sourced numbers, show the calculation in a few words. If you can't source something the person needs, say so plainly and call data.missing.` });
+        continue;
+      }
+    }
     if (!res.toolCalls.length) {
       // A reply that promises or claims an action with nothing behind it ("I'll book…", "reply approve") gets one corrective
       // retry on a stronger model — live models do this, and it leaves the user waiting on an approval that doesn't exist.
@@ -404,6 +414,21 @@ function wrapUpNudge(runId: string) {
     patchJson("runs", "spent", runId, (x) => ({ ...x, wrapUpNoted: 1 }));
     appendStep(runId, "signal", { text: "[CHECK] You've gathered plenty. Stop researching and answer now with the best of what you have — concrete options with links — and say plainly what's unverified (e.g. live prices)." });
   }
+}
+
+/** Money, percentages and precise decimals in a reply that can't be found (±1%) among numbers the run actually saw. */
+const FIGURE = /(?:[$€£¥]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmMbB](?:n|illion)?)?)|(?:\d[\d,]*(?:\.\d+)?\s?%)|(?:\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b)|(?:\b\d+\.\d{2,}\b)/g;
+const num = (x: string) => { const n = parseFloat(x.replace(/[^\d.]/g, "")); const mult = /b(n|illion)?\b/i.test(x) ? 1e9 : /m(illion)?\b/i.test(x) && !/%/.test(x) ? 1e6 : /k\b/i.test(x) ? 1e3 : 1; return n * mult; };
+export function ungroundedFigures(run: any, text: string): string[] {
+  const figs = [...new Set(String(text).match(FIGURE) ?? [])].filter((f) => num(f) > 0);
+  if (!figs.length) return [];
+  const seen = [
+    ...all<any>("select data from run_steps where run_id=? and type='tool_result'", run.id).map((r) => J(r.data, {}).content ?? ""),
+    ...all<any>("select data from events where room_id=? and type='message' order by seq desc limit 40", run.room_id).map((r) => J(r.data, {}).text ?? ""),
+    String(run.objective ?? ""), ...retrieve(one<any>("select * from rooms where id=?", run.room_id), run.agent_id, run.objective, run.requested_by, 20).map((m: any) => m.text),
+  ].join(" ");
+  const known = (seen.match(/\d[\d,]*(?:\.\d+)?/g) ?? []).map((x) => parseFloat(x.replace(/,/g, ""))).filter((n) => n > 0);
+  return figs.filter((f) => { const v = num(f); return !known.some((k) => Math.abs(k - v) <= Math.max(0.011 * Math.abs(k), 0.006)); }).slice(0, 8);
 }
 
 // Tool-call syntax leaking into a text reply (DeepSeek DSML, Qwen/Hermes <tool_call>, Llama <function=…>, raw JSON tool_calls).

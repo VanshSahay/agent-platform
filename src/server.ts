@@ -125,6 +125,8 @@ function aiView(ws: string) {
 function agentView(a: any) {
   return {
     ...a, skills: J(a.skills, []), permissions: J(a.permissions, {}), onboarding: J(a.onboarding, {}), spec: J(a.spec, null),
+    // What people asked for that this agent couldn't source (data.missing), most requested first: the list of sources to add next.
+    data_gaps: all<any>("select json_extract(data, '$.need') need, json_extract(data, '$.category') category, count(*) n, max(ts) last from events where type='DATA_GAP' and actor=? group by 1, 2 order by n desc, last desc limit 8", a.id),
     permission_table: tpl.permissionTable(J(a.skills, []), J(a.permissions, {}), a.id),
     channels: all<any>("select id, platform, address, config from channel_identities where agent_id=?", a.id).map((c) => ({ ...c, config: J(c.config, {}), webhook_url: `${pub()}/v1/webhooks/${c.platform}/${c.id}` })),
     connections_needed: tpl.connectionsNeeded(J(a.skills, [])),

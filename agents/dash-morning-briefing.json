@@ -3,7 +3,7 @@
   "slug": "dash-morning-briefing",
   "version": "1.0.0",
   "publisher": "platform",
-  "avatar": "☀️",
+  "avatar": "\u2600\ufe0f",
   "category": "personal",
   "title": "Morning Briefer",
   "tagline": "Your day in one text: calendar, plus the news you follow.",
@@ -14,7 +14,9 @@
     "calendar",
     "monitor-topic",
     "web-research",
-    "reminders"
+    "reminders",
+    "market-data",
+    "weather"
   ],
   "permissions": {},
   "model_profile": "standard",

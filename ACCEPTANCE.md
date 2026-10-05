@@ -90,6 +90,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-R11 | A reply that promises or claims a side effect ("I'll book…", "reply approve") with no successful write and no pending approval behind it is sent back once, on the escalation tier, to call the tool; the false instruction never reaches the user. | §35.3 |
 | AC-R12 | With `JEV_API_KEY` set, "relevant" group participation and the unbacked-claim check are judged by JEV (typed yes/no probability, threshold 0.5); when JEV errors or is unset, the previous model/keyword and regex checks still apply. | §35.3 |
 | AC-R13 | A reply containing raw tool-call markup is never sent: one retry on a stronger model, else the markup is stripped. | §7 |
+| AC-R14 | Grounding: money, percentages and precise figures in a reply must appear (±1%) in this conversation's tool results, messages or memory; otherwise one 'cite or drop' retry. Agents record data they can't source (data.missing) and the agent page lists those gaps, most requested first. | §7 |
 | AC-IM1 | Replies are shaped per app: plain text on iMessage/SMS/Telegram (no markdown symbols, tables become lines, links readable), WhatsApp `*bold*`, Slack mrkdwn; web unchanged. Long replies are split at paragraph/sentence boundaries into normal-sized texts. | §6 |
 | AC-IM2 | People known only by phone number appear as "someone (…1234)" (never the full number) until they say their name ("I'm Maria"); the agent is told to ask once when it needs a name. | §20.2 |
 | AC-IM3 | A 👍/❤️/‼️ tapback on an approval or plan message counts as its first button (approve/go), 👎 as the second; other tapbacks do nothing, and only people allowed to decide can. | §3.7, §6 |
@@ -188,6 +189,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-SP1 | A one-line request becomes an explicit Agent Spec the user confirms: a plain-words restatement ("you", not "me"), concrete jobs, gap questions only where the request is silent, boundaries (approvals, never moves money), success signs and rehearsal scenarios. | §3.4 |
 | AC-SP2 | Routines stated in plain words ("every Friday at 10am", "weekdays at 7pm", "every morning") become recurring schedules, including weekly ones. | §37 |
 | AC-SP3 | The confirmed spec and answers compile into the agent's standing instructions and schedules; rehearsal runs every scenario in the sandbox (nothing reaches a real channel) and grades each one before the agent is added to a chat. | §23 |
+| AC-SP4 | The agent spec lists its data needs, each resolved to a real source (built-in tool, a connected account, a website, cited web search, ask the people once, or none = say so); only the catalog can call something built in, and built-in sources add their skill. Rehearsal samples contain no invented facts. | §3 |
 
 ## Email & delivery reliability
 

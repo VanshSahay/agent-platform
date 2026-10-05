@@ -11,6 +11,8 @@ export { PLANS } from "./billing"; // plan limits live with billing (no import c
 
 export interface Skill { id: string; name: string; tools: string[]; procedure: string }
 export const SKILLS: Record<string, Skill> = Object.fromEntries(([
+  ["market-data", "Market data", ["market.quote", "market.history"], "Every price, move or percentage comes from market.quote/market.history in this conversation: give the number, the change and the 'as of' time, and say when a source is delayed. If a ticker fails, say so — never estimate or recall prices from memory. For 'why did it move', search the news and cite it; if nothing explains it, say so."],
+  ["weather", "Weather", ["weather.forecast"], "Use weather.forecast for any weather question or plan that depends on it; give highs/lows and rain chance with the place and dates."],
   ["web-research", "Web research", ["web.search", "web.fetch"], "Search, open the best sources, and answer with cited URLs. Prefer primary sources. Say what you could not verify."],
   ["source-verification", "Source verification", ["web.fetch"], "Before stating a fact as current, open the source and check its date."],
   ["monitor-topic", "Topic monitoring", ["web.search", "web.fetch", "reminder.schedule", "memory.remember"], "For standing topics, schedule a recurring check, compare against what you remember, and only report meaningful changes. Save the new state to room memory."],
@@ -40,7 +42,7 @@ export const SKILLS: Record<string, Skill> = Object.fromEntries(([
   ["credential-followup", "Credential follow-up", ["task.create", "task.update", "email.draft", "email.send", "wait.for_reply"], "For each missing document, one task, one owner. Outreach is gated by approval and never to candidates a human has claimed."],
 ] as const).map(([sid, name, tools, procedure]) => [sid, { id: sid, name, tools: [...tools], procedure }]));
 
-export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update", "files.read", "settings.timezone"];
+export const CORE_TOOLS = ["memory.remember", "task.create", "task.update", "plan.update", "files.read", "settings.timezone", "data.missing"];
 
 export function agentTools(agent: { skills: string | string[]; id?: string }): Set<string> {
   const skills: string[] = typeof agent.skills === "string" ? J(agent.skills, []) : agent.skills;
@@ -142,6 +144,8 @@ const ROLE_RULES: [RegExp, string, string, string[]][] = [
   [/\b(email|inbox|calendar|meeting|assistant|schedul|remind)/i, "Ava", "Executive Assistant", []],
 ];
 const KEYWORD_SKILLS: [RegExp, string[]][] = [
+  [/\b(stocks?|portfolio|tickers?|shares|equit(y|ies)|etfs?|crypto|bitcoin|btc|eth(ereum)?|nasdaq|s&p|dow|market|investing|investments?|trading)\b/i, ["market-data", "web-research", "monitor-topic"]],
+  [/\b(weather|forecast|rain|snow|temperature|sunny)\b/i, ["weather"]],
   [/\b(email|inbox|mail)/i, ["email-triage", "email-drafting"]],
   [/\b(calendar|schedul|meeting)/i, ["calendar", "meeting-prep"]],
   [/\b(remind|follow.?up|haven'?t replied|nudge)/i, ["follow-up-tracking", "reminders"]],

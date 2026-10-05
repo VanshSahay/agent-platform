@@ -37,7 +37,7 @@ export function formatFor(platform: string, t: string) {
     .replace(/^\s*\|(.+)\|\s*$/gm, (_, row) => row.split("|").map((c: string) => c.trim()).filter(Boolean).join(" · ")) // table rows
     .replace(/^#{1,6}\s+(.+)$/gm, bold)
     .replace(/\*\*(.+?)\*\*/g, bold).replace(/__(.+?)__/g, "$1").replace(/`([^`\n]+)`/g, "$1")
-    .replace(/\[?\[([^\]]+)\]\((https?:[^)\s]+)\)\]?/g, (_, label, url) => (/^(source|link|here|\d+)$/i.test(label.trim()) ? url : `${label} (${url})`))
+    .replace(/\[?\[([^\]]+)\]\((https?:[^)\s]+)\)\]?/g, (_, label, url) => (/^(source|link|here|\d+)$/i.test(label.trim()) || url.toLowerCase().includes(label.trim().toLowerCase().replace(/^www\./, "")) ? url : `${label} (${url})`))
     .replace(/^(\s*)[-*]\s+/gm, "$1• ")
     .replace(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/gm, "")
     .replace(/\n{3,}/g, "\n\n").trim();
