@@ -1,23 +1,63 @@
 // Channel layer (plan §5, §6, §20). External chats are interfaces into a Room, never the source of truth.
 // Webhook -> verify -> dedupe -> persist -> 200. A worker later normalizes, resolves identities/rooms and signals the runtime.
-import { createHmac, timingSafeEqual, randomInt } from "node:crypto";
-import { all, one, exec, id, now, S, J, seal, unseal, emit } from "./db";
+import { createHmac, timingSafeEqual, randomInt, randomBytes } from "node:crypto";
+import { all, one, exec, id, now, S, J, seal, unseal, emit, recordUsage, patchJson } from "./db";
 import * as rt from "./runtime";
 import * as intake from "./intake";
 import * as tpl from "./templates";
+import { photonEnabled, photonSend, photonTyping } from "./photon";
+import * as media from "./media";
 
 export type Platform = "web" | "telegram" | "slack" | "whatsapp" | "email" | "imessage" | "phone";
 export interface InboundEvent {
   provider: Platform; providerEventId: string; conversationId: string; isGroup: boolean;
-  senderId: string; senderName?: string; type: "message" | "button_clicked" | "email_received";
-  text: string; data?: string; subject?: string; to?: string[];
+  senderId: string; senderName?: string; type: "message" | "button_clicked" | "email_received" | "email_undeliverable";
+  text: string; data?: string; subject?: string; to?: string[]; emailId?: string;
+  attachments?: string[];                          // stored file ids (photos, voice notes, files)
+  reaction?: { emoji: string; targetId: string };  // tapback on one of our messages
 }
 interface Outbound { text: string; agentName?: string; agentAlias?: string; buttons?: { label: string; data: string }[] }
 interface Adapter {
   verify(raw: string, h: Headers, secret: any, url: string): boolean;
   parse(raw: string, ident: any): InboundEvent[];
   send(ident: any, secret: any, ep: any, msg: Outbound, idemKey: string): Promise<string | undefined>;
+  typing?(ident: any, secret: any, ep: any): Promise<void>;
 }
+
+// ---------------- outbound text shaping ----------------
+// Models write markdown; chat apps don't render it. iMessage/SMS get plain text, WhatsApp its own *bold*, Slack mrkdwn.
+const PLAIN = ["imessage", "whatsapp", "telegram", "phone"];
+export function formatFor(platform: string, t: string) {
+  if (platform === "slack") return t.replace(/\*\*(.+?)\*\*/g, "*$1*").replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, "<$2|$1>").replace(/^#{1,6}\s+(.+)$/gm, "*$1*");
+  if (!PLAIN.includes(platform)) return t; // web renders markdown; email has its own formatting
+  const bold = platform === "whatsapp" ? "*$1*" : "$1";
+  return t
+    .replace(/```[\w-]*\n?([\s\S]*?)```/g, "$1")
+    .replace(/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/gm, "")                 // table separator rows
+    .replace(/^\s*\|(.+)\|\s*$/gm, (_, row) => row.split("|").map((c: string) => c.trim()).filter(Boolean).join(" · ")) // table rows
+    .replace(/^#{1,6}\s+(.+)$/gm, bold)
+    .replace(/\*\*(.+?)\*\*/g, bold).replace(/__(.+?)__/g, "$1").replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\[?\[([^\]]+)\]\((https?:[^)\s]+)\)\]?/g, (_, label, url) => (/^(source|link|here|\d+)$/i.test(label.trim()) ? url : `${label} (${url})`))
+    .replace(/^(\s*)[-*]\s+/gm, "$1• ")
+    .replace(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n").trim();
+}
+/** Long replies become several normal-sized texts, split at paragraph, then line, then sentence boundaries. */
+export function splitMessage(t: string, max: number) {
+  if (t.length <= max) return [t];
+  const out: string[] = [];
+  let cur = "";
+  const pieces = t.split(/(\n\n)/).flatMap((p) => (p.length > max ? p.split(/(?<=\n)|(?<=[.!?] )/) : [p]));
+  for (const piece of pieces) {
+    if ((cur + piece).length > max && cur.trim()) { out.push(cur.trim()); cur = ""; }
+    for (let x = piece; x.length; x = x.slice(max)) { if (x.length > max) out.push(x.slice(0, max)); else { cur += x; break; } } // a single run-on chunk: hard cut
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+const SPLIT_AT: Record<string, number> = { imessage: 900, whatsapp: 1200, telegram: 1500, phone: 900 };
+/** A shared line keeps one route per (conversation, agent); extra agents in the same 1:1 thread use `conv~agentId`. */
+const baseConv = (c: string) => c.replace(/~agt_[\w-]+$/, "");
 
 const hmac = (alg: string, key: string | Buffer, data: string, enc: "hex" | "base64" = "hex") => createHmac(alg, key).update(data).digest(enc);
 const safeEq = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
@@ -51,6 +91,7 @@ export const ADAPTERS: Record<string, Adapter> = {
         reply_markup: b.length ? { inline_keyboard: [b.map((x) => ({ text: x.label, callback_data: x.data }))] } : undefined });
       return String(r.result?.message_id ?? "");
     },
+    async typing(_i, s, ep) { await post(`https://api.telegram.org/bot${s.bot_token}/sendChatAction`, { chat_id: ep.external_conversation_id, action: "typing" }); },
   },
 
   slack: {
@@ -117,18 +158,27 @@ export const ADAPTERS: Record<string, Adapter> = {
       return sig.split(" ").some((p) => safeEq(p.split(",")[1] ?? "", expected));
     },
     parse(raw) {
-      const e = JSON.parse(raw);
+      const e = JSON.parse(raw), d = e.data ?? {};
+      const addrs = (xs: any) => [].concat(xs ?? []).map((x: string) => (x.match(/<([^>]+)>/)?.[1] ?? x).toLowerCase());
+      // Bounces/complaints: stop writing to that address instead of retrying into a wall.
+      if (e.type === "email.bounced" || e.type === "email.complained")
+        return [{ provider: "email", providerEventId: `${d.email_id ?? d.id}:${e.type}`, conversationId: "", isGroup: false, senderId: "", type: "email_undeliverable", text: e.type, to: addrs(d.to) }];
       if (e.type !== "email.received") return [];
-      const d = e.data, from = (d.from.match(/<([^>]+)>/)?.[1] ?? d.from).toLowerCase();
-      const body = String(d.text ?? (d.html ?? "").replace(/<[^>]+>/g, " ")).split(/\nOn .+wrote:\n|\n>/)[0].trim();
+      const from = (d.from.match(/<([^>]+)>/)?.[1] ?? d.from).toLowerCase();
+      const body = emailText(d.text, d.html);
       return [{ provider: "email", providerEventId: d.email_id ?? d.id, conversationId: from, isGroup: false, senderId: from,
-        senderName: d.from.replace(/<.*>/, "").trim() || from, type: "email_received", text: body || d.subject, subject: d.subject,
-        to: [].concat(d.to ?? []).map((x: string) => (x.match(/<([^>]+)>/)?.[1] ?? x).toLowerCase()) }];
+        senderName: d.from.replace(/<.*>/, "").trim() || from, type: "email_received", text: body || d.subject, subject: d.subject, to: addrs(d.to),
+        ...(d.text == null && d.html == null ? { emailId: d.email_id ?? d.id } : {}) }]; // webhook carried metadata only: fetch the body before processing
     },
     async send(i, s, ep, m, idem) {
       const cfg = J(ep.config, {});
       const from = i.agent_id ? i.address : `${(m as any).agentAlias ?? "agent"}@${i.address}`;
+      // Tokenised Reply-To: a reply finds this exact conversation even if it's forwarded or sent from another address.
+      let token = ep.reply_token;
+      if (!token && ep.id) { token = randomBytes(10).toString("hex"); exec("update room_endpoints set reply_token=? where id=?", token, ep.id); }
+      const [local, domain] = from.split("@");
       const r: any = await post("https://api.resend.com/emails", { from: `${m.agentName} <${from}>`, to: [String(ep.external_conversation_id).split("|")[0]],
+        ...(token ? { reply_to: [`${local}+r_${token}@${domain}`] } : {}),
         subject: cfg.subject ? `Re: ${cfg.subject.replace(/^re:\s*/i, "")}` : `Message from ${m.agentName}`,
         text: m.buttons?.length ? `${m.text}\n\nReply with: ${m.buttons.map((b) => b.label.toLowerCase()).join(" / ")}` : m.text }, { authorization: `Bearer ${s.resend_api_key}`, "idempotency-key": idem });
       return r.id;
@@ -144,13 +194,25 @@ export const ADAPTERS: Record<string, Adapter> = {
     },
     parse(raw) {
       const m = JSON.parse(raw);
-      if (!m.text || m.from_me) return [];
-      return [{ provider: "imessage", providerEventId: m.id, conversationId: m.chat_id, isGroup: !!m.is_group, senderId: m.sender.handle, senderName: m.sender.name, type: "message", text: m.text }];
+      if (m.from_me) return [];
+      // Bridge payload: text, and optionally attachments [{name, mime_type, data_base64}] or a tapback {emoji, target_id}.
+      const attachments = (m.attachments ?? []).filter((a: any) => a?.data_base64).map((a: any) => media.storeMedia({ kind: "file", name: a.name ?? "attachment", mime: a.mime_type ?? "application/octet-stream", data: new Uint8Array(Buffer.from(a.data_base64, "base64")) }));
+      const reaction = m.reaction?.target_id ? { emoji: String(m.reaction.emoji ?? ""), targetId: String(m.reaction.target_id) } : undefined;
+      if (!m.text && !attachments.length && !reaction) return [];
+      return [{ provider: "imessage", providerEventId: m.id, conversationId: m.chat_id, isGroup: !!m.is_group, senderId: m.sender.handle, senderName: m.sender.name,
+        type: "message", text: m.text ?? "", ...(attachments.length ? { attachments } : {}), ...(reaction ? { reaction } : {}) }];
     },
-    async send(_i, s, ep, m) {
-      // iMessage has no buttons; text replies ("approve", "go") are parsed
-      const r: any = await post(`${s.api_url}/messages`, { chat_id: ep.external_conversation_id, text: m.text }, { authorization: `Bearer ${s.api_key}` });
+    async send(i, s, ep, m) {
+      // iMessage has no buttons: the text says how to answer, and a 👍/👎 tapback on the message works too (see processEvent).
+      const b = buttons(m);
+      const text = b.length >= 2 ? `${m.text}\n(👍 or "${b[0].label.toLowerCase()}" · 👎 or "${b[1].label.toLowerCase()}")` : m.text;
+      if (!i.agent_id && photonEnabled()) return photonSend(ep.external_conversation_id, text);
+      const r: any = await post(`${s.api_url}/messages`, { chat_id: ep.external_conversation_id, text }, { authorization: `Bearer ${s.api_key}` });
       return r.id;
+    },
+    async typing(i, s, ep) {
+      if (!i.agent_id && photonEnabled()) return photonTyping(ep.external_conversation_id);
+      await post(`${s.api_url}/typing`, { chat_id: ep.external_conversation_id }, { authorization: `Bearer ${s.api_key}` }).catch(() => {}); // optional on bridges
     },
   },
 
@@ -164,6 +226,12 @@ export const ADAPTERS: Record<string, Adapter> = {
     send: async () => undefined, // replies are spoken inline
   },
 };
+
+/** Plain text of an email: prefer text, else strip HTML (HTML-only replies must not come out empty), drop the quoted history. */
+export function emailText(text?: string | null, html?: string | null) {
+  const t = text ?? (html ?? "").replace(/<blockquote[\s\S]*?<\/blockquote>|<div class="gmail_quote"[\s\S]*$/gi, "").replace(/<(br|\/p|\/div)[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  return String(t).split(/\nOn .+wrote:\n|\n>/)[0].replace(/[ \t]+/g, " ").trim();
+}
 
 // ---------------- channel identities ----------------
 export function addChannelIdentity(agentId: string, platform: Platform, address: string, secret: any, config: any = {}) {
@@ -234,6 +302,13 @@ function redeemDeploy(code: string, e: InboundEvent, ident: any): { ok: true; ag
   }
   linkIdentityTo(e.provider, e.senderId, c.user_id, null);
   const room = rt.privateRoomFor(c.user_id, agent);
+  if (ep && ep.agent_id && ep.agent_id !== agent.id && one("select 1 from agents where id=? and status!='deleted'", ep.agent_id)) {
+    // This thread already talks to another agent: add this one alongside (its own route) and make it the current one.
+    const mine = threadEps(ident.id, e.conversationId).find((x) => x.agent_id === agent.id)
+      ?? attachEndpoint(room.id, e.provider, `${e.conversationId}~${agent.id}`, ident.id, false, agent.id);
+    patchJson("room_endpoints", "config", ep.id, (cfg) => ({ ...cfg, current: agent.id }));
+    return { ok: true, agent, ep: mine, group: false };
+  }
   if (ep) exec("update room_endpoints set room_id=?, agent_id=? where id=?", room.id, agent.id, ep.id);
   else ep = attachEndpoint(room.id, e.provider, e.conversationId, ident.id, false, agent.id);
   return { ok: true, agent, ep: one<any>("select * from room_endpoints where id=?", ep.id), group: false };
@@ -281,7 +356,14 @@ export async function handleSlackApp(req: Request): Promise<Response> {
 export async function processInbound() {
   let n = 0;
   for (const row of all<any>("select * from inbound_events where status='queued' order by received_at limit 100")) {
-    try { await processEvent(J(row.raw), identity(row.channel_identity_id)); exec("update inbound_events set status='processed' where id=?", row.id); }
+    try {
+      const e: InboundEvent = J(row.raw), ident = identity(row.channel_identity_id);
+      if (e.emailId && ident) { // Resend's webhook may carry metadata only: fetch the message (stored event first, so nothing is lost if this fails)
+        const r: any = await (await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(e.emailId)}`, { headers: { authorization: `Bearer ${unseal<any>(ident.secret_enc)?.resend_api_key}` } })).json();
+        e.text = emailText(r.text, r.html) || e.text;
+      }
+      await processEvent(e, ident); exec("update inbound_events set status='processed' where id=?", row.id);
+    }
     catch (e: any) { exec("update inbound_events set status='error', error=? where id=?", e.message, row.id); console.error("[inbound]", e); }
     n++;
   }
@@ -293,7 +375,9 @@ export function resolveSender(platform: string, externalId: string, displayName?
   const x = one<any>("select * from external_identities where platform=? and external_user_id=?", platform, externalId);
   if (x) return x.user_id as string;
   const uid = id("usr");
-  exec("insert into users (id, name, guest, created_at) values (?,?,1,?)", uid, displayName || `${platform} ${externalId.slice(-4)}`, now());
+  // Phone-number "names" (all iMessage gives us) read badly in a group: show "someone (…1234)" until they tell us.
+  const name = displayName && !/^[+\d\s()\-.]{7,}$|@/.test(displayName) ? displayName : `someone (…${externalId.replace(/\D/g, "").slice(-4) || externalId.slice(-4)})`;
+  exec("insert into users (id, name, guest, created_at) values (?,?,1,?)", uid, name, now());
   exec("insert into external_identities (platform, external_user_id, user_id, verified, display_name) values (?,?,?,0,?)", platform, externalId, uid, displayName ?? null);
   return uid;
 }
@@ -321,12 +405,21 @@ const isMember = (ws: string, u: string) => !!one("select 1 from memberships whe
 
 async function processEvent(e: InboundEvent, ident: any) {
   if (!ident) return;
+  if (e.type === "email_undeliverable") {
+    for (const to of e.to ?? []) exec("update room_endpoints set undeliverable=1 where platform='email' and channel_identity_id=? and (external_conversation_id=? or external_conversation_id like ?)", ident.id, to, `${to}|%`);
+    emit("EMAIL_UNDELIVERABLE", { data: { to: e.to, reason: e.text } }); return;
+  }
+  const token = e.provider === "email" ? (e.to ?? []).map((t) => t.match(/\+r_([a-f0-9]{16,})@/i)?.[1]).find(Boolean) : undefined;
+  const byToken = token ? one<any>("select * from room_endpoints where reply_token=? and channel_identity_id=?", token, ident.id) : null;
+  if (byToken) e.conversationId = byToken.external_conversation_id; // the reply goes back to the conversation that sent it
   // Shared email: the recipient alias picks the agent, and each (sender, alias) pair is its own conversation.
-  const alias = !ident.agent_id && e.provider === "email" ? one<any>("select id, email_alias from agents where email_alias in (" + (e.to ?? []).map(() => "?").join(",") + ") and status!='deleted'", ...(e.to ?? []).map((t) => t.split("@")[0])) : null;
-  if (!ident.agent_id && e.provider === "email") { if (!alias) return; e.conversationId = `${e.senderId}|${alias.email_alias}`; }
+  const alias = !ident.agent_id && e.provider === "email" ? one<any>("select id, email_alias from agents where email_alias in (" + (e.to ?? []).map(() => "?").join(",") + ") and status!='deleted'", ...(e.to ?? []).map((t) => t.split("@")[0].split("+")[0])) : null;
+  if (!ident.agent_id && e.provider === "email" && !byToken) { if (!alias) return; e.conversationId = `${e.senderId}|${alias.email_alias}`; }
   const existing = one<any>("select * from room_endpoints where platform=? and channel_identity_id=? and external_conversation_id=?", e.provider, ident.id, e.conversationId);
+  // A shared line's 1:1 thread can hold several of the person's agents: "@Ava …" switches (and sticks), "agents" lists them.
+  const dm = !ident.agent_id && existing && !e.isGroup && e.provider !== "email" && e.type === "message" ? dmThread(e, ident, existing) : null;
   // Shared lines carry no agent: the conversation's binding (or the email recipient alias) decides.
-  const agentId = ident.agent_id ?? alias?.id ?? existing?.agent_id ?? (existing ? rt.roomAgents(existing.room_id)[0]?.id : null);
+  const agentId = ident.agent_id ?? alias?.id ?? dm?.ep.agent_id ?? existing?.agent_id ?? (existing ? rt.roomAgents(existing.room_id)[0]?.id : null);
   const senderId = resolveSender(e.provider, e.senderId, e.senderName);
   const raw = (text: string) => ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), existing ?? { external_conversation_id: e.conversationId, is_group: e.isGroup ? 1 : 0, config: "{}" },
     { text, agentName: one<any>("select name from agents where id=?", agentId)?.name ?? "Agents" }, id("idem"));
@@ -353,7 +446,7 @@ async function processEvent(e: InboundEvent, ident: any) {
   }
   const agent = one<any>("select * from agents where id=?", agentId);
   if (!ident.agent_id && e.provider === "slack" && J(ident.config, {}).bot_user_id) e.text = e.text.replaceAll(`<@${J(ident.config, {}).bot_user_id}>`, `@${agent.name}`);
-  const reply = async (text: string) => { const ep = resolveRoom(e, ident, resolveSender(e.provider, e.senderId), agentId); await ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), ep, { text, agentName: agent.name }, id("idem")); };
+  const reply = async (text: string) => { const ep = dm?.ep ?? resolveRoom(e, ident, resolveSender(e.provider, e.senderId), agentId); await ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), { ...ep, external_conversation_id: baseConv(ep.external_conversation_id) }, { text: formatFor(e.provider, text), agentName: agent.name }, id("idem")); };
 
   const link = e.text.trim().match(/^link (\d+)$/i);
   if (link) {
@@ -363,6 +456,21 @@ async function processEvent(e: InboundEvent, ident: any) {
     if (linkIdentity(e.provider, e.senderId, link[1], ident)) return reply(`Linked. I'll recognize you here from now on.`);
     emit("LINK_FAILED", { data: { sender: `${e.provider}:${e.senderId}` } });
     return reply(`That code is invalid or expired.`);
+  }
+
+  if (dm?.note) return reply(dm.note);
+  if (dm?.switched) return reply(`Hi, it's ${agent.name}. What can I do for you?`);
+
+  // Tapback on one of our messages: 👍/❤️/‼️ = the message's first button (approve, go), 👎 = the second (reject, cancel).
+  if (e.reaction) {
+    const o = one<any>("select o.* from outbox o join room_endpoints r on r.id=o.endpoint_id where o.external_id=? and r.channel_identity_id=?", e.reaction.targetId, ident.id);
+    const btns = o ? J(one<any>("select data from events where id=?", o.event_id)?.data, {}).buttons ?? [] : [];
+    const pick = /^(👍|❤️|♥️|‼️|like|love|emphasi[sz]e|thumbs_?up)$/i.test(e.reaction.emoji) ? btns[0] : /^(👎|dislike|thumbs_?down)$/i.test(e.reaction.emoji) ? btns[1] : null;
+    if (!pick) return; // other tapbacks (😂, ❓) aren't messages to the agent
+    const r = await pressButton(pick.data, senderId, o.room_id, o.endpoint_id);
+    if ("error" in r) return reply(r.error!);
+    if (r.say) return reply(r.say);
+    return;
   }
 
   if (e.type === "button_clicked") {
@@ -379,11 +487,63 @@ async function processEvent(e: InboundEvent, ident: any) {
     if (agentId && rt.signalEvent(`email:${ws}:${e.senderId}`, `Email from ${e.senderName} <${e.senderId}> — ${e.subject ?? ""}\n<untrusted origin="EMAIL">${e.text}</untrusted>`)) return;
   }
 
-  const ep = resolveRoom(e, ident, senderId, agentId);
-  if (e.subject) exec("update room_endpoints set config=json_set(config, '$.subject', ?) where id=?", e.subject, ep.id);
+  const ep = dm?.ep ?? resolveRoom(e, ident, senderId, agentId);
+  if (e.subject) patchJson("room_endpoints", "config", ep.id, (c) => ({ ...c, subject: e.subject }));
   const room = one<any>("select * from rooms where id=?", ep.room_id);
+  learnName(senderId, e.text);
+  if (e.attachments?.length) { // photos described, voice notes transcribed, files read — then it's an ordinary message
+    const said: string[] = [];
+    for (const f of e.attachments) said.push(await media.describe(f, { workspaceId: room.workspace_id, roomId: room.id, userId: senderId, sender: rt.nameOf(senderId) ?? "someone" }));
+    e.text = [e.text, ...said].filter(Boolean).join("\n");
+  }
+  if (!e.text.trim()) return;
   await rt.ingestMessage({ roomId: ep.room_id, senderId, text: e.text, platform: e.provider, endpointId: ep.id, externalId: e.providerEventId,
     untrusted: !isMember(room.workspace_id, senderId) }); // external contacts are untrusted (plan §21.1)
+}
+
+const threadEps = (identId: string, conv: string) =>
+  all<any>("select * from room_endpoints where channel_identity_id=? and (external_conversation_id=? or external_conversation_id like ?) order by last_active_at", identId, conv, `${conv}~%`);
+function dmThread(e: InboundEvent, ident: any, primary: any): { ep: any; note?: string; switched?: boolean } {
+  const eps = threadEps(ident.id, primary.external_conversation_id);
+  const current = eps.find((x) => x.agent_id === J(primary.config, {}).current) ?? primary;
+  const user = one<any>("select x.user_id from external_identities x join users u on u.id=x.user_id where x.platform=? and x.external_user_id=? and u.guest=0", e.provider, e.senderId)?.user_id;
+  if (!user) return { ep: current };
+  const mine = all<any>("select a.* from agents a join memberships m on m.workspace_id=a.workspace_id where m.user_id=? and a.status='active' order by a.created_at", user);
+  const t = e.text.trim();
+  if (/^\/?(agents|who'?s here\??)$/i.test(t)) {
+    const names = mine.map((a) => (a.id === current.agent_id ? `${a.name} (talking now)` : a.name));
+    return { ep: current, note: `Your agents: ${names.join(", ")}. Start a message with @Name to talk to another one — I'll stay with them until you switch.` };
+  }
+  const m = t.match(/^(?:switch to|talk to)\s+@?([\w-]+)/i) ?? t.match(/^@([\w-]+)/) ?? t.match(/^([\w-]+)[,:]\s/);
+  const target = m ? mine.find((a) => a.name.toLowerCase() === m[1].toLowerCase()) : null;
+  if (!target || target.id === current.agent_id) return { ep: current };
+  let ep = eps.find((x) => x.agent_id === target.id);
+  if (!ep) ep = attachEndpoint(rt.privateRoomFor(user, target).id, e.provider, `${primary.external_conversation_id}~${target.id}`, ident.id, false, target.id);
+  patchJson("room_endpoints", "config", primary.id, (c) => ({ ...c, current: target.id }));
+  return { ep, switched: /^(switch to|talk to)\s+@?[\w-]+[.!]?$/i.test(t) };
+}
+
+// People on iMessage arrive as phone numbers. Pick up a name when they say it ("I'm Maria", "call me Maria", "this is Maria").
+// ponytail: pattern-based; a model pass could catch "Maria here" etc. if it matters.
+const NOT_NAMES = /^(not|good|fine|here|late|out|in|on|back|home|sorry|down|up|done|ok|okay|sure|so|just|the|sick|hungry|free|busy|tired|excited|ready|coming|leaving|going|running|almost|still|also|off|there|new|super|very|really|glad|happy|great|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|me|him|her|us|them|over|fair|true|real|cool|fun|worth|time|possible|easy|hard|amazing|awesome)$/i;
+export function learnName(userId: string, text: string) {
+  const u = one<any>("select name, guest from users where id=?", userId);
+  if (!u?.guest || !/^someone \(/.test(u.name)) return;
+  const m = text.match(/\b(?:[Mm]y name is|[Cc]all me|[Tt]his is|[Ii]t'?s)\s+([A-Z][a-z]{1,19})\b/) ?? text.match(/^(?:(?:[Hh]i|[Hh]ey|[Hh]ello)[,!]?\s+)?(?:I'?m|I am|i'?m)\s+([A-Z][a-z]{1,19})\b/);
+  if (!m || NOT_NAMES.test(m[1])) return;
+  exec("update users set name=? where id=?", m[1], userId);
+  exec("update external_identities set display_name=? where user_id=?", m[1], userId);
+}
+
+/** "…is typing" in the chat a run came from, while the agent works (at most every 4s per chat). */
+const typedAt = new Map<string, number>();
+export function typing(endpointId: string | null | undefined) {
+  const ep = endpointId ? one<any>("select * from room_endpoints where id=?", endpointId) : null;
+  const ad = ep && ADAPTERS[ep.platform];
+  if (!ep || !ad?.typing || !ep.channel_identity_id || Date.now() - (typedAt.get(ep.id) ?? 0) < 4000) return;
+  typedAt.set(ep.id, Date.now());
+  const ident = identity(ep.channel_identity_id);
+  if (ident) ad.typing(ident, unseal(ident.secret_enc), { ...ep, external_conversation_id: baseConv(ep.external_conversation_id) }).catch(() => {});
 }
 
 /** Every card button (web or channel) lands here; a button only acts on objects in the room it was pressed in. */
@@ -450,23 +610,37 @@ function linkIdentityTo(platform: string, externalId: string, userId: string, id
 export function enqueue(endpointId: string, roomId: string, eventId: string, payload: Outbound) {
   exec("insert into outbox (id, endpoint_id, room_id, event_id, payload, created_at) values (?,?,?,?,?,?)", id("out"), endpointId, roomId, eventId, S(payload), now());
 }
+export const SEND_CLAIM_STALE_MS = 10 * 60_000;
 export async function flushOutbox() {
   let n = 0;
+  // A claim that never got confirmed means we crashed mid-send: it may or may not have gone out. Never auto-resend (Castellum
+  // learned a timeout-driven resend double-sends); park it as 'unconfirmed' for a human to check.
+  exec("update outbox set status='unconfirmed', error='send was interrupted; check before resending' where status='sending' and claimed_at<?", now() - SEND_CLAIM_STALE_MS);
   for (const o of all<any>("select * from outbox where status='queued' and attempts<5 order by created_at limit 100")) {
     const ep = one<any>("select * from room_endpoints where id=?", o.endpoint_id);
     const ident = ep?.channel_identity_id ? identity(ep.channel_identity_id) : null;
     if (!ep || !ident || !ADAPTERS[ep.platform]) { exec("update outbox set status='skipped' where id=?", o.id); continue; }
+    if (ep.undeliverable) { exec("update outbox set status='skipped', error='address bounced or complained' where id=?", o.id); continue; }
+    // Claim before sending, confirm after: two separate writes, so an interruption is visible instead of silent.
+    if (!exec("update outbox set status='sending', claimed_at=? where id=? and status='queued'", now(), o.id).changes) continue;
     try {
       const p = J(o.payload);
-      if (!ident.agent_id) { // shared line: say who's talking in groups; email needs the agent's alias
+      p.text = formatFor(ep.platform, String(p.text ?? ""));
+      if (!ident.agent_id) { // shared line: say who's talking (groups, or a 1:1 thread with several agents); email needs the alias
         const a = one<any>("select name, email_alias from agents where name=? and workspace_id=(select workspace_id from rooms where id=?)", p.agentName, o.room_id);
-        if (ep.is_group && p.agentName) p.text = `${p.agentName}: ${p.text}`;
+        const shared1to1 = !ep.is_group && one<any>("select count(*) n from room_endpoints where channel_identity_id=? and (external_conversation_id=? or external_conversation_id like ?)",
+          ident.id, baseConv(ep.external_conversation_id), `${baseConv(ep.external_conversation_id)}~%`).n > 1;
+        if ((ep.is_group || shared1to1) && p.agentName && ep.platform !== "email") p.text = `${p.agentName}: ${p.text}`;
         p.agentAlias = a?.email_alias;
       }
-      const ext = await ADAPTERS[ep.platform].send(ident, unseal(ident.secret_enc), ep, p, o.id);
+      const target = { ...ep, external_conversation_id: baseConv(ep.external_conversation_id) };
+      const parts = SPLIT_AT[ep.platform] ? splitMessage(p.text, SPLIT_AT[ep.platform]) : [p.text];
+      let ext: string | undefined;
+      for (const [i, text] of parts.entries()) // buttons ride on the last part; the stored id is the last part's (tapbacks target it)
+        ext = await ADAPTERS[ep.platform].send(ident, unseal(ident.secret_enc), target, { ...p, text, buttons: i === parts.length - 1 ? p.buttons : undefined }, parts.length > 1 ? `${o.id}:${i}` : o.id);
       exec("update outbox set status='sent', external_id=?, attempts=attempts+1 where id=?", ext ?? null, o.id);
-      exec("update events set data=json_set(data, '$.delivery', json_array(json_object('platform', ?, 'external_id', ?))) where id=?", ep.platform, ext ?? null, o.event_id);
-    } catch (e: any) {
+      patchJson("events", "data", o.event_id, (d) => ({ ...d, delivery: [{ platform: ep.platform, external_id: ext ?? null }] }));
+    } catch (e: any) { // the provider said no: nothing went out, so it's safe to retry
       exec("update outbox set attempts=attempts+1, error=?, status=case when attempts+1>=5 then 'failed' else 'queued' end where id=?", e.message, o.id);
     }
     n++;
@@ -488,6 +662,6 @@ async function handlePhone(ident: any, raw: string, url: string) {
   for (let i = 0; i < 6 && started.some((r) => one<any>("select status from runs where id=?", r)?.status === "queued"); i++) await rt.tick();
   const seq = one<any>("select seq from events where id=?", eventId).seq;
   const said = all<any>("select data from events where room_id=? and type='message' and actor=? and seq>? order by seq", ep.room_id, ident.agent_id, seq).map((x) => J(x.data).text);
-  exec("insert into usage (workspace_id, agent_id, kind, qty, ts) select workspace_id, ?, 'voice_turns', 1, ? from rooms where id=?", ident.agent_id, now(), ep.room_id);
+  recordUsage({ workspace_id: one<any>("select workspace_id from rooms where id=?", ep.room_id).workspace_id, agent_id: ident.agent_id, kind: "voice_turns", qty: 1 });
   return twiml(said.join(" ") || "I'm working on it and will follow up by message.", url);
 }

@@ -1,9 +1,10 @@
 {
   "name": "Atlas",
   "slug": "atlas-research",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "publisher": "platform",
-  "avatar": "◈",
+  "avatar": "🔭",
+  "category": "personal",
   "title": "Research Analyst",
   "tagline": "Maintains research briefs and monitors topics.",
   "job": "Maintain evidence-backed research briefs and keep them current.",

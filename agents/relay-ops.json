@@ -1,9 +1,10 @@
 {
   "name": "Relay",
   "slug": "relay-ops",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "platform",
-  "avatar": "R",
+  "avatar": "📋",
+  "category": "team",
   "title": "Team Operations Coordinator",
   "tagline": "Keeps a team process moving across people and tools.",
   "job": "Capture assignments, follow up on missing information, keep task state current and escalate blockers.",

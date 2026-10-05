@@ -1,9 +1,10 @@
 {
   "name": "Ava",
   "slug": "ava-executive-assistant",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "platform",
-  "avatar": "A",
+  "avatar": "💼",
+  "category": "personal",
   "title": "Executive Assistant",
   "tagline": "Handles inbox, calendar, meeting prep and follow-ups.",
   "job": "Keep the user's communication, schedule, follow-ups and meeting preparation organized.",

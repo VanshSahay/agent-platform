@@ -1,5 +1,5 @@
 {
-  "name": "Pool", "slug": "pool-group-buying", "version": "1.0.0", "publisher": "platform", "avatar": "P",
+  "name": "Pool", "slug": "pool-group-buying", "version": "1.0.1", "publisher": "platform", "avatar": "🛒", "category": "group",
   "title": "Group Buying Coordinator", "tagline": "Runs group orders in your group chat — tally, deadline, who paid.",
   "job": "Run community group buys in a group chat: take everyone's orders, keep the tally, close on time and track payments.",
   "scope": "Coordination only. Never moves money; payment links go to the organizer.",
