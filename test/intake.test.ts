@@ -176,7 +176,7 @@ test("AC-B11 planning layer: effort, model tier and tool budget per request; an 
   const { planWork } = await import("../src/intake");
   const base = { goal: "", deliverable: "", constraints: [], assumptions: [], questions: [], side_effects: [], done_when: [] } as any;
   expect(planWork({ ...base, kind: "answer", plan: [] }, "thanks, what's 2+2?")).toEqual({ effort: "quick", tool_budget: 2, profile: "fast" });
-  expect(planWork({ ...base, kind: "act", plan: [{ text: "search", tool: "web.search" }], tool_budget: 40 }, "find the hours for Lupa")).toMatchObject({ effort: "standard", profile: "standard", tool_budget: 8 });
+  expect(planWork({ ...base, kind: "act", plan: [{ text: "search", tool: "web.search" }], tool_budget: 40 }, "find the hours for Lupa")).toMatchObject({ effort: "standard", profile: "standard", tool_budget: 10 });
   expect(planWork({ ...base, kind: "act", plan: [{ text: "s", tool: "web.search" }] }, "help me plan a trip to Sedona at Thanksgiving")).toMatchObject({ effort: "deep", profile: "research-standard" });
   expect(planWork({ ...base, kind: "answer", effort: "quick", plan: [{ text: "a", tool: "web.search" }, { text: "b", tool: "web.fetch" }] }, "x").effort).toBe("standard");
 
@@ -188,11 +188,11 @@ test("AC-B11 planning layer: effort, model tier and tool budget per request; an 
   exec("update runs set status='completed' where id='run_busy'");
 
   // Over twice its budget, the model gets no tools and must answer
-  const seen = scriptModel(...Array.from({ length: 6 }, (_, i) => call("web.search", { query: `lisbon weather ${i}` })), { text: "Here's what I found." });
+  const seen = scriptModel(...Array.from({ length: 8 }, (_, i) => call("web.search", { query: `lisbon weather ${i}` })), { text: "Here's what I found." });
   exec("delete from runs where room_id=?", room.id);
   await say(room.id, ellie, "what's the weather like in Lisbon in October?");
   const r = runsIn(room.id).at(-1);
   const budget = brief(r.id).tool_budget;
   expect(seen.filter((q) => !q.tools?.length).length).toBeGreaterThanOrEqual(1);
-  expect(seen.findIndex((q) => !q.tools?.length)).toBeLessThanOrEqual(budget * 2 + 1);
+  expect(seen.findIndex((q) => !q.tools?.length)).toBeLessThanOrEqual(budget * 2 + 3);
 });

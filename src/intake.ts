@@ -16,7 +16,7 @@ export interface Brief {
   effort?: Effort; tool_budget?: number; profile?: string; ack?: string;
 }
 export type Effort = "quick" | "standard" | "deep";
-const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [3, 8], deep: [8, 16] }; // [min, max] tool calls
+const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [5, 10], deep: [8, 16] }; // [min, max] tool calls
 const DEEP = /\b(research|compare|comparison|analy[sz]e|itinerary|plan (a|an|our|my|the) (trip|vacation|holiday|wedding|party|event)|deep dive|options for|best .* (for|in)|pros and cons)\b/i;
 /** When the planner didn't write one: never leave the chat silent while real work runs. */
 export const defaultAck = (b: Pick<Brief, "effort">) => b.effort === "deep" ? "On it — this needs some digging. I'll send what I find in a couple of minutes." : "On it — back in a minute.";

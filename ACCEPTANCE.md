@@ -47,7 +47,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-B8 | Confirmation is decided by a deterministic policy with a per-agent mode (smart / always / never); a single external write relies on its approval card instead of asking twice. | §19.3 |
 | AC-B9 | Unanswered questions and unconfirmed plans expire after 72h instead of guessing. | §2.8 |
 | AC-B10 | Internal-only work (to-dos, reminders, lists) runs without asking "go"; plans that write outside, delegate or wait on people still show first. Every agent and brief prompt carries the current date, time and zone. | §3.4 |
-| AC-B11 | Planning layer: every request gets an effort (quick/standard/deep), a model tier and a tool budget; real work gets an immediate reply; a request that has to wait is acknowledged at once; long runs post one progress note; past the budget the agent is told to wrap up, and past twice the budget it must answer without tools. | §3.4, §7 |
+| AC-B11 | Planning layer: every request gets an effort (quick/standard/deep), a model tier and a tool budget; real work gets an immediate reply; a request that has to wait is acknowledged at once; long runs post one progress note; past the budget the agent is told to wrap up, and past twice the budget (+2) it is told to answer and gets no tools. | §3.4, §7 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |
@@ -89,6 +89,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-R10 | Platform-hosted inference stops at the plan's monthly allowance with a clear message; BYOK usage isn't counted. | §22 |
 | AC-R11 | A reply that promises or claims a side effect ("I'll book…", "reply approve") with no successful write and no pending approval behind it is sent back once, on the escalation tier, to call the tool; the false instruction never reaches the user. | §35.3 |
 | AC-R12 | With `JEV_API_KEY` set, "relevant" group participation and the unbacked-claim check are judged by JEV (typed yes/no probability, threshold 0.5); when JEV errors or is unset, the previous model/keyword and regex checks still apply. | §35.3 |
+| AC-R13 | A reply containing raw tool-call markup is never sent: one retry on a stronger model, else the markup is stripped. | §7 |
 | AC-IM1 | Replies are shaped per app: plain text on iMessage/SMS/Telegram (no markdown symbols, tables become lines, links readable), WhatsApp `*bold*`, Slack mrkdwn; web unchanged. Long replies are split at paragraph/sentence boundaries into normal-sized texts. | §6 |
 | AC-IM2 | People known only by phone number appear as "someone (…1234)" (never the full number) until they say their name ("I'm Maria"); the agent is told to ask once when it needs a name. | §20.2 |
 | AC-IM3 | A 👍/❤️/‼️ tapback on an approval or plan message counts as its first button (approve/go), 👎 as the second; other tapbacks do nothing, and only people allowed to decide can. | §3.7, §6 |

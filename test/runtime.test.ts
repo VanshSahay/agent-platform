@@ -226,3 +226,20 @@ test("AC-R12 with JEV configured, group relevance and unbacked claims are judged
     expect(runsIn(room.id)).toHaveLength(1);
   } finally { delete process.env.JEV_API_KEY; }
 });
+
+test("AC-R13 a reply containing raw tool-call markup is never sent: one retry on a stronger model, else the markup is stripped", async () => {
+  const a = customAgent(ws, ellie, ["web-research"]);
+  const room = rt.privateRoomFor(ellie, a);
+  const leak = '<｜DSML｜tool_calls> <｜DSML｜invoke name="web__search"> <｜DSML｜parameter name="query" string="true">madrid hotels</｜DSML｜parameter> </｜DSML｜invoke> </｜DSML｜tool_calls>';
+  const seen = scriptModel({ text: leak }, { text: "Three Madrid hotels: Only YOU, Único, The Principal." });
+  await say(room.id, ellie, "hi there, any good madrid hotels");
+  expect(events("TOOL_MARKUP_LEAK")).toHaveLength(1);
+  expect(seen.at(-1)!.escalate).toBe(true);
+  const said = messages(room.id).filter((m) => m.actor === a.id).map((m) => m.text).join("\n");
+  expect(said).toContain("Three Madrid hotels");
+  expect(said).not.toMatch(/DSML|tool_calls/);
+  // Still leaking after the retry: strip it rather than send it
+  scriptModel({ text: leak }, { text: `Here you go. ${leak}` });
+  await say(room.id, ellie, "and barcelona?");
+  expect(messages(room.id).filter((m) => m.actor === a.id).map((m) => m.text).join("\n")).not.toMatch(/DSML/);
+});

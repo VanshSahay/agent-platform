@@ -314,11 +314,16 @@ async function stepRunInner(runId: string) {
     let res;
     try {
       channels.typing(run.origin_endpoint_id); // "…is typing" in the chat this came from while the model works
-      // Past twice the plan's tool budget the model gets no tools: it has to answer with what it has.
-      const overBudget = (spent.toolCalls ?? 0) >= toolBudget(run.id) * 2;
+      // Past twice the plan's tool budget (+2) the model gets no tools and is told plainly to answer with what it has.
+      const overBudget = (spent.toolCalls ?? 0) >= toolBudget(run.id) * 2 + 2;
+      if (overBudget && !spent.finalCallNoted) {
+        patchJson("runs", "spent", run.id, (x) => ({ ...x, finalCallNoted: 1 }));
+        appendStep(run.id, "signal", { text: "[CHECK] Research time is up and tools are off. Write your final answer to the person now, in plain text, from what you already found. Do not write tool calls." });
+        continue;
+      }
       progressNote(run, agent, room);
       res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: overBudget ? [] : c.tools,
-        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || !!spent.unbackedRetries || i >= budget.maxModelCalls - 2 });
+        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || !!spent.unbackedRetries || !!spent.leakRetry || i >= budget.maxModelCalls - 2 });
     } catch (e: any) {
       const errs = (spent.modelErrors ?? 0) + 1;
       patchJson("runs", "spent", run.id, (s) => ({ ...s, modelErrors: errs }));
@@ -331,6 +336,16 @@ async function stepRunInner(runId: string) {
     if (!live()) return; // cancelled or revised while the model was thinking: drop this answer
     appendStep(run.id, "assistant", { text: res.text, toolCalls: res.toolCalls, model: res.model, raw: res.raw });
     emit("MODEL_CALL", { ...base, data: { model: res.model, tool_calls: res.toolCalls.map((t) => t.name), usage: res.usage, cost_usd: res.costUsd } });
+    if (!res.toolCalls.length && TOOL_MARKUP.test(res.text)) {
+      // The model wrote its tool calls as text (seen live from DeepSeek once tools were withheld): never send that to a person.
+      if (!spent.leakRetry) {
+        patchJson("runs", "spent", run.id, (x) => ({ ...x, leakRetry: 1 }));
+        emit("TOOL_MARKUP_LEAK", { ...base, data: { model: res.model } });
+        appendStep(run.id, "signal", { text: "[CHECK] Your last reply contained raw tool-call markup instead of an answer. Reply to the person in plain text with what you found." });
+        continue;
+      }
+      res.text = res.text.replace(TOOL_MARKUP_BLOCK, "").trim() || "I found results but couldn't finish writing them up — ask me again and I'll send them.";
+    }
     if (!res.toolCalls.length) {
       // A reply that promises or claims an action with nothing behind it ("I'll book…", "reply approve") gets one corrective
       // retry on a stronger model — live models do this, and it leaves the user waiting on an approval that doesn't exist.
@@ -391,6 +406,9 @@ function wrapUpNudge(runId: string) {
   }
 }
 
+// Tool-call syntax leaking into a text reply (DeepSeek DSML, Qwen/Hermes <tool_call>, Llama <function=…>, raw JSON tool_calls).
+const TOOL_MARKUP = /<｜?DSML｜|<\/?tool_calls?>|<\|tool_calls?(_begin)?\|>|<function[=\s]|"tool_calls"\s*:/i;
+const TOOL_MARKUP_BLOCK = /<｜?DSML｜tool_calls>[\s\S]*?(<\/｜?DSML｜tool_calls>|$)|<tool_calls?>[\s\S]*?(<\/tool_calls?>|$)|<\|tool_calls?_begin\|>[\s\S]*?(<\|tool_calls?_end\|>|$)|<function[=\s][\s\S]*?(<\/function>|$)/gi;
 const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;
 /** The reply promises/claims a side effect, yet this run has no successful write and no pending approval to show for it. */
 async function claimsUnbackedAction(runId: string, text: string) {
