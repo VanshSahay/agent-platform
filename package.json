@@ -17,6 +17,7 @@
     "@anthropic-ai/sdk": "^0.131.0",
     "@clerk/backend": "^3.22.0",
     "@clerk/react": "^6.17.5",
+    "@spectrum-ts/imessage-local": "^12.10.1",
     "@temporalio/activity": "^1",
     "@temporalio/client": "^1",
     "@temporalio/worker": "^1",
@@ -36,5 +37,8 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "patchedDependencies": {
+    "@photon-ai/imessage-kit@3.0.0": "patches/@photon-ai%2Fimessage-kit@3.0.0.patch"
   }
 }

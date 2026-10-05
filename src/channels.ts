@@ -267,7 +267,7 @@ export const sharedIdentity = (platform: string) => one<any>("select * from chan
 
 export const isPhone = (x: string) => /^\+[1-9]\d{7,14}$/.test(String(x ?? "").replace(/[\s()-]/g, ""));
 /** Photon Free/Pro: a shared pool, no fixed number people can text — the agent has to start the conversation. */
-export const imessagePoolMode = () => photon.enabled() && !isPhone(process.env.SHARED_IMESSAGE_LINE ?? "");
+export const imessagePoolMode = () => photon.enabled() && process.env.IMESSAGE_MODE !== "local" && !isPhone(process.env.SHARED_IMESSAGE_LINE ?? "");
 /** Pool mode: text this person first. They're connected only once they reply YES from that number (proof they own it); STOP opts out. */
 export async function inviteByText(agent: any, userId: string, phoneIn: string) {
   const phone = String(phoneIn).replace(/[\s()-]/g, "");
@@ -463,6 +463,7 @@ async function processEvent(e: InboundEvent, ident: any) {
     return;
   }
   if (!agentId) {
+    if (process.env.IMESSAGE_MODE === "local" && e.provider === "imessage") return; // a personal Apple ID: never auto-reply to people's own texts
     // Unbound conversation on a shared line: explain once a day how to connect, don't guess an agent.
     if (!one("select 1 from events where type='SHARED_LINE_HELP' and json_extract(data, '$.conv')=? and ts>?", `${e.provider}:${e.conversationId}`, now() - 864e5)) {
       emit("SHARED_LINE_HELP", { data: { conv: `${e.provider}:${e.conversationId}` } });

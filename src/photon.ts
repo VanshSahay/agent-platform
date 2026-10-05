@@ -2,7 +2,7 @@
 // outbound replies go back to the chat by its id — looked up again after a restart, so reminders and approvals still land.
 // Two modes: a long-lived stream (one server), or with SPECTRUM_WEBHOOK_SECRET set, signed webhooks to POST /v1/webhooks/photon
 // so any number of servers can sit behind a load balancer (sends never needed the stream: chats are looked up by id).
-import { exec, id, now, S } from "./db";
+import { exec, one, id, now, S } from "./db";
 import { SHARED_ENV } from "./channels";
 import { storeMedia } from "./media";
 
@@ -27,13 +27,23 @@ export async function photonStartDm(phone: string, text: string) {
   return space.id as string;
 }
 export const photonTyping = async (spaceId: string) => { await (await spaceFor(spaceId)).startTyping?.(); };
-export const photonEnabled = () => !!(process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID);
+// IMESSAGE_MODE=local: run through this Mac's own Messages app (the line = the Apple ID signed in here). Needs macOS Full Disk Access.
+export const localMode = () => process.env.IMESSAGE_MODE === "local";
+export const photonEnabled = () => localMode() || !!(process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID);
 
 /** Line health for the operator view: is the stream up, when did we last hear from it, how often has it dropped. */
 export const photonStatus = { enabled: false, mode: "off" as "off" | "stream" | "webhook", connected: false, since: 0, last_event_at: 0, reconnects: 0, last_error: "" };
 
 async function connect() {
   const { Spectrum } = await import("spectrum-ts");
+  if (localMode()) {
+    const { localIMessage } = await import("@spectrum-ts/imessage-local");
+    app = await Spectrum({ providers: [localIMessage.config()] });
+    platform = (localIMessage as any)(app);
+    spaces.clear();
+    Object.assign(photonStatus, { connected: true, since: Date.now(), last_error: "" });
+    return;
+  }
   const { imessage } = await import("spectrum-ts/providers/imessage");
   const webhookSecret = process.env.SPECTRUM_WEBHOOK_SECRET;
   app = await Spectrum({ projectId: (process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID)!, projectSecret: (process.env.PHOTON_PROJECT_SECRET || process.env.PROJECT_SECRET)!,
@@ -46,10 +56,19 @@ async function connect() {
 export async function startPhoton() {
   if (!photonEnabled()) return;
   photonStatus.enabled = true;
-  photonStatus.mode = process.env.SPECTRUM_WEBHOOK_SECRET ? "webhook" : "stream";
+  photonStatus.mode = process.env.SPECTRUM_WEBHOOK_SECRET && !localMode() ? "webhook" : "stream";
+  if (localMode()) {
+    const { accessSync, constants } = await import("node:fs"), { homedir } = await import("node:os");
+    try { accessSync(`${homedir()}/Library/Messages/chat.db`, constants.R_OK); }
+    catch {
+      photonStatus.last_error = "Full Disk Access needed";
+      console.error("[imessage] local mode can't read the Messages database. Grant Full Disk Access to the app running this server (System Settings → Privacy & Security → Full Disk Access), then restart it.");
+      return;
+    }
+  }
   await connect();
   if (photonStatus.mode === "webhook") { console.log("[photon] iMessage line connected (webhook mode: POST /v1/webhooks/photon)"); return; }
-  console.log("[photon] iMessage line connected (stream)");
+  console.log(`[photon] iMessage line connected (${localMode() ? `this Mac's Messages app${process.env.SHARED_IMESSAGE_LINE ? ` as ${process.env.SHARED_IMESSAGE_LINE}` : ""}` : "stream"})`);
   // The stream can end or throw (network blip, Photon deploy). Reconnect with backoff, forever; messages missed while down are
   // redelivered by Photon on reconnect, and inbound_events dedupes on the provider id.
   (async () => {
@@ -75,6 +94,10 @@ export async function photonWebhook(req: Request) {
 async function ingest(space: any, m: any) {
   photonStatus.last_event_at = Date.now();
   if (m.direction !== "inbound" || !m.sender) return;
+  // Local mode runs on a personal Apple ID: only touch deploy codes and conversations already connected to an agent.
+  // Everything else (a friend texting you) is never stored and never answered.
+  if (localMode() && !one("select 1 from room_endpoints where platform='imessage' and (external_conversation_id=? or external_conversation_id like ?)", space.id, `${space.id}~%`)
+      && !(m.content?.type === "text" && /^\s*\/?(start|join)\s+\d{8}\s*$/i.test(m.content.text ?? ""))) return;
   spaces.set(space.id, space);
   const base = { provider: "imessage", providerEventId: m.id, conversationId: space.id, isGroup: space.type === "group", senderId: m.sender.id, senderName: m.sender.id, type: "message" };
   const e = await toEvent(m.content).catch(() => null);

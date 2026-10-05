@@ -532,7 +532,8 @@ export const routes: Record<string, any> = {
     }
     const ident = p === "slack" ? null : ch.sharedIdentity(p) ?? fail(501, `${p} isn't set up on this platform yet`);
     // A line people can't text is worse than none: refuse a placeholder instead of handing out a broken "Open Messages" link.
-    if ((p === "imessage" || p === "whatsapp") && !/^\+?[1-9]\d{7,14}$/.test(String(ident?.address ?? "").replace(/[\s()-]/g, "")))
+    const reachable = /^\+?[1-9]\d{7,14}$/.test(String(ident?.address ?? "").replace(/[\s()-]/g, "")) || (p === "imessage" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(ident?.address ?? ""))); // iMessage accounts can be an email
+    if ((p === "imessage" || p === "whatsapp") && !reachable)
       fail(501, `the ${p === "imessage" ? "iMessage" : "WhatsApp"} line's phone number isn't set (SHARED_${p.toUpperCase()}_${p === "imessage" ? "LINE" : "NUMBER"} must be a real number like +14155550123)`);
     const code = ch.createDeployCode(a.id, u.id, p, kind);
     const addr = ident?.address ?? "";
