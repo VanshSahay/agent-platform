@@ -1,6 +1,7 @@
 // Provider-neutral ModelGateway (plan §8). Canonical history is our normalized Msg[]; provider payloads are built per call.
 import Anthropic from "@anthropic-ai/sdk";
 import { one, unseal, recordUsage } from "./db";
+import * as billing from "./billing";
 
 export interface ToolCall { id: string; name: string; input: any }
 export interface Msg { role: "user" | "assistant" | "tool"; content: string; toolCalls?: ToolCall[]; toolCallId?: string; toolName?: string; raw?: any; model?: string }
@@ -21,14 +22,23 @@ const PRICE: Record<string, [number, number]> = { // $ per 1M tokens in/out
 const wire = (n: string) => n.replace(/\./g, "__");
 const unwire = (n: string) => n.replace(/__/g, ".");
 
-function keyFor(provider: string, workspaceId?: string): { key: string; byok: boolean } | null {
-  if (workspaceId) {
+export const PROVIDERS = ["anthropic", "openai", "openrouter", "custom"] as const;
+const BASE: Record<string, string> = { openai: "https://api.openai.com/v1", openrouter: "https://openrouter.ai/api/v1" };
+export const platformKey = (provider: string) => ({ anthropic: process.env.ANTHROPIC_API_KEY, openai: process.env.OPENAI_API_KEY, openrouter: process.env.OPENROUTER_API_KEY }as Record<string, string | undefined>)[provider];
+
+/** Credits mode uses only platform keys (billed); BYOK mode uses only the workspace's own keys (never billed). */
+function keyFor(provider: string, workspaceId?: string): { key: string; base?: string; byok: boolean } | null {
+  const mode = workspaceId ? billing.aiSettings(workspaceId).mode : "credits";
+  if (mode === "byok") {
     const row = one<{ key_enc: string }>("select key_enc from provider_keys where workspace_id=? and provider=?", workspaceId, provider);
-    if (row) return { key: unseal<string>(row.key_enc)!, byok: true };
+    if (!row) return null;
+    const v = unseal<any>(row.key_enc);
+    return typeof v === "string" ? { key: v, byok: true } : { key: v.key ?? "", base: v.base_url, byok: true };
   }
-  const env = { anthropic: process.env.ANTHROPIC_API_KEY, openai: process.env.OPENAI_API_KEY }[provider];
+  const env = platformKey(provider);
   return env ? { key: env, byok: false } : null;
 }
+export const hasAnyModel = (workspaceId?: string) => PROVIDERS.some((p) => keyFor(p, workspaceId));
 
 async function callAnthropic(model: string, key: string, req: ModelRequest) {
   const client = new Anthropic({ apiKey: key });
@@ -63,7 +73,10 @@ async function callAnthropic(model: string, key: string, req: ModelRequest) {
   return { text, toolCalls, usage, costUsd: (usage.input * pi + usage.output * po) / 1e6, raw: res.content };
 }
 
-async function callOpenAI(model: string, key: string, req: ModelRequest) {
+/** Any OpenAI-compatible Chat Completions API: OpenAI, OpenRouter (open-source models), Together, Groq, Ollama, vLLM… */
+async function callOpenAI(provider: string, model: string, k: { key: string; base?: string }, req: ModelRequest) {
+  const base = (k.base ?? BASE[provider]).replace(/\/$/, "");
+  if (provider === "custom" && !process.env.ALLOW_PRIVATE_MODEL_URLS) await (await import("./tools")).assertPublicUrl(base); // admin-supplied URL: no SSRF into our network
   const messages: any[] = [{ role: "system", content: req.system }];
   for (const m of req.messages) {
     if (m.role === "tool") messages.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
@@ -71,14 +84,21 @@ async function callOpenAI(model: string, key: string, req: ModelRequest) {
       tool_calls: m.toolCalls?.length ? m.toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: wire(c.name), arguments: JSON.stringify(c.input) } })) : undefined });
     else messages.push({ role: "user", content: m.content });
   }
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({ model, messages, tools: req.tools?.map((t) => ({ type: "function", function: { name: wire(t.name), description: t.description, parameters: t.input_schema } })) }),
+  const r = await fetch(`${base}/chat/completions`, {
+    method: "POST", redirect: "manual", signal: AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS ?? 120000)),
+    headers: { ...(k.key ? { authorization: `Bearer ${k.key}` } : {}), "content-type": "application/json", ...(provider === "openrouter" ? { "x-title": "agents" } : {}) },
+    body: JSON.stringify({ model, messages, max_tokens: req.maxTokens ?? 4096, ...(req.tools?.length ? { tools: req.tools.map((t) => ({ type: "function", function: { name: wire(t.name), description: t.description, parameters: t.input_schema } })) } : {}),
+      // OpenRouter: report real cost, and only route to providers that support every parameter we send (tool calling).
+      ...(provider === "openrouter" ? { usage: { include: true }, ...(req.tools?.length ? { provider: { require_parameters: true } } : {}) } : {}) }),
   });
-  if (!r.ok) throw new Error(`openai ${r.status}: ${await r.text()}`);
-  const j: any = await r.json(), msg = j.choices[0].message;
+  if (!r.ok) throw new Error(`${provider} ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const j: any = await r.json(), msg = j.choices?.[0]?.message;
+  if (!msg) throw new Error(`${provider}: empty response`);
+  const usage = { input: j.usage?.prompt_tokens ?? 0, output: j.usage?.completion_tokens ?? 0 };
+  const [pi, po] = billing.priceOf(`${provider}:${model}`) ?? [0, 0];
   return {
-    text: msg.content ?? "", usage: { input: j.usage.prompt_tokens, output: j.usage.completion_tokens }, costUsd: 0,
+    text: msg.content ?? "", usage, costUsd: typeof j.usage?.cost === "number" ? j.usage.cost : (usage.input * pi + usage.output * po) / 1e6,
+    // A malformed tool call from a smaller open model throws here, so the next model in the chain gets a turn.
     toolCalls: (msg.tool_calls ?? []).map((c: any) => ({ id: c.id, name: unwire(c.function.name), input: JSON.parse(c.function.arguments || "{}") })),
   };
 }
@@ -90,30 +110,36 @@ export async function generate(req: ModelRequest): Promise<ModelResult> {
     return { text: "", toolCalls: [], model: "test", usage: { input: 0, output: 0 }, costUsd: 0, byok: false, ...r };
   }
   const p = one<any>("select * from model_profiles where name=?", req.profile) ?? one<any>("select * from model_profiles where name='standard'");
-  const chain = [req.escalate && p.escalation_model, p.primary_model, p.fallback_model].filter(Boolean) as string[];
+  // The workspace's own pick for this profile goes first; open models on OpenRouter are the last resort.
+  const picked = req.workspaceId ? billing.aiSettings(req.workspaceId).models[p.name] : undefined;
+  const chain = [...new Set([picked, req.escalate && p.escalation_model, req.escalate && billing.openDefault("escalation"), p.primary_model, p.fallback_model, billing.openDefault(p.name)].filter(Boolean) as string[])];
   const errors: string[] = [];
   for (const spec of chain) {
-    const [provider, model] = spec.split(":");
+    const i = spec.indexOf(":"), provider = spec.slice(0, i), model = spec.slice(i + 1); // model ids may contain ':' (llama3.1:8b)
     const k = keyFor(provider, req.workspaceId);
     if (!k) continue;
+    if (!k.byok && req.workspaceId && !billing.canSpend(req.workspaceId)) { errors.push("out of AI credits"); break; } // every caller, not just runs
     try {
-      const r = provider === "anthropic" ? await callAnthropic(model, k.key, req) : await callOpenAI(model, k.key, req);
+      const r = provider === "anthropic" ? await callAnthropic(model, k.key, req) : await callOpenAI(provider, model, k, req);
       const out = { ...r, model: spec, byok: k.byok };
       if (req.workspaceId) {
-        recordUsage({ workspace_id: req.workspaceId, agent_id: req.agentId, run_id: req.runId, kind: "model_input_tokens", qty: r.usage.input, cost_usd: k.byok ? 0 : r.costUsd, byok: k.byok });
+        const billed = k.byok ? 0 : r.costUsd * billing.MARKUP();
+        billing.charge(req.workspaceId, billed);
+        recordUsage({ workspace_id: req.workspaceId, agent_id: req.agentId, run_id: req.runId, kind: "model_input_tokens", qty: r.usage.input, cost_usd: billed, byok: k.byok });
         recordUsage({ workspace_id: req.workspaceId, agent_id: req.agentId, run_id: req.runId, kind: "model_output_tokens", qty: r.usage.output, byok: k.byok });
       }
       return out;
     } catch (e: any) { errors.push(`${spec}: ${e.message}`); }
   }
   if (errors.length) throw new Error(`all models failed: ${errors.join("; ")}`);
+  if (req.workspaceId && billing.aiSettings(req.workspaceId).mode === "byok") throw new Error("no model key for this workspace — add one in Settings → AI, or switch to platform credits");
   if (!warned) { console.warn("[model] no provider keys configured; using offline heuristic model"); warned = true; }
   return { ...localAgent(req), model: "local:heuristic", usage: { input: 0, output: 0 }, costUsd: 0, byok: false };
 }
 
 /** Ask a model for JSON; fall back to a deterministic heuristic offline or on parse failure. */
 export async function structured<T>(profile: string, instruction: string, input: string, fallback: () => T, workspaceId?: string): Promise<T> {
-  if (hooks.model || !(keyFor("anthropic", workspaceId) || keyFor("openai", workspaceId))) return fallback();
+  if (hooks.model || !hasAnyModel(workspaceId)) return fallback();
   try {
     const r = await generate({ profile, workspaceId, system: `${instruction}\nRespond with a single JSON object and nothing else.`, messages: [{ role: "user", content: input }], maxTokens: 2000 });
     const m = r.text.match(/\{[\s\S]*\}/);
@@ -124,17 +150,17 @@ export async function structured<T>(profile: string, instruction: string, input:
 // ---------------- offline heuristic model ----------------
 // ponytail: keyword planner so the product works end-to-end with no API key (demo, CI, evals baseline). Real judgment needs a real model.
 export interface LocalCtx {
-  agentName: string; speaker?: string; objective: string; tools: string[];
+  agentName: string; speaker?: string; objective: string; tools: string[]; roomId?: string;
   agents: string[]; openTasks: { title: string; owner: string; status: string }[]; recentAgentReplies: string[]; memories: string[];
 }
 
 // Domain modules (reservations, group orders...) plug their own intents into the offline planner.
 export type Step = { name: string; input: any };
-export const extraPlanners: ((text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName">) => { steps: Step[]; exclusive?: boolean })[] = [];
+export const extraPlanners: ((text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName" | "roomId">) => { steps: Step[]; exclusive?: boolean })[] = [];
 export const extraChains: ((objective: string, last: Msg, c: LocalCtx) => Step | null)[] = [];
 export const extraSummaries: Record<string, (j: any) => string> = {};
 
-export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName">) {
+export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speaker" | "agentName" | "roomId">) {
   for (const p of extraPlanners) { const r = p(text, c); if (r.exclusive && r.steps.length) return r.steps; }
   const t = text.toLowerCase(), has = (n: string) => c.tools.includes(n), out: { name: string; input: any }[] = [];
   const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g)?.at(-1); // latest wins (follow-up corrections append)
