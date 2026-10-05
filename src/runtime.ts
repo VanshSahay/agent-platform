@@ -332,7 +332,9 @@ async function stepRunInner(runId: string) {
       const errs = (spent.modelErrors ?? 0) + 1;
       patchJson("runs", "spent", run.id, (s) => ({ ...s, modelErrors: errs }));
       emit("MODEL_CALL_FAILED", { ...base, data: { error: e.message, attempt: errs } });
-      if (errs >= 3) return fail(run, `model unavailable: ${e.message}`);
+      // Out of credit doesn't fix itself in seconds: fail now (the person gets a plain message; the operator gets an alert).
+      const noCredit = /\b402\b/.test(e.message) && !/in_flight_budget/.test(e.message);
+      if (errs >= 3 || noCredit) return fail(run, `model unavailable: ${e.message}`);
       createWait(run, { kind: "retry", reason: "model call failed; retrying", wake_at: now() + 2 ** errs * 1000 });
       return;
     }
@@ -491,7 +493,14 @@ function fail(run: any, reason: string) {
   if (!setStatus(run.id, "failed_terminal", { error: reason })) return;
   emit("RUN_FAILED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id, data: { reason } });
   if (run.parent_run_id) signalEvent(`run:${run.id}`, `${nameOf(run.agent_id)} could not finish: ${reason}`);
-  else postMessage(run.room_id, { sender: run.agent_id, text: `I couldn't finish that: ${reason}.`, runId: run.id, targets: replyTargets(run.room_id, run.origin_endpoint_id) });
+  else postMessage(run.room_id, { sender: run.agent_id, text: `I couldn't finish that: ${plainReason(reason)}`, runId: run.id, targets: replyTargets(run.room_id, run.origin_endpoint_id) });
+}
+/** What a person should read when a run fails. Provider internals (status codes, URLs, key names) stay in the run log. */
+export function plainReason(reason: string) {
+  if (/out of AI credits/i.test(reason)) return "this workspace is out of AI credits — add credits or your own model key in Settings → AI.";
+  if (/\b402\b|afford|in_flight_budget/i.test(reason)) return "my AI service is out of credit right now. I've flagged it — please try again a bit later.";
+  if (/model unavailable|all models failed|no AI model/i.test(reason)) return "my AI service isn't responding right now. Please try again in a few minutes.";
+  return `${reason.replace(/https?:\/\/\S+/g, "").replace(/\{[\s\S]*$/, "").trim().slice(0, 200)}.`;
 }
 
 export function cancelRun(runId: string, by: string) {

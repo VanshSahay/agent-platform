@@ -16,7 +16,8 @@ const save = (kind: string, r: any) => {
 
 if (args.includes("--live")) {
   process.env.EVAL_LIVE_WEB = "1";
-  const { SCENARIOS, runScenario, SCENARIO_VERSION } = await import("./scenarios");
+  const { SCENARIOS: BASE, AVA_RELEASE, runScenario, SCENARIO_VERSION } = await import("./scenarios");
+  const SCENARIOS = [...BASE, ...AVA_RELEASE];
   const one = opt("one", "");
   if (one) { // worker mode: run one scenario in this process (each gets its own in-memory DB) and print JSON
     const r = await runScenario(SCENARIOS.find((s) => s.id === one)!);
@@ -38,7 +39,7 @@ if (args.includes("--live")) {
       if (r.infra) console.log(`    ⚠ ${r.infra}`);
       for (const x of r.results.filter((x: any) => x.kind === "not_evaluated")) console.log(`    ? ${x.label}: ${x.why}`);
       for (const x of r.results.filter((x: any) => !x.pass && x.kind !== "not_evaluated")) console.log(`    ✗ [${x.kind}] ${x.label}${x.why ? ` — ${x.why}` : ""}`);
-      if (!r.pass && args.includes("--show")) console.log("    ┄ " + (r.transcript || "(no messages)").replace(/\n/g, "\n    ┄ ").slice(0, 1500) + `\n    ┄ tools: ${r.tools.join(", ") || "none"}`);
+      if (!r.pass && args.includes("--show")) console.log("    ┄ " + (r.transcript || "(no messages)").replace(/\n/g, "\n    ┄ ").slice(0, 1500) + `\n    ┄ tools: ${r.tools.join(", ") || "none"}\n    ┄ runs: ${(r.runs ?? []).join(" | ")}`);
     }
   }));
   // Per scenario: pass@1 (share of attempts that passed) and pass^k (every attempt passed = reliable).

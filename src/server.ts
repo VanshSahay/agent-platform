@@ -115,6 +115,8 @@ export async function healthReport() {
       runs: { queued: count("select count(*) n from runs where status='queued'"), oldest_queued_s: oldestQueued ? Math.round((now() - oldestQueued) / 1000) : 0,
         running: count("select count(*) n from runs where status='running'"), failed_24h: count("select count(*) n from runs where status='failed_terminal' and updated_at>?", now() - 864e5),
         waiting_on_people: count("select count(*) n from runs where status='waiting_for_human'") },
+      models: (() => { const f = all<any>("select data from events where type='MODEL_CALL_FAILED' and ts>?", now() - 36e5).map((e) => String(J(e.data, {}).error ?? ""));
+        return { failures_1h: f.length, out_of_credit: f.some((x) => /\b402\b/.test(x)) }; })(),
       jobs_24h: all<any>("select json_extract(data, '$.job') job, sum(case when cast(json_extract(data, '$.ok') as text) in ('1','true') then 1 else 0 end) ok, count(*) n from events where type='JOB_OUTCOME' and ts>? group by 1", now() - 864e5),
       problems,
     };
@@ -124,6 +126,7 @@ export async function healthReport() {
       report.outbox.failed + report.outbox.unconfirmed > 0 && `${report.outbox.failed + report.outbox.unconfirmed} outgoing messages failed or unconfirmed`,
       report.runs.oldest_queued_s > 120 && `requests waiting ${report.runs.oldest_queued_s}s to start — is the worker running?`,
       report.inbound.errors_24h > 0 && `${report.inbound.errors_24h} inbound messages failed to process (24h)`,
+      report.models.failures_1h > 0 && `AI model calls failing (${report.models.failures_1h} in the last hour${report.models.out_of_credit ? ", provider says OUT OF CREDIT" : ""})`,
     ].filter(Boolean);
     return { ok: !alerts.length, alerts, ...report };
 }

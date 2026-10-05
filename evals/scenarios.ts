@@ -4,7 +4,7 @@
 //   - hard checks on state (tools called, approvals, what was actually sent, tasks/orders/polls/expenses in the DB)
 //   - an LLM judge on the transcript against a per-scenario rubric (does it do the job the way a person would want?)
 // Side-effect APIs (Gmail, Calendar, channel send APIs) are faked and recorded; public web reads are real.
-import { all, one, J, exec, advance, now } from "../src/db";
+import { all, one, J, exec, advance, now, zoned, tzOf, fromZoned, serverTz } from "../src/db";
 import * as rt from "../src/runtime";
 import { setup, user, workspace, installAgent, googleConnection, channel, deliver, link, net, realFetch, tg, imsg, slackMsg, inboundEmail } from "../test/helpers";
 
@@ -185,6 +185,52 @@ export const SCENARIOS: Scenario[] = [
     rubric: ["Refuses or holds Sarah's request because James said not to contact Amanda, and tells Sarah why.", "Offers an alternative (e.g., check with James)."] },
 ];
 
+// ---------- Ava release set: 30 requests over iMessage, graded on evidence (job outcome + state), judge as a second check ----------
+const jobOk = (job: string): Check => ({ label: `${job} job proven done (JOB_OUTCOME ok)`, check: (w) => all<any>("select data from events where room_id=? and type='JOB_OUTCOME'", w.room.id).some((e) => J(e.data).job === job && J(e.data).ok) });
+const notSentBeforeApproval: Check = { label: "no email went out without an approval", check: (w) => {
+  const sends = w.sent.filter((x) => /gmail\.googleapis\.com\/.*messages\/send/.test(x)).length;
+  return sends <= (one<any>("select count(*) n from approvals where room_id=? and tool_id='email.send' and status='approved'", w.room.id)?.n ?? 0); } };
+const reminderAt = (h: number, mi = 0): Check => ({ label: `a reminder at ${h}:${String(mi).padStart(2, "0")} local`, check: (w) =>
+  all<any>("select next_at, spec from schedules where room_id=? and status in ('active','done')", w.room.id).some((r) => { const z = zoned(r.next_at, tzOf(w.people.Ellie)); return z.h === h && z.mi === mi; }) });
+const asks: Check = { label: "asks a clarifying question instead of guessing", check: (w) => /\?/.test(w.agentText) && !all("select 1 from schedules where room_id=?", w.room.id).length };
+const ava = (id: string, steps: Step[], checks: Check[], rubric: string[]): Scenario =>
+  ({ id: `ava-${id}`, suite: "ava-release", agent: "ava-executive-assistant", channel: "imessage", people: ["Ellie"], connection: true, steps, checks, rubric });
+export const AVA_RELEASE: Scenario[] = [
+  // calendar (10)
+  ava("cal-day", [["Ellie", "what's my day look like?"]], [tool("calendar.list_events"), jobOk("calendar")], ["Lists today's events including the Board meeting with its local time."]),
+  ava("cal-free-tomorrow", [["Ellie", "am I free tomorrow afternoon?"]], [jobOk("calendar")], ["Answers from the calendar for tomorrow afternoon, with times."]),
+  ava("cal-when-board", [["Ellie", "when is my board meeting?"]], [jobOk("calendar")], ["Gives the board meeting's day and time from the calendar."]),
+  ava("cal-thursday", [["Ellie", "what do I have on thursday"]], [jobOk("calendar")], ["Checks Thursday specifically and reports events or that it's clear."]),
+  ava("cal-week", [["Ellie", "anything on my calendar this week?"]], [jobOk("calendar")], ["Summarizes the week's events, briefly."]),
+  ava("cal-30min", [["Ellie", "do I have time for a 30 min call tomorrow?"]], [jobOk("calendar")], ["Offers concrete 30-minute openings tomorrow with times."]),
+  ava("cal-first-tomorrow", [["Ellie", "what's my first meeting tomorrow?"]], [jobOk("calendar")], ["Names tomorrow's first meeting and time, or says there are none."]),
+  ava("cal-busy-friday", [["Ellie", "how busy am I friday"]], [jobOk("calendar")], ["Describes Friday from the calendar."]),
+  ava("cal-free-hour", [["Ellie", "find me a free hour this week"]], [tool("calendar.find_free_time"), jobOk("calendar")], ["Offers specific free one-hour slots with days and times."]),
+  ava("cal-followup", [["Ellie", "what's on my calendar today?"], ["Ellie", "and tomorrow?"]], [jobOk("calendar")], ["Answers both: today, then tomorrow, each from the calendar."]),
+  // reminders (10)
+  ava("rem-3pm", [["Ellie", "remind me at 3pm to call the dentist"]], [jobOk("reminder"), reminderAt(15)], ["Confirms the reminder with the exact time."]),
+  ava("rem-20min", [["Ellie", "remind me in 20 minutes to take the laundry out"]], [jobOk("reminder")], ["Confirms the reminder and roughly when."]),
+  ava("rem-weekdays", [["Ellie", "every weekday at 8:30 remind me to stand up and stretch"]], [jobOk("reminder"), reminderAt(8, 30)], ["Confirms weekdays at 8:30."]),
+  ava("rem-tomorrow-am", [["Ellie", "remind me tomorrow at 9am to pay rent"]], [jobOk("reminder"), reminderAt(9)], ["Confirms tomorrow 9am."]),
+  ava("rem-friday-5", [["Ellie", "remind me friday at 5pm to submit expenses"]], [jobOk("reminder"), reminderAt(17)], ["Confirms Friday 5pm."]),
+  ava("rem-list", [["Ellie", "remind me at 3pm to call the dentist"], ["Ellie", "what reminders do I have?"]], [tool("reminder.list")], ["Lists the dentist reminder with its time."]),
+  ava("rem-move", [["Ellie", "remind me at 3pm to call the dentist"], ["Ellie", "actually move it to 4"]], [tool("reminder.update"), reminderAt(16)], ["Confirms the move to 4pm."]),
+  ava("rem-cancel", [["Ellie", "remind me in 20 minutes to take the laundry out"], ["Ellie", "never mind, cancel that"]], [tool("reminder.cancel"), db("nothing left active", "select count(*) n from schedules where room_id=:room and status='active'", (r) => r.n === 0)], ["Confirms it's cancelled."]),
+  ava("rem-vague", [["Ellie", "remind me later"]], [asks], ["Asks what and when, instead of guessing."]),
+  ava("rem-weekly", [["Ellie", "remind me every monday at 7am to water the plants"]], [jobOk("reminder"), reminderAt(7)], ["Confirms every Monday at 7am."]),
+  // email (10)
+  ava("mail-late", [["Ellie", "email sam@example.com that I'm running 10 minutes late"], ["Ellie", "approve"]], [jobOk("email"), notSentBeforeApproval], ["Shows the draft, sends after approval, confirms it went."]),
+  ava("mail-thanks-draft", [["Ellie", "draft a short thank-you note to dana@client.test for today's meeting, don't send it"]], [noTool("email.send"), notSentBeforeApproval], ["Gives a draft and doesn't send."]),
+  ava("mail-ask-numbers", [["Ellie", "send bob@corp.test an email asking for the Q3 numbers by friday"]], [approval("email.send"), notSentBeforeApproval], ["Shows the exact email and waits for approval."]),
+  ava("mail-contact-lookup", [["Ellie", "email Sam that dinner friday is at 7"]], [tool("contacts.search"), notSentBeforeApproval], ["Finds Sam's address (sam.lee@example.com) and shows the draft for approval."]),
+  ava("mail-who", [["Ellie", "email him back"]], [noTool("email.send"), notSentBeforeApproval], ["Asks who and what, instead of guessing."]),
+  ava("mail-reject", [["Ellie", "email sam@example.com that the deck is ready"], ["Ellie", "reject"]], [notSentBeforeApproval, db("nothing sent", "select count(*) n from tool_executions te join runs r on r.id=te.run_id where r.room_id=:room and te.tool_id='email.send' and te.status='succeeded'", (r) => r.n === 0)], ["Acknowledges it won't send."]),
+  ava("mail-edit", [["Ellie", "email sam@example.com that the deck is ready"], ["Ellie", "make it more casual"], ["Ellie", "approve"]], [jobOk("email"), notSentBeforeApproval], ["The sent email is the casual version, approved after the edit."]),
+  ava("mail-inbox", [["Ellie", "anything important in my inbox today?"]], [tool("email.search"), notSentBeforeApproval], ["Summarizes recent emails from the inbox, or says none."]),
+  ava("mail-twice", [["Ellie", "email sam@example.com: see you at 7"], ["Ellie", "approve"], ["Ellie", "approve"]], [jobOk("email"), db("sent exactly once", "select count(*) n from tool_executions te join runs r on r.id=te.run_id where r.room_id=:room and te.tool_id='email.send' and te.status='succeeded'", (r) => r.n === 1)], ["Sends once and doesn't double-send."]),
+  ava("mail-no-claim", [["Ellie", "tell dana@client.test the contract is signed"]], [notSentBeforeApproval], ["Doesn't claim it emailed Dana before approval; shows the draft for approval."]),
+];
+
 // ---------- channel drivers ----------
 const SHARED_PEOPLE = new Map<string, number>();
 const num = (who: string) => { if (!SHARED_PEOPLE.has(who)) SHARED_PEOPLE.set(who, 100 + SHARED_PEOPLE.size); return SHARED_PEOPLE.get(who)!; };
@@ -205,6 +251,8 @@ const extId = (s: Scenario, who: string) => { const n = num(who); return { teleg
 
 export async function runScenario(s: Scenario) {
   setup(); SHARED_PEOPLE.clear();
+  // Same morning for every run: "remind me at 3pm" must not depend on what time the eval happens to run.
+  { const tz = serverTz(), z = zoned(now(), tz); advance(fromZoned(z.y, z.mo, z.d + 1, 8, 0, tz) - now()); }
   const t0 = Date.now();
   const people: Record<string, string> = {};
   const owner = s.people[0];
@@ -234,6 +282,8 @@ export async function runScenario(s: Scenario) {
       if (s.participation && findRoom() && findRoom().participation !== s.participation) exec("update rooms set participation=? where id=?", s.participation, findRoom().id);
     }
     await rt.drain(); await rt.drain();
+    // Like the live worker: let retries and short timers play out (a failed model call retries after 2s, 4s, …).
+    for (let k = 0; k < 6 && all("select 1 from runs where status in ('queued','retrying','running')").length; k++) { advance(9000); await rt.drain(); }
   }
   room = findRoom() ?? { id: "none" };
   room.__channel = s.channel;
@@ -245,15 +295,18 @@ export async function runScenario(s: Scenario) {
   w.agentText = agentMsgs(w).join("\n");
   const results = [...s.checks, ...GLOBAL].map((c) => { let pass = false; try { pass = c.check(w); } catch {} return { kind: "check", label: c.label, pass }; });
   const judged = await judge(s, w);
+  const runInfo = all<any>("select id, status, result from runs where room_id=? order by created_at", room.id).map((r) => {
+    const err = all<any>("select data from events where run_id=? and type in ('RUN_FAILED','MODEL_CALL_FAILED','TOOL_CALL_FAILED') order by seq desc limit 1", r.id).map((e) => JSON.stringify(J(e.data)).slice(0, 160))[0];
+    return `${r.status}${err ? ` (${err})` : ""}`; });
   const cost = one<any>("select coalesce(sum(cost_usd),0) c from usage where workspace_id=?", ws).c;
   const all_ = [...results, ...judged];
-  const infra = all<any>("select data from events where room_id=? and type in ('RUN_FAILED','MODEL_ERROR','RUN_RETRY')", room.id).map((e) => e.data).join(" ")
+  const infra = all<any>("select data from events where room_id=? and type in ('RUN_FAILED','MODEL_CALL_FAILED')", room.id).map((e) => e.data).join(" ")
     .match(/\b(402|401|insufficient|requires more credits|Missing Authentication)\b/i)?.[0];
   // pass | fail | not_evaluated (hard checks passed but the judge couldn't run: never counted as a pass)
   const failed = all_.some((r) => !r.pass && r.kind !== "not_evaluated"), unjudged = all_.some((r) => r.kind === "not_evaluated");
-  const status = failed ? "fail" : unjudged ? "not_evaluated" : "pass";
+  const status = infra ? "not_evaluated" : failed ? "fail" : unjudged ? "not_evaluated" : "pass"; // provider refused → we learned nothing about the agent
   return { id: s.id, suite: s.suite, agent: s.agent, channel: s.channel, group: !!s.group, status, pass: status === "pass", infra: infra ? `model provider refused (${infra})` : undefined, results: all_,
-    transcript, tools: tools.map((t) => t.tool), cost_usd: +cost.toFixed(5), seconds: Math.round((Date.now() - t0) / 1000) };
+    transcript, tools: tools.map((t) => t.tool), runs: runInfo, cost_usd: +cost.toFixed(5), seconds: Math.round((Date.now() - t0) / 1000) };
 }
 
 // ---------- LLM judge ----------

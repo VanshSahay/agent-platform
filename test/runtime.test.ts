@@ -159,7 +159,7 @@ test("AC-R8 model outage: retries with backoff then fails terminally with a mess
   expect(runsIn(room.id)[0].status).toBe("retrying");
   advance(3000); await rt.drain(); advance(5000); await rt.drain();
   expect(runsIn(room.id)[0].status).toBe("failed_terminal");
-  expect(lastFrom(room.id, a.id)).toMatch(/model unavailable/);
+  expect(lastFrom(room.id, a.id)).toMatch(/AI service isn.t responding/);
 });
 
 test("AC-R9 cancelling a run cancels its waits and pending approvals", async () => {
