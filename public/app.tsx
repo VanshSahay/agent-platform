@@ -1447,9 +1447,18 @@ function ChatPicker({ a, kind: k0 = "dm", prefer }: { a: any; kind?: "dm" | "gro
   const name = a.name, addr = code?.address || t.address;
   const copy = (s: string) => { navigator.clipboard?.writeText(s); toast("Copied"); };
   const Code = () => code && <span className="code-pill">{code.message}<button className="btn sm ghost" onClick={() => copy(code.message)}>Copy</button></span>;
+  // Photon shared pool: no number to text — the agent texts you first.
+  const [mobile, setMobile] = useState(""), [inviting, setInviting] = useState(false);
+  const invite = async () => { setInviting(true); setErr(""); try { const r = await api(`/v1/agents/${a.id}/deploy/imessage`, { kind, phone: mobile }); setCode(r); setBase(live("imessage")); } catch (e: any) { setErr(e.message); } finally { setInviting(false); } };
   const waiting = code && !done && <div className="waiting mt16"><span className="dot live" />Waiting for your message<span className="dots"><span /><span /><span /></span></div>;
   const steps: Record<string, ReactNode> = {
-    imessage: kind === "dm" ? <><div>On your iPhone, tap <b>Open Messages</b>{!phone && " — or scan the code with your camera"}. Or text <b className="mono">{addr}</b> yourself.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away. Text it anytime, like a friend.</div></>
+    imessage: code?.mode === "pool" ? (code.sent
+        ? <><div>{name} just texted your iPhone from a new number.</div><div>Reply <b>YES</b> in that thread.</div><div>That's it — text it anytime after that, like a friend.</div></>
+        : <><div>Enter your iPhone number — {name} texts you first (iMessage has no fixed number on this plan).</div>
+          <div className="row" style={{ gap: 8 }}><input className="input" style={{ maxWidth: 220 }} type="tel" placeholder="+1 415 555 0123" value={mobile} onChange={(e) => setMobile(e.target.value)} onKeyDown={(e) => e.key === "Enter" && mobile && invite()} />
+            <button className="btn grad" disabled={!mobile || inviting} onClick={invite}>{inviting ? "Texting…" : "Text me"}</button></div>
+          <div>Reply <b>YES</b> when it arrives. You can reply STOP anytime.</div></>)
+      : kind === "dm" ? <><div>On your iPhone, tap <b>Open Messages</b>{!phone && " — or scan the code with your camera"}. Or text <b className="mono">{addr}</b> yourself.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away. Text it anytime, like a friend.</div></>
       : <><div>Open your group chat in Messages and add <b>{addr}</b> to the group.</div><div>Send this in the group: <Code /></div><div>Ask by name — “{name}, …” — and {name} answers everyone.</div></>,
     whatsapp: <><div>Tap <b>Open WhatsApp</b>{!phone && " — or scan the code with your phone"}.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away.</div></>,
     telegram: kind === "dm" ? <><div>Tap <b>Open Telegram</b>{!phone && " — or scan the code"}.</div><div>Press <b>Start</b>.</div><div>{name} says hi. That's it.</div></>

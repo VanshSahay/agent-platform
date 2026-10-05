@@ -521,6 +521,15 @@ export const routes: Record<string, any> = {
       return json({ address: `${alias}@${process.env.SHARED_EMAIL_DOMAIN}`, instructions: `Email or CC ${alias}@${process.env.SHARED_EMAIL_DOMAIN}; replies thread by subject.` });
     }
     if (!["imessage", "whatsapp", "telegram", "slack"].includes(p)) fail(400, "unknown platform");
+    if (p === "imessage" && ch.imessagePoolMode()) {
+      // Photon Free/Pro: no fixed number — the agent texts you first, and groups need a dedicated line.
+      if (kind === "group") fail(501, "iMessage group chats need a dedicated number (Photon Business plan). Use WhatsApp or Telegram for groups for now.");
+      if (!b.phone) return json({ mode: "pool", needs_phone: true, instructions: `Enter your iPhone number — ${a.name} will text you. Reply YES to start.` });
+      limit(`invite:${u.id}`, 10);
+      const r = await ch.inviteByText(a, u.id, String(b.phone));
+      if ("error" in r) fail(400, r.error!);
+      return json({ mode: "pool", sent: true, code: r.code, instructions: `${a.name} just texted you. Reply YES on your iPhone to start.`, expires_in_days: 7 });
+    }
     const ident = p === "slack" ? null : ch.sharedIdentity(p) ?? fail(501, `${p} isn't set up on this platform yet`);
     // A line people can't text is worse than none: refuse a placeholder instead of handing out a broken "Open Messages" link.
     if ((p === "imessage" || p === "whatsapp") && !/^\+?[1-9]\d{7,14}$/.test(String(ident?.address ?? "").replace(/[\s()-]/g, "")))

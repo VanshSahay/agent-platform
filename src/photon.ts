@@ -18,6 +18,14 @@ async function spaceFor(spaceId: string) {
   return s;
 }
 export const photonSend = async (spaceId: string, text: string) => (await (await spaceFor(spaceId)).send(text))?.id as string | undefined;
+/** Shared-pool lines can't be texted first by people (each person gets a pool number), so the agent opens the DM. Returns the chat id. */
+export async function photonStartDm(phone: string, text: string) {
+  if (!platform) throw new Error("iMessage line isn't connected");
+  const space = await platform.space.create(phone);
+  spaces.set(space.id, space);
+  await space.send(text);
+  return space.id as string;
+}
 export const photonTyping = async (spaceId: string) => { await (await spaceFor(spaceId)).startTyping?.(); };
 export const photonEnabled = () => !!(process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID);
 
@@ -94,3 +102,6 @@ async function toEvent(c: any): Promise<{ text: string; attachments?: string[]; 
     default: return null; // typing, reads, renames, polls: not messages to the agent
   }
 }
+
+/** The channel layer talks to Photon through this object (tests swap it for a fake line). */
+export const photon = { enabled: photonEnabled, send: photonSend, typing: photonTyping, startDm: photonStartDm };

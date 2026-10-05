@@ -120,3 +120,41 @@ test("AC-IM6 the chat shows '…is typing' while the agent works (iMessage bridg
   await deliver("telegram", t.id, tg(77, 77, "Ellie", "hello again friend"));
   expect(net.to(/sendChatAction/).length).toBeGreaterThanOrEqual(1);
 });
+
+test("AC-IM7 Photon shared pool (no fixed number): the agent texts you first; YES from that number connects; YES from another number doesn't; STOP opts out; groups say they need a dedicated line", async () => {
+  const { photon } = await import("../src/photon");
+  const real = { ...photon }, out: { conv: string; text: string }[] = [];
+  Object.assign(photon, { enabled: () => true, startDm: async (ph: string, text: string) => { out.push({ conv: `any;-;${ph}`, text }); return `any;-;${ph}`; }, send: async (conv: string, text: string) => { out.push({ conv, text }); return `m${out.length}`; }, typing: async () => {} });
+  const saved = process.env.SHARED_IMESSAGE_LINE; process.env.SHARED_IMESSAGE_LINE = "your Photon line";
+  try {
+    const { serve } = await import("../src/server");
+    const srv = serve(0);
+    const ava = installAgent("ava-executive-assistant", ws, ellie);
+    const { realFetch } = await import("./helpers");
+    const token = (await (await realFetch(new URL("/v1/auth/signup", srv.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Ann", email: "ann@example.com", password: "password123" }) })).json()).token;
+    const annWs = one<any>("select w.id from workspaces w join memberships m on m.workspace_id=w.id join users u on u.id=m.user_id where u.email='ann@example.com'").id;
+    const pip = installAgent("ava-executive-assistant", annWs, one<any>("select id from users where email='ann@example.com'").id);
+    const call = async (body: any) => { const r = await realFetch(new URL(`/v1/agents/${pip.id}/deploy/imessage`, srv.url), { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); return { status: r.status, data: await r.json() }; };
+    expect((await call({ kind: "dm" })).data).toMatchObject({ mode: "pool", needs_phone: true });
+    expect((await call({ kind: "group" })).data.error).toMatch(/dedicated number \(Photon Business/);
+    expect((await call({ kind: "dm", phone: "555" })).status).toBe(400);
+    expect((await call({ kind: "dm", phone: "+1 415 555 0123" })).data).toMatchObject({ mode: "pool", sent: true });
+    expect(out.at(-1)!.text).toMatch(/I'm Ava — Ann set me up[\s\S]*Reply YES/);
+    const conv = "any;-;+14155550123";
+    await deliver("imessage", LINE, { ...imsg(conv, "+19995550000", "", "yes"), id: "x1" }); // someone else's YES: nothing
+    expect(all("select 1 from room_endpoints where external_conversation_id=?", conv)).toHaveLength(0);
+    await deliver("imessage", LINE, { ...imsg(conv, "+14155550123", "", "Yes!"), id: "x2" });
+    expect(one<any>("select agent_id from room_endpoints where external_conversation_id=?", conv).agent_id).toBe(pip.id);
+    expect(out.at(-1)!.text).toMatch(/Hi, I'm Ava\. You're all set/);
+    scriptModel({ text: "Morning! What can I do?" });
+    await deliver("imessage", LINE, { ...imsg(conv, "+14155550123", "", "hey there friend"), id: "x3" });
+    expect(out.at(-1)).toEqual({ conv, text: "Morning! What can I do?" }); // replies land in the same thread
+    // STOP: opted out, and no new invite can be sent to that number
+    await call({ kind: "dm", phone: "+14155550999" });
+    await deliver("imessage", LINE, { ...imsg("any;-;+14155550999", "+14155550999", "", "STOP"), id: "x4" });
+    expect(out.at(-1)!.text).toMatch(/won't hear from me again/);
+    expect((await call({ kind: "dm", phone: "+14155550999" })).data.error).toMatch(/asked not to be texted/);
+    srv.stop(true);
+    void ava;
+  } finally { Object.assign(photon, real); process.env.SHARED_IMESSAGE_LINE = saved; }
+});

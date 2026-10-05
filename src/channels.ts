@@ -5,7 +5,7 @@ import { all, one, exec, id, now, S, J, seal, unseal, emit, recordUsage, patchJs
 import * as rt from "./runtime";
 import * as intake from "./intake";
 import * as tpl from "./templates";
-import { photonEnabled, photonSend, photonTyping } from "./photon";
+import { photon } from "./photon";
 import * as media from "./media";
 
 export type Platform = "web" | "telegram" | "slack" | "whatsapp" | "email" | "imessage" | "phone";
@@ -206,12 +206,12 @@ export const ADAPTERS: Record<string, Adapter> = {
       // iMessage has no buttons: the text says how to answer, and a 👍/👎 tapback on the message works too (see processEvent).
       const b = buttons(m);
       const text = b.length >= 2 ? `${m.text}\n(👍 or "${b[0].label.toLowerCase()}" · 👎 or "${b[1].label.toLowerCase()}")` : m.text;
-      if (!i.agent_id && photonEnabled()) return photonSend(ep.external_conversation_id, text);
+      if (!i.agent_id && photon.enabled()) return photon.send(ep.external_conversation_id, text);
       const r: any = await post(`${s.api_url}/messages`, { chat_id: ep.external_conversation_id, text }, { authorization: `Bearer ${s.api_key}` });
       return r.id;
     },
     async typing(i, s, ep) {
-      if (!i.agent_id && photonEnabled()) return photonTyping(ep.external_conversation_id);
+      if (!i.agent_id && photon.enabled()) return photon.typing(ep.external_conversation_id);
       await post(`${s.api_url}/typing`, { chat_id: ep.external_conversation_id }, { authorization: `Bearer ${s.api_key}` }).catch(() => {}); // optional on bridges
     },
   },
@@ -265,9 +265,25 @@ export function ensureSharedIdentities() {
 }
 export const sharedIdentity = (platform: string) => one<any>("select * from channel_identities where id=? and agent_id is null", SHARED_ENV[platform]?.id ?? "-");
 
+export const isPhone = (x: string) => /^\+[1-9]\d{7,14}$/.test(String(x ?? "").replace(/[\s()-]/g, ""));
+/** Photon Free/Pro: a shared pool, no fixed number people can text — the agent has to start the conversation. */
+export const imessagePoolMode = () => photon.enabled() && !isPhone(process.env.SHARED_IMESSAGE_LINE ?? "");
+/** Pool mode: text this person first. They're connected only once they reply YES from that number (proof they own it); STOP opts out. */
+export async function inviteByText(agent: any, userId: string, phoneIn: string) {
+  const phone = String(phoneIn).replace(/[\s()-]/g, "");
+  if (!isPhone(phone)) return { error: "Enter a full mobile number with country code, like +14155550123" };
+  if (one("select 1 from opt_outs where platform='imessage' and address=?", phone)) return { error: "That number asked not to be texted (it replied STOP). They can text START to the agent's last message to opt back in." };
+  const code = createDeployCode(agent.id, userId, "imessage", "dm");
+  const who = one<any>("select name from users where id=?", userId)?.name ?? "Someone";
+  const conv = await photon.startDm(phone, `Hi! I'm ${agent.name} — ${who} set me up to help you here. Reply YES to start (or STOP and you won't hear from me again).`);
+  exec("update deploy_codes set target=?, conv=? where code=?", phone, conv, code);
+  emit("DEPLOY_INVITE_SENT", { workspace_id: agent.workspace_id, actor: userId, data: { agent_id: agent.id, platform: "imessage" } });
+  return { ok: true, code, conv };
+}
+
 export function createDeployCode(agentId: string, userId: string, platform: string, kind: "dm" | "group") {
   const code = String(randomInt(10_000_000, 99_999_999));
-  exec("insert into deploy_codes values (?,?,?,?,?,?,null)", code, agentId, userId, platform, kind, now() + 7 * 864e5);
+  exec("insert into deploy_codes (code, agent_id, user_id, platform, kind, expires_at) values (?,?,?,?,?,?)", code, agentId, userId, platform, kind, now() + 7 * 864e5);
   return code;
 }
 
@@ -424,7 +440,17 @@ async function processEvent(e: InboundEvent, ident: any) {
   const raw = (text: string) => ADAPTERS[e.provider].send(ident, unseal(ident.secret_enc), existing ?? { external_conversation_id: e.conversationId, is_group: e.isGroup ? 1 : 0, config: "{}" },
     { text, agentName: one<any>("select name from agents where id=?", agentId)?.name ?? "Agents" }, id("idem"));
 
-  const start = e.text.trim().match(/^\/?(?:start|join)(?:@\w+)?\s+(\d{8})$/i) ?? e.text.trim().match(/^@\S+\s+join\s+(\d{8})$/i);
+  // Pool-mode invite: the agent texted first; YES from that same number redeems it, STOP opts the number out.
+  const invite = !ident.agent_id && e.provider === "imessage" && !e.isGroup
+    ? one<any>("select * from deploy_codes where platform='imessage' and conv=? and used_at is null and expires_at>? order by expires_at desc limit 1", e.conversationId, now()) : null;
+  const sameNumber = invite && String(e.senderId).replace(/\D/g, "").endsWith(String(invite.target ?? "").replace(/\D/g, "").slice(-10));
+  if (invite && sameNumber && /^(stop|unsubscribe|no thanks)\b/i.test(e.text.trim())) {
+    exec("insert or ignore into opt_outs (platform, address, ts) values ('imessage', ?, ?)", invite.target, now());
+    exec("update deploy_codes set used_at=? where code=?", now(), invite.code);
+    return raw("Got it — you won't hear from me again.");
+  }
+  const start = (invite && sameNumber && /^(yes|y|yep|yeah|sure|ok|okay|start)\b/i.test(e.text.trim()) ? [e.text, invite.code] : null)
+    ?? e.text.trim().match(/^\/?(?:start|join)(?:@\w+)?\s+(\d{8})$/i) ?? e.text.trim().match(/^@\S+\s+join\s+(\d{8})$/i);
   if (start && !ident.agent_id && e.provider !== "email") { // email senders can be forged: no code redemption over email
     const misses = one<any>("select count(*) n from events where type='LINK_FAILED' and json_extract(data, '$.sender')=? and ts>?", `${e.provider}:${e.senderId}`, now() - 36e5).n;
     const global = one<any>("select count(*) n from events where type='LINK_FAILED' and ts>?", now() - 6e4).n; // spray across many senders

@@ -73,6 +73,7 @@ create table if not exists custom_skills (id text primary key, agent_id text, wo
 create table if not exists files (id text primary key, workspace_id text, room_id text, name text, mime text, size int, data blob, text text,
   uploaded_by text, created_at int);
 create table if not exists deploy_codes (code text primary key, agent_id text, user_id text, platform text, kind text, expires_at int, used_at int);
+create table if not exists opt_outs (platform text, address text, ts int, primary key (platform, address));
 create table if not exists standing_approvals (id text primary key, agent_id text, tool_id text, constraints text, max_uses int default 1, uses int default 0,
   expires_at int, granted_by text, approval_id text, ref text, status text default 'active', created_at int);
 create table if not exists reservations (id text primary key, workspace_id text, user_id text, agent_id text, site text, venue_id text, venue text, date text, time text,
@@ -108,7 +109,7 @@ create table if not exists credit_ledger (id text primary key, workspace_id text
 const COLUMN_MIGRATIONS = [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
     ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"], ["agents", "spec", "text"],
     ["outbox", "claimed_at", "int"], ["room_endpoints", "reply_token", "text"], ["room_endpoints", "undeliverable", "int default 0"],
-    ["workspaces", "ai_mode", "text default 'credits'"], ["workspaces", "ai_models", "text default '{}'"], ["workspaces", "credit_usd", "real default 0"], ["workspaces", "allowance_month", "text"], ["workspaces", "allowance_used", "real default 0"], ["users", "clerk_id", "text"], ["users", "tz", "text"]];
+    ["workspaces", "ai_mode", "text default 'credits'"], ["workspaces", "ai_models", "text default '{}'"], ["workspaces", "credit_usd", "real default 0"], ["workspaces", "allowance_month", "text"], ["workspaces", "allowance_used", "real default 0"], ["users", "clerk_id", "text"], ["users", "tz", "text"], ["deploy_codes", "target", "text"], ["deploy_codes", "conv", "text"]];
 
 let pgReady = false;
 /** Postgres: DATABASE_URL. Tests pass ":memory:" for a fresh database — on Postgres that truncates every table instead. */
