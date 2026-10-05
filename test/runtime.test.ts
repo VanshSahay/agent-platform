@@ -258,3 +258,16 @@ test("AC-R14 grounding: figures with no source get one 'cite or drop' retry; sou
   expect(rt.ungroundedFigures({ id: "none", room_id: room.id, objective: "I paid $240 for the cabin", agent_id: a.id }, "You paid $240, so $60 each... wait")).toEqual(["$60"]);
   expect(rt.ungroundedFigures({ id: "none", room_id: room.id, objective: "I paid $240 for the cabin", agent_id: a.id }, "Got it: $240 for the cabin.")).toEqual([]);
 });
+
+test("AC-R15 sports scores come from the scoreboard feed: finals with scores, upcoming games without fake 0–0, team filter, in the person's time zone", async () => {
+  const ev = (id: string, state: string, home: string, away: string, hs: string, as: string) => ({ id, name: `${away} at ${home}`, date: "2026-10-05T00:00Z",
+    status: { type: { state, description: state === "post" ? "Final" : "Scheduled", shortDetail: state === "post" ? "Final" : "10/5 - 8:15 PM EDT" } },
+    competitions: [{ competitors: [{ homeAway: "home", score: hs, team: { displayName: home, abbreviation: home.slice(0, 3).toUpperCase() } }, { homeAway: "away", score: as, team: { displayName: away, abbreviation: away.slice(0, 3).toUpperCase() } }], broadcasts: [{ names: ["ESPN"] }] }] });
+  net.on(/site\.api\.espn\.com.*baseball\/mlb\/scoreboard/, (r) => { expect(r.headers.get("user-agent")).toContain("Mozilla"); return Response.json({ events: [ev("1", "post", "Brewers", "Padres", "4", "3"), ev("2", "pre", "Dodgers", "Braves", "0", "0")] }); });
+  const out = (await TOOLS["sports.scores"].execute({ league: "mlb", date: "today" }, { run: { requested_by: ellie } } as any)).output;
+  expect(out.games[0]).toMatchObject({ status: "Final", home: { team: "Brewers", score: "4" }, away: { score: "3" }, tv: "ESPN" });
+  expect(out.games[1].home.score).toBeNull();
+  const braves = (await TOOLS["sports.scores"].execute({ league: "mlb", team: "braves" }, { run: { requested_by: ellie } } as any)).output.games;
+  expect(braves.map((g: any) => g.away.team)).toEqual(["Braves"]);
+  await expect(TOOLS["sports.scores"].execute({ league: "cricket" }, { run: {} } as any)).rejects.toThrow(/unknown league/);
+});

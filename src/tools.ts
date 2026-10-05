@@ -339,6 +339,37 @@ def({
     return { status: "SUCCEEDED", output: { symbol: r.meta.symbol, range, change_pct: pct(last, first), first, last, closes: closes.slice(-60).map((c: any) => ({ ...c, close: Math.round(c.close * 100) / 100 })), source: "Yahoo Finance (unofficial)" } };
   },
 });
+// Sports: ESPN's public scoreboard feed (keyless, unofficial — labeled as such). One tool for live scores, results and schedules.
+const LEAGUES: Record<string, string> = { nfl: "football/nfl", ncaaf: "football/college-football", nba: "basketball/nba", wnba: "basketball/wnba", ncaab: "basketball/mens-college-basketball",
+  mlb: "baseball/mlb", nhl: "hockey/nhl", mls: "soccer/usa.1", epl: "soccer/eng.1", laliga: "soccer/esp.1", seriea: "soccer/ita.1", bundesliga: "soccer/ger.1", ligue1: "soccer/fra.1",
+  ucl: "soccer/uefa.champions", uel: "soccer/uefa.europa", nwsl: "soccer/usa.nwsl", f1: "racing/f1" };
+def({
+  id: "sports.scores", description: `Live scores, final results and upcoming games (with start times and TV) for a league, optionally one team. Leagues: ${Object.keys(LEAGUES).join(", ")}. Use for any score, result or "when do they play"; never recall scores from memory.`,
+  risk: "read", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ league: { type: "string", enum: Object.keys(LEAGUES) }, team: str("optional team name, city or abbreviation"), date: str("today | yesterday | tomorrow | YYYY-MM-DD"), days: num("how many days from that date (1-14), for schedules") }, ["league"]),
+  async execute({ league, team, date = "today", days = 1 }, ctx) {
+    const tz = tzOf(ctx?.run?.requested_by), z = zoned(now(), tz);
+    const off = { yesterday: -1, today: 0, tomorrow: 1 }[String(date).toLowerCase() as "today"];
+    const start = off !== undefined ? fromZoned(z.y, z.mo, z.d + off, 12, 0, tz) : Date.parse(`${date}T12:00:00Z`);
+    if (!LEAGUES[league] || Number.isNaN(start)) throw new ToolError("BUSINESS_RULE", `unknown league or date (leagues: ${Object.keys(LEAGUES).join(", ")})`);
+    const ymd = (t: number) => { const x = zoned(t, tz); return `${x.y}${String(x.mo + 1).padStart(2, "0")}${String(x.d).padStart(2, "0")}`; };
+    const n = Math.min(14, Math.max(1, Number(days) || 1)), range = n > 1 ? `${ymd(start)}-${ymd(start + (n - 1) * 864e5)}` : ymd(start);
+    // One request per day, in parallel (the feed's own date-range syntax 400s for some leagues); it refuses requests without a browser UA.
+    const pages = await Promise.all(Array.from({ length: n }, (_, k) => call(`https://site.api.espn.com/apis/site/v2/sports/${LEAGUES[league]}/scoreboard?dates=${ymd(start + k * 864e5)}&limit=200`,
+      { headers: { "user-agent": "Mozilla/5.0" } }).then((r) => r.json()).catch(() => ({ events: [] }))));
+    const events = [...new Map(pages.flatMap((p: any) => p.events ?? []).map((e: any) => [e.id, e])).values()];
+    const want = String(team ?? "").toLowerCase().trim();
+    const games = events.map((e: any) => {
+      const c = e.competitions?.[0] ?? {}, side = (h: string) => c.competitors?.find((t: any) => t.homeAway === h) ?? {};
+      const upcoming = e.status?.type?.state === "pre"; // a scheduled game has "0" scores in the feed: don't show them as 0–0
+      const fmt = (t: any) => ({ team: t.team?.displayName, abbr: t.team?.abbreviation, score: upcoming ? null : t.score ?? null, record: t.records?.[0]?.summary });
+      return { name: e.name, start: fmtLocal(Date.parse(e.date), tz), status: e.status?.type?.description, detail: e.status?.type?.shortDetail, home: fmt(side("home")), away: fmt(side("away")),
+        venue: c.venue?.fullName, tv: c.broadcasts?.flatMap((b: any) => b.names ?? []).join(", ") || undefined, headline: c.headlines?.[0]?.shortLinkText };
+    }).filter((g: any) => !want || [g.home, g.away].some((t: any) => [t.team, t.abbr].some((x: string) => String(x ?? "").toLowerCase().includes(want) || want.includes(String(t.abbr ?? "#").toLowerCase()))));
+    return { status: "SUCCEEDED", untrusted: true, output: { league, dates: range, time_zone: tz, games: games.slice(0, 30), note: games.length ? undefined : "no games found for that team/date", source: "ESPN scoreboard (unofficial)" } };
+  },
+});
+
 def({
   id: "weather.forecast", description: "Weather forecast for a place (Open-Meteo): daily highs/lows, rain chance and conditions for up to 14 days.",
   risk: "read", idempotency: "safe", defaultApproval: "none",

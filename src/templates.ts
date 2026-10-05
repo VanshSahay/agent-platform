@@ -12,6 +12,7 @@ export { PLANS } from "./billing"; // plan limits live with billing (no import c
 export interface Skill { id: string; name: string; tools: string[]; procedure: string }
 export const SKILLS: Record<string, Skill> = Object.fromEntries(([
   ["market-data", "Market data", ["market.quote", "market.history"], "Every price, move or percentage comes from market.quote/market.history in this conversation: give the number, the change and the 'as of' time, and say when a source is delayed. If a ticker fails, say so — never estimate or recall prices from memory. For 'why did it move', search the news and cite it; if nothing explains it, say so."],
+  ["sports", "Sports", ["sports.scores"], "Scores, results and schedules come only from sports.scores (give the score, status and when; say 'final' vs live). Never recall results from memory; if a league isn't covered, say so."],
   ["weather", "Weather", ["weather.forecast"], "Use weather.forecast for any weather question or plan that depends on it; give highs/lows and rain chance with the place and dates."],
   ["web-research", "Web research", ["web.search", "web.fetch"], "Search, open the best sources, and answer with cited URLs. Prefer primary sources. Say what you could not verify."],
   ["source-verification", "Source verification", ["web.fetch"], "Before stating a fact as current, open the source and check its date."],
@@ -146,6 +147,7 @@ const ROLE_RULES: [RegExp, string, string, string[]][] = [
 const KEYWORD_SKILLS: [RegExp, string[]][] = [
   [/\b(stocks?|portfolio|tickers?|shares|equit(y|ies)|etfs?|crypto|bitcoin|btc|eth(ereum)?|nasdaq|s&p|dow|market|investing|investments?|trading)\b/i, ["market-data", "web-research", "monitor-topic"]],
   [/\b(weather|forecast|rain|snow|temperature|sunny)\b/i, ["weather"]],
+  [/\b(scores?|games?|match(es)?|fixtures?|standings|playoffs?|nfl|nba|wnba|mlb|nhl|mls|premier league|champions league|la ?liga|serie a|bundesliga|f1|formula 1|football|soccer|basketball|baseball|hockey|fantasy)\b/i, ["sports", "reminders"]],
   [/\b(email|inbox|mail)/i, ["email-triage", "email-drafting"]],
   [/\b(calendar|schedul|meeting)/i, ["calendar", "meeting-prep"]],
   [/\b(remind|follow.?up|haven'?t replied|nudge)/i, ["follow-up-tracking", "reminders"]],

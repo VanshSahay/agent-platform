@@ -22,6 +22,7 @@ export interface DataNeed { need: string; how: DataHow; detail: string }
 const DATA_CATALOG: { re: RegExp; how: DataHow; detail: string; skill?: string }[] = [
   { re: /stock|share|ticker|portfolio|crypto|bitcoin|etf|index|market|currenc|exchange rate|fx/i, how: "built-in", detail: "Live market quotes and price history (Yahoo Finance; Finnhub if connected)", skill: "market-data" },
   { re: /weather|forecast|rain|temperature/i, how: "built-in", detail: "Weather forecasts (Open-Meteo)", skill: "weather" },
+  { re: /scores?|game|match|fixture|schedule of|nfl|nba|mlb|nhl|soccer|football|basketball|baseball|hockey|f1/i, how: "built-in", detail: "Live scores, results and schedules (ESPN feed, unofficial)", skill: "sports" },
   { re: /restaurant|table|reservation/i, how: "built-in", detail: "Restaurant search and booking (OpenTable/Resy through your login)", skill: "reservations" },
   { re: /email|inbox|calendar|meeting|contact/i, how: "connect", detail: "Connect Google (Gmail + Calendar)" },
   { re: /news|headline|article|review|price of|product|hotel|flight|event|ticket/i, how: "web", detail: "Web search + reading the source pages (cited, may be unverified)", skill: "web-research" },
@@ -127,7 +128,7 @@ Return JSON with: name (friendly first name), title, avatar (one emoji), underst
 jobs (3-6 concrete things it will do), routines (things it should do on its own: [{every: "daily"|"weekdays"|"weekly", day?: 0-6 Sunday=0, hour: 0-23, objective}], only if implied),
 questions (max 4 gaps that genuinely change behaviour, each {id, q, why, default?}; don't ask what the request already says), boundaries (what it must never do or must ask first),
 success (2-3 observable signs it's working), skills (subset of [${Object.keys(tpl.SKILLS).join(", ")}]),
-data_needs (the facts its jobs depend on, each {need, how, detail}: how = "built-in" (live market quotes, weather, restaurant booking, web search are built in) | "connect" (needs an account connected: Gmail/Calendar, Slack, or an API via MCP) | "website" (read or operate a specific site in a browser) | "web" (general web search, cited, may be unverified) | "ask" (only the people know it, e.g. what's in their portfolio — ask once, then remember) | "none" (no reliable source: say so)),
+data_needs (the facts its jobs depend on, each {need, how, detail}: how = "built-in" (live market quotes, weather, sports scores/schedules, restaurant booking, web search are built in) | "connect" (needs an account connected: Gmail/Calendar, Slack, or an API via MCP) | "website" (read or operate a specific site in a browser) | "web" (general web search, cited, may be unverified) | "ask" (only the people know it, e.g. what's in their portfolio — ask once, then remember) | "none" (no reliable source: say so)),
 rehearsal (2-3 realistic first messages a PERSON would send it {say, expect}; "say" must not contain invented prices, news or facts), tone.`,
     description, () => base, workspaceId);
   // Trust nothing structural from the model: keep only known skills, sane routines, bounded lists.

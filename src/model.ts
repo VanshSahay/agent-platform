@@ -190,7 +190,7 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
       ? { text: rem?.[1] ?? text, recurring: "daily", hour: Number(daily[1] ?? 9) }
       : { text: rem![1], in_minutes: rem![2] ? Number(rem![2]) * unit : t.includes("tomorrow") ? 1440 : 60 } });
   }
-  const remember = text.match(/^(?:please )?(?:remember|note)(?: that)? (.+)/i);
+  const remember = text.match(/^(?:please )?(?:remember|note)(?: that)? (.+)/i) ?? text.match(/\b((?:we|i) (?:follow|root for|support|cheer for) .+)/i);
   if (remember && has("memory.remember"))
     out.push({ name: "memory.remember", input: { text: remember[1], scope: /\b(team|everyone|workspace)\b/i.test(text) ? "workspace" : "room" } });
 
@@ -200,6 +200,21 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   if (url && has("web.fetch")) out.push({ name: "web.fetch", input: { url } });
   else if (/\b(search|find|research|look up|compare|options?|hotels?|flights?|prices?|latest|news)\b/.test(t) && !rem && has("web.search"))
     out.push({ name: "web.search", input: { query: text.replace(/^@?\w+[,:]\s*/, "").slice(0, 200) } });
+
+  // Live data tools (sports, markets, weather): the offline planner picks the obvious call.
+  const LEAGUE_OF: [RegExp, string][] = [[/\b(nba|lakers|warriors|celtics|knicks|bulls|heat|nets|suns|bucks)\b/, "nba"], [/\b(mlb|dodgers|yankees|mets|braves|red sox|cubs|giants|padres)\b/, "mlb"],
+    [/\b(nfl|chiefs|eagles|cowboys|saints|niners|49ers|packers|bills)\b/, "nfl"], [/\b(nhl|rangers|bruins|maple leafs|lightning|flyers)\b/, "nhl"],
+    [/\b(premier league|epl|arsenal|chelsea|liverpool|man(chester)? (city|united)|tottenham)\b/, "epl"], [/\b(champions league|ucl)\b/, "ucl"], [/\b(mls|inter miami|lafc)\b/, "mls"], [/\b(f1|formula 1|grand prix)\b/, "f1"]];
+  const league = LEAGUE_OF.find(([re]) => re.test(t))?.[1];
+  if (league && has("sports.scores") && /\b(scores?|win|won|lose|lost|beat|game|play|playing|match|next|when|watch|result)\b/.test(t) && !remember) {
+    const team = t.match(LEAGUE_OF.find(([, l]) => l === league)![0])?.[0];
+    out.push({ name: "sports.scores", input: { league, ...(team && team !== league ? { team } : {}), date: /\b(last night|yesterday)\b/.test(t) ? "yesterday" : "today", days: /\b(next|when|upcoming)\b/.test(t) ? 10 : 1 } });
+  }
+  const tickers = [...new Set(text.match(/\b[A-Z]{2,5}(?:-USD)?\b/g) ?? [])].filter((x) => !["I", "AM", "PM", "OK", "US", "USA", "ET", "TV", "NBA", "NFL", "MLB", "NHL"].includes(x));
+  if (has("market.quote") && (tickers.length || /\b(stocks?|portfolio|market)\b/.test(t)) && /\b(price|doing|up|down|quote|stocks?|portfolio|market|today)\b/.test(t))
+    out.push({ name: "market.quote", input: { symbols: tickers.length ? tickers.slice(0, 10) : ["^GSPC"] } });
+  const wx = text.match(/\b(?:weather|rain|forecast|snow)\b.*?\bin ([A-Z][\w .'-]+?)(?:[?.!,]|$| this| next| on| tomorrow)/i);
+  if (has("weather.forecast") && /\b(weather|rain|forecast|snow|temperature)\b/.test(t)) out.push({ name: "weather.forecast", input: { place: wx?.[1]?.trim() ?? "New York", days: 5 } });
 
   if (/\b(calendar|agenda|meetings?)\b/.test(t) && !rem) {
     if (/\b(book|create|add|set up|schedule)\b/.test(t) && has("calendar.create_event"))
