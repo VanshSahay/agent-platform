@@ -1,6 +1,7 @@
 // Photon Spectrum bridge for the shared iMessage line: inbound messages go into inbound_events (same path as webhooks),
 // outbound replies go back to the chat by its id — looked up again after a restart, so reminders and approvals still land.
-// ponytail: long-lived stream in-process; switch to app.webhook() + SPECTRUM_WEBHOOK_SECRET when running more than one server.
+// Two modes: a long-lived stream (one server), or with SPECTRUM_WEBHOOK_SECRET set, signed webhooks to POST /v1/webhooks/photon
+// so any number of servers can sit behind a load balancer (sends never needed the stream: chats are looked up by id).
 import { exec, id, now, S } from "./db";
 import { SHARED_ENV } from "./channels";
 import { storeMedia } from "./media";
@@ -24,21 +25,29 @@ export async function startPhoton() {
   if (!photonEnabled()) return;
   const { Spectrum } = await import("spectrum-ts");
   const { imessage } = await import("spectrum-ts/providers/imessage");
-  app = await Spectrum({ projectId: (process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID)!, projectSecret: (process.env.PHOTON_PROJECT_SECRET || process.env.PROJECT_SECRET)!, providers: [imessage.config()] });
+  const webhookSecret = process.env.SPECTRUM_WEBHOOK_SECRET;
+  app = await Spectrum({ projectId: (process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID)!, projectSecret: (process.env.PHOTON_PROJECT_SECRET || process.env.PROJECT_SECRET)!,
+    providers: [imessage.config()], ...(webhookSecret ? { webhookSecret } : {}) });
   platform = (imessage as any)(app);
-  console.log("[photon] iMessage line connected");
-  (async () => {
-    for await (const [space, m] of app.messages) {
-      if (m.direction !== "inbound" || !m.sender) continue;
-      spaces.set(space.id, space);
-      const base = { provider: "imessage", providerEventId: m.id, conversationId: space.id, isGroup: (space as any).type === "group",
-        senderId: m.sender.id, senderName: m.sender.id, type: "message" };
-      const e = await toEvent(m.content).catch(() => null);
-      if (!e) continue;
-      exec("insert or ignore into inbound_events (id, provider, provider_event_id, channel_identity_id, raw, received_at) values (?,?,?,?,?,?)",
-        id("inb"), "imessage", m.id, SHARED_ENV.imessage.id, S({ ...base, ...e }), now());
-    }
-  })().catch((err) => console.error("[photon] stream stopped:", err?.message));
+  if (webhookSecret) { console.log("[photon] iMessage line connected (webhook mode: POST /v1/webhooks/photon)"); return; }
+  console.log("[photon] iMessage line connected (stream)");
+  (async () => { for await (const [space, m] of app.messages) await ingest(space, m); })().catch((err) => console.error("[photon] stream stopped:", err?.message));
+}
+
+/** Webhook mode: Spectrum verifies the signature (bad → 401); each message is stored once (dedupe on its id). */
+export async function photonWebhook(req: Request) {
+  if (!app || !process.env.SPECTRUM_WEBHOOK_SECRET) return new Response("iMessage webhooks aren't enabled", { status: 404 });
+  return app.webhook(req, (space: any, m: any) => ingest(space, m));
+}
+
+async function ingest(space: any, m: any) {
+  if (m.direction !== "inbound" || !m.sender) return;
+  spaces.set(space.id, space);
+  const base = { provider: "imessage", providerEventId: m.id, conversationId: space.id, isGroup: space.type === "group", senderId: m.sender.id, senderName: m.sender.id, type: "message" };
+  const e = await toEvent(m.content).catch(() => null);
+  if (!e) return;
+  exec("insert or ignore into inbound_events (id, provider, provider_event_id, channel_identity_id, raw, received_at) values (?,?,?,?,?,?)",
+    id("inb"), "imessage", m.id, SHARED_ENV.imessage.id, S({ ...base, ...e }), now());
 }
 
 /** Spectrum content → the parts of an InboundEvent we use. Bytes are stored right away (inbound_events holds JSON only). */

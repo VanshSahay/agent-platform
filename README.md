@@ -102,7 +102,9 @@ Per workspace you can pick the model for each profile (everyday work, quick step
 |---|---|
 | `OPENROUTER_API_KEY` | Platform key for open-source models (credits mode) |
 | `JEV_API_KEY` | Optional. TypeSafe JEV for fast yes/no gates: group "relevant" replies and the unbacked-claim check (~150ms each; falls back without it) |
+| `EXA_API_KEY` / `BRAVE_API_KEY` / `SERPER_API_KEY` / `TAVILY_API_KEY` | Web search for agents; first one set wins, falling through on failure. Serper = Google's results. Without any, a keyless DuckDuckGo fallback (unreliable, bot-checked) |
 | `MEDIA_MODEL` | Optional. Multimodal model (OpenRouter) that describes photos and transcribes voice notes people send; default `google/gemini-2.5-flash`. `MEDIA_UNDERSTANDING=off` disables |
+| `SPECTRUM_WEBHOOK_SECRET` | iMessage (Photon) webhook mode: Photon POSTs to `/v1/webhooks/photon` instead of a per-server stream, so several servers can run. Set the same secret in Photon's dashboard |
 | `DEFAULT_TZ` | Time zone agents use for "today", "Saturday 7pm" (default: the server's) |
 | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Optional. Clerk sign-in (Google, email codes, phone) instead of built-in email/password. `clerk link --app <id> && clerk env pull --file .env.clerk` fills them. `CLERK_AUTHORIZED_PARTIES` adds extra allowed origins besides `PUBLIC_URL` |
 | `OPENROUTER_MODEL`, `OPENROUTER_FAST_MODEL` | Override the open-model defaults (`openrouter:<model-id>`) |

@@ -6,6 +6,8 @@
 import { generate, type Msg, type ToolSpec } from "./model";
 import { bb } from "./browser";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)); // runs in the Bun server and the Node Temporal worker
+
 export interface BrowserJob {
   task: string; startUrl?: string; workspaceId: string; agentId?: string; runId?: string;
   sessionId?: string;                                  // reuse a session (e.g. one opened on the user's login Context)
@@ -68,8 +70,8 @@ const OBSERVE = `(() => {
 const el = (i: number) => `document.querySelector('[data-agent-i="${Number(i)}"]')`;
 async function settle(c: Cdp, ms = 12_000) {
   const end = Date.now() + ms;
-  while (Date.now() < end) { if ((await c.eval("document.readyState").catch(() => "")) === "complete") break; await Bun.sleep(300); }
-  await Bun.sleep(700); // SPA re-render after load
+  while (Date.now() < end) { if ((await c.eval("document.readyState").catch(() => "")) === "complete") break; await sleep(300); }
+  await sleep(700); // SPA re-render after load
 }
 const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 const allowed = (u: string, ds?: string[]) => !ds?.length || /^(about|data|chrome):/.test(u) || ds.some((d) => host(u) === d || host(u).endsWith(`.${d}`));
@@ -156,7 +158,7 @@ async function act(c: Cdp, name: string, a: any, job: BrowserJob): Promise<strin
       await settle(c, 4000);
       return r === "ok" ? `selected "${a.option}" in [${a.i}]` : `select [${a.i}]: ${r}`;
     }
-    case "scroll": await c.eval(`window.scrollBy(0, ${a.direction === "up" ? -1 : 1} * innerHeight * 0.8)`); await Bun.sleep(400); return `scrolled ${a.direction}`;
+    case "scroll": await c.eval(`window.scrollBy(0, ${a.direction === "up" ? -1 : 1} * innerHeight * 0.8)`); await sleep(400); return `scrolled ${a.direction}`;
     case "goto": {
       if (!/^https?:\/\//.test(a.url) || !allowed(a.url, job.allowedDomains)) return `goto refused: ${a.url} is not an allowed site`;
       await c.send("Page.navigate", { url: a.url }); await settle(c); return `opened ${a.url}`;

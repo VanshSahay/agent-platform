@@ -52,11 +52,15 @@ export async function describe(fileId: string, ctx: { workspaceId: string; roomI
 async function understand(kind: "photo" | "voice", mime: string, data: Uint8Array, workspaceId: string): Promise<string | null> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key || process.env.MEDIA_UNDERSTANDING === "off") return null;
+  if (kind === "voice" && !AUDIO_FORMAT[mime]) { // e.g. iMessage .caf voice memos: no model accepts the container, so transcode
+    const mp3 = await toMp3(data);
+    if (!mp3) return null;
+    data = mp3; mime = "audio/mpeg";
+  }
   const b64 = Buffer.from(data).toString("base64");
   const part = kind === "photo"
     ? { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }
-    : AUDIO_FORMAT[mime] ? { type: "input_audio", input_audio: { data: b64, format: AUDIO_FORMAT[mime] } } : null;
-  if (!part) return null; // e.g. iMessage .caf voice memos: no model accepts the container without transcoding
+    : { type: "input_audio", input_audio: { data: b64, format: AUDIO_FORMAT[mime] } };
   const ask = kind === "photo"
     ? "Describe this photo in 1-3 plain sentences for someone who can't see it. If it contains text (receipt, menu, screenshot, ticket, sign), transcribe the important text exactly, including amounts, dates and names."
     : "Transcribe this voice note exactly. Return only the transcript.";
@@ -71,4 +75,17 @@ async function understand(kind: "photo" | "voice", mime: string, data: Uint8Arra
     recordUsage({ workspace_id: workspaceId, kind: kind === "photo" ? "photo_understanding" : "voice_transcription", qty: 1 });
     return text.slice(0, 4000);
   } catch { return null; }
+}
+
+/** Any audio → 16 kHz mono MP3 via ffmpeg (installed in the server image). null when ffmpeg isn't available or fails. */
+export async function toMp3(data: Uint8Array): Promise<Uint8Array | null> {
+  if (!Bun.which("ffmpeg")) return null;
+  const { tmpdir } = await import("node:os"), { join } = await import("node:path"), { rm } = await import("node:fs/promises");
+  const src = join(tmpdir(), `${id("aud")}.in`), dst = `${src}.mp3`;
+  try {
+    await Bun.write(src, data);
+    const p = Bun.spawn(["ffmpeg", "-v", "error", "-y", "-i", src, "-ac", "1", "-ar", "16000", "-f", "mp3", dst], { stdout: "ignore", stderr: "ignore" });
+    if ((await p.exited) !== 0) return null;
+    return new Uint8Array(await Bun.file(dst).arrayBuffer());
+  } catch { return null; } finally { await rm(src, { force: true }); await rm(dst, { force: true }); }
 }

@@ -231,23 +231,45 @@ def({
   id: "web.search", description: "Search the web. Returns titles, URLs and snippets.", risk: "read", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ query: str("search query") }, ["query"]),
   async execute({ query }) {
-    if (process.env.EXA_API_KEY) {
-      const r = await call("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": process.env.EXA_API_KEY, "content-type": "application/json" },
-        body: S({ query, numResults: 5, contents: { text: { maxCharacters: 600 } } }) });
-      const j: any = await r.json();
-      return { status: "SUCCEEDED", untrusted: true, output: { results: j.results.map((x: any) => ({ title: x.title, url: x.url, snippet: x.text })) } };
+    // First configured provider that answers wins: Exa (built for agents), Brave (independent index), Serper (Google's results),
+    // Tavily; then keyless DuckDuckGo (no SLA, and it bot-checks automated traffic: set a key for real use). Each failure falls through, so one outage doesn't blind every agent.
+    const tried: string[] = [];
+    for (const [name, run] of SEARCH_PROVIDERS) {
+      if (!run.enabled()) continue;
+      try { const results = await run.search(query); if (results.length) return { status: "SUCCEEDED", untrusted: true, output: { results: results.slice(0, 6), via: name } }; tried.push(`${name}: no results`); }
+      catch (e: any) { tried.push(`${name}: ${e.message?.slice(0, 80)}`); }
     }
-    // ponytail: keyless fallback scrapes DuckDuckGo's HTML endpoint; set EXA_API_KEY for production search.
-    const r = await call(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers: { "user-agent": "Mozilla/5.0 agent-platform" } });
-    const html = await r.text(), results: any[] = [];
-    for (const m of html.matchAll(/class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)) {
-      let url = m[1]; const u = url.match(/uddg=([^&]+)/); if (u) url = decodeURIComponent(u[1]);
-      results.push({ title: stripHtml(m[2]), url, snippet: stripHtml(m[3]) });
-      if (results.length >= 5) break;
-    }
-    return { status: "SUCCEEDED", untrusted: true, output: { results } };
+    return { status: "SUCCEEDED", untrusted: true, output: { results: [], note: `no results (${tried.join("; ")})` } };
   },
 });
+
+type Hit = { title: string; url: string; snippet: string };
+const ddg = async (url: string, re: RegExp) => {
+  const r = await call(url, { headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" } });
+  const html = await r.text(), out: Hit[] = [];
+  for (const m of html.matchAll(re)) {
+    let u = m[1]; const x = u.match(/uddg=([^&]+)/); if (x) u = decodeURIComponent(x[1]);
+    if (/^https?:/.test(u)) out.push({ title: stripHtml(m[2]), url: u, snippet: stripHtml(m[3] ?? "") });
+  }
+  return out;
+};
+const SEARCH_PROVIDERS: [string, { enabled: () => boolean; search: (q: string) => Promise<Hit[]> }][] = [
+  ["exa", { enabled: () => !!process.env.EXA_API_KEY, search: async (q) => {
+    const j: any = await (await call("https://api.exa.ai/search", { method: "POST", headers: { "x-api-key": process.env.EXA_API_KEY!, "content-type": "application/json" },
+      body: S({ query: q, numResults: 6, contents: { text: { maxCharacters: 600 } } }) })).json();
+    return (j.results ?? []).map((x: any) => ({ title: x.title, url: x.url, snippet: x.text })); } }],
+  ["brave", { enabled: () => !!process.env.BRAVE_API_KEY, search: async (q) => {
+    const j: any = await (await call(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=6`, { headers: { "x-subscription-token": process.env.BRAVE_API_KEY!, accept: "application/json" } })).json();
+    return (j.web?.results ?? []).map((x: any) => ({ title: x.title, url: x.url, snippet: stripHtml(x.description ?? "") })); } }],
+  ["serper", { enabled: () => !!process.env.SERPER_API_KEY, search: async (q) => {
+    const j: any = await (await call("https://google.serper.dev/search", { method: "POST", headers: { "x-api-key": process.env.SERPER_API_KEY!, "content-type": "application/json" }, body: S({ q, num: 6 }) })).json();
+    return (j.organic ?? []).map((x: any) => ({ title: x.title, url: x.link, snippet: x.snippet ?? "" })); } }],
+  ["tavily", { enabled: () => !!process.env.TAVILY_API_KEY, search: async (q) => {
+    const j: any = await (await call("https://api.tavily.com/search", { method: "POST", headers: { authorization: `Bearer ${process.env.TAVILY_API_KEY}`, "content-type": "application/json" }, body: S({ query: q, max_results: 6 }) })).json();
+    return (j.results ?? []).map((x: any) => ({ title: x.title, url: x.url, snippet: x.content ?? "" })); } }],
+  ["duckduckgo", { enabled: () => true, search: (q) => ddg(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+    /class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g) }],
+];
 
 def({
   id: "web.fetch", description: "Fetch a public web page and return its readable text.", risk: "read", idempotency: "safe", defaultApproval: "none",

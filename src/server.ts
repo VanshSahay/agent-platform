@@ -173,6 +173,7 @@ export const routes: Record<string, any> = {
   ...browserRoutes, // live-browser website logins (src/browser.ts)
   "/v1/health": { GET: () => json({ ok: true }) },
 
+  "/v1/webhooks/photon": { POST: async (req: Request) => (await import("./photon")).photonWebhook(req) },
   "/v1/me/tz": { POST: h(async (req) => { const u = userOf(req), b = await body(req); if (!setTz(u.id, String(b.tz ?? ""))) fail(400, "unknown time zone"); return json({ tz: b.tz }); }) },
   "/v1/auth/config": { GET: h(() => json({ clerk: clerkOn() ? clerkPublishableKey() : null })) },
   "/v1/auth/clerk": { POST: h(async (req) => {
