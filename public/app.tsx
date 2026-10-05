@@ -1,6 +1,10 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
+import { ClerkProvider, SignIn, useAuth } from "@clerk/react";
+
+// Set at boot from /v1/auth/config: Clerk's publishable key when the server has Clerk on, else null (built-in sign-in).
+let CLERK_KEY: string | null = null;
 
 // PWA: installable on phones (added at runtime so the HTML bundler doesn't try to resolve them).
 for (const [rel, href] of [["manifest", "/manifest.webmanifest"], ["icon", "/icon.svg"], ["apple-touch-icon", "/icon.svg"]]) {
@@ -51,84 +55,7 @@ function QR({ value, size = 168 }: { value: string; size?: number }) {
   return <div style={{ display: "inline-block", flexShrink: 0, lineHeight: 0, background: "#fff", padding: 8, borderRadius: 10 }} dangerouslySetInnerHTML={{ __html: q.createSvgTag(cell, 0) }} />;
 }
 
-function Landing({ onDone }: { onDone: () => void }) {
-  const [list] = useApi<any[]>("/v1/agent-templates");
-  return <div className="landing">
-    <div className="landing-hero">
-      <div>
-        <div className="pill accent">Agents that live where you talk</div>
-        <h1 style={{ fontSize: 40, lineHeight: 1.1, margin: "14px 0" }}>Describe an agent.<br />Test it. Text it.</h1>
-        <p className="muted" style={{ fontSize: 17 }}>Create an agent for yourself or your team in plain words, try it safely, then deploy it in one tap to iMessage, WhatsApp, Slack, Telegram or the web — where it actually does the work.</p>
-        <div className="row wrap mt16" style={{ gap: 18 }}>{[["1", "Describe", "“Grab me a table at the hottest spots on Resy”"], ["2", "Test", "Dry-run it — nothing is sent or booked"], ["3", "Deploy", "Text it from your phone or add it to a group"]].map(([n, h, d]) =>
-          <div key={n} style={{ maxWidth: 190 }}><div className="avatar">{n}</div><b className="mt8" style={{ display: "block" }}>{h}</b><div className="small muted">{d}</div></div>)}</div>
-      </div>
-      <Auth onDone={onDone} />
-    </div>
-    <h2 style={{ maxWidth: 1040, margin: "40px auto 12px", padding: "0 24px" }}>Ready-made agents</h2>
-    <div className="grid2" style={{ maxWidth: 1040, margin: "0 auto", padding: "0 24px 60px" }}>{list?.map((t) => <a key={t.id} className="card" href={`#/discover/${t.slug}`}>
-      <div className="row"><div className="avatar">{t.manifest.avatar ?? t.name[0]}</div><b>{t.name}</b><span className="muted small">{t.manifest.title}</span></div>
-      <div className="small muted mt8">{t.tagline}</div><div className="small mt8" style={{ color: "var(--accent-text)" }}>Try it →</div></a>)}</div>
-  </div>;
-}
-
-function Auth({ onDone }: { onDone: () => void }) {
-  const [mode, setMode] = useState<"login" | "signup">("signup"), [f, setF] = useState({ name: "", email: "", password: "" }), [err, setErr] = useState("");
-  const submit = async (e: any) => { e.preventDefault(); setErr(""); try { await api(`/v1/auth/${mode}`, f); onDone(); } catch (x: any) { setErr(x.message); } };
-  return <div className="auth card">
-    <h1>{mode === "signup" ? "Create your account" : "Welcome back"}</h1>
-    <p className="muted">Persistent agents that work wherever you already talk.</p>
-    <form className="col mt16" onSubmit={submit}>
-      {mode === "signup" && <input className="input" placeholder="Name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />}
-      <input className="input" placeholder="Email" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
-      <input className="input" placeholder="Password (8+ characters)" type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
-      {err && <div className="pill bad">{err}</div>}
-      <button className="btn primary">{mode === "signup" ? "Sign up" : "Sign in"}</button>
-      <a className="small muted" href="#" onClick={(e) => { e.preventDefault(); setMode(mode === "login" ? "signup" : "login"); }}>{mode === "login" ? "New here? Create an account" : "Have an account? Sign in"}</a>
-    </form>
-    <p className="small faint mt16">Or <a href="#/discover" style={{ textDecoration: "underline" }}>try a public agent</a> without an account.</p>
-  </div>;
-}
-
 // ---------------- shell ----------------
-function App() {
-  const route = useHash();
-  const [me, reloadMe, meErr] = useApi<any>("/v1/me");
-  const [ws, setWsState] = useState<string>(() => localStorage.getItem("ws") ?? "");
-  const [msg, setMsg] = useState("");
-  const toast = (s: string) => { setMsg(s); setTimeout(() => setMsg(""), 2500); };
-  const setWs = (w: string) => { localStorage.setItem("ws", w); setWsState(w); };
-  useEffect(() => { if (me && !me.workspaces.find((w: any) => w.id === ws)) setWs(me.workspaces[0]?.id); }, [me]);
-  const [home] = useApi<any>(me && ws ? `/v1/home?workspace=${ws}` : null, 5000);
-  useEffect(() => { document.querySelector(".main")?.scrollTo(0, 0); }, [route]);
-
-  if (route.startsWith("/discover") && !me) return <div className="page"><Discover route={route} anonymous /></div>;
-  if (meErr && !me) return <Landing onDone={() => { reloadMe(); go("/agents/new"); }} />;
-  if (!me || !ws) return <div className="page muted">Loading…</div>;
-  const attention = home ? home.needs_attention.approvals.length + home.needs_attention.waits.length + home.needs_attention.reconnect.length : 0;
-  const nav = [["/", "Home", "⌂"], ["/agents", "Agents", "◎"], ["/rooms", "Rooms", "◇"], ["/tasks", "Tasks", "☑"], ["/discover", "Discover", "✦"], ["/connections", "Connections", "⟷"], ["/activity", "Activity", "≡"]];
-  const on = (p: string) => (p === "/" ? route === "/" : route.startsWith(p));
-  const wide = /^\/rooms\/[^/]+$/.test(route);
-  return <Ctx.Provider value={{ me, ws, setWs, toast, reloadMe }}>
-    <div className="app">
-      <nav className="rail">
-        <select className="ws-switch" value={ws} onChange={(e) => { setWs(e.target.value); go("/"); }}>
-          {me.workspaces.map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}
-        </select>
-        {nav.map(([p, l, i]) => <a key={p} href={`#${p}`} className={on(p) ? "on" : ""}><span style={{ width: 16, textAlign: "center" }}>{i}</span>{l}{p === "/" && attention > 0 && <span className="count">{attention}</span>}</a>)}
-        <div className="sep" />
-        <a href="#/settings" className={on("/settings") ? "on" : ""}><span style={{ width: 16, textAlign: "center" }}>⚙</span>Settings</a>
-      </nav>
-      <main className="main"><div className={`page ${wide ? "wide" : ""}`}>
-        {route === "/" ? <Home /> : route === "/agents" ? <Agents /> : route === "/agents/new" ? <CreateAgent /> : route.startsWith("/agents/") ? <AgentPage id={route.split("/")[2]} tab={route.split("/")[3]} />
-          : route === "/rooms" ? <Rooms /> : route.startsWith("/rooms/") ? <Room id={route.split("/")[2]} /> : route.startsWith("/discover") ? <Discover route={route} />
-          : route.startsWith("/connections") ? <Connections /> : route === "/activity" ? <Activity /> : route === "/tasks" ? <Tasks /> : route.startsWith("/settings") ? <Settings />
-          : route.startsWith("/invite/") ? <AcceptInvite token={route.split("/")[2]} /> : <div className="empty">Not found</div>}
-      </div></main>
-    </div>
-    {msg && <div className="toast">{msg}</div>}
-  </Ctx.Provider>;
-}
-
 // ---------------- Home ----------------
 function ApprovalCard({ a, onDone }: { a: any; onDone: () => void }) {
   const { toast } = useCtx();
@@ -147,37 +74,6 @@ function ApprovalCard({ a, onDone }: { a: any; onDone: () => void }) {
     <div className="row mt8 between"><button className="btn" disabled={busy} onClick={() => decide("reject")}>Reject</button>
       <button className="btn primary" disabled={busy} onClick={() => decide("approve")}>{a.strong ? "Confirm" : "Approve once"}</button></div>
   </div>;
-}
-function Home() {
-  const { ws, me } = useCtx();
-  const [d, reload] = useApi<any>(`/v1/home?workspace=${ws}`, 4000);
-  if (!d) return null;
-  const hour = new Date().getHours();
-  const att = d.needs_attention;
-  const n = att.approvals.length + att.waits.length + att.reconnect.length;
-  return <>
-    <h1>Good {hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening"}, {me.user.name.split(" ")[0]}</h1>
-    {d.agent_count === 0 && <QuickStart />}
-    <p className="muted">{n ? `${n} thing${n > 1 ? "s" : ""} need${n === 1 ? "s" : ""} your attention.` : "Nothing needs you right now."}</p>
-    <h2>Needs your attention {n > 0 && <span className="pill accent">{n}</span>}</h2>
-    {!n && <div className="empty">You're all caught up.</div>}
-    <div className="col">
-      {att.approvals.map((a: any) => <ApprovalCard key={a.id} a={a} onDone={reload} />)}
-      {att.reconnect.map((c: any) => <div key={c.id} className="card row"><span className="pill warn">Reconnect</span><span className="grow">{c.provider} ({c.account}) needs to be reconnected; agent work is paused.</span><a className="btn" href={`/v1/connections/google/start?workspace=${ws}&reconnect=${c.id}`}>Reconnect</a></div>)}
-      {att.waits.map((w: any) => <WaitCard key={w.id} w={w} onDone={reload} />)}
-    </div>
-    <h2>Active</h2>
-    {d.active.length ? <div className="list">{d.active.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}>
-      <div className="avatar">{r.agent_name?.[0]}</div>
-      <div className="grow"><div><b>{r.agent_name}</b> <span className="muted">{r.waits[0]?.reason ?? r.objective}</span></div><div className="small faint">{r.room_name} · {ago(r.updated_at)}</div></div>
-      <Status s={r.status} /></a>)}</div> : <div className="empty">No agents are working on anything right now.</div>}
-    {d.blocked.length > 0 && <><h2>Blocked</h2><div className="list">{d.blocked.map((t: any) => <a key={t.id} className="item" href={`#/rooms/${t.room_id}`}>
-      <span className="pill bad">Blocked</span><span className="grow">{t.title}</span><span className="small muted">Owner: {t.owner_name} · {t.room_name}</span></a>)}</div></>}
-    <h2>Recently completed</h2>
-    {d.completed.length ? <div className="list">{d.completed.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}>
-      <span style={{ color: "var(--ok)" }}>✓</span><div className="grow"><div>{r.objective.slice(0, 90)}</div><div className="small faint">{r.agent_name} · {r.room_name} · {ago(r.completed_at)}</div></div></a>)}</div> : <div className="empty">Finished work will show up here.</div>}
-    {d.failed.length > 0 && <><h2>Failed</h2><div className="list">{d.failed.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}><span className="pill bad">Failed</span><span className="grow">{r.objective.slice(0, 80)}</span><span className="small muted">{r.error}</span></a>)}</div></>}
-  </>;
 }
 function BriefCard({ b, live, onDone, onEdit }: { b: any; live: any; onDone: () => void; onEdit: (prefill: string) => void }) {
   const { toast } = useCtx();
@@ -198,13 +94,6 @@ function BriefCard({ b, live, onDone, onEdit }: { b: any; live: any; onDone: () 
       {(!clarify || brief.questions.every((q: any) => q.default)) && <button className="btn primary" onClick={() => act("go")}>{clarify ? "Use defaults" : "Go"}</button>}</div>}
   </div>;
 }
-function QuickStart() {
-  const { ws, toast } = useCtx();
-  const [list] = useApi<any[]>("/v1/agent-templates");
-  const add = async (slug: string) => { try { const r = await api(`/v1/agent-templates/${slug}/install`, { workspace_id: ws }); go(`/agents/${r.agent.id}`); } catch (e: any) { toast(e.message); } };
-  return <div className="card mt16"><h3>Start with an agent</h3><p className="muted small">Pick one to add in one click, or <a href="#/agents/new" style={{ textDecoration: "underline" }}>describe your own</a>.</p>
-    <div className="col mt8">{list?.map((t) => <div key={t.id} className="row"><div className="avatar">{t.manifest.avatar ?? t.name[0]}</div><div className="grow"><b>{t.name}</b> <span className="muted small">{t.tagline}</span></div><button className="btn sm primary" onClick={() => add(t.slug)}>Add</button></div>)}</div></div>;
-}
 function WaitCard({ w, onDone }: { w: any; onDone: () => void }) {
   const resolve = async (outcome: string) => { await api(`/v1/waits/${w.id}/resolve`, { outcome }); onDone(); };
   return <div className="card"><div className="row"><span className="pill warn">{w.kind === "verify" ? "Verify" : "Action needed"}</span><b>{w.agent_name}</b></div>
@@ -214,24 +103,6 @@ function WaitCard({ w, onDone }: { w: any; onDone: () => void }) {
 }
 
 // ---------------- Agents ----------------
-function Agents() {
-  const { setWs } = useCtx();
-  const [ov] = useApi<any[]>("/v1/overview", 8000);
-  return <>
-    <div className="row between"><div><h1>Agents</h1><p className="muted">Everything your agents do, across all your workspaces.</p></div>
-      <div className="row"><a className="btn" href="#/discover">Browse agents</a><a className="btn primary" href="#/agents/new">New agent</a></div></div>
-    {ov?.map((w) => <div key={w.workspace.id}><h2>{w.workspace.name}</h2>
-      {w.agents.length ? <div className="list">{w.agents.map((a: any) => <a key={a.id} className="item" href={`#/agents/${a.id}`} onClick={() => setWs(w.workspace.id)}>
-        <div className="avatar">{a.avatar}</div>
-        <div className="grow"><div><b>{a.name}</b> <span className="muted">— {a.job}</span></div>
-          <div className="row wrap small mt8" style={{ gap: 4 }}>{a.deployed.map((p: string) => <span key={p} className="pill accent">{PLATFORM[p] ?? p}</span>)}
-            {a.connections.map((c: any, i: number) => <span key={i} className="pill">{c.provider === "site_login" ? c.account : c.provider}</span>)}</div></div>
-        <div className="small muted" style={{ textAlign: "right", minWidth: 140 }}>{a.active_runs ? <span className="pill accent">{a.active_runs} in progress</span> : <span className="row" style={{ justifyContent: "flex-end" }}><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}</span>}
-          <div className="mt8">{a.completed_this_month} done this month · {a.open_tasks} open</div><div>{a.memories} memories · ${a.spend_this_month}</div></div>
-      </a>)}</div> : <div className="empty">No agents in this workspace yet.</div>}</div>)}
-  </>;
-}
-
 function Tasks() {
   const { ws, toast } = useCtx();
   const [mine, setMine] = useState(false);
@@ -265,167 +136,14 @@ function PermissionRows({ rows, onChange }: { rows: any[]; onChange?: (tool: str
   </tr>)}</tbody></table>;
 }
 
-function CreateAgent() {
-  const { ws, me, setWs, toast, reloadMe } = useCtx();
-  const teams = me.workspaces.filter((w: any) => w.kind === "team");
-  const [forWho, setForWho] = useState<string>(me.workspaces.find((w: any) => w.id === ws)?.kind === "team" ? ws : "me"), [teamName, setTeamName] = useState("");
-  const [desc, setDesc] = useState(""), [draft, setDraft] = useState<any>(null), [busy, setBusy] = useState(false), [custom, setCustom] = useState(false);
-  const [catalog] = useApi<any>("/v1/catalog");
-  const propose = async () => { setBusy(true); try { setDraft(await api("/v1/agents/draft", { description: desc, workspace_id: ws })); } catch (e: any) { toast(e.message); } finally { setBusy(false); } };
-  const create = async () => {
-    setBusy(true);
-    try {
-      const perms = Object.fromEntries(draft.permissions.map((p: any) => [p.tool, p.mode]));
-      // Who it's for decides the workspace: your personal one, an existing team, or a new team.
-      let target = forWho === "me" ? me.workspaces.find((w: any) => w.kind === "personal")?.id ?? ws : forWho;
-      if (forWho === "new") { const w = await api("/v1/workspaces", { name: teamName || "My team" }); target = w.id; reloadMe(); }
-      const a = await api("/v1/agents", { workspace_id: target, name: draft.name, title: draft.title, job: draft.job, skills: draft.skills, permissions: perms });
-      setWs(target);
-      go(`/agents/${a.id}/test`);
-    } catch (e: any) { toast(e.message); } finally { setBusy(false); }
-  };
-  const toggleSkill = async (s: string) => {
-    const skills = draft.skills.includes(s) ? draft.skills.filter((x: string) => x !== s) : [...draft.skills, s];
-    const tools = new Set(["memory.remember", "task.create", "task.update", ...skills.flatMap((k: string) => catalog.skills.find((x: any) => x.id === k)?.tools ?? [])]);
-    const perms = catalog.tools.filter((t: any) => tools.has(t.id)).map((t: any) => draft.permissions.find((p: any) => p.tool === t.id) ?? { tool: t.id, risk: t.risk, description: t.description,
-      mode: t.risk === "financial" || t.risk === "destructive" ? "always_ask" : t.defaultApproval === "none" ? "auto" : t.defaultApproval === "first_time" ? "first_time" : "ask" });
-    setDraft({ ...draft, skills, permissions: perms, connections: [...new Set(catalog.tools.filter((t: any) => tools.has(t.id) && t.requiresConnection).map((t: any) => t.requiresConnection))] });
-  };
-  return <>
-    <h1>New agent</h1>
-    <p className="muted">Describe the job. You can adjust everything after.</p>
-    <div className="mt16"><textarea className="input hero-input" autoFocus placeholder="What do you want this agent to do?  e.g. “An executive assistant that watches my email, prepares me for meetings, helps schedule things and reminds me when people haven't replied.”" value={desc} onChange={(e) => setDesc(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) propose(); }} /></div>
-    <div className="row wrap mt8"><span className="small muted">For</span>
-      <select className="input" style={{ width: 220 }} value={forWho} onChange={(e) => setForWho(e.target.value)}>
-        <option value="me">Just me (personal)</option>{teams.map((t: any) => <option key={t.id} value={t.id}>My team: {t.name}</option>)}<option value="new">A new team…</option></select>
-      {forWho === "new" && <input className="input" style={{ width: 200 }} placeholder="Team name" value={teamName} onChange={(e) => setTeamName(e.target.value)} />}</div>
-    <div className="row mt8"><button className="btn primary" disabled={!desc.trim() || busy} onClick={propose}>{busy && !draft ? "Thinking…" : draft ? "Re-propose" : "Propose agent"}</button><span className="small faint">⌘↵</span></div>
-    {draft && <div className="card mt16 draft">
-      <div className="row gap16"><div className="avatar lg">{draft.name[0]}</div>
-        {custom ? <div className="col grow"><input className="input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /><input className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></div>
-          : <div><h3 style={{ fontSize: 20 }}>{draft.name}</h3><div className="muted">{draft.title}</div></div>}</div>
-      <h4>JOB</h4>{custom ? <textarea className="input" value={draft.job} onChange={(e) => setDraft({ ...draft, job: e.target.value })} /> : <div>{draft.job}</div>}
-      <h4>SKILLS</h4>
-      {(custom ? catalog?.skills ?? [] : draft.skillDetails).map((s: any) => <label key={s.id} className="check"><input type="checkbox" checked={draft.skills.includes(s.id)} disabled={!custom} onChange={() => toggleSkill(s.id)} />{s.name}</label>)}
-      <h4>CONNECTIONS NEEDED</h4>{draft.connections.length ? draft.connections.map((c: string) => <div key={c} className="check">○ {c === "google" ? "Gmail + Google Calendar" : c}</div>) : <div className="muted">None</div>}
-      <h4>DEFAULT PERMISSIONS</h4><PermissionRows rows={draft.permissions} onChange={custom ? (t, m) => setDraft({ ...draft, permissions: draft.permissions.map((p: any) => p.tool === t ? { ...p, mode: m } : p) }) : undefined} />
-      <h4>CHANNELS</h4><div className="row wrap">{draft.channels.map((c: string) => <span key={c} className="pill">○ {PLATFORM[c]}</span>)}</div>
-      <div className="row mt16"><button className="btn primary" disabled={busy || !draft.name} onClick={create}>Create &amp; test it</button><button className="btn" onClick={() => setCustom(!custom)}>{custom ? "Done customizing" : "Customize"}</button></div>
-    </div>}
-  </>;
-}
-
-function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
-  const { ws, toast } = useCtx();
-  const [a, reload] = useApi<any>(`/v1/agents/${id}`, 6000);
-  if (!a) return null;
-  const tabs = ["overview", "test", "deploy", "job", "skills", "connections", "memory", "permissions", "schedule", "activity", "settings"];
-  const message = async () => { const r = await api(`/v1/agents/${id}/private-room`, {}); go(`/rooms/${r.id}`); };
-  const patch = async (b: any) => { try { await api(`/v1/agents/${id}`, b, "PATCH"); toast("Saved"); reload(); } catch (e: any) { toast(e.message); } };
-  return <>
-    <div className="row gap16"><div className="avatar lg">{a.avatar}</div>
-      <div className="grow"><h1>{a.name}</h1><div className="row small"><span className={`dot ${a.status === "active" ? "" : "idle"}`} /><span className="muted">{a.status === "active" ? "Active" : "Paused"}</span>{a.template_version && <span className="pill">v{a.template_version}</span>}</div></div>
-      <button className="btn primary" onClick={message}>Message</button><AddTo agent={a} /></div>
-    <div className="tabs">{tabs.map((t) => <a key={t} className={t === tab ? "on" : ""} href={`#/agents/${id}/${t}`}>{t[0].toUpperCase() + t.slice(1)}</a>)}</div>
-    {tab === "overview" && <SetupChecklist a={a} onMessage={message} />}
-    {tab === "overview" && <div className="grid2">
-      <div className="card"><div className="small muted">What it does</div><div className="mt8">{a.job}</div></div>
-      <div className="card"><div className="small muted">Where it lives</div><div className="mt8 row wrap"><span className="pill">Web</span>{a.deployed?.filter((p: string) => p !== "web").map((p: string) => <span key={p} className="pill accent">{PLATFORM[p]}</span>)}</div><a className="small mt8" style={{ display: "block", color: "var(--accent-text)" }} href={`#/agents/${a.id}/deploy`}>Deploy somewhere →</a></div>
-      <div className="card"><div className="small muted">Who it works with</div><div className="mt8 col">{a.rooms.map((r: any) => <a key={r.id} href={`#/rooms/${r.id}`}>◇ {r.name}</a>)}</div></div>
-      <div className="card"><div className="small muted">What it can access</div><div className="mt8 col">{a.connections.length ? a.connections.map((c: any) => <div key={c.id}>{c.provider} · {c.account} <span className="faint">({c.owner})</span></div>) : <span className="muted">No connections{a.connections_needed.length ? ` — needs ${a.connections_needed.join(", ")}` : ""}</span>}</div></div>
-      <div className="card" style={{ gridColumn: "1 / -1" }}><div className="small muted">What it's doing</div>{a.active_runs.length ? a.active_runs.map((r: any) => <a key={r.id} href={`#/rooms/${r.room_id}`} className="row mt8"><Status s={r.status} /><span>{r.objective.slice(0, 100)}</span></a>) : <div className="mt8 muted">Idle</div>}</div>
-    </div>}
-    {tab === "job" && <JobEditor a={a} patch={patch} />}
-    {tab === "skills" && <SkillsEditor a={a} patch={patch} />}
-    {tab === "connections" && <AgentConnections a={a} reload={reload} />}
-    {tab === "memory" && <MemoryList agent={a.id} agentName={a.name} />}
-    {tab === "test" && <TestPanel a={a} />}
-    {tab === "deploy" && <Deploy a={a} reload={reload} />}
-    {tab === "channels" && <ChannelsEditor a={a} reload={reload} />}
-    {tab === "permissions" && <div className="card"><PermissionRows rows={a.permission_table} onChange={(t, m) => patch({ permissions: { [t]: m } })} /><p className="small faint mt8">Permissions are enforced by the platform before every action. The agent can't change them.</p></div>}
-    {tab === "schedule" && <div className="list">{a.schedules.length ? a.schedules.map((s: any) => <div key={s.id} className="item"><span className="pill">{s.kind}</span><span className="grow">{s.objective}</span><span className="small muted">{s.next_at ? `next ${new Date(s.next_at).toLocaleString()}` : s.spec.wake_key}</span></div>) : <div className="item muted">No schedules. Ask the agent to “remind me…” or “every morning…”.</div>}</div>}
-    {tab === "activity" && <Activity agent={a.id} />}
-    {tab === "settings" && <div className="card col">
-      <label className="field">Before starting work<select className="input" value={a.confirm_mode ?? "smart"} onChange={(e) => patch({ confirm_mode: e.target.value })}>
-        <option value="smart">Smart — ask only when unclear, multi-step, or several external actions</option><option value="always">Always show the plan and wait for “go”</option><option value="never">Never — just start (approvals still apply)</option></select></label>
-      <label className="field">Model profile<select className="input" value={a.model_profile} onChange={(e) => patch({ model_profile: e.target.value })}>{["fast", "standard", "research-standard", "escalation"].map((m) => <option key={m}>{m}</option>)}</select></label>
-      <div className="row"><button className="btn" onClick={() => patch({ status: a.status === "active" ? "paused" : "active" })}>{a.status === "active" ? "Pause agent" : "Resume agent"}</button>
-        {a.template_id && <button className="btn" onClick={async () => { const r = await api(`/v1/agents/${id}/upgrade`, {}); toast(r.error ?? `Upgraded to ${r.version}`); reload(); }}>Upgrade to latest version</button>}</div>
-    </div>}
-  </>;
-}
-function TestPanel({ a }: { a: any }) {
-  const { toast } = useCtx();
-  const [room, setRoom] = useState<any>(null);
-  useEffect(() => { api(`/v1/agents/${a.id}/test-room`, {}).then(setRoom).catch((e) => toast(e.message)); }, [a.id]);
-  return <div>
-    <div className="card" style={{ marginBottom: 12, background: "var(--warn-soft)", borderColor: "transparent" }}>
-      <b>Test mode.</b> <span className="small">Plans, approvals and tools all run — but nothing leaves the platform: no emails sent, no tables booked, no posts. Accounts you haven't connected use sample data.</span></div>
-    {room && <div style={{ height: "64vh", border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}><Room id={room.id} /></div>}
-    <div className="row mt16"><span className="muted grow">Happy with how it behaves?</span><a className="btn primary" href={`#/agents/${a.id}/deploy`}>Deploy {a.name} →</a></div>
-  </div>;
-}
-
-const PLATFORM_ICON: Record<string, string> = { web: "🌐", mobile: "📱", imessage: "💬", whatsapp: "🟢", telegram: "✈️", slack: "#", email: "✉️" };
-function Deploy({ a }: { a: any; reload: () => void }) {
-  const { toast } = useCtx();
-  const [d, reloadD] = useApi<any>(`/v1/agents/${a.id}/deploy`, 8000);
-  const [codes, setCodes] = useState<Record<string, any>>({}), [chans, setChans] = useState<any[] | null>(null), [adv, setAdv] = useState(false);
-  const phone = /iPhone|Android|iPad/i.test(navigator.userAgent);
-  const get = async (p: string, kind: string) => {
-    try { const r = await api(`/v1/agents/${a.id}/deploy/${p}`, { kind }); setCodes((c) => ({ ...c, [`${p}:${kind}`]: r })); if (phone && r.link) location.href = r.link; reloadD(); }
-    catch (e: any) { toast(e.message); }
-  };
-  if (!d) return null;
-  const T = (p: string) => d.targets.find((t: any) => t.platform === p);
-  const unavailable = <div className="small muted mt8">Not configured on this platform yet. An admin can add the shared line, or use your own account under Advanced.</div>;
-  return <>
-    <p className="muted">One tap puts {a.name} where you already talk. Every channel reaches the same agent, memory and work.</p>
-    <div className="grid2">
-      <DeployCard p="web" title="Web" t={T("web")}><div className="small muted mt8">Always on.</div><div className="row mt8"><a className="btn sm" href={T("web").url.replace(/^.*#/, "#")}>Open chat</a>
-        <button className="btn sm ghost" onClick={() => { navigator.clipboard?.writeText(T("web").url); toast("Link copied"); }}>Copy link</button></div></DeployCard>
-      <DeployCard p="mobile" title="Phone app" t={T("mobile")}><div className="row mt8" style={{ gap: 14, alignItems: "flex-start" }}><QR value={T("mobile").url} size={112} /><div className="small muted">Scan to open {a.name} on your phone, then Share → <b>Add to Home Screen</b> for an app icon.</div></div></DeployCard>
-      <DeployCard p="imessage" title="iMessage" t={T("imessage")}>{T("imessage").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("imessage", "dm")}>Text {a.name} from my iPhone</button>
-        <button className="btn sm" onClick={() => get("imessage", "group")}>Add to a group chat</button></div><CodeBox r={codes["imessage:dm"]} /><CodeBox r={codes["imessage:group"]} /></> : unavailable}</DeployCard>
-      <DeployCard p="whatsapp" title="WhatsApp" t={T("whatsapp")}>{T("whatsapp").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("whatsapp", "dm")}>Chat on WhatsApp</button></div><CodeBox r={codes["whatsapp:dm"]} /></> : unavailable}</DeployCard>
-      <DeployCard p="telegram" title="Telegram" t={T("telegram")}>{T("telegram").available ? <><div className="row wrap mt8"><button className="btn sm primary" onClick={() => get("telegram", "dm")}>Open in Telegram</button>
-        <button className="btn sm" onClick={() => get("telegram", "group")}>Add to a group</button></div><CodeBox r={codes["telegram:dm"]} /><CodeBox r={codes["telegram:group"]} /></> : unavailable}</DeployCard>
-      <DeployCard p="slack" title="Slack" t={T("slack")}>{T("slack").available ? <div className="col mt8">
-        {T("slack").installed.length ? <><div className="small muted">Installed in {T("slack").installed.map((x: any) => x.team).join(", ")}.</div>
-          {chans ? <div className="col">{chans.map((c) => <div key={c.id} className="row"><span className="grow">#{c.name}</span>
-            <button className="btn sm" onClick={async () => { try { await api(`/v1/agents/${a.id}/slack/channels`, { identity: c.identity, channel_id: c.id, name: c.name }); toast(`${a.name} joined #${c.name}`); reloadD(); } catch (e: any) { toast(e.message); } }}>Add</button></div>)}</div>
-            : <button className="btn sm" onClick={async () => setChans(await api(`/v1/agents/${a.id}/slack/channels`))}>Pick channels…</button>}</> : null}
-        <a className="btn sm primary" style={{ alignSelf: "flex-start" }} href={T("slack").install_url}>{T("slack").installed.length ? "Add to another Slack" : "Add to Slack"}</a></div> : unavailable}</DeployCard>
-      <DeployCard p="email" title="Email" t={T("email")}>{T("email").available ? <div className="mt8">{T("email").address ? <div className="mono">{T("email").address}</div>
-        : <button className="btn sm primary" onClick={async () => { try { await api(`/v1/agents/${a.id}/deploy/email`, {}); reloadD(); } catch (e: any) { toast(e.message); } }}>Give {a.name} an email address</button>}</div> : unavailable}</DeployCard>
-    </div>
-    <h2 style={{ cursor: "pointer" }} onClick={() => setAdv(!adv)}>{adv ? "▾" : "▸"} Advanced: use your own bot, number or line</h2>
-    {adv && <ChannelsEditor a={a} reload={reloadD} />}
-  </>;
-}
-
 // Top-level so background refreshes don't remount them (which would swap buttons out from under the user).
-function DeployCard({ p, title, t, children }: { p: string; title: string; t: any; children: ReactNode }) {
-  return <div className="card">
-    <div className="row between"><div className="row"><span style={{ fontSize: 20 }}>{PLATFORM_ICON[p]}</span><b>{title}</b></div>
-      {t.connected?.length ? <span className="pill ok">Live · {t.connected.length}</span> : t.available ? <span className="pill">Ready</span> : <span className="pill">Not set up</span>}</div>
-    {children}
-    {t.connected?.length ? <div className="small mt8">{t.connected.map((c: any) => <div key={c.room_id + c.conv}>✓ {c.is_group ? "Group" : "Direct"} · <a href={`#/rooms/${c.room_id}`} style={{ textDecoration: "underline" }}>{c.room}</a></div>)}</div> : null}
-  </div>;
-}
-function CodeBox({ r }: { r: any }) {
-  if (!r) return null;
-  return <div className="row mt8" style={{ alignItems: "flex-start", gap: 14 }}>{r.link && <QR value={r.link} size={132} />}<div className="col" style={{ gap: 6 }}>
-    <div className="small">{r.instructions}</div><div className="mono" style={{ fontSize: 14 }}>{r.message ?? r.address}</div>
-    {r.link && <a className="btn sm primary" href={r.link}>Open on this device</a>}{r.link && <div className="small faint">Or scan with your phone's camera.</div>}</div></div>;
-}
 function SetupChecklist({ a, onMessage }: { a: any; onMessage: () => void }) {
   const { ws } = useCtx();
   const needsGoogle = a.connections_needed.includes("google");
   const items = [
     needsGoogle && { done: a.connections.some((c: any) => c.provider === "google"), label: "Connect Gmail + Google Calendar", action: <a className="btn sm" href={`/v1/connections/google/start?workspace=${ws}&agent=${a.id}`}>Connect</a> },
     a.skills.includes("reservations") && { done: a.connections.some((c: any) => c.provider === "mcp"), label: "Connect a browser runner (Browser Use) for real Resy / OpenTable bookings — until then Reese uses sandbox restaurants", action: <a className="btn sm" href="#/connections">Connect</a> },
-    a.skills.includes("reservations") && { done: a.connections.some((c: any) => c.provider === "site_login"), label: "Save your Resy / OpenTable login", action: <a className="btn sm" href="#/connections">Add login</a> },
+    a.skills.includes("reservations") && { done: a.connections.some((c: any) => c.provider === "site_login" || c.provider === "browser_login"), label: "Save your Resy / OpenTable login", action: <a className="btn sm" href="#/connections">Add login</a> },
     { done: a.deployed?.some((p: string) => p !== "web"), label: `Reach ${a.name} from your phone or group chats (iMessage, WhatsApp, Slack…)`, action: <a className="btn sm" href={`#/agents/${a.id}/deploy`}>Deploy</a> },
     { done: a.completed_runs > 0, label: "Give it a first task", action: <button className="btn sm primary" onClick={onMessage}>Start</button> },
   ].filter(Boolean) as any[];
@@ -440,7 +158,7 @@ function AddTo({ agent }: { agent: any }) {
   return <div style={{ position: "relative" }}><button className="btn" onClick={() => setOpen(!open)}>Add to…</button>
     {open && <div className="card" style={{ position: "absolute", right: 0, top: 36, width: 260, zIndex: 5 }}>
       {rooms?.filter((r) => r.kind === "shared").map((r) => <a key={r.id} className="row" style={{ padding: 6, cursor: "pointer" }} onClick={async () => { await api(`/v1/rooms/${r.id}/members`, { agent_id: agent.id }); toast(`Added to ${r.name}`); setOpen(false); }}>◇ {r.name}</a>)}
-      <a className="row small muted" style={{ padding: 6 }} href="#/rooms">+ New room</a></div>}</div>;
+      <a className="row small muted" style={{ padding: 6 }} href="#/rooms">+ New chat</a></div>}</div>;
 }
 function JobEditor({ a, patch }: any) {
   const [f, setF] = useState({ name: a.name, job: a.job, instructions: a.instructions ?? "" });
@@ -513,22 +231,22 @@ function Rooms() {
   const [f, setF] = useState<any>(null);
   const create = async () => { try { const r = await api("/v1/rooms", { workspace_id: ws, ...f }); go(`/rooms/${r.id}`); } catch (e: any) { toast(e.message); } };
   return <>
-    <div className="row between"><div><h1>Rooms</h1><p className="muted">Shared context and objectives. Every channel points into a Room.</p></div><button className="btn primary" onClick={() => setF({ name: "", objective: "", agent_ids: [], member_ids: [], participation: "mention_only" })}>New room</button></div>
+    <div className="row between"><div><h1>Chats</h1><p className="muted">Every conversation your agents are in — web, iMessage, WhatsApp, Telegram, Slack. Same memory everywhere.</p></div><button className="btn primary" onClick={() => setF({ name: "", objective: "", agent_ids: [], member_ids: [], participation: "mention_only" })}>＋ New chat</button></div>
     {f && <div className="card col mt16">
-      <input className="input" placeholder="Room name (e.g. Trip to Japan)" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+      <input className="input" placeholder="Chat name (e.g. Trip to Japan)" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
       <input className="input" placeholder="Objective (optional)" value={f.objective} onChange={(e) => setF({ ...f, objective: e.target.value })} />
       <div className="small muted">Agents</div><div className="row wrap">{agents?.map((a) => <label key={a.id} className="pill"><input type="checkbox" checked={f.agent_ids.includes(a.id)} onChange={(e) => setF({ ...f, agent_ids: e.target.checked ? [...f.agent_ids, a.id] : f.agent_ids.filter((x: string) => x !== a.id) })} />{a.name}</label>)}</div>
       <div className="small muted">People</div><div className="row wrap">{members?.map((m) => <label key={m.id} className="pill"><input type="checkbox" checked={f.member_ids.includes(m.id)} onChange={(e) => setF({ ...f, member_ids: e.target.checked ? [...f.member_ids, m.id] : f.member_ids.filter((x: string) => x !== m.id) })} />{m.name}</label>)}</div>
       <label className="field">Agents participate<select className="input" value={f.participation} onChange={(e) => setF({ ...f, participation: e.target.value })}><option value="mention_only">Only when mentioned</option><option value="relevant">When relevant</option><option value="manager">Proactively (manages the objective)</option></select></label>
-      <div className="row"><button className="btn primary" disabled={!f.name} onClick={create}>Create room</button><button className="btn" onClick={() => setF(null)}>Cancel</button></div></div>}
+      <div className="row"><button className="btn primary" disabled={!f.name} onClick={create}>Create chat</button><button className="btn" onClick={() => setF(null)}>Cancel</button></div></div>}
     <div className="list mt16">{rooms?.length ? rooms.map((r) => <a key={r.id} className="item" href={`#/rooms/${r.id}`}>
       <div className="avatar human">{r.kind === "private" ? "◉" : "◇"}</div>
       <div className="grow"><b>{r.name}</b>{r.objective && <span className="muted"> — {r.objective}</span>}<div className="small faint">{r.humans} {r.humans === 1 ? "person" : "people"} · {r.agents} AI{r.last_ts ? ` · ${ago(r.last_ts)}` : ""}</div></div>
-      {r.pending > 0 && <span className="pill warn">{r.pending} approval{r.pending > 1 ? "s" : ""}</span>}</a>) : <div className="item muted">No rooms yet.</div>}</div>
+      {r.pending > 0 && <span className="pill warn">{r.pending} approval{r.pending > 1 ? "s" : ""}</span>}</a>) : <div className="item muted">No chats yet — add an agent to a chat from its page.</div>}</div>
   </>;
 }
 
-function Room({ id }: { id: string }) {
+function Room({ id, compact }: { id: string; compact?: boolean }) {
   const { me, toast } = useCtx();
   const [data, setData] = useState<any>(null), [events, setEvents] = useState<any[]>([]), [text, setText] = useState(""), [trace, setTrace] = useState<string | null>(null);
   const after = useRef(0), tl = useRef<HTMLDivElement>(null), box = useRef<HTMLTextAreaElement>(null);
@@ -546,7 +264,7 @@ function Room({ id }: { id: string }) {
   const humans = data.members.filter((m: any) => m.kind === "human"), agents = data.members.filter((m: any) => m.kind === "agent");
   const approvalsById = Object.fromEntries(data.approvals.map((a: any) => [a.id, a]));
   const shown = events.filter((e) => e.type === "message" || ["APPROVAL_GRANTED", "APPROVAL_REJECTED", "BRIEF_CONFIRMED", "BRIEF_REVISED", "MEMBER_JOINED", "DELEGATION_CREATED", "TASK_CREATED", "RUN_FAILED", "ENDPOINT_LINKED"].includes(e.type));
-  return <div className="room">
+  return <div className={`room ${compact ? "compact" : ""}`}>
     <div className="convo">
       <div className="room-head"><div className="grow"><h3>{data.room.name}</h3><div className="small muted">{humans.length} {humans.length === 1 ? "person" : "people"} · {agents.length} AI{data.room.objective ? ` · ${data.room.objective}` : ""}</div></div>
         <div className="row small">{data.endpoints.map((e: any) => <span key={e.id} className="pill">{PLATFORM[e.platform]}</span>)}<span className="pill">Web</span></div>
@@ -673,70 +391,28 @@ function Trace({ id, onClose }: { id: string; onClose: () => void }) {
 }
 
 // ---------------- Discover ----------------
-function Discover({ route, anonymous }: { route: string; anonymous?: boolean }) {
-  const slug = route.split("/")[2];
-  const [list] = useApi<any[]>(slug ? null : "/v1/agent-templates");
-  if (slug) return <TemplatePage slug={slug} anonymous={anonymous} />;
-  return <>
-    <h1>Discover</h1><p className="muted">A small set of agents that are genuinely useful. Try one before you add it.</p>
-    <h2>Featured</h2>
-    <div className="list">{list?.map((t) => <div key={t.id} className="item"><div className="avatar">{t.manifest.avatar ?? t.name[0]}</div>
-      <div className="grow"><b>{t.name} — {t.manifest.title}</b><div className="muted small">{t.tagline}</div><div className="small faint">by {t.publisher}{t.installs ? ` · ${t.installs} installs` : ""}{t.rating ? ` · ★ ${t.rating.toFixed(1)}` : ""}</div></div>
-      <a className="btn" href={`#/discover/${t.slug}`}>Try</a>{!anonymous && <a className="btn primary" href={`#/discover/${t.slug}?add=1`}>Add agent</a>}</div>)}</div>
-    {anonymous && <p className="mt16"><a className="btn" href="#/">Sign in</a></p>}
-  </>;
-}
-function TemplatePage({ slug, anonymous }: { slug: string; anonymous?: boolean }) {
-  const ctx = useContext(Ctx);
-  const [t] = useApi<any>(`/v1/agent-templates/${slug.split("?")[0]}`);
-  const [trial, setTrial] = useState<any>({ messages: [] }), [q, setQ] = useState(""), [busy, setBusy] = useState(false), [answers, setAnswers] = useState<Record<string, string>>({});
-  const [adding, setAdding] = useState(location.hash.includes("add=1"));
-  if (!t) return null;
-  const m = t.manifest;
-  const ask = async () => { if (!q.trim()) return; setBusy(true); try { setTrial(await api(`/v1/agent-templates/${t.slug}/trial`, { text: q, trial_id: trial.trial_id })); setQ(""); } finally { setBusy(false); } };
-  const install = async () => { try { const r = await api(`/v1/agent-templates/${t.slug}/install`, { workspace_id: ctx!.ws, answers }); go(`/agents/${r.agent.id}/connections`); } catch (e: any) { ctx!.toast(e.message); } };
-  const fork = async () => { try { const r = await api(`/v1/agent-templates/${t.slug}/fork`, {}); ctx!.toast(`Forked as ${r.manifest.slug} (draft)`); } catch (e: any) { ctx!.toast(e.message); } };
-  return <>
-    <a className="small muted" href="#/discover">← Discover</a>
-    <div className="row gap16 mt16"><div className="avatar lg">{m.avatar ?? m.name[0]}</div><div className="grow"><h1>{m.name}</h1><div className="muted">{m.title} · by {t.publisher} · v{t.latest_version}</div></div>
-      {!anonymous && <><button className="btn" onClick={fork}>Fork / Customize</button><button className="btn primary" onClick={() => setAdding(true)}>Add agent</button></>}</div>
-    <p className="mt16">{m.job}</p>
-    {adding && !anonymous && <div className="card col mt16"><h3>Add {m.name}</h3>
-      {(m.onboarding ?? []).map((o: any) => <label key={o.id} className="field">{o.question}<input className="input" value={answers[o.id] ?? ""} onChange={(e) => setAnswers({ ...answers, [o.id]: e.target.value })} /></label>)}
-      <div className="small muted">Needs: {t.connections.length ? t.connections.map((c: string) => c === "google" ? "Gmail + Google Calendar" : c).join(", ") : "no account access"}</div>
-      <div><button className="btn primary" onClick={install}>Add to workspace</button></div></div>}
-    <h2>Try {m.name}</h2>
-    <div className="card">
-      <div className="col">{trial.messages.map((x: any, i: number) => <div key={i} className={`msg ${x.from === "you" ? "" : "agent"}`}><div className={`avatar ${x.from === "you" ? "human" : ""}`}>{x.from[0].toUpperCase()}</div><div className="body"><div className="who">{x.from === "you" ? "You" : x.from}</div><div className="text">{x.text}</div></div></div>)}
-        {!trial.messages.length && <div className="muted">Ask {m.name} anything — no account needed.</div>}</div>
-      {trial.upsell && <div className="approval mt16"><b>{m.name} can keep this going for you.</b><div className="small muted">Add {m.name} to: Telegram · iMessage · Slack · Web</div>{anonymous ? <a className="btn primary mt8" href="#/">Create an account</a> : <button className="btn primary mt8" onClick={() => setAdding(true)}>Add {m.name}</button>}</div>}
-      {trial.limit_reached ? <div className="pill warn mt16">Trial limit reached — create an account to continue.</div> :
-        <div className="row mt16"><input className="input" placeholder={`Ask ${m.name}…`} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} /><button className="btn primary" disabled={busy} onClick={ask}>{busy ? "…" : "Ask"}</button></div>}
-    </div>
-    <h2>Skills</h2><div className="grid2">{t.skills.map((s: any) => <div key={s.id} className="card"><b>{s.name}</b><div className="small muted mt8">{s.procedure}</div></div>)}</div>
-    <h2>Permissions</h2><div className="card"><PermissionRows rows={t.permissions} /></div>
-    <h2>Declared</h2><div className="card small col"><div>Network: {(m.network ?? []).join(", ") || "none"}</div><div>Channels: {(m.channels ?? []).map((c: string) => PLATFORM[c]).join(", ")}</div><div>Evals: {(m.evals ?? []).join(", ")}</div>
-      {m.escalation && <div>Escalation: {m.escalation.join(" ")}</div>}</div>
-    {t.reviews.length > 0 && <><h2>Reviews</h2>{t.reviews.map((r: any, i: number) => <div key={i} className="card">{"★".repeat(r.rating)} <span className="muted">{r.name}</span><div>{r.text}</div></div>)}</>}
-  </>;
-}
-
 // ---------------- Connections ----------------
 function Connections() {
   const { ws, me, toast } = useCtx();
   const [conns, reload] = useApi<any[]>(`/v1/connections?workspace=${ws}`);
   const [sel, setSel] = useState<string | null>(null), [dev, setDev] = useState<any>(null), [form, setForm] = useState<any>(null);
-  const mine = conns?.filter((c) => c.visibility === "private") ?? [], company = conns?.filter((c) => c.visibility === "workspace") ?? [];
+  const live = conns?.filter((c) => c.status !== "pending") ?? []; // pending = a live-browser login that was never finished
+  const mine = live.filter((c) => c.visibility === "private"), company = live.filter((c) => c.visibility === "workspace");
+  const reconnectLive = (c: any) => setForm({ kind: "live", site: c.site, agents: c.agents?.map((a: any) => a.id) ?? [], autostart: true });
   const addDev = async () => { try { await api("/v1/connections", { workspace_id: ws, provider: dev.provider, account: dev.account, visibility: dev.visibility, credentials: { access_token: dev.token } }); setDev(null); reload(); } catch (e: any) { toast(e.message); } };
-  const Row = (c: any) => <a key={c.id} className="item" style={{ cursor: "pointer" }} onClick={() => setSel(c.id)}><span className="pill">{c.provider === "mcp" ? `MCP · ${c.tool_count ?? 0} tools` : c.provider === "site_login" ? "site login" : c.provider}</span><b className="grow">{c.label}</b><span className="muted">{c.visibility === "workspace" ? "Company" : c.owner}</span><span className="muted">{c.account}</span>
-    <span className={`pill ${c.status === "active" ? "ok" : "warn"}`}>{c.status === "active" ? "Connected" : "Reconnect"}</span></a>;
+  const Row = (c: any) => <a key={c.id} className="item" style={{ cursor: "pointer" }} onClick={() => setSel(c.id)}><span className="pill">{c.provider === "mcp" ? `MCP · ${c.tool_count ?? 0} tools` : c.provider === "site_login" ? "site login" : c.provider === "browser_login" ? "live login" : c.provider}</span><b className="grow">{c.label}</b><span className="muted">{c.visibility === "workspace" ? "Company" : c.owner}</span><span className="muted">{c.account}</span>
+    {c.provider === "browser_login" && c.status !== "active" && c.owner_id === me.user.id
+      ? <button className="btn sm" onClick={(e) => { e.stopPropagation(); reconnectLive(c); }}>Reconnect</button>
+      : <span className={`pill ${c.status === "active" ? "ok" : "warn"}`}>{c.status === "active" ? "Connected" : c.provider === "browser_login" ? "Needs reconnect" : "Reconnect"}</span>}</a>;
   return <>
     <div className="row between"><div><h1>Connections</h1><p className="muted">Access to your tools. Each connection has one owner; agents only use what they've been allowed.</p></div>
       <div className="row wrap"><a className="btn primary" href={`/v1/connections/google/start?workspace=${ws}`}>Connect Google</a>
         <button className="btn" onClick={() => setForm({ kind: "mcp", preset: "browserbase", url: MCP_PRESETS.browserbase.url, headers: MCP_PRESETS.browserbase.headers, label: "Browserbase", agents: [] })}>Add MCP server</button>
+        <button className="btn" onClick={() => setForm({ kind: "live", site: "resy.com", agents: [] })}>Sign in with a live browser</button>
         <button className="btn" onClick={() => setForm({ kind: "site", site: "resy.com", username: "", password: "", agents: [] })}>Add site login</button>
         <button className="btn ghost" onClick={() => setDev({ provider: "google", account: me.user.email, token: "", visibility: "private" })}>Add token</button></div></div>
-    {form && <ConnectForm form={form} setForm={setForm} onDone={() => { setForm(null); reload(); }} />}
+    {form && (form.kind === "live" ? <LiveLoginForm key={form.autostart ? `re-${form.site}` : "new"} form={form} setForm={setForm} onDone={() => { setForm(null); reload(); }} />
+      : <ConnectForm form={form} setForm={setForm} onDone={() => { setForm(null); reload(); }} />)}
     {dev && <div className="card col mt16"><div className="small muted">Paste an OAuth access token (e.g. from the Google OAuth Playground) — useful in development.</div>
       <input className="input" placeholder="Account (email)" value={dev.account} onChange={(e) => setDev({ ...dev, account: e.target.value })} />
       <input className="input" placeholder="Access token" value={dev.token} onChange={(e) => setDev({ ...dev, token: e.target.value })} />
@@ -744,7 +420,7 @@ function Connections() {
       <div className="row"><button className="btn primary" onClick={addDev}>Save</button><button className="btn" onClick={() => setDev(null)}>Cancel</button></div></div>}
     <h2>Your connections</h2><div className="list">{mine.length ? mine.map(Row) : <div className="item muted">None yet.</div>}</div>
     <h2>Company connections</h2><div className="list">{company.length ? company.map(Row) : <div className="item muted">None yet.</div>}</div>
-    {sel && <ConnectionDrawer id={sel} onClose={() => { setSel(null); reload(); }} />}
+    {sel && <ConnectionDrawer id={sel} onClose={() => { setSel(null); reload(); }} onReconnectLive={(c: any) => { setSel(null); reconnectLive(c); }} />}
   </>;
 }
 // Hosted endpoints verified Oct 2026 (Browserbase, Browserless). Browser Use: run its MCP server and paste that URL.
@@ -789,7 +465,45 @@ function ConnectForm({ form, setForm, onDone }: { form: any; setForm: (f: any) =
     <div className="row"><button className="btn primary" disabled={busy} onClick={save}>{busy ? "Connecting…" : "Save"}</button><button className="btn" onClick={() => setForm(null)}>Cancel</button></div>
   </div>;
 }
-function ConnectionDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+/** The user logs into the site themselves inside a Browserbase session; we keep only the browser profile's id. */
+function LiveLoginForm({ form, setForm, onDone }: { form: any; setForm: (f: any) => void; onDone: () => void }) {
+  const { ws, toast } = useCtx();
+  const [agents] = useApi<any[]>(`/v1/agents?workspace=${ws}`);
+  const [s, setS] = useState<any>(null), [busy, setBusy] = useState(false), [err, setErr] = useState<string | null>(null);
+  const F = (k: string, v: any) => setForm({ ...form, [k]: v });
+  const start = async () => {
+    setBusy(true); setErr(null);
+    try { setS(await api("/v1/browser-logins/start", { workspace_id: ws, site: form.site, agent_ids: form.agents })); }
+    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const finish = async () => {
+    setBusy(true);
+    try { await api("/v1/browser-logins/finish", { session_id: s.session_id, workspace_id: ws, site: form.site, agent_ids: form.agents }); toast(`Signed in to ${form.site}`); onDone(); }
+    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const cancel = async () => { if (s) await api("/v1/browser-logins/cancel", { session_id: s.session_id }).catch(() => {}); setForm(null); };
+  useEffect(() => { if (form.autostart) start(); }, []);
+  return <div className="card col mt16">
+    <h3>Sign in to {form.site || "a website"} with a live browser</h3>
+    {!s ? <>
+      <p className="small muted">A secure cloud browser opens right here. You log in yourself; agents then act on the site as you, without ever seeing your password.</p>
+      <select className="input" value={["resy.com", "opentable.com", "linkedin.com"].includes(form.site) ? form.site : "other"} onChange={(e) => F("site", e.target.value === "other" ? "" : e.target.value)}>
+        <option value="resy.com">Resy</option><option value="opentable.com">OpenTable</option><option value="linkedin.com">LinkedIn</option><option value="other">Other site…</option></select>
+      {!["resy.com", "opentable.com", "linkedin.com"].includes(form.site) && <input className="input" placeholder="example.com" value={form.site} onChange={(e) => F("site", e.target.value)} />}
+      <div className="small muted">Agents that can use it</div>
+      <div className="row wrap">{agents?.map((a) => <label key={a.id} className="pill"><input type="checkbox" checked={form.agents.includes(a.id)} onChange={(e) => F("agents", e.target.checked ? [...form.agents, a.id] : form.agents.filter((x: string) => x !== a.id))} />{a.name}</label>)}</div>
+      {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
+      <div className="row"><button className="btn primary" disabled={busy || !form.site} onClick={start}>{busy ? "Opening…" : "Open live browser"}</button><button className="btn" onClick={() => setForm(null)}>Cancel</button></div>
+    </> : <>
+      <p className="small"><b>Log in normally, including 2FA. We never see or store your password.</b> <span className="muted">If the page is blank, type {form.site} into the browser's address.</span></p>
+      <iframe src={s.live_view_url} title={`${form.site} login`} sandbox="allow-same-origin allow-scripts allow-forms allow-popups" allow="clipboard-read; clipboard-write"
+        style={{ width: "100%", maxWidth: 1024, aspectRatio: "1024 / 700", border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }} />
+      {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
+      <div className="row"><button className="btn primary" disabled={busy} onClick={finish}>{busy ? "Saving…" : "I'm logged in"}</button><button className="btn" disabled={busy} onClick={cancel}>Cancel</button></div>
+    </>}
+  </div>;
+}
+function ConnectionDrawer({ id, onClose, onReconnectLive }: { id: string; onClose: () => void; onReconnectLive: (c: any) => void }) {
   const { ws } = useCtx();
   const [c, reload] = useApi<any>(`/v1/connections/${id}`);
   if (!c) return null;
@@ -800,10 +514,13 @@ function ConnectionDrawer({ id, onClose }: { id: string; onClose: () => void }) 
       <h2>Tools <button className="btn sm" onClick={async () => { await api(`/v1/connections/${id}/refresh`, {}); reload(); }}>Refresh</button></h2>
       {(c.config.tools ?? []).map((t: any) => <div key={t.name} className="row small" style={{ padding: "3px 0" }}><span className={`pill ${t.risk === "read" ? "" : t.risk === "destructive" ? "bad" : "warn"}`}>{t.risk.replace("_", " ")}</span><span className="mono">{t.name}</span><span className="faint grow">{t.description?.slice(0, 80)}</span></div>)}</>
       : c.provider === "site_login" ? <div className="small muted">Site: <span className="mono">{c.config.site}</span> · password stored encrypted, never shown to agents</div>
+      : c.provider === "browser_login" ? <div className="small muted">Site: <span className="mono">{c.config.site}</span> · signed in by you in a live browser. We keep only an encrypted browser profile at Browserbase — never your password.{c.status === "needs_reauth" && <b> The login expired; reconnect to keep using it.</b>}</div>
       : <div className="small muted">Scopes: <span className="mono">{c.scopes ?? "—"}</span></div>}<div className="small muted">Last used: {c.last_used_at ? ago(c.last_used_at) : "never"}</div>
     <h2>Agents with access</h2>{c.agents.length ? c.agents.map((a: any) => <div key={a.id} className="row between" style={{ padding: "4px 0" }}><span>{a.name}</span><button className="btn sm" onClick={async () => { await api(`/v1/connections/${id}/grants/${a.id}`, undefined, "DELETE"); reload(); }}>Remove</button></div>) : <div className="muted small">None</div>}
     <h2>Audit trail</h2>{c.audit.length ? c.audit.map((e: any, i: number) => <div key={i} className="small" style={{ padding: "3px 0" }}>{ago(e.ts)} · {e.agent} · <span className="mono">{e.tool}</span> · {e.status}</div>) : <div className="muted small">No activity yet.</div>}
-    <div className="row mt16">{c.status !== "active" && <a className="btn" href={`/v1/connections/google/start?workspace=${ws}&reconnect=${c.id}`}>Reconnect</a>}
+    <div className="row mt16">{c.status !== "active" && (c.provider === "browser_login"
+        ? <button className="btn" onClick={() => onReconnectLive({ site: c.config.site, agents: c.agents })}>Reconnect</button>
+        : <a className="btn" href={`/v1/connections/google/start?workspace=${ws}&reconnect=${c.id}`}>Reconnect</a>)}
       <button className="btn danger" onClick={async () => { if (confirm("Revoke this connection? Agents lose access immediately.")) { await api(`/v1/connections/${id}/revoke`, {}); onClose(); } }}>Revoke</button></div>
   </div></>;
 }
@@ -850,7 +567,7 @@ function Settings() {
   const [s, reload] = useApi<any>(`/v1/workspaces/${ws}/settings`);
   const [members, reloadMembers] = useApi<any[]>(`/v1/workspaces/${ws}/members`);
   const [usage] = useApi<any>(`/v1/usage?workspace=${ws}`);
-  const [invite, setInvite] = useState(""), [link, setLink] = useState(""), [key, setKey] = useState({ provider: "anthropic", key: "" }), [newWs, setNewWs] = useState("");
+  const [invite, setInvite] = useState(""), [link, setLink] = useState(""), [newWs, setNewWs] = useState("");
   const role = me.workspaces.find((w: any) => w.id === ws)?.role;
   if (!s) return null;
   return <>
@@ -862,14 +579,10 @@ function Settings() {
     {role !== "member" && s.workspace.kind === "team" && <div className="row mt8"><input className="input" placeholder="Email to invite (optional)" value={invite} onChange={(e) => setInvite(e.target.value)} />
       <button className="btn" onClick={async () => { const r = await api(`/v1/workspaces/${ws}/invitations`, { email: invite || undefined }); setLink(r.url); }}>Create invite link</button></div>}
     {link && <div className="card mt8 mono">{link}</div>}
-    <h2>Model keys (BYOK)</h2>
-    <p className="small muted">Use your own provider keys; inference is billed to you, the platform meters everything else. Keys are encrypted and never shown again.</p>
-    <div className="row"><select className="input" style={{ width: 140 }} value={key.provider} onChange={(e) => setKey({ ...key, provider: e.target.value })}><option>anthropic</option><option>openai</option></select>
-      <input className="input" type="password" placeholder="sk-…" value={key.key} onChange={(e) => setKey({ ...key, key: e.target.value })} />
-      <button className="btn" onClick={async () => { try { await api(`/v1/workspaces/${ws}/provider-keys/${key.provider}`, { key: key.key }, "PUT"); setKey({ ...key, key: "" }); reload(); toast("Saved"); } catch (e: any) { toast(e.message); } }}>Save</button></div>
-    <div className="row mt8 wrap">{s.byok.map((p: string) => <span key={p} className="pill ok">{p} key set <a style={{ cursor: "pointer" }} onClick={async () => { await api(`/v1/workspaces/${ws}/provider-keys/${p}`, undefined, "DELETE"); reload(); }}>✕</a></span>)}</div>
-    <h2>Model routing</h2>
-    <table className="t card"><thead><tr><th>Profile</th><th>Primary</th><th>Fallback</th><th>Escalation</th><th>Max $/run</th></tr></thead><tbody>{s.model_profiles.map((p: any) => <tr key={p.name}><td>{p.name}</td><td className="mono">{p.primary_model}</td><td className="mono">{p.fallback_model}</td><td className="mono">{p.escalation_model ?? "—"}</td><td>{p.max_cost}</td></tr>)}</tbody></table>
+    <h2>AI models & billing</h2>
+    <AiSettings canEdit={role !== "member"} />
+    <details className="mt8"><summary className="small muted">Platform fallback routing ▸</summary>
+      <table className="t card mt8"><thead><tr><th>Profile</th><th>Primary</th><th>Fallback</th><th>Escalation</th><th>Max $/run</th></tr></thead><tbody>{s.model_profiles.map((p: any) => <tr key={p.name}><td>{p.name}</td><td className="mono">{p.primary_model}</td><td className="mono">{p.fallback_model}</td><td className="mono">{p.escalation_model ?? "—"}</td><td>{p.max_cost}</td></tr>)}</tbody></table></details>
     <h2>Usage</h2>
     {usage && <><div className="grid2">{[["Completed tasks", usage.metrics.completed_runs], ["Autonomous completion", usage.metrics.autonomous_completion_rate ?? "—"], ["Approval acceptance", usage.metrics.approval_acceptance_rate ?? "—"], ["Rooms used across channels", usage.metrics.cross_channel_rooms]].map(([l, v]) =>
       <div key={l as string} className="card"><div className="small muted">{l}</div><div style={{ fontSize: 22, fontWeight: 600 }}>{v}</div></div>)}</div>
@@ -878,12 +591,898 @@ function Settings() {
     <h2>Workspaces</h2>
     <div className="row"><input className="input" placeholder="New team workspace name" value={newWs} onChange={(e) => setNewWs(e.target.value)} />
       <button className="btn" onClick={async () => { const w = await api("/v1/workspaces", { name: newWs }); setNewWs(""); reloadMe(); setWs(w.id); toast("Workspace created"); }}>Create</button></div>
-    <div className="mt16"><button className="btn" onClick={async () => { await api("/v1/auth/logout", {}); location.hash = "/"; location.reload(); }}>Sign out</button></div>
+    <div className="mt16"><button className="btn" onClick={async () => { await (window as any).Clerk?.signOut?.(); await api("/v1/auth/logout", {}); location.hash = "/"; location.reload(); }}>Sign out</button></div>
   </>;
+}
+const PROVIDER_LABEL: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", custom: "Self-hosted / other (OpenAI-compatible)" };
+const PROFILES: [string, string, string][] = [["standard", "Everyday work", "What most agents use"], ["fast", "Quick steps", "Understanding requests, short replies, summaries"],
+  ["research-standard", "Research", "Long multi-step research"], ["escalation", "Hard problems", "Used when a task gets stuck"]];
+const usd = (x: number | null | undefined) => x == null ? "∞" : `$${x < 10 ? x.toFixed(2) : Math.round(x)}`;
+function AiSettings({ canEdit }: { canEdit: boolean }) {
+  const { ws, toast } = useCtx();
+  const [ai, reload] = useApi<any>(`/v1/workspaces/${ws}/ai`);
+  const [models] = useApi<any[]>(ai ? `/v1/models?workspace=${ws}&mode=${ai.mode}&k=${ai.byok.join(",")}` : null);
+  const [key, setKey] = useState({ provider: "openrouter", key: "", base_url: "" }), [openOnly, setOpenOnly] = useState(true), [custom, setCustom] = useState<Record<string, string>>({});
+  if (!ai) return null;
+  const put = async (b: any) => { try { await api(`/v1/workspaces/${ws}/ai`, b, "PUT"); reload(); } catch (e: any) { toast(e.message); } };
+  const saveKey = async () => { try { await api(`/v1/workspaces/${ws}/provider-keys/${key.provider}`, key.provider === "custom" ? { key: key.key, base_url: key.base_url } : { key: key.key }, "PUT"); setKey({ ...key, key: "" }); reload(); toast("Key saved — your agents now use it"); } catch (e: any) { toast(e.message); } };
+  const topUp = async (amount: number) => { try { location.href = (await api(`/v1/workspaces/${ws}/credits/checkout`, { usd: amount })).url; } catch (e: any) { toast(e.message); } };
+  const usable = (models ?? []).filter((m) => m.available && (!openOnly || m.open)).sort((a, b) => a.price_in_per_m + a.price_out_per_m - b.price_in_per_m - b.price_out_per_m);
+  const b = ai.balance;
+  return <div className="col" style={{ gap: 14 }}>
+    <div className="aud" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }} role="radiogroup" aria-label="How agents pay for AI">
+      <button role="radio" aria-checked={ai.mode === "credits"} disabled={!canEdit} className={ai.mode === "credits" ? "on" : ""} onClick={() => put({ mode: "credits" })}>
+        <div className="e">⚡</div><b>Use our models</b><span>Pay as you go with credits. Open-source models cost a fraction of a cent per message.</span></button>
+      <button role="radio" aria-checked={ai.mode === "byok"} disabled={!canEdit} className={ai.mode === "byok" ? "on" : ""} onClick={() => ai.byok.length ? put({ mode: "byok" }) : toast("Add a key below first")}>
+        <div className="e">🔑</div><b>Bring your own key</b><span>Use your Anthropic, OpenAI, OpenRouter or self-hosted model. We never charge for AI.</span></button>
+    </div>
+    {ai.mode === "credits" ? <div className="card">
+      <div className="row wrap between"><div><div className="small muted">Available</div><div style={{ fontSize: 30, fontWeight: 700, letterSpacing: "-.02em" }}>{b.unlimited ? "Unlimited" : usd(b.available)}</div>
+        <div className="small muted">{b.unlimited ? "Your plan has no AI cap." : <>{usd(b.allowance_left)} of this month's {usd(b.allowance)} plan allowance{b.credits ? <> + {usd(b.credits)} credits</> : null}</>} · {usd(ai.spent_this_month)} used this month</div></div>
+        {canEdit && <div className="col" style={{ gap: 6 }}><span className="small muted">Add credits</span><div className="row">{[10, 25, 50].map((x) => <button key={x} className="btn" onClick={() => topUp(x)}>${x}</button>)}</div></div>}</div>
+      {!ai.platform.length && <div className="pill warn mt8">No platform model keys on this server yet — agents use the offline fallback until an admin sets OPENROUTER_API_KEY (or Anthropic/OpenAI).</div>}
+      <div className="small faint mt8">Prices include a {Math.round((ai.markup - 1) * 100)}% platform fee on the provider's cost.{!ai.payments && " Card payments aren't configured on this server (STRIPE_SECRET_KEY)."}</div>
+    </div> : <div className="card col">
+      <div className="row wrap" style={{ gap: 6 }}>{ai.byok.map((p: string) => <span key={p} className="pill ok">🔑 {PROVIDER_LABEL[p] ?? p}{canEdit && <a style={{ cursor: "pointer" }} aria-label={`Remove ${p} key`} onClick={async () => { await api(`/v1/workspaces/${ws}/provider-keys/${p}`, undefined, "DELETE"); reload(); }}> ✕</a>}</span>)}</div>
+      <div className="small muted">Your keys are encrypted and never shown again. Agents only use providers you've added a key for.</div>
+    </div>}
+    {canEdit && (ai.mode === "byok" || !ai.byok.length) && <div className="card col">
+      <b>{ai.byok.length ? "Add another key" : "Bring your own key"}</b>
+      <div className="row wrap"><select className="input" style={{ width: 260 }} value={key.provider} onChange={(e) => setKey({ ...key, provider: e.target.value })}>{Object.entries(PROVIDER_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        {key.provider === "custom" && <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="Base URL, e.g. https://api.together.xyz/v1" value={key.base_url} onChange={(e) => setKey({ ...key, base_url: e.target.value })} />}
+        <input className="input" style={{ flex: 1, minWidth: 180 }} type="password" autoComplete="off" placeholder={key.provider === "custom" ? "API key (optional)" : key.provider === "openrouter" ? "sk-or-…" : "sk-…"} value={key.key} onChange={(e) => setKey({ ...key, key: e.target.value })} />
+        <button className="btn primary" onClick={saveKey}>Save key</button></div>
+      <div className="small faint">{key.provider === "openrouter" ? "One OpenRouter key unlocks hundreds of models, including open-source Llama, DeepSeek, Qwen and Mistral." : key.provider === "custom" ? "Works with Together, Groq, Fireworks, or your own vLLM / Ollama server — anything that speaks the OpenAI Chat Completions API." : ""}</div>
+    </div>}
+    <div className="card">
+      <div className="row between wrap"><b>Which model your agents use</b><label className="row small muted"><input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />Open-source only</label></div>
+      {PROFILES.map(([p, label, hint], i) => { const cur = ai.models[p] ?? "";
+        const inList = !cur || usable.some((m) => m.id === cur);
+        return <div key={p} className="ability" style={i > 1 ? { opacity: .85 } : undefined}><span className="e">{["💬", "⚡", "🔎", "🧠"][i]}</span>
+          <div className="grow"><div>{label}</div><div className="small faint">{hint}</div></div>
+          <div className="col" style={{ gap: 4, width: "min(360px, 55%)" }}>
+            <select className="input" disabled={!canEdit} value={cur} onChange={(e) => e.target.value === "__custom" ? setCustom({ ...custom, [p]: "custom:" }) : put({ models: { [p]: e.target.value } })}>
+              <option value="">Recommended (automatic)</option>
+              {!inList && <option value={cur}>{cur}</option>}
+              {usable.map((m) => <option key={m.id} value={m.id}>{m.name} — ${m.price_in_per_m}/${m.price_out_per_m} per 1M{m.open ? " · open" : ""}</option>)}
+              {ai.byok.includes("custom") && <option value="__custom">Self-hosted model…</option>}
+            </select>
+            {custom[p] !== undefined && <div className="row"><input className="input" placeholder="custom:llama3.1:8b" value={custom[p]} onChange={(e) => setCustom({ ...custom, [p]: e.target.value })} />
+              <button className="btn sm" onClick={() => { put({ models: { [p]: custom[p] } }); const c = { ...custom }; delete c[p]; setCustom(c); }}>Use</button></div>}
+          </div></div>; })}
+      {models && !usable.length && <div className="small muted mt8">{ai.mode === "byok" ? "Add a key above to choose models." : "No models available on this server yet."}</div>}
+    </div>
+  </div>;
 }
 function AcceptInvite({ token }: { token: string }) {
   const { reloadMe, setWs, toast } = useCtx();
   return <div className="card"><h3>You've been invited to a workspace</h3><button className="btn primary mt16" onClick={async () => { try { const r = await api(`/v1/invitations/${token}/accept`, {}); reloadMe(); setWs(r.workspace_id); go("/"); } catch (e: any) { toast(e.message); } }}>Accept invitation</button></div>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+// ---------------- shared building blocks for the describe → try → add-to-chat flow ----------------
+const SKILL_COPY: Record<string, [string, string]> = {
+  "web-research": ["🔎", "Looks things up on the web and cites sources"], "source-verification": ["✅", "Double-checks facts against the source"],
+  "monitor-topic": ["📡", "Watches topics and tells you what changed"], "email-triage": ["📥", "Sorts your inbox: needs reply, FYI, ignore"],
+  "email-drafting": ["✉️", "Drafts emails in your voice — you approve sends"], calendar: ["📅", "Finds times and manages your calendar"],
+  "meeting-prep": ["🗂️", "Preps you before meetings"], "follow-up-tracking": ["🔁", "Chases replies and nudges people"],
+  reminders: ["⏰", "Reminds you or the group at the right time"], documents: ["📄", "Finds and reads your docs"],
+  reservations: ["🍽️", "Finds and books tables, watches for openings"], "group-buying": ["🛒", "Runs group orders — tally, deadline, who paid"],
+  browser: ["🧭", "Uses websites for you — forms and bookings"], "task-tracking": ["☑️", "Tracks who's doing what"],
+  delegation: ["🤝", "Hands work to your other agents"], "travel-planning": ["🧳", "Plans trips around everyone's preferences"],
+  "group-coordination": ["👥", "Keeps the group on track and sums up status"], "candidate-matching": ["🎯", "Matches candidates to roles"],
+  "credential-followup": ["📋", "Chases missing documents"], polls: ["📊", "Runs polls and RSVPs right in the chat"],
+  "expense-splitting": ["💸", "Splits costs and says who owes who"], "shared-lists": ["📝", "Keeps shared lists — groceries, packing, to-buy"],
+};
+const abilityOf = (s: any): [string, string] => SKILL_COPY[s?.id ?? s] ?? ["✨", s?.name ?? String(s)];
+const titleOf = (a: any) => a.title ?? a.instructions?.match(/You are [^,]+, an? ([^.\n]+)\./)?.[1] ?? "";
+
+const PICON: Record<string, ReactNode> = {
+  imessage: <path d="M12 4C7 4 3 7.2 3 11.1c0 2.2 1.3 4.1 3.3 5.4L5.6 20l3.9-2.2c.8.2 1.6.3 2.5.3 5 0 9-3.2 9-7S17 4 12 4z" fill="currentColor" />,
+  whatsapp: <><path d="M12 3.5a8.5 8.5 0 0 0-7.4 12.7L3.5 20.5l4.4-1.1A8.5 8.5 0 1 0 12 3.5z" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M9 8.5c.3 2.6 2.6 5.3 5.6 6.2l1.1-1.3-1.7-1-1 .8c-1-.5-2-1.5-2.4-2.4l.8-1-1-1.7z" fill="currentColor" /></>,
+  telegram: <path d="M20.5 4.2 3.4 10.8c-.9.4-.9 1 0 1.3l4.3 1.4 1.7 5.1c.2.6.6.7 1 .3l2.4-2.2 4.6 3.4c.7.4 1.2.2 1.4-.7l2.9-13.6c.3-1.2-.4-1.7-1.2-1.4zM9 13.2l8.6-5.5-6.9 6.4-.3 3z" fill="currentColor" />,
+  slack: <path d="M9 3.5v17M15 3.5v17M3.5 9h17M3.5 15h17" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />,
+  web: <><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17" fill="none" stroke="currentColor" strokeWidth="1.6" /></>,
+  mobile: <><rect x="7" y="3" width="10" height="18" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" /><circle cx="12" cy="17.5" r="1" fill="currentColor" /></>,
+  email: <><rect x="3.5" y="5.5" width="17" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="m4 7 8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.8" /></>,
+};
+const PMark = ({ p, size = "" }: { p: string; size?: string }) => <span className={`pmark ${size} p-${p}`} title={PLATFORM[p] ?? p}><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>{PICON[p] ?? PICON.web}</svg></span>;
+
+type Aud = "me" | "group" | "team";
+const AUDIENCE: [Aud, string, string, string][] = [
+  ["me", "🙋", "Just me", "A personal agent you text 1:1"], ["group", "💬", "A group chat", "Friends, family, a club or community"], ["team", "🏢", "My team", "Slack channels and shared work"]];
+const EXAMPLES: Record<Aud, string[]> = {
+  me: ["Grab me a table at the hottest new spots on Resy for Friday nights", "Every morning, brief me on my calendar and AI news", "Watch these sneakers and tell me when they drop under $120", "Quiz me on Spanish verbs every evening"],
+  group: ["Split our ski trip costs and tell everyone who owes what", "Plan Maya's birthday — poll dates and track who brings what", "Run our building's bulk coffee order every month", "Keep our apartment grocery list and chore rotation"],
+  team: ["Answer customer questions from our help docs and escalate the rest", "Run Monday standup in #eng and chase blockers", "Research inbound leads and draft first outreach emails", "Turn meeting notes into action items and follow up"],
+};
+const CAT_OF = (t: any): Aud => (t.manifest?.category === "personal" ? "me" : t.manifest?.category) ?? (/pool|group/.test(t.slug) ? "group" : /relay|recruit/.test(t.slug) ? "team" : "me");
+
+function AudiencePicker({ value, onChange }: { value: Aud; onChange: (a: Aud) => void }) {
+  return <div className="aud" role="radiogroup" aria-label="Who is it for">{AUDIENCE.map(([k, e, b, s]) =>
+    <button key={k} role="radio" aria-checked={value === k} className={value === k ? "on" : ""} onClick={() => onChange(k)}><div className="e">{e}</div><b>{b}</b><span>{s}</span></button>)}</div>;
+}
+
+function DescribeBox({ value, onChange, onSubmit, audience = "me", busy, cta = "Build my agent" }: { value: string; onChange: (s: string) => void; onSubmit: () => void; audience?: Aud; busy?: boolean; cta?: string }) {
+  const [i, setI] = useState(0);
+  useEffect(() => { const t = setInterval(() => setI((x) => x + 1), 3800); return () => clearInterval(t); }, []);
+  const ex = EXAMPLES[audience][i % EXAMPLES[audience].length];
+  return <div className="describe">
+    <textarea value={value} aria-label="Describe what your agent should do" placeholder={ex} onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onSubmit(); if (e.key === "Tab" && !value) { e.preventDefault(); onChange(ex); } }} />
+    <div className="bar"><span className="small faint grow">{value ? "⌘↵ to build" : "Press Tab to use the example"}</span>
+      <button className="btn grad lg" disabled={!value.trim() || busy} onClick={onSubmit}>{busy ? "Building…" : cta} →</button></div>
+  </div>;
+}
+
+function Stepper({ at, onPick }: { at: number; onPick?: (i: number) => void }) {
+  const steps = ["Describe", "Understand", "Rehearse", "Add to a chat"];
+  return <div className="stepper">{steps.map((s, i) => <span key={s} className="row" style={{ gap: 8 }}>
+    {i > 0 && <span className="line" />}
+    <span className={`s ${i === at ? "on" : i < at ? "done" : ""}`} style={{ cursor: onPick ? "pointer" : undefined }} onClick={() => onPick?.(i)}><i>{i < at ? "✓" : i + 1}</i><span>{s}</span></span></span>)}</div>;
+}
+
+function IdeaGallery({ cat: cat0 = "all", onPick, anonymous }: { cat?: Aud | "all"; onPick: (t: any) => void; anonymous?: boolean }) {
+  const [list] = useApi<any[]>("/v1/agent-templates");
+  const [cat, setCat] = useState<Aud | "all">(cat0);
+  useEffect(() => setCat(cat0), [cat0]);
+  const shown = (list ?? []).filter((t) => cat === "all" || CAT_OF(t) === cat);
+  return <>
+    <div className="seg" style={{ marginBottom: 14 }}>{([["all", "All"], ["me", "For you"], ["group", "For group chats"], ["team", "For teams"]] as const).map(([k, l]) =>
+      <button key={k} className={cat === k ? "on" : ""} onClick={() => setCat(k)}>{l}</button>)}</div>
+    <div className="grid3">{shown.map((t, i) => <div key={t.id} className="card hover idea rise" style={{ animationDelay: `${Math.min(i, 12) * 30}ms` }}>
+      <div className="top"><div className="avatar lg">{t.manifest.avatar ?? t.name[0]}</div><div className="grow"><h3>{t.name}</h3><div className="small muted">{t.manifest.title}</div></div></div>
+      <div className="tag">{t.tagline}</div>
+      <div className="row between"><div className="where">{(t.manifest.channels ?? ["web"]).filter((c: string) => PICON[c]).slice(0, 5).map((c: string) => <PMark key={c} p={c} size="sm" />)}</div>
+        <div className="row" style={{ gap: 6 }}><a className="btn sm ghost" href={`#/discover/${t.slug}`}>Try</a><button className="btn sm primary" onClick={() => onPick(t)}>{anonymous ? "Use" : "Add"}</button></div></div>
+    </div>)}</div>
+    {list && !shown.length && <div className="empty">No agents here yet — describe your own above.</div>}
+  </>;
+}
+
+// ---------------- landing ----------------
+// ---------------- landing: editorial "letters become stickers" hero ----------------
+// Interaction adapted from boknowsworld/boknows-text-image-template (MIT): letters swap to mixed-media stickers on hover,
+// neighbours make room, stickers spring in and shrink out; idle letters cycle on their own. Stickers are drawn as SVG
+// in chat/agent visual languages (bubbles, stamps, tags, receipts, polls, notes, app icons, label tape) — no image assets.
+type Kind = "imsg" | "wa" | "stamp" | "tag" | "receipt" | "poll" | "note" | "app" | "tape" | "rosette" | "ticket";
+function Sticker({ kind, ch }: { kind: Kind; ch: string }) {
+  const L = (x: number, y: number, fill: string, font = "Arial Black, Arial, sans-serif", size = 62, extra: any = {}) =>
+    <text x={x} y={y} fill={fill} fontFamily={font} fontSize={size} fontWeight={900} textAnchor="middle" dominantBaseline="central" {...extra}>{ch}</text>;
+  const body: Record<Kind, ReactNode> = {
+    imsg: <><path d="M16 10h68a12 12 0 0 1 12 12v52a12 12 0 0 1-12 12H40l-16 14 2-14h-10A12 12 0 0 1 4 74V22a12 12 0 0 1 12-12z" fill="#0a84ff" />{L(50, 48, "#fff")}</>,
+    wa: <><path d="M84 10H16A12 12 0 0 0 4 22v52a12 12 0 0 0 12 12h56l18 12-4-16a12 12 0 0 0 8-8V22a12 12 0 0 0-12-12z" fill="#d9fdd3" stroke="#25d366" strokeWidth="3" />{L(48, 48, "#0b5e37")}<text x="80" y="80" fontSize="11" fill="#53bdeb" fontFamily="Arial">✓✓</text></>,
+    stamp: <><rect x="8" y="8" width="84" height="94" fill="#fff8ec" stroke="#fff8ec" strokeWidth="10" strokeDasharray="0.1 7.9" strokeLinecap="round" />
+      <rect x="16" y="16" width="68" height="78" fill="#f6d6c9" stroke="#c2412d" strokeWidth="2.5" />{L(50, 52, "#c2412d", "Georgia, serif", 60)}<text x="78" y="88" fontSize="9" textAnchor="end" fill="#c2412d" fontFamily="Courier New">2¢</text></>,
+    tag: <><path d="M50 4c-6 0-6 10 0 14" stroke="#8a6a3c" strokeWidth="2.5" fill="none" /><path d="M24 22h52l12 14v60a6 6 0 0 1-6 6H18a6 6 0 0 1-6-6V36z" fill="#d9b48a" stroke="#9b7448" strokeWidth="2" strokeDasharray="4 3" />
+      <circle cx="50" cy="32" r="4.5" fill="#e8ece8" stroke="#8a6a3c" strokeWidth="2" />{L(50, 68, "#3d2a14", "Georgia, serif", 52)}</>,
+    receipt: <><path d="M14 6h72v92l-6-5-6 5-6-5-6 5-6-5-6 5-6-5-6 5-6-5-6 5-6-5z" fill="#fffef8" stroke="#cfd5cc" strokeWidth="1.5" />
+      {[16, 24].map((y) => <line key={y} x1="22" x2="78" y1={y} y2={y} stroke="#b7bfb4" strokeWidth="2" strokeDasharray="3 3" />)}{L(50, 56, "#1d2420", "Courier New, monospace", 58)}<text x="50" y="84" fontSize="8" textAnchor="middle" fill="#6b746c" fontFamily="Courier New">SPLIT 4 WAYS</text></>,
+    poll: <><rect x="6" y="10" width="88" height="88" rx="14" fill="#fff" stroke="#d3d8d2" strokeWidth="2" />{[30, 50, 70].map((y, i) => <rect key={y} x="18" y={y - 5} width={[46, 64, 28][i]} height="10" rx="5" fill={["#c8c3ff", "#7a5cff", "#e3e0ff"][i]} />)}
+      {L(78, 30, "#4533d6", "Arial Black, Arial", 34)}<text x="18" y="90" fontSize="9" fill="#67646f" fontFamily="Arial">3 votes</text></>,
+    note: <><g transform="rotate(-4 50 55)"><rect x="10" y="12" width="80" height="84" fill="#ffe86b" /><path d="M74 96l16-16v16z" fill="#e6c94a" /><rect x="38" y="6" width="26" height="12" fill="#ffffff99" />
+      {L(48, 56, "#2b2a20", "Georgia, serif", 64, { fontStyle: "italic", fontWeight: 700 })}</g></>,
+    app: <><rect x="8" y="12" width="84" height="84" rx="22" fill="url(#g)" /><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#7a5cff" /><stop offset="1" stopColor="#2fa8ff" /></linearGradient></defs>
+      {L(50, 56, "#fff")}<circle cx="86" cy="16" r="11" fill="#ff3b30" /><text x="86" y="17" fontSize="13" fill="#fff" textAnchor="middle" dominantBaseline="central" fontFamily="Arial" fontWeight="700">1</text></>,
+    tape: <><rect x="4" y="30" width="92" height="50" rx="6" fill="#1d1f22" /><rect x="4" y="30" width="92" height="6" rx="3" fill="#3a3d42" />
+      {L(50, 57, "#f4f4f2", "Courier New, monospace", 50, { letterSpacing: 2 })}</>,
+    rosette: <><path d="M38 70l-12 34 14-8 8 12 6-36zM62 70l12 34-14-8-8 12-6-36z" fill="#2f6f5a" />
+      <circle cx="50" cy="48" r="40" fill="#e0b84a" stroke="#c99a2a" strokeWidth="4" strokeDasharray="5 3" /><circle cx="50" cy="48" r="28" fill="#fffaf0" />{L(50, 49, "#2f6f5a", "Georgia, serif", 46)}</>,
+    ticket: <><path d="M6 24h88v20a8 8 0 0 0 0 20v20H6V64a8 8 0 0 0 0-20z" fill="#ff8a65" /><line x1="72" x2="72" y1="28" y2="80" stroke="#fff" strokeWidth="2" strokeDasharray="4 4" />
+      {L(38, 54, "#fff", "Arial Black, Arial", 52)}<text x="83" y="54" fontSize="9" fill="#fff" textAnchor="middle" dominantBaseline="central" fontFamily="Courier New" transform="rotate(90 83 54)">RSVP</text></>,
+  };
+  return <svg viewBox="0 0 100 110" aria-hidden>{body[kind]}</svg>;
+}
+
+const HERO = "text an agent";
+// Two distinct visual languages per letter position (spaces excluded), so the same letter never repeats a look.
+const LOOKS: [Kind, Kind][] = [["imsg", "stamp"], ["note", "rosette"], ["tape", "ticket"], ["app", "receipt"], ["wa", "tag"], ["poll", "note"],
+  ["stamp", "app"], ["receipt", "imsg"], ["rosette", "wa"], ["tag", "tape"], ["ticket", "poll"]];
+const spring = (angle: number, y: number) => Array.from({ length: 41 }, (_, i) => {
+  const t = i / 40, v = i === 40 ? 1 : 1 - Math.exp(-7.2 * t) * (Math.cos(10.5 * t) + .24 * Math.sin(10.5 * t));
+  return { offset: t, transform: `translate(-50%, -50%) translateY(${y + 8 * (1 - v)}px) rotate(${angle - 8 * (1 - v)}deg) scale(${.35 + .65 * v})` };
+});
+
+function LetterHero({ text = HERO, idle = true }: { text?: string; idle?: boolean }) {
+  const chars = Array.from(text);
+  const positions = chars.map((c, i) => c === " " ? -1 : chars.slice(0, i).filter((x) => x !== " ").length);
+  const n = chars.filter((c) => c !== " ").length;
+  const look = (i: number) => LOOKS[i % LOOKS.length]; // longer titles cycle through the looks
+  const [active, setActive] = useState<Record<number, Kind>>({});
+  const last = useRef<Record<number, Kind>>({}), hovered = useRef<number | null>(null), timers = useRef<Record<number, any>>({});
+  const reduced = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const show = (i: number, ms?: number) => {
+    if (reduced) return;
+    const [a, b] = look(i), kind = last.current[i] === a ? b : last.current[i] === b ? a : Math.random() < .5 ? a : b;
+    last.current[i] = kind; clearTimeout(timers.current[i]);
+    setActive((s) => ({ ...s, [i]: kind }));
+    if (ms) timers.current[i] = setTimeout(() => hovered.current !== i && hide(i), ms);
+  };
+  const hide = (i: number) => { clearTimeout(timers.current[i]); setActive((s) => { const c = { ...s }; delete c[i]; return c; }); };
+  useEffect(() => {
+    if (reduced || !idle) return;
+    const t: any[] = [];
+    for (let i = 0; i < n; i++) t.push(setTimeout(() => show(i), i * 40)); // opening: every letter becomes a sticker, then returns
+    [...Array(n).keys()].sort(() => Math.random() - .5).forEach((i, k) => t.push(setTimeout(() => hide(i), 40 * n + 700 + 45 * k)));
+    let auto: any;
+    const loop = () => { auto = setTimeout(() => { if (hovered.current === null && !document.hidden) show(Math.floor(Math.random() * n), 1000); loop(); }, 1300 + Math.random() * 1500); };
+    t.push(setTimeout(loop, 40 * n + 1500));
+    return () => { t.forEach(clearTimeout); clearTimeout(auto); Object.values(timers.current).forEach(clearTimeout); };
+  }, []);
+  const point = (e: { clientX: number; clientY: number }) => {
+    const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest("[data-pos]") as HTMLElement | null;
+    const next = el ? Number(el.dataset.pos) : null;
+    if (next === hovered.current) return;
+    const old = hovered.current; hovered.current = next;
+    if (old !== null) hide(old);
+    if (next !== null) show(next);
+  };
+  const leave = () => { const old = hovered.current; hovered.current = null; if (old !== null) hide(old); };
+  return <h1 className="ed-title" aria-label={text} onPointerMove={point} onPointerDown={point} onPointerLeave={leave} onPointerCancel={leave}>
+    {/* letters grouped per word so narrow screens wrap between words, never inside one */}
+    {text.split(" ").map((w, wi, ws) => { const start = ws.slice(0, wi).reduce((n, x) => n + x.length + 1, 0);
+      return <span key={wi} className="ed-word">{Array.from(w).map((c, j) => <Letter key={j} ch={c} pos={positions[start + j]} kind={active[positions[start + j]]} />)}</span>; })}
+  </h1>;
+}
+function Letter({ ch, pos, kind }: { ch: string; pos: number; kind?: Kind }) {
+  const [shown, setShown] = useState<Kind | undefined>(kind), ref = useRef<HTMLSpanElement>(null), anim = useRef<Animation | null>(null);
+  const angle = [-9, 7, -5, 8, -7, 6, -4][pos % 7], y = [3, -2, 2, -3, 1, 3, -1][pos % 7];
+  useEffect(() => { if (kind) setShown(kind); }, [kind]);
+  useLayoutEffect(() => {
+    const el = ref.current; if (!el) return;
+    anim.current?.cancel(); // a cancelled exit never fires onfinish, so a quick re-hover keeps its sticker
+    if (kind && shown === kind) anim.current = el.animate(spring(angle, y), { duration: 340, fill: "both" });
+    else if (!kind && shown) {
+      const a = el.animate([{ transform: `translate(-50%, -50%) rotate(${angle}deg) scale(1)`, opacity: 1 }, { transform: `translate(-50%, -50%) rotate(${angle}deg) scale(1.055)`, opacity: 1, offset: .2 },
+        { transform: `translate(-50%, -50%) rotate(${angle}deg) scale(.7)`, opacity: .42, offset: .62 }, { transform: `translate(-50%, -50%) rotate(${angle}deg) scale(.35)`, opacity: 0 }], { duration: 620, easing: "cubic-bezier(.22,1,.36,1)", fill: "forwards" });
+      a.onfinish = () => setShown(undefined); anim.current = a;
+    }
+  }, [kind, shown]);
+  return <span className={`ed-letter ${kind ? "on" : shown ? "returning" : ""}`} data-pos={pos}>
+    <span className="ed-char">{ch}</span>
+    {shown && <span className="ed-sticker" ref={ref}><Sticker kind={shown} ch={ch} /></span>}
+  </span>;
+}
+function LocalClock() {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => { const i = setInterval(() => setT(new Date()), 10000); return () => clearInterval(i); }, []);
+  return <time dateTime={t.toISOString()}>{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}</time>;
+}
+
+// ---------------- landing: playful line-doodle style ----------------
+const Sparkle = ({ size = 26, color = "#c6f432", style }: { size?: number; color?: string; style?: any }) =>
+  <svg className="gm-doodle" width={size} height={size} viewBox="0 0 40 40" style={style} aria-hidden><path d="M20 2c1.6 9.6 8.4 16.4 18 18-9.6 1.6-16.4 8.4-18 18-1.6-9.6-8.4-16.4-18-18 9.6-1.6 16.4-8.4 18-18z" fill={color} stroke="#111" strokeWidth="2.2" strokeLinejoin="round" /></svg>;
+/** Googly eyes that follow the pointer. */
+function Eyes({ size = 46, style, className = "" }: { size?: number; style?: any; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null), [p, setP] = useState({ x: 0, y: 0 });
+  useEffect(() => {
+    const move = (e: PointerEvent) => { const r = ref.current?.getBoundingClientRect(); if (!r) return; const a = Math.atan2(e.clientY - r.top - r.height / 2, e.clientX - r.left - r.width / 2); setP({ x: Math.cos(a) * 4, y: Math.sin(a) * 4 }); };
+    addEventListener("pointermove", move); return () => removeEventListener("pointermove", move);
+  }, []);
+  return <span ref={ref} className={`gm-eyes ${className}`} style={style} aria-hidden>{[0, 1].map((i) => <svg key={i} width={size / 2} height={size / 2 * 1.15} viewBox="0 0 24 28">
+    <ellipse cx="12" cy="14" rx="10.5" ry="12.5" fill="#fff" stroke="#111" strokeWidth="2.2" /><circle cx={12 + p.x} cy={15 + p.y} r="4.6" fill="#111" /><circle cx={13.6 + p.x} cy={13.4 + p.y} r="1.3" fill="#fff" /></svg>)}</span>;
+}
+/** A word circled with a lime marker. */
+const Circled = ({ children }: { children: ReactNode }) => <span className="gm-circled">{children}<svg viewBox="0 0 200 80" preserveAspectRatio="none" aria-hidden>
+  <path d="M30 14C80 2 170 4 190 30s-40 44-110 42S6 58 10 36 50 10 100 10" fill="none" stroke="#c6f432" strokeWidth="7" strokeLinecap="round" /></svg></span>;
+
+/** "for yourself / your group chat / your team" — the audience word flips through, each in its own marker colour. */
+function Rotator() {
+  const words: [string, string][] = [["yourself", "#c6f432"], ["your group chat", "#c6f432"], ["your team", "#c6f432"]];
+  const [i, setI] = useState(0);
+  useEffect(() => { const t = setInterval(() => setI((x) => (x + 1) % words.length), 2200); return () => clearInterval(t); }, []);
+  return <span className="gm-rot" aria-live="polite"><span key={i} className="gm-rot-word" style={{ background: words[i][1] }}>{words[i][0]}</span>,</span>;
+}
+/** Every chat app is a chunky tilted tile with a sample message bobbing above it. */
+function ChannelParade() {
+  const ch: [string, string, string][] = [["imessage", "iMessage", "Reese, table for 4 Fri? 🍽️"], ["whatsapp", "WhatsApp", "Tab, who owes what? 🧾"], ["slack", "Slack", "@Max action items pls 📝"],
+    ["telegram", "Telegram", "Plans, poll: Sat or Sun? 📊"], ["web", "Web & phone", "Dash, brief me ☀️"], ["email", "Email", "cc Leo on this 📈"]];
+  return <div className="gm-parade" aria-label="Works in iMessage, WhatsApp, Slack, Telegram, the web and email">
+    {ch.map(([p, name, msg], i) => <div key={p} className="gm-app" style={{ "--tilt": `${[-3, 2, -2, 3, -2, 2][i]}deg` } as any}>
+      <span className="gm-say">{msg}</span>
+      <span className={`gm-tile p-${p}`}><svg viewBox="0 0 24 24" width="34" height="34" aria-hidden>{PICON[p]}</svg></span>
+      <span className="gm-app-name">{name}</span></div>)}
+  </div>;
+}
+
+/** Fades its children up once they scroll into view. */
+function Reveal({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null), [on, setOn] = useState(false);
+  useEffect(() => { const io = new IntersectionObserver(([e]) => e.isIntersecting && setOn(true), { threshold: .2 }); ref.current && io.observe(ref.current); return () => io.disconnect(); }, []);
+  return <div ref={ref} className={`gm-reveal ${on ? "in" : ""}`}>{children}</div>;
+}
+
+/** Scroll progress (0..1) through a tall element, measured against its scrolling container. */
+function useScrollProgress(ref: { current: HTMLElement | null }) {
+  const [p, setP] = useState(0);
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const scroller: any = el.closest(".landing") ?? window;
+    let raf = 0;
+    const update = () => { raf = 0; const r = el.getBoundingClientRect(), vh = innerHeight; setP(Math.min(1, Math.max(0, -r.top / Math.max(1, r.height - vh)))); };
+    const on = () => { if (!raf) raf = requestAnimationFrame(update); };
+    update(); scroller.addEventListener("scroll", on, { passive: true }); addEventListener("resize", on);
+    return () => { scroller.removeEventListener("scroll", on); removeEventListener("resize", on); cancelAnimationFrame(raf); };
+  }, []);
+  return p;
+}
+
+// The storyline: a pinned stage plays one chapter per screen of scrolling, scrubbed by scroll position (nothing autoplays).
+const CHAPTERS: [string, string, string][] = [
+  ["01", "It starts with one sentence.", "Say what you need like you'd text a friend. No forms, no prompt engineering."],
+  ["02", "We turn it into an agent.", "The right abilities and the right guardrails. It asks before it sends, books or pays."],
+  ["03", "Try it where nothing can break.", "A sandbox chat runs the real tools, but nothing leaves until you're happy."],
+  ["04", "Drop it into any chat.", "iMessage, WhatsApp, Telegram, Slack, the web or email: 1:1 or the whole group."],
+  ["05", "And now it just… helps.", "Everyone asks it by name. Splits, polls, bookings, reminders, right where you already talk."],
+];
+const STORY_IDEA = "Split our ski trip costs and tell everyone who owes what";
+function Story() {
+  const ref = useRef<HTMLDivElement>(null), p = useScrollProgress(ref);
+  const n = CHAPTERS.length, at = Math.min(n - 1, Math.floor(p * n)), local = Math.min(1, p * n - at); // chapter + progress inside it
+  const reached = (x: number) => local >= x;
+  const typed = STORY_IDEA.slice(0, Math.ceil(Math.min(1, local / .7) * STORY_IDEA.length));
+  const fly = Math.min(1, local / .55); // chapter 4: the agent travels into the iMessage tile
+  const stage = [
+    <div key="d" className="st-card st-describe"><div className="small muted" style={{ marginBottom: 8 }}>What should your agent do?</div>
+      <div className="st-typed">{typed}<span className="st-caret" /></div>
+      <div className="row" style={{ justifyContent: "flex-end" }}><span className={`gm-btn ${typed.length === STORY_IDEA.length ? "dark" : ""}`} style={{ pointerEvents: "none" }}>Build my agent →</span></div></div>,
+    <div key="b" className="st-card st-agent"><div className="row" style={{ gap: 12 }}><div className={`st-av ${reached(.05) ? "in" : ""}`}>🧾</div><div><h3 style={{ font: "800 22px Rubik, sans-serif" }}>Tab</h3><div className="small muted">Expense splitter</div></div></div>
+      {[["💸", "Splits costs, to the cent", .2], ["📊", "Says who owes who", .4], ["⏰", "Nudges people to pay up", .6], ["✋", "Never moves money: you approve", .8]].map(([e, t, x]) =>
+        <div key={t as string} className={`st-row ${reached(x as number) ? "in" : ""}`}><span>{e}</span>{t}<b>✓</b></div>)}</div>,
+    <div key="t" className="st-card st-chat"><span className="st-test">🧪 Test mode</span>
+      <div className={`bub me ${reached(.1) ? "" : "st-hidden"}`}>I paid $90 for gas</div>
+      <div className={`bub bot ${reached(.4) ? "" : "st-hidden"}`}>💸 $90 split 3 ways: $30 each. Sam and Leo owe you $30.</div>
+      <div className={`st-note ${reached(.7) ? "" : "st-hidden"}`}>Nothing was sent. Looks right? Ship it.</div></div>,
+    <div key="c" className="st-deploy">
+      <div className="st-fly" style={{ transform: `translate(${-104 * fly}px, ${97 * fly}px) scale(${1 - .3 * fly})`, opacity: fly >= 1 ? 0 : 1 }}>🧾</div>
+      <div className="st-tiles">{["imessage", "whatsapp", "telegram", "slack", "web", "email"].map((x, i) =>
+        <span key={x} className={`gm-tile p-${x} ${i === 0 && reached(.6) ? "st-live" : ""}`} style={{ "--tilt": "0deg" } as any}><svg viewBox="0 0 24 24" width="30" height="30" aria-hidden>{PICON[x]}</svg>{i === 0 && reached(.6) && <i>✓</i>}</span>)}</div>
+      <div className={`st-note ${reached(.65) ? "" : "st-hidden"}`}>Tab joined “Ski trip 🏔”</div></div>,
+    <PhoneMock key="l" count={Math.max(1, Math.ceil(local * 7.5))} />,
+  ];
+  return <div className="story" ref={ref} style={{ height: `${n * 85 + 15}vh` }}>
+    <div className="story-pin">
+      <div className="story-copy">
+        <div className="story-dots">{CHAPTERS.map((_, i) => <span key={i} className={i === at ? "on" : i < at ? "done" : ""} />)}</div>
+        <div key={at} className="story-text"><span className="story-num">{CHAPTERS[at][0]}</span><h2 className="gm-h2">{CHAPTERS[at][1]}</h2><p className="gm-p">{CHAPTERS[at][2]}</p></div>
+      </div>
+      <div className="story-stage"><div key={at} className="story-scene">{stage[at]}</div></div>
+    </div>
+  </div>;
+}
+
+function PhoneMock({ count }: { count?: number }) {
+  const msgs: [string, string, string?][] = [["them", "Tab, I paid $240 for the cabin 🏔", "Maya"], ["bot", "Got it — $240 split 4 ways, $60 each.\nSam, Leo and you each owe Maya $60.", "Tab 🧾"],
+    ["me", "Plans, poll: dinner Friday or Saturday?"], ["bot", "📊 Dinner night?\n1. Friday\n2. Saturday\nJust reply with a number.", "Plans 🎉"], ["them", "2", "Sam"], ["them", "2!", "Leo"], ["bot", "Saturday it is — 3 votes to 0 🎉", "Plans 🎉"]];
+  return <div className="phone" aria-hidden><div className="scr">
+    <div className="hd"><div className="faces">{[["M", "#ff7a45"], ["S", "#3b82f6"], ["L", "#ffe14d"], ["✦", "#c6f432"]].map(([c, bg]) => <span key={c} style={{ background: bg }}>{c}</span>)}</div><div className="small" style={{ fontWeight: 700 }}>Ski trip 🏔</div><div className="small faint">Maya, Sam, Leo, Tab, Plans</div></div>
+    <div className="thread">{msgs.slice(0, count ?? msgs.length).map(([k, t, who], i) => <div key={i} style={{ display: "contents" }}>
+      {who && k !== "me" && (i === 0 || msgs[i - 1][2] !== who) && <div className="who-s">{who}</div>}
+      <div className={`bub ${k}`} style={{ animationDelay: count == null ? `${i * 0.35}s` : "0s" }}>{t}</div></div>)}</div>
+  </div></div>;
+}
+
+function Landing({ onDone }: { onDone: () => void }) {
+  const [idea, setIdea] = useState(""), [aud, setAud] = useState<Aud>("group"), [auth, setAuth] = useState<null | "signup" | "login">(null);
+  const save = (k: string, v: any) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+  const ideas = useRef<HTMLElement>(null), how = useRef<HTMLElement>(null), describe = useRef<HTMLDivElement>(null);
+  useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && setAuth(null); addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+  const go2 = (r: { current: HTMLElement | null }) => r.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  return <div className="landing gm">
+    <nav className="gm-nav">
+      <div className="gm-logo">agents<Eyes size={26} /></div>
+      <div className="gm-links"><button onClick={() => go2(how)}>How it works</button><button onClick={() => go2(ideas)}>Agents</button><button onClick={() => describe.current?.querySelector("textarea")?.focus()}>Build one</button></div>
+      <div className="row" style={{ gap: 14 }}><button className="gm-link" onClick={() => setAuth("login")}>Sign in</button><button className="gm-btn dark" onClick={() => setAuth("signup")}>Get started</button></div>
+    </nav>
+
+    <section className="gm-hero">
+      <Sparkle size={22} style={{ left: "12%", top: 70 }} />
+      <p className="gm-hand">psst… hover the letters ↓</p>
+      <div className="gm-title-wrap"><LetterHero text="deploy your agent" idle={false} /></div>
+      <p className="gm-for"><span>for</span><Rotator /><span className="gm-anywhere">anywhere.</span></p>
+      <ChannelParade />
+      <p className="gm-sub">Describe a helper in plain words, try it safely, then drop it into the chats you already use — 1:1, the group chat, or your team's channels. One agent, same memory everywhere.</p>
+      <div className="gm-ctas"><button className="gm-btn dark" onClick={() => describe.current?.querySelector("textarea")?.focus()}>Build my agent</button>
+        <button className="gm-btn" onClick={() => go2(ideas)}>Browse agents</button></div>
+    </section>
+
+    <section className="gm-sec gm-describe" ref={describe as any}>
+      <div className="gm-bubble">
+        <div className="gm-tabs" role="tablist" aria-label="Who is it for">{AUDIENCE.map(([k, e, l]) => <button key={k} role="tab" aria-selected={aud === k} className={aud === k ? "on" : ""} onClick={() => setAud(k)}>{e} {l}</button>)}</div>
+        <DescribeBox value={idea} onChange={setIdea} audience={aud} onSubmit={() => { save("pendingIdea", { idea, aud }); setAuth("signup"); }} />
+        <div className="row wrap mt16" style={{ gap: 8 }}>{EXAMPLES[aud].slice(0, 3).map((x) => <button key={x} className="gm-chip" onClick={() => setIdea(x)}>{x.length > 46 ? x.slice(0, 44) + "…" : x}</button>)}</div>
+      </div>
+    </section>
+
+    <section ref={how}><Story /></section>
+
+    <section className="gm-sec" ref={ideas}>
+      <Reveal><h2 className="gm-h2" style={{ textAlign: "center" }}>Meet the crew</h2>
+      <p className="gm-p" style={{ textAlign: "center", margin: "0 auto 26px" }}>20 agents people actually use. Try one, then add it in a click.</p></Reveal>
+      <IdeaGallery cat="all" anonymous onPick={(t) => { save("pendingTemplate", t.slug); setAuth("signup"); }} />
+    </section>
+
+    <section className="gm-sec gm-end">
+      <Reveal><h2 className="gm-h2">Your group chat just got<br />a new <Circled>friend</Circled></h2></Reveal>
+      <div className="gm-ctas"><button className="gm-btn dark" onClick={() => setAuth("signup")}>Start for free</button></div>
+      <p className="gm-fine">Agents ask before they send, book or pay · Your data stays in your workspace</p>
+    </section>
+    {auth && <div className="modal-bg" onClick={(e) => e.target === e.currentTarget && setAuth(null)}><div className={CLERK_KEY ? "modal bare" : "modal"}><Auth initial={auth} onDone={onDone} /></div></div>}
+  </div>;
+}
+
+const clerkLook = {
+  variables: { colorPrimary: "#111", colorText: "#111", colorBackground: "#fff", fontFamily: "Inter, -apple-system, sans-serif", borderRadius: "12px" },
+  elements: { cardBox: { border: "2px solid #111", boxShadow: "6px 6px 0 #c6f432" }, formButtonPrimary: { background: "#111", boxShadow: "0 3px 0 #c6f432", fontWeight: 700, textTransform: "none" } },
+};
+/** Clerk signed in but the API has no session yet (fresh sign-in, or back from a Google redirect): trade the Clerk token for one. */
+function ClerkBridge({ need, onSynced }: { need: boolean; onSynced: () => void }) {
+  const { isSignedIn, getToken } = useAuth();
+  useEffect(() => {
+    if (!need || !isSignedIn) return;
+    getToken().then((token) => api("/v1/auth/clerk", { token })).then(onSynced).catch((e) => console.error("clerk sign-in", e));
+  }, [need, isSignedIn]);
+  return null;
+}
+
+function Auth({ onDone, initial = "signup" }: { onDone: () => void; initial?: "login" | "signup" }) {
+  if (CLERK_KEY) return <SignIn routing={"virtual" as any} withSignUp />; // virtual: keeps Clerk off our #/ routes (runtime-supported, missing from the React types). One flow for both: new emails continue into sign-up; ClerkBridge finishes
+  const [mode, setMode] = useState(initial), [f, setF] = useState({ name: "", email: "", password: "" }), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const submit = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { await api(`/v1/auth/${mode}`, f); onDone(); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
+  return <div>
+    <div className="logo" style={{ padding: "0 0 14px" }}><i />agents</div>
+    <h1>{mode === "signup" ? "Create your free account" : "Welcome back"}</h1>
+    <p className="muted">{mode === "signup" ? "Then we'll build your agent — it takes a minute." : "Pick up where you left off."}</p>
+    <form className="col mt16" onSubmit={submit}>
+      {mode === "signup" && <input className="input" placeholder="Your name" autoComplete="name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />}
+      <input className="input" placeholder="Email" type="email" autoComplete="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+      <input className="input" placeholder="Password (8+ characters)" type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
+      {err && <div className="pill bad">{err}</div>}
+      <button className="btn grad lg" disabled={busy}>{mode === "signup" ? "Create account" : "Sign in"}</button>
+      <button type="button" className="btn ghost small" onClick={() => setMode(mode === "login" ? "signup" : "login")}>{mode === "login" ? "New here? Create an account" : "Have an account? Sign in"}</button>
+    </form>
+  </div>;
+}
+
+// ---------------- shell ----------------
+function App() {
+  const route = useHash();
+  const [path, qs] = route.split("?");
+  const [me, reloadMe, meErr] = useApi<any>("/v1/me");
+  const [ws, setWsState] = useState<string>(() => localStorage.getItem("ws") ?? "");
+  const [msg, setMsg] = useState("");
+  const toast = (s: string) => { setMsg(s); setTimeout(() => setMsg(""), 2600); };
+  const setWs = (w: string) => { localStorage.setItem("ws", w); setWsState(w); };
+  useEffect(() => { if (me && !me.workspaces.find((w: any) => w.id === ws)) setWs(me.workspaces[0]?.id); }, [me]);
+  const [home] = useApi<any>(me && ws ? `/v1/home?workspace=${ws}` : null, 5000);
+  useEffect(() => { document.querySelector(".main")?.scrollTo(0, 0); }, [path]);
+  // A template picked on the landing page before signing up gets installed right after.
+  useEffect(() => {
+    if (!me || !ws) return;
+    let slug: string | null = null; try { slug = JSON.parse(localStorage.getItem("pendingTemplate") ?? "null"); localStorage.removeItem("pendingTemplate"); } catch {}
+    if (slug) api(`/v1/agent-templates/${slug}/install`, { workspace_id: ws }).then((r) => go(`/agents/${r.agent.id}/launch`)).catch((e) => toast(e.message));
+  }, [me?.user?.id, ws]);
+
+  if (path.startsWith("/discover") && !me) return <div className="page"><Discover route={path} anonymous /></div>;
+  const afterAuth = () => { reloadMe(); go(localStorage.getItem("pendingIdea") ? "/agents/new" : "/"); };
+  if (meErr && !me) return <>{CLERK_KEY && <ClerkBridge need onSynced={afterAuth} />}<Landing onDone={afterAuth} /></>;
+  if (!me || !ws || !me.workspaces.some((w: any) => w.id === ws)) return <div className="page muted">Loading…</div>; // stale ws from another session gets replaced first
+  const attention = home ? home.needs_attention.approvals.length + home.needs_attention.waits.length + home.needs_attention.reconnect.length : 0;
+  const nav = [["/", "Home", "⌂"], ["/agents", "Agents", "◎"], ["/rooms", "Chats", "◇"], ["/tasks", "Tasks", "☑"], ["/discover", "Ideas", "✦"], ["/connections", "Connections", "⟷"], ["/activity", "Activity", "≡"]];
+  const on = (p: string) => (p === "/" ? path === "/" : path.startsWith(p) && !(p === "/agents" && path === "/agents/new"));
+  const wide = /^\/rooms\/[^/]+$/.test(path);
+  const seg = path.split("/");
+  return <Ctx.Provider value={{ me, ws, setWs, toast, reloadMe }}>
+    <div className="app">
+      <nav className="rail" aria-label="Main">
+        <div className="logo">agents<Eyes size={24} /></div>
+        <a className="new" href="#/agents/new">＋ New agent</a>
+        {me.workspaces.length > 1 && <select className="ws-switch" aria-label="Workspace" value={ws} onChange={(e) => { setWs(e.target.value); go("/"); }}>
+          {me.workspaces.map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>}
+        {nav.map(([p, l, i]) => <a key={p} href={`#${p}`} className={on(p) ? "on" : ""}><span className="ic">{i}</span>{l}{p === "/" && attention > 0 && <span className="count">{attention}</span>}</a>)}
+        <div className="sep" />
+        <a href="#/settings" className={on("/settings") ? "on" : ""}><span className="ic">⚙</span>Settings</a>
+      </nav>
+      <main className="main"><div key={path} className={`page ${wide ? "wide" : ""}`}>
+        {path === "/" ? <Home /> : path === "/agents" ? <Agents /> : path === "/agents/new" ? <CreateAgent />
+          : path.startsWith("/agents/") && seg[3] === "launch" ? <Launch id={seg[2]} aud={(new URLSearchParams(qs).get("aud") as Aud) ?? "me"} />
+          : path.startsWith("/agents/") ? <AgentPage id={seg[2]} tab={seg[3]} />
+          : path === "/rooms" ? <Rooms /> : path.startsWith("/rooms/") ? <Room id={seg[2]} /> : path.startsWith("/discover") ? <Discover route={path} />
+          : path.startsWith("/connections") ? <Connections /> : path === "/activity" ? <Activity /> : path === "/tasks" ? <Tasks /> : path.startsWith("/settings") ? <Settings />
+          : path.startsWith("/invite/") ? <AcceptInvite token={seg[2]} /> : <div className="empty">Not found</div>}
+      </div></main>
+    </div>
+    {msg && <div className="toast" role="status">{msg}</div>}
+  </Ctx.Provider>;
+}
+
+// ---------------- Home & Agents ----------------
+function AgentCard({ a }: { a: any }) {
+  const lives = (a.deployed ?? ["web"]).filter((p: string) => p !== "web");
+  return <a className="card hover idea" href={`#/agents/${a.id}`}>
+    <div className="top"><div className="avatar lg">{a.avatar}</div><div className="grow"><h3>{a.name}</h3><div className="small muted">{titleOf(a)}</div></div>
+      {a.active_runs?.length || a.active_runs > 0 ? <span className="pill accent"><span className="dot live" />Working</span> : a.status !== "active" ? <span className="pill">Paused</span> : null}</div>
+    <div className="tag" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{a.job}</div>
+    <div className="row small muted">{lives.length ? <>{lives.map((p: string) => <PMark key={p} p={p} size="sm" />)}<span>Live in {lives.map((p: string) => PLATFORM[p] ?? p).join(", ")}</span></>
+      : <span style={{ color: "var(--accent-text)", fontWeight: 560 }}>Add to a chat →</span>}</div>
+  </a>;
+}
+const NewAgentCard = () => <a className="card hover" href="#/agents/new" style={{ display: "grid", placeItems: "center", borderStyle: "dashed", minHeight: 150, color: "var(--muted)", boxShadow: "none" }}>
+  <div style={{ textAlign: "center" }}><div style={{ fontSize: 26 }}>＋</div><b>New agent</b><div className="small">Describe it in plain words</div></div></a>;
+
+function Home() {
+  const { ws, me } = useCtx();
+  const [d, reload] = useApi<any>(`/v1/home?workspace=${ws}`, 4000);
+  const [agents] = useApi<any[]>(`/v1/agents?workspace=${ws}`, 10000);
+  const [idea, setIdea] = useState(""), [aud, setAud] = useState<Aud>("me");
+  if (!d || !agents) return null;
+  const hour = new Date().getHours(), att = d.needs_attention;
+  const n = att.approvals.length + att.waits.length + att.reconnect.length;
+  const build = () => { try { localStorage.setItem("pendingIdea", JSON.stringify({ idea, aud })); } catch {} go("/agents/new"); };
+  const add = async (t: any) => { const r = await api(`/v1/agent-templates/${t.slug}/install`, { workspace_id: ws }); go(`/agents/${r.agent.id}/launch`); };
+  if (!agents.length) return <>
+    <h1>Hi {me.user.name.split(" ")[0]} — what should your first agent do?</h1>
+    <p className="muted">Describe it in plain words. You'll try it, then add it to your chats.</p>
+    <div className="mt16"><div className="seg" style={{ marginBottom: 12 }}>{AUDIENCE.map(([k, e, l]) => <button key={k} className={aud === k ? "on" : ""} onClick={() => setAud(k)}>{e} {l}</button>)}</div>
+      <DescribeBox value={idea} onChange={setIdea} audience={aud} onSubmit={build} /></div>
+    <h2>Or start from an idea</h2><IdeaGallery cat={aud} onPick={add} />
+  </>;
+  return <>
+    <h1>Good {hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening"}, {me.user.name.split(" ")[0]}</h1>
+    <p className="muted">{n ? `${n} thing${n > 1 ? "s" : ""} need${n === 1 ? "s" : ""} you.` : "Nothing needs you right now."}</p>
+    {n > 0 && <><h2>Needs you <span className="pill accent">{n}</span></h2><div className="col">
+      {att.approvals.map((a: any) => <ApprovalCard key={a.id} a={a} onDone={reload} />)}
+      {att.reconnect.map((c: any) => <div key={c.id} className="card row"><span className="pill warn">Reconnect</span><span className="grow">{c.provider} ({c.account}) needs to be reconnected; agent work is paused.</span><a className="btn" href={`/v1/connections/google/start?workspace=${ws}&reconnect=${c.id}`}>Reconnect</a></div>)}
+      {att.waits.map((w: any) => <WaitCard key={w.id} w={w} onDone={reload} />)}</div></>}
+    <h2>Your agents</h2>
+    <div className="grid3">{agents.map((a) => <AgentCard key={a.id} a={a} />)}<NewAgentCard /></div>
+    {agents.length < 4 && <><h2>More agents people love</h2><IdeaGallery onPick={add} /></>}
+    {d.active.length > 0 && <><h2>Working on</h2><div className="list">{d.active.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}>
+      <div className="avatar">{r.agent_name?.[0]}</div>
+      <div className="grow"><div><b>{r.agent_name}</b> <span className="muted">{r.waits[0]?.reason ?? r.objective}</span></div><div className="small faint">{r.room_name} · {ago(r.updated_at)}</div></div>
+      <Status s={r.status} /></a>)}</div></>}
+    {d.blocked.length > 0 && <><h2>Blocked</h2><div className="list">{d.blocked.map((t: any) => <a key={t.id} className="item" href={`#/rooms/${t.room_id}`}>
+      <span className="pill bad">Blocked</span><span className="grow">{t.title}</span><span className="small muted">Owner: {t.owner_name} · {t.room_name}</span></a>)}</div></>}
+    {d.completed.length > 0 && <><h2>Recently done</h2><div className="list">{d.completed.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}>
+      <span style={{ color: "var(--ok)" }}>✓</span><div className="grow"><div>{r.objective.slice(0, 90)}</div><div className="small faint">{r.agent_name} · {r.room_name} · {ago(r.completed_at)}</div></div></a>)}</div></>}
+    {d.failed.length > 0 && <><h2>Failed</h2><div className="list">{d.failed.map((r: any) => <a key={r.id} className="item" href={`#/rooms/${r.room_id}`}><span className="pill bad">Failed</span><span className="grow">{r.objective.slice(0, 80)}</span><span className="small muted">{r.error}</span></a>)}</div></>}
+  </>;
+}
+
+function Agents() {
+  const { setWs } = useCtx();
+  const [ov] = useApi<any[]>("/v1/overview", 8000);
+  return <>
+    <div className="row between wrap"><div><h1>Agents</h1><p className="muted">Everyone working for you, and where they live.</p></div>
+      <div className="row"><a className="btn" href="#/discover">Browse ideas</a><a className="btn primary" href="#/agents/new">＋ New agent</a></div></div>
+    {ov?.map((w) => <div key={w.workspace.id} onClick={() => setWs(w.workspace.id)}>{ov.length > 1 && <h2>{w.workspace.name}</h2>}
+      <div className="grid3 mt16">{w.agents.map((a: any) => <AgentCard key={a.id} a={a} />)}<NewAgentCard /></div></div>)}
+  </>;
+}
+
+// ---------------- builder: describe → review ----------------
+function CreateAgent() {
+  const { ws, me, setWs, toast, reloadMe } = useCtx();
+  const [pending] = useState<any>(() => { try { const p = JSON.parse(localStorage.getItem("pendingIdea") ?? "null"); localStorage.removeItem("pendingIdea"); return p; } catch { return null; } });
+  const teams = me.workspaces.filter((w: any) => w.kind === "team");
+  const [aud, setAud] = useState<Aud>(pending?.aud ?? (me.workspaces.find((w: any) => w.id === ws)?.kind === "team" ? "team" : "me"));
+  const [team, setTeam] = useState<string>(teams[0]?.id ?? "new"), [teamName, setTeamName] = useState("");
+  const [desc, setDesc] = useState(pending?.idea ?? ""), [draft, setDraft] = useState<any>(null), [busy, setBusy] = useState(false);
+  const [catalog] = useApi<any>("/v1/catalog");
+  const personal = me.workspaces.find((w: any) => w.kind === "personal")?.id ?? ws;
+  const target = async () => {
+    if (aud !== "team") return personal;
+    if (team !== "new") return team;
+    const w = await api("/v1/workspaces", { name: teamName || "My team" }); reloadMe(); return w.id as string;
+  };
+  // Interpretation layer: the request becomes an explicit spec (understanding, jobs, routines, questions, boundaries) to confirm before anything exists.
+  const propose = async () => {
+    if (!desc.trim()) return; setBusy(true);
+    try { const sp = await api("/v1/agents/interpret", { description: desc, audience: aud, workspace_id: ws }); setDraft({ ...sp, job: sp.understanding, permissions: [], answers: {} }); }
+    catch (e: any) { toast(e.message); } finally { setBusy(false); }
+  };
+  useEffect(() => { if (draft && catalog && !draft.permissions.length) setDraft((d: any) => ({ ...d, permissions: permsFor(d.skills, d) })); }, [!!draft, !!catalog]);
+  useEffect(() => { if (pending?.idea) propose(); }, []);
+  const permsFor = (skills: string[], d = draft) => {
+    const tools = new Set(["memory.remember", "task.create", "task.update", ...skills.flatMap((k) => catalog?.skills.find((x: any) => x.id === k)?.tools ?? [])]);
+    return (catalog?.tools ?? []).filter((t: any) => tools.has(t.id)).map((t: any) => d?.permissions?.find((p: any) => p.tool === t.id) ?? { tool: t.id, risk: t.risk, description: t.description,
+      mode: t.risk === "financial" || t.risk === "destructive" ? "always_ask" : t.defaultApproval === "none" ? "auto" : t.defaultApproval === "first_time" ? "first_time" : "ask" });
+  };
+  const setSkills = (skills: string[]) => setDraft({ ...draft, skills, permissions: permsFor(skills),
+    connections: [...new Set((catalog?.tools ?? []).filter((t: any) => skills.some((s) => catalog.skills.find((x: any) => x.id === s)?.tools.includes(t.id)) && t.requiresConnection).map((t: any) => t.requiresConnection))] });
+  const create = async () => {
+    setBusy(true);
+    try {
+      const w = await target();
+      const { answers, permissions, job, ...sp } = draft;
+      const a = await api("/v1/agents", { workspace_id: w, name: draft.name, title: draft.title, job: draft.understanding, skills: draft.skills, avatar: draft.avatar, spec: sp, answers,
+        permissions: Object.fromEntries(draft.permissions.map((p: any) => [p.tool, p.mode])) });
+      setWs(w); go(`/agents/${a.id}/launch?aud=${aud}`);
+    } catch (e: any) { toast(e.message); } finally { setBusy(false); }
+  };
+  const useTemplate = async (t: any) => { try { const w = await target(); const r = await api(`/v1/agent-templates/${t.slug}/install`, { workspace_id: w }); setWs(w); go(`/agents/${r.agent.id}/launch?aud=${aud}`); } catch (e: any) { toast(e.message); } };
+
+  if (!draft) return <>
+    <Stepper at={0} />
+    <h1>What should your agent do?</h1>
+    <p className="muted">Describe the job like you'd tell a friend. You can change anything later.</p>
+    <div className="mt24"><div className="small muted" style={{ marginBottom: 8, fontWeight: 560 }}>Who is it for?</div><AudiencePicker value={aud} onChange={setAud} /></div>
+    {aud === "team" && <div className="row wrap mt16"><span className="small muted">Team</span>
+      <select className="input" style={{ width: 220 }} value={team} onChange={(e) => setTeam(e.target.value)}>{teams.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}<option value="new">A new team…</option></select>
+      {team === "new" && <input className="input" style={{ width: 200 }} placeholder="Team name" value={teamName} onChange={(e) => setTeamName(e.target.value)} />}</div>}
+    <div className="mt16"><DescribeBox value={desc} onChange={setDesc} onSubmit={propose} audience={aud} busy={busy} /></div>
+    <div className="row wrap mt16" style={{ gap: 6 }}>{EXAMPLES[aud].map((x) => <button key={x} className="chip" onClick={() => setDesc(x)}>{x.length > 52 ? x.slice(0, 50) + "…" : x}</button>)}</div>
+    <h2>Or start from a ready-made agent</h2>
+    <IdeaGallery cat={aud} onPick={useTemplate} />
+  </>;
+
+  const unused = (catalog?.skills ?? []).filter((x: any) => !draft.skills.includes(x.id));
+  const set = (k: string, v: any) => setDraft({ ...draft, [k]: v });
+  const DAY = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
+  const when = (r: any) => `${r.every === "weekly" ? `Every ${DAY[r.day ?? 1].slice(0, -1)}` : r.every === "weekdays" ? "Weekdays" : "Every day"} at ${((r.hour + 11) % 12) + 1}${r.hour < 12 ? "am" : "pm"}`;
+  return <>
+    <Stepper at={1} onPick={(i) => i === 0 && setDraft(null)} />
+    <div className="card profile rise">
+      <div className="banner" />
+      <div className="body">
+        <div className="row" style={{ alignItems: "flex-start", gap: 16 }}>
+          <div className="avatar xl">{draft.avatar}</div>
+          <div className="grow" style={{ paddingTop: 2 }}>
+            <input className="input" aria-label="Agent name" style={{ fontSize: 26, fontWeight: 700, border: 0, padding: 0, background: "transparent", boxShadow: "none", letterSpacing: "-.02em" }} value={draft.name} onChange={(e) => set("name", e.target.value)} />
+            <div className="muted">{draft.title}</div></div></div>
+
+        <div className="draft"><h4>Here's what I understood</h4></div>
+        <textarea className="input" aria-label="What the agent should do" rows={2} value={draft.understanding} onChange={(e) => set("understanding", e.target.value)} />
+        <div className="small faint mt8">Not quite? Edit it, or go back and add detail.</div>
+
+        {draft.questions.length > 0 && <><div className="draft"><h4>A few quick questions</h4></div>
+          <div className="col" style={{ gap: 10 }}>{draft.questions.map((q: any) => <label key={q.id} className="field">{q.q}
+            <input className="input" placeholder={q.default ? `Default: ${q.default}` : "Your answer"} value={draft.answers[q.id] ?? ""} onChange={(e) => set("answers", { ...draft.answers, [q.id]: e.target.value })} />
+            <span className="small faint" style={{ fontWeight: 400 }}>Why: {q.why}</span></label>)}</div></>}
+
+        <div className="split mt16">
+          <div><div className="draft"><h4>What {draft.name || "it"} will do</h4></div>
+            {draft.jobs.map((j: string, i: number) => <div key={i} className="ability"><span className="e">✓</span><span className="grow">{j}</span></div>)}
+            <div className="draft"><h4>On its own</h4></div>
+            {draft.routines.length ? draft.routines.map((r: any, i: number) => <div key={i} className="ability"><span className="e">⏰</span><span className="grow"><b>{when(r)}</b><div className="small muted">{r.objective}</div></span>
+              <button className="btn sm ghost" aria-label="Remove routine" onClick={() => set("routines", draft.routines.filter((_: any, k: number) => k !== i))}>✕</button></div>)
+              : <div className="ability"><span className="e">💬</span><span className="grow muted">Only when someone asks. Say "every morning…" to give it a routine.</span></div>}
+            <div className="draft"><h4>Abilities</h4></div>
+            {draft.skills.map((x: string) => { const [e, t] = abilityOf(x); return <div key={x} className="ability"><span className="e">{e}</span><span className="grow">{t}</span>
+              <button className="btn sm ghost" aria-label={`Remove ${t}`} onClick={() => setSkills(draft.skills.filter((y: string) => y !== x))}>✕</button></div>; })}
+            {unused.length > 0 && <select className="input mt8" value="" onChange={(e) => e.target.value && setSkills([...draft.skills, e.target.value])}>
+              <option value="">＋ Add an ability…</option>{unused.map((x: any) => <option key={x.id} value={x.id}>{abilityOf(x)[0]} {abilityOf(x)[1]}</option>)}</select>}</div>
+          <div><div className="draft"><h4>Boundaries</h4></div>
+            {draft.boundaries.map((b: string, i: number) => <div key={i} className="ability"><span className="e">✋</span><span className="grow">{b}</span></div>)}
+            <div className="draft"><h4>You'll know it's working when</h4></div>
+            {draft.success.map((b: string, i: number) => <div key={i} className="ability"><span className="e">🎯</span><span className="grow">{b}</span></div>)}
+            <div className="draft"><h4>Needs access to</h4></div>
+            {draft.connections.length ? draft.connections.map((c: string) => <div key={c} className="ability"><span className="e">🔗</span><span className="grow">{c === "google" ? "Gmail + Google Calendar" : c}<div className="small faint">Connect after creating. Until then it rehearses with sample data.</div></span></div>)
+              : <div className="ability"><span className="e">⚡</span><span className="grow muted">Nothing. It works right away.</span></div>}
+            <div className="draft"><h4>We'll rehearse it with</h4></div>
+            {draft.rehearsal.map((r: any, i: number) => <div key={i} className="ability"><span className="e">🧪</span><span className="grow">“{r.say}”</span></div>)}</div>
+        </div>
+        <details className="mt16"><summary className="small muted">Fine-tune permissions ▸</summary><div className="mt8"><PermissionRows rows={draft.permissions} onChange={(t, m) => setDraft({ ...draft, permissions: draft.permissions.map((p: any) => p.tool === t ? { ...p, mode: m } : p) })} /></div></details>
+        <div className="row mt24"><button className="btn ghost" onClick={() => setDraft(null)}>← Edit description</button><div className="grow" />
+          <button className="btn grad lg" disabled={busy || !draft.name.trim()} onClick={create}>{busy ? "Creating…" : `Looks right: create & rehearse`} →</button></div>
+      </div>
+    </div>
+  </>;
+}
+
+// ---------------- launch: try it → add to a chat ----------------
+function Launch({ id, aud }: { id: string; aud: Aud }) {
+  const [a] = useApi<any>(`/v1/agents/${id}`);
+  const [step, setStep] = useState(2);
+  if (!a) return null;
+  return <>
+    <Stepper at={step} onPick={(i) => i >= 2 && setStep(i)} />
+    <div className="row gap16 wrap" style={{ marginBottom: 18 }}><div className="avatar lg">{a.avatar}</div>
+      <div className="grow"><h1>{step === 2 ? `Rehearsal: ${a.name}` : `Add ${a.name} to a chat`}</h1>
+        <div className="muted">{step === 2 ? "We ran it through a few real requests in the sandbox. Nothing was sent, booked or paid." : "Pick where your people already talk. Takes about 20 seconds."}</div></div>
+      {step === 2 ? <button className="btn grad lg" onClick={() => setStep(3)}>Add to a chat →</button> : <a className="btn" href={`#/agents/${id}`}>Done</a>}</div>
+    {step === 2 ? <><Rehearsal a={a} /><h2>Try your own messages</h2><TestPanel a={a} /></> : <ChatPicker a={a} kind={aud === "group" ? "group" : "dm"} prefer={aud === "team" ? "slack" : "imessage"} />}
+  </>;
+}
+
+/** Runs the spec's rehearsal scenarios in the sandbox and shows a verdict for each before the agent reaches a real chat. */
+function Rehearsal({ a }: { a: any }) {
+  const { toast } = useCtx();
+  const [res, setRes] = useState<any[] | null>(null), [busy, setBusy] = useState(false);
+  const run = async () => { setBusy(true); try { setRes((await api(`/v1/agents/${a.id}/rehearse`, {})).results); } catch (e: any) { toast(e.message); } finally { setBusy(false); } };
+  useEffect(() => { run(); }, [a.id]);
+  const mark = { pass: ["✓", "ok"], warn: ["!", "warn"], fail: ["✕", "bad"] } as Record<string, [string, string]>;
+  const passed = res?.filter((r) => r.verdict === "pass").length ?? 0;
+  return <div className="card">
+    <div className="row between"><b>{busy || !res ? "Rehearsing…" : `${passed} of ${res.length} went as expected`}</b><button className="btn sm" disabled={busy} onClick={run}>Run again</button></div>
+    {busy && !res && <div className="waiting mt8"><span className="dot live" />Running each scenario in the sandbox<span className="dots"><span /><span /><span /></span></div>}
+    {res?.map((r, i) => <div key={i} className="ability"><span className={`pill ${mark[r.verdict][1]}`} style={{ minWidth: 22, justifyContent: "center" }}>{mark[r.verdict][0]}</span>
+      <div className="grow"><div><b>“{r.say}”</b></div><div className="small muted" style={{ whiteSpace: "pre-wrap" }}>{r.reply ? r.reply.slice(0, 220) : "—"}</div><div className="small faint">{r.note}</div></div></div>)}
+    {res && passed < res.length && <div className="small muted mt8">Not quite right? Go back to the agent's Abilities tab, or tell it in the chat below. It learns from corrections.</div>}
+  </div>;
+}
+
+function TestPanel({ a }: { a: any }) {
+  const { toast } = useCtx();
+  const [room, setRoom] = useState<any>(null);
+  useEffect(() => { api(`/v1/agents/${a.id}/test-room`, {}).then(setRoom).catch((e) => toast(e.message)); }, [a.id]);
+  return <div>
+    <div className="row small" style={{ marginBottom: 10, gap: 8 }}><span className="pill warn">🧪 Test mode</span><span className="muted">Tools run for real, but nothing leaves the platform. Unconnected accounts use sample data.</span></div>
+    {room && <div className="chatframe"><Room id={room.id} compact /></div>}
+  </div>;
+}
+
+const GROUPS_OK: Record<string, boolean> = { imessage: true, telegram: true, slack: true, whatsapp: false, web: false, email: false };
+function ChatPicker({ a, kind: k0 = "dm", prefer }: { a: any; kind?: "dm" | "group"; prefer?: string }) {
+  const { toast } = useCtx();
+  const [d, reloadD] = useApi<any>(`/v1/agents/${a.id}/deploy`, 2500);
+  const [kind, setKind] = useState<"dm" | "group">(k0), [p, setP] = useState<string | null>(null);
+  const [code, setCode] = useState<any>(null), [base, setBase] = useState<number | null>(null), [err, setErr] = useState(""), [chans, setChans] = useState<any[] | null>(null), [adv, setAdv] = useState(false);
+  const phone = /iPhone|Android|iPad/i.test(navigator.userAgent);
+  const T = (x: string) => d?.targets.find((t: any) => t.platform === x) ?? { platform: x, available: false, connected: [] };
+  const live = (x: string) => T(x).connected.filter((c: any) => !!c.is_group === (kind === "group")).length;
+  useEffect(() => { if (d && !p) { const first = [prefer, "imessage", "telegram", "whatsapp", "slack", "web"].find((x) => x && T(x).available && (kind === "dm" || GROUPS_OK[x])); setP(first ?? "web"); } }, [d]);
+  useEffect(() => {
+    setCode(null); setErr(""); setBase(null);
+    if (!d || !p || !["imessage", "whatsapp", "telegram"].includes(p) || !T(p).available || (kind === "group" && !GROUPS_OK[p])) return;
+    api(`/v1/agents/${a.id}/deploy/${p}`, { kind }).then((r) => { setCode(r); setBase(live(p)); }).catch((e) => setErr(e.message));
+  }, [p, kind, !!d]);
+  if (!d || !p) return null;
+  const opts = kind === "group" ? ["imessage", "whatsapp", "telegram", "slack"] : ["imessage", "whatsapp", "telegram", "slack", "web", "email"];
+  const t = T(p), done = code && base !== null && live(p) > base;
+  const name = a.name, addr = code?.address || t.address;
+  const copy = (s: string) => { navigator.clipboard?.writeText(s); toast("Copied"); };
+  const Code = () => code && <span className="code-pill">{code.message}<button className="btn sm ghost" onClick={() => copy(code.message)}>Copy</button></span>;
+  const waiting = code && !done && <div className="waiting mt16"><span className="dot live" />Waiting for your message<span className="dots"><span /><span /><span /></span></div>;
+  const steps: Record<string, ReactNode> = {
+    imessage: kind === "dm" ? <><div>On your iPhone, tap <b>Open Messages</b>{!phone && " — or scan the code with your camera"}.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away. Text it anytime, like a friend.</div></>
+      : <><div>Open your group chat in Messages and add <b>{addr}</b> to the group.</div><div>Send this in the group: <Code /></div><div>Ask by name — “{name}, …” — and {name} answers everyone.</div></>,
+    whatsapp: <><div>Tap <b>Open WhatsApp</b>{!phone && " — or scan the code with your phone"}.</div><div>Send the message that's filled in: <Code /></div><div>{name} replies right away.</div></>,
+    telegram: kind === "dm" ? <><div>Tap <b>Open Telegram</b>{!phone && " — or scan the code"}.</div><div>Press <b>Start</b>.</div><div>{name} says hi. That's it.</div></>
+      : <><div>Tap <b>Choose a group</b> — Telegram asks which one.</div><div>{name} joins and introduces itself.</div><div>Ask by name — “{name}, …”.</div></>,
+  };
+  return <div className="col" style={{ gap: 18 }}>
+    <div className="row wrap between"><div className="seg">{(["dm", "group"] as const).map((k) => <button key={k} className={kind === k ? "on" : ""} onClick={() => { setKind(k); if (k === "group" && !GROUPS_OK[p]) setP("imessage"); }}>{k === "dm" ? "🙋 Just me" : "💬 A group chat"}</button>)}</div>
+      {d.targets.some((x: any) => x.connected?.length) && <div className="row wrap small muted" style={{ gap: 6 }}>Live in:{d.targets.flatMap((x: any) => (x.connected ?? []).map((c: any) =>
+        <a key={x.platform + c.conv} className="pill ok" href={`#/rooms/${c.room_id}`}>{PLATFORM[x.platform] ?? x.platform} · {c.is_group ? "group" : "direct"}</a>))}</div>}</div>
+    <div className="platforms">{opts.map((x) => { const ok = T(x).available && (kind === "dm" || GROUPS_OK[x]);
+      return <button key={x} className={p === x ? "on" : ""} disabled={!ok && x !== "slack"} onClick={() => setP(x)}>
+        <PMark p={x} size="lg" /><b>{PLATFORM[x] ?? x}</b><span className="small muted">{!T(x).available ? "Not set up yet" : kind === "group" && !GROUPS_OK[x] ? "1:1 only" : live(x) ? `Live · ${live(x)}` : kind === "group" ? "Add to a group" : x === "web" ? "Link & phone app" : "Text it"}</span>
+        {live(x) > 0 && <span className="badge dot" />}</button>; })}</div>
+
+    <div className="card rise" key={p + kind}>
+      {done ? <div className="success"><div className="big">✓</div><h1>{name} is live{kind === "group" ? " in your group" : ""} 🎉</h1>
+          <p className="muted">{kind === "group" ? `Ask “${name}, …” in the chat — it answers everyone.` : `Text ${name} anytime. It remembers you across every chat.`}</p>
+          <div className="row mt16" style={{ justifyContent: "center" }}><a className="btn primary" href={`#/rooms/${T(p).connected.at(-1)?.room_id}`}>Open the conversation</a><button className="btn" onClick={() => { setCode(null); setBase(null); setKind(kind === "dm" ? "group" : "dm"); }}>Add to {kind === "dm" ? "a group" : "another chat"}</button></div></div>
+        : !t.available && p !== "slack" ? <div className="col"><h3>{PLATFORM[p]} isn't set up on this server yet</h3>
+          <p className="muted small">An admin connects the shared {PLATFORM[p]} line once (see README), and every agent can use it. Or connect your own bot or number below.</p>
+          <button className="btn" style={{ alignSelf: "flex-start" }} onClick={() => setAdv(!adv)}>{adv ? "Hide" : "Use my own"} {PLATFORM[p]} account</button>{adv && <ChannelsEditor a={a} reload={reloadD} />}</div>
+        : p === "web" ? <div className="howto"><QR value={t.url} size={148} /><div className="steps"><div>Scan with your phone's camera to open {name}.</div><div>Tap Share → <b>Add to Home Screen</b> for an app icon.</div>
+          <div className="row wrap"><a className="btn primary" href={t.url.replace(/^.*#/, "#")}>Open chat here</a><button className="btn" onClick={() => copy(t.url)}>Copy link</button></div></div></div>
+        : p === "email" ? <div className="col"><h3>Give {name} an email address</h3><p className="muted small">Email it or CC it on threads; replies stay in the same conversation.</p>
+          {t.address ? <span className="code-pill">{t.address}<button className="btn sm ghost" onClick={() => copy(t.address)}>Copy</button></span>
+            : <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={async () => { try { await api(`/v1/agents/${a.id}/deploy/email`, {}); reloadD(); } catch (e: any) { toast(e.message); } }}>Create address</button>}</div>
+        : p === "slack" ? <div className="col">
+          {!t.available ? <><h3>Slack isn't set up on this server yet</h3><p className="muted small">An admin adds the Slack app credentials once (see README).</p></>
+            : <><h3>{t.installed?.length ? `Pick a channel for ${name}` : `Add ${name} to your Slack`}</h3>
+              {t.installed?.length ? (chans ? <div className="list">{chans.map((c) => <div key={c.id} className="item"><span className="grow">#{c.name}</span>
+                <button className="btn sm primary" onClick={async () => { try { await api(`/v1/agents/${a.id}/slack/channels`, { identity: c.identity, channel_id: c.id, name: c.name }); toast(`${name} joined #${c.name}`); reloadD(); } catch (e: any) { toast(e.message); } }}>Add</button></div>)}</div>
+                : <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={async () => setChans(await api(`/v1/agents/${a.id}/slack/channels`))}>Show channels</button>) : null}
+              <a className={`btn ${t.installed?.length ? "" : "primary"}`} style={{ alignSelf: "flex-start" }} href={t.install_url}>{t.installed?.length ? "Add to another workspace" : "Add to Slack"}</a></>}</div>
+        : err ? <div className="pill bad">{err}</div>
+        : !code ? <div className="waiting">Getting your link…</div>
+        : <div className="howto">{code.link && !phone && <QR value={code.link} size={148} />}
+          <div><div className="steps">{steps[p]}</div>
+            {code.link && <a className="btn grad lg mt16" href={code.link}>{p === "imessage" && kind === "dm" ? "Open Messages" : p === "whatsapp" ? "Open WhatsApp" : p === "telegram" ? (kind === "group" ? "Choose a group" : "Open Telegram") : "Open"} →</a>}
+            {waiting}<div className="small faint mt8">Code expires in {code.expires_in_days} days.</div></div></div>}
+    </div>
+  </div>;
+}
+
+// ---------------- agent profile ----------------
+function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
+  const { toast } = useCtx();
+  const [a, reload] = useApi<any>(`/v1/agents/${id}`, 6000);
+  if (!a) return null;
+  const tabs = [["overview", "Overview"], ["test", "Try it"], ["deploy", "Add to a chat"], ["skills", "Abilities"], ["memory", "Memory"], ["activity", "Activity"], ["settings", "Settings"]];
+  const sect = ({ job: "skills", connections: "skills", permissions: "skills", channels: "deploy", schedule: "settings" } as any)[tab] ?? tab;
+  const message = async () => { const r = await api(`/v1/agents/${id}/private-room`, {}); go(`/rooms/${r.id}`); };
+  const patch = async (b: any) => { try { await api(`/v1/agents/${id}`, b, "PATCH"); toast("Saved"); reload(); } catch (e: any) { toast(e.message); } };
+  const lives = a.deployed?.filter((p: string) => p !== "web") ?? [];
+  return <>
+    <div className="card profile">
+      <div className="banner" />
+      <div className="body"><div className="row wrap" style={{ alignItems: "flex-start", gap: 16 }}>
+        <div className="avatar xl">{a.avatar}</div>
+        <div className="grow" style={{ minWidth: 200 }}><h1 style={{ fontSize: 26 }}>{a.name}</h1><div className="row small muted"><span className={`dot ${a.status === "active" ? "" : "idle"}`} />{a.status === "active" ? "Active" : "Paused"}{titleOf(a) && <> · {titleOf(a)}</>}</div></div>
+        <div className="row"><button className="btn" onClick={message}>Open chat</button><a className="btn grad" href={`#/agents/${id}/deploy`}>Add to a chat</a></div></div>
+        <p className="mt16" style={{ marginBottom: 0 }}>{a.job}</p>
+        <div className="row wrap small muted mt8">{lives.length ? <>Live in {lives.map((p: string) => <span key={p} className="row" style={{ gap: 5 }}><PMark p={p} size="sm" />{PLATFORM[p]}</span>)}</> : "Not in any chat yet."}</div>
+      </div></div>
+    <div className="tabs">{tabs.map(([t, l]) => <a key={t} className={t === sect ? "on" : ""} href={`#/agents/${id}/${t}`}>{l}</a>)}</div>
+    {sect === "overview" && <><SetupChecklist a={a} onMessage={message} />
+      <div className="split">
+        <div className="card"><div className="small muted">What it can do</div><div className="mt8">{a.skills.map((s: string) => { const [e, t] = abilityOf(s); return <div key={s} className="ability"><span className="e">{e}</span><span>{t}</span></div>; })}</div></div>
+        <div className="col" style={{ gap: 12 }}>
+          <div className="card"><div className="small muted">Doing now</div>{a.active_runs.length ? a.active_runs.map((r: any) => <a key={r.id} href={`#/rooms/${r.room_id}`} className="row mt8"><Status s={r.status} /><span className="grow">{r.objective.slice(0, 90)}</span></a>) : <div className="mt8 muted">Idle — {a.completed_runs} task{a.completed_runs === 1 ? "" : "s"} done so far.</div>}</div>
+          <div className="card"><div className="small muted">Chats it's in</div><div className="mt8 col">{a.rooms.length ? a.rooms.map((r: any) => <a key={r.id} href={`#/rooms/${r.id}`}>{r.kind === "private" ? "🙋" : "💬"} {r.name}</a>) : <span className="muted">None yet</span>}</div></div>
+          <div className="card"><div className="small muted">Can access</div><div className="mt8 col">{a.connections.length ? a.connections.map((c: any) => <div key={c.id}>🔗 {c.provider} · {c.account} <span className="faint">({c.owner})</span></div>) : <span className="muted">Nothing{a.connections_needed.length ? ` — wants ${a.connections_needed.join(", ")}` : ""}</span>}</div></div>
+        </div></div></>}
+    {sect === "test" && <TestPanel a={a} />}
+    {sect === "deploy" && <ChatPicker a={a} />}
+    {sect === "skills" && <><JobEditor a={a} patch={patch} /><h2>Abilities</h2><SkillsEditor a={a} patch={patch} /><h2>Accounts it can use</h2><AgentConnections a={a} reload={reload} />
+      <h2>Permissions</h2><div className="card"><PermissionRows rows={a.permission_table} onChange={(t, m) => patch({ permissions: { [t]: m } })} /><p className="small faint mt8">Enforced by the platform before every action. The agent can't change them.</p></div></>}
+    {sect === "memory" && <MemoryList agent={a.id} agentName={a.name} />}
+    {sect === "activity" && <Activity agent={a.id} />}
+    {sect === "settings" && <><div className="card col">
+      <label className="field">Before starting work<select className="input" value={a.confirm_mode ?? "smart"} onChange={(e) => patch({ confirm_mode: e.target.value })}>
+        <option value="smart">Smart — ask only when unclear, multi-step, or several external actions</option><option value="always">Always show the plan and wait for “go”</option><option value="never">Never — just start (approvals still apply)</option></select></label>
+      <label className="field">Model profile<select className="input" value={a.model_profile} onChange={(e) => patch({ model_profile: e.target.value })}>{["fast", "standard", "research-standard", "escalation"].map((m) => <option key={m}>{m}</option>)}</select></label>
+      <div className="row wrap"><button className="btn" onClick={() => patch({ status: a.status === "active" ? "paused" : "active" })}>{a.status === "active" ? "Pause agent" : "Resume agent"}</button>
+        {a.template_id && <button className="btn" onClick={async () => { const r = await api(`/v1/agents/${id}/upgrade`, {}); toast(r.error ?? `Upgraded to ${r.version}`); reload(); }}>Upgrade to latest version</button>}</div></div>
+      <h2>Schedules</h2><div className="list">{a.schedules.length ? a.schedules.map((s: any) => <div key={s.id} className="item"><span className="pill">{s.kind}</span><span className="grow">{s.objective}</span><span className="small muted">{s.next_at ? `next ${new Date(s.next_at).toLocaleString()}` : s.spec.wake_key}</span></div>) : <div className="item muted">No schedules. Ask it to “remind me…” or “every morning…”.</div>}</div></>}
+  </>;
+}
+
+// ---------------- ideas ----------------
+function Discover({ route, anonymous }: { route: string; anonymous?: boolean }) {
+  const ctx = useContext(Ctx);
+  const slug = route.split("/")[2];
+  if (slug) return <TemplatePage slug={slug} anonymous={anonymous} />;
+  const add = async (t: any) => {
+    if (anonymous) { try { localStorage.setItem("pendingTemplate", JSON.stringify(t.slug)); } catch {} go("/"); return; }
+    try { const r = await api(`/v1/agent-templates/${t.slug}/install`, { workspace_id: ctx!.ws }); go(`/agents/${r.agent.id}/launch?aud=${CAT_OF(t)}`); } catch (e: any) { ctx!.toast(e.message); }
+  };
+  return <>
+    <div className="row between wrap"><div><h1>Agent ideas</h1><p className="muted">Ready-made agents people actually use. Try one, then add it in a click.</p></div>
+      {!anonymous && <a className="btn primary" href="#/agents/new">＋ Describe your own</a>}</div>
+    <div className="mt16"><IdeaGallery onPick={add} anonymous={anonymous} /></div>
+    {anonymous && <p className="mt16"><a className="btn" href="#/">Sign in</a></p>}
+  </>;
+}
+function TemplatePage({ slug, anonymous }: { slug: string; anonymous?: boolean }) {
+  const ctx = useContext(Ctx);
+  const [t] = useApi<any>(`/v1/agent-templates/${slug.split("?")[0]}`);
+  const [trial, setTrial] = useState<any>({ messages: [] }), [q, setQ] = useState(""), [busy, setBusy] = useState(false), [answers, setAnswers] = useState<Record<string, string>>({});
+  const [adding, setAdding] = useState(location.hash.includes("add=1"));
+  if (!t) return null;
+  const m = t.manifest;
+  const ask = async (text = q) => { if (!text.trim()) return; setBusy(true); try { setTrial(await api(`/v1/agent-templates/${t.slug}/trial`, { text, trial_id: trial.trial_id })); setQ(""); } finally { setBusy(false); } };
+  const install = async () => {
+    if (anonymous) { try { localStorage.setItem("pendingTemplate", JSON.stringify(t.slug)); } catch {} go("/"); return; }
+    if (m.onboarding?.length && !adding) { setAdding(true); return; }
+    try { const r = await api(`/v1/agent-templates/${t.slug}/install`, { workspace_id: ctx!.ws, answers }); go(`/agents/${r.agent.id}/launch?aud=${CAT_OF(t)}`); } catch (e: any) { ctx!.toast(e.message); }
+  };
+  const fork = async () => { try { const r = await api(`/v1/agent-templates/${t.slug}/fork`, {}); ctx!.toast(`Forked as ${r.manifest.slug} (draft)`); } catch (e: any) { ctx!.toast(e.message); } };
+  return <>
+    <a className="small muted" href="#/discover">← All ideas</a>
+    <div className="card profile mt16"><div className="banner" /><div className="body">
+      <div className="row wrap" style={{ alignItems: "flex-start", gap: 16 }}><div className="avatar xl">{m.avatar ?? m.name[0]}</div>
+        <div className="grow" style={{ minWidth: 200 }}><h1 style={{ fontSize: 26 }}>{m.name}</h1><div className="muted">{m.title}{t.installs ? ` · ${t.installs} using it` : ""}{t.rating ? ` · ★ ${t.rating.toFixed(1)}` : ""}</div></div>
+        <div className="row">{!anonymous && <button className="btn ghost" onClick={fork}>Customize</button>}<button className="btn grad" onClick={install}>Use {m.name} →</button></div></div>
+      <p className="mt16" style={{ marginBottom: 0 }}>{m.job}</p>
+      <div className="row wrap small muted mt8">Works in {(m.channels ?? []).filter((c: string) => PICON[c]).map((c: string) => <span key={c} className="row" style={{ gap: 5 }}><PMark p={c} size="sm" />{PLATFORM[c]}</span>)}</div>
+    </div></div>
+    {adding && !anonymous && m.onboarding?.length > 0 && <div className="card col mt16"><h3>A couple of quick questions</h3>
+      {m.onboarding.map((o: any) => <label key={o.id} className="field">{o.question}<input className="input" value={answers[o.id] ?? ""} onChange={(e) => setAnswers({ ...answers, [o.id]: e.target.value })} /></label>)}
+      <div><button className="btn primary" onClick={install}>Add {m.name}</button></div></div>}
+    <div className="split mt16">
+      <div className="card"><h3>Try {m.name}</h3><div className="small muted">No account needed.</div>
+        <div className="col mt16" style={{ gap: 6 }}>{trial.messages.map((x: any, i: number) => <div key={i} className={`bub ${x.from === "you" ? "me" : "bot"}`}>{x.text}</div>)}
+          {!trial.messages.length && <div className="row wrap" style={{ gap: 6 }}>{(m.starters ?? []).map((s: string) => <button key={s} className="chip" onClick={() => ask(s)}>{s.length > 50 ? s.slice(0, 48) + "…" : s}</button>)}</div>}</div>
+        {trial.upsell && <div className="approval mt16"><b>{m.name} can keep this going for you.</b><div className="small muted">Add it to iMessage, WhatsApp, Telegram or Slack.</div><button className="btn primary mt8" onClick={install}>Use {m.name}</button></div>}
+        {trial.limit_reached ? <div className="pill warn mt16">Trial limit reached — add {m.name} to keep going.</div> :
+          <div className="row mt16"><input className="input" placeholder={`Ask ${m.name}…`} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} /><button className="btn primary" disabled={busy} onClick={() => ask()}>{busy ? "…" : "Send"}</button></div>}
+      </div>
+      <div className="card"><h3>What it can do</h3><div className="mt8">{t.skills.map((s: any) => { const [e, x] = abilityOf(s); return <div key={s.id} className="ability"><span className="e">{e}</span><span>{x}</span></div>; })}</div>
+        <details className="mt16"><summary className="small muted">Permissions & details ▸</summary><div className="mt8"><PermissionRows rows={t.permissions} /></div>
+          <div className="small muted mt8">Network: {(m.network ?? []).join(", ") || "none"}{m.escalation && <> · Escalation: {m.escalation.join(" ")}</>}</div></details></div>
+    </div>
+    {t.reviews.length > 0 && <><h2>Reviews</h2>{t.reviews.map((r: any, i: number) => <div key={i} className="card">{"★".repeat(r.rating)} <span className="muted">{r.name}</span><div>{r.text}</div></div>)}</>}
+  </>;
+}
+
+fetch("/v1/auth/config").then((r) => r.json()).catch(() => ({})).then((c: any) => {
+  CLERK_KEY = c.clerk ?? null;
+  createRoot(document.getElementById("root")!).render(CLERK_KEY
+    ? <ClerkProvider publishableKey={CLERK_KEY} appearance={clerkLook as any} afterSignOutUrl="/"><App /></ClerkProvider> : <App />);
+});

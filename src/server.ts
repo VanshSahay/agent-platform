@@ -1,27 +1,21 @@
 // HTTP API (plan §34) + webhooks + web app.
-import { all, one, exec, emit, id, now, S, J, seal, unseal, tx } from "./db";
+import { randomBytes, createHash } from "node:crypto";
+import { all, one, exec, emit, id, now, S, J, seal, unseal, tx, patchJson } from "./db";
 import * as rt from "./runtime";
 import * as ch from "./channels";
 import * as tpl from "./templates";
 import { PLANS } from "./templates";
 import * as mem from "./memory";
 import * as intake from "./intake";
+import * as billing from "./billing";
+import { extractText } from "./media";
+import * as spec from "./spec";
+import { browserRoutes, bb } from "./browser";
+import { PROVIDERS, platformKey } from "./model";
 import { TOOLS, getTool, assertPublicUrl } from "./tools";
 import app from "../public/index.html";
 
 type Req = Request & { params: Record<string, string> };
-/** Text for agents to read: PDFs via unpdf, text-like files as UTF-8; anything else is stored but unreadable. */
-async function extractText(name: string, mime: string, buf: Uint8Array) {
-  try {
-    if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
-      const { extractText: pdf, getDocumentProxy } = await import("unpdf");
-      const { text } = await pdf(await getDocumentProxy(buf), { mergePages: true });
-      return String(text).slice(0, 500_000);
-    }
-    if (/^text\/|json|xml|csv|markdown/.test(mime) || /\.(txt|md|csv|json|html?|xml|ya?ml|log|tsv)$/i.test(name)) return new TextDecoder().decode(buf).slice(0, 500_000);
-  } catch {}
-  return null;
-}
 const json = (d: any, status = 200) => Response.json(d, { status });
 const err = (status: number, error: string) => json({ error }, status);
 class HttpError extends Error { constructor(public status: number, msg: string) { super(msg); } }
@@ -31,7 +25,10 @@ const pub = () => process.env.PUBLIC_URL ?? "http://localhost:3000";
 const admins = () => (process.env.PLATFORM_ADMINS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 // ---------------- auth ----------------
-// ponytail: built-in email/password sessions; swap for Clerk/Better Auth (orgs, SSO) when enterprise lands.
+// Sign-in: Clerk when CLERK_SECRET_KEY is set (the browser trades its Clerk session token for our session cookie at
+// /v1/auth/clerk), otherwise built-in email/password. Either way the rest of the API sees the same `sid` session.
+const clerkOn = () => !!process.env.CLERK_SECRET_KEY;
+const clerkPublishableKey = () => process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY ?? null;
 function sessionUser(req: Request) {
   const token = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? req.headers.get("cookie")?.match(/(?:^|; )sid=([^;]+)/)?.[1];
   if (!token) return null;
@@ -81,9 +78,40 @@ function createWorkspace(name: string, kind: string, ownerId: string) {
 }
 
 
+/** OAuth state: random, stored, single-use, short-lived and bound to the browser session that started it (stops replay and
+ *  login-CSRF, i.e. someone tricking you into connecting *their* account). Optional PKCE verifier for providers that support it. */
+function issueState(provider: string, userId: string, payload: any, pkce = false) {
+  const state = randomBytes(24).toString("base64url"), verifier = pkce ? randomBytes(32).toString("base64url") : null;
+  exec("insert into oauth_states (state, provider, workspace_id, user_id, verifier, payload, expires_at) values (?,?,?,?,?,?,?)", state, provider, payload.ws ?? null, userId, verifier, S(payload), now() + 6e5);
+  return { state, challenge: verifier ? createHash("sha256").update(verifier).digest("base64url") : null };
+}
+function takeState(req: Request, provider: string, state: string | null) {
+  const row = one<any>("select * from oauth_states where state=? and provider=?", state ?? "", provider);
+  if (!row || row.used_at || row.expires_at < now()) fail(400, "This sign-in link expired or was already used. Start again from the app.");
+  if (sessionUser(req)?.id !== row.user_id) fail(403, "Finish connecting in the same browser you started from, signed in as the same person.");
+  exec("update oauth_states set used_at=? where state=?", now(), row.state);
+  return { ...J(row.payload), user: row.user_id, verifier: row.verifier };
+}
+
+/** The user's sandbox room with an agent: tools run in test mode, nothing leaves the platform. */
+function testRoom(userId: string, a: any) {
+  return one<any>(`select r.* from rooms r join room_members m on m.room_id=r.id where r.mode='test' and r.status='active' and m.principal_id=? and exists
+      (select 1 from room_members x where x.room_id=r.id and x.principal_id=?)`, userId, a.id)
+    ?? rt.createRoom({ workspace_id: a.workspace_id, name: `Test · ${a.name}`, kind: "private", participation: "manager", mode: "test", members: [{ id: userId, kind: "human" }, { id: a.id, kind: "agent" }] });
+}
+
+function aiView(ws: string) {
+  const b = billing.balance(ws), d = new Date(now()), monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  return { ...billing.aiSettings(ws), balance: { ...b, available: b.available === Infinity ? null : Math.round(b.available * 100) / 100 },
+    byok: all<any>("select provider from provider_keys where workspace_id=?", ws).map((r) => r.provider),
+    platform: PROVIDERS.filter((p) => platformKey(p)), markup: billing.MARKUP(), payments: !!process.env.STRIPE_SECRET_KEY,
+    spent_this_month: one<any>("select round(coalesce(sum(cost_usd),0), 4) s from usage where workspace_id=? and byok=0 and ts>=?", ws, monthStart).s,
+    ledger: all<any>("select delta_usd, reason, ts from credit_ledger where workspace_id=? order by ts desc limit 10", ws) };
+}
+
 function agentView(a: any) {
   return {
-    ...a, skills: J(a.skills, []), permissions: J(a.permissions, {}), onboarding: J(a.onboarding, {}),
+    ...a, skills: J(a.skills, []), permissions: J(a.permissions, {}), onboarding: J(a.onboarding, {}), spec: J(a.spec, null),
     permission_table: tpl.permissionTable(J(a.skills, []), J(a.permissions, {}), a.id),
     channels: all<any>("select id, platform, address, config from channel_identities where agent_id=?", a.id).map((c) => ({ ...c, config: J(c.config, {}), webhook_url: `${pub()}/v1/webhooks/${c.platform}/${c.id}` })),
     connections_needed: tpl.connectionsNeeded(J(a.skills, [])),
@@ -142,9 +170,36 @@ const h = (fn: (req: Req) => Promise<Response> | Response) => async (req: Req) =
 };
 
 export const routes: Record<string, any> = {
+  ...browserRoutes, // live-browser website logins (src/browser.ts)
   "/v1/health": { GET: () => json({ ok: true }) },
 
+  "/v1/auth/config": { GET: h(() => json({ clerk: clerkOn() ? clerkPublishableKey() : null })) },
+  "/v1/auth/clerk": { POST: h(async (req) => {
+    if (!clerkOn()) fail(404, "Clerk sign-in is not enabled");
+    limit(`clerk:${req.headers.get("x-forwarded-for") ?? "local"}`, 30);
+    const b = await body(req);
+    const { verifyToken, createClerkClient } = await import("@clerk/backend");
+    const parties = [new URL(pub()).origin, ...(process.env.CLERK_AUTHORIZED_PARTIES ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
+    const claims = await verifyToken(String(b.token ?? ""), { secretKey: process.env.CLERK_SECRET_KEY!, authorizedParties: parties }).catch(() => fail(401, "Clerk session is invalid or expired"));
+    const cu = await createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! }).users.getUser(claims.sub);
+    const primary = cu.emailAddresses.find((e) => e.id === cu.primaryEmailAddressId);
+    if (!primary || primary.verification?.status !== "verified") fail(403, "verify your email with Clerk first");
+    const email = primary!.emailAddress.toLowerCase(), name = [cu.firstName, cu.lastName].filter(Boolean).join(" ") || cu.username || email.split("@")[0];
+    // Same person = same Clerk id, or (first Clerk sign-in) the same verified email as an existing account.
+    let u = one<any>("select * from users where clerk_id=?", cu.id) ?? one<any>("select * from users where email=? and clerk_id is null", email);
+    if (u) { if (!u.clerk_id) exec("update users set clerk_id=? where id=?", cu.id, u.id); }
+    else {
+      const uid = id("usr");
+      tx(() => {
+        exec("insert into users (id, email, name, clerk_id, created_at) values (?,?,?,?,?)", uid, email, name, cu.id, now());
+        createWorkspace(`${name} — Personal`, "personal", uid);
+      });
+      u = { id: uid, name, email };
+    }
+    return startSession(u.id, { user: { id: u.id, name: u.name, email: u.email } });
+  }) },
   "/v1/auth/signup": { POST: h(async (req) => {
+    if (clerkOn()) fail(404, "sign up with Clerk");
     const b = await body(req);
     limit(`signup:${req.headers.get("x-forwarded-for") ?? "local"}`, 20);
     if (!b.email || !b.password || b.password.length < 8 || !b.name) fail(400, "name, email and an 8+ character password are required");
@@ -157,6 +212,7 @@ export const routes: Record<string, any> = {
     return startSession(uid, { user: { id: uid, name: b.name, email: b.email } });
   }) },
   "/v1/auth/login": { POST: h(async (req) => {
+    if (clerkOn()) fail(404, "sign in with Clerk");
     const b = await body(req);
     limit(`login:${String(b.email ?? "").toLowerCase()}`, 10);
     const u = one<any>("select * from users where email=?", String(b.email ?? "").toLowerCase());
@@ -202,17 +258,66 @@ export const routes: Record<string, any> = {
     return json({ workspace_id: inv.workspace_id });
   }) },
   "/v1/workspaces/:id/provider-keys/:provider": {
-    PUT: h(async (req) => { const u = userOf(req), b = await body(req); member(req.params.id, u.id, ["owner", "admin"]);
-      if (!["anthropic", "openai"].includes(req.params.provider) || !b.key) fail(400, "provider anthropic|openai and key required");
-      exec("insert or replace into provider_keys values (?,?,?)", req.params.id, req.params.provider, seal(b.key));
-      emit("BYOK_SET", { workspace_id: req.params.id, actor: u.id, data: { provider: req.params.provider } }); // never the key
-      return json({ ok: true }); }),
+    PUT: h(async (req) => { const u = userOf(req), b = await body(req), p = req.params.provider; member(req.params.id, u.id, ["owner", "admin"]);
+      if (!(PROVIDERS as readonly string[]).includes(p)) fail(400, `provider must be one of ${PROVIDERS.join(", ")}`);
+      if (p === "custom") { // any OpenAI-compatible server (Together, Groq, Fireworks, self-hosted Ollama / vLLM)
+        if (!/^https?:\/\/[^\s]+$/.test(b.base_url ?? "")) fail(400, "base_url required, e.g. https://api.together.xyz/v1");
+        if (!process.env.ALLOW_PRIVATE_MODEL_URLS) await assertPublicUrl(b.base_url).catch(() => fail(400, "that URL points at a private network"));
+      } else if (!b.key) fail(400, "key required");
+      exec("insert or replace into provider_keys values (?,?,?)", req.params.id, p, seal(p === "custom" ? { key: b.key ?? "", base_url: b.base_url } : b.key));
+      exec("update workspaces set ai_mode='byok' where id=?", req.params.id); // adding your key means you want to use it
+      emit("BYOK_SET", { workspace_id: req.params.id, actor: u.id, data: { provider: p } }); // never the key
+      return json({ ok: true, mode: "byok" }); }),
     DELETE: h((req) => { const u = userOf(req); member(req.params.id, u.id, ["owner", "admin"]);
-      exec("delete from provider_keys where workspace_id=? and provider=?", req.params.id, req.params.provider); return json({ ok: true }); }),
+      exec("delete from provider_keys where workspace_id=? and provider=?", req.params.id, req.params.provider);
+      if (!one("select 1 from provider_keys where workspace_id=?", req.params.id)) exec("update workspaces set ai_mode='credits' where id=?", req.params.id);
+      return json({ ok: true }); }),
   },
+  "/v1/workspaces/:id/ai": {
+    GET: h((req) => { const u = userOf(req); member(req.params.id, u.id); return json(aiView(req.params.id)); }),
+    PUT: h(async (req) => { const u = userOf(req), b = await body(req); member(req.params.id, u.id, ["owner", "admin"]);
+      if (b.mode !== undefined) {
+        if (!["credits", "byok"].includes(b.mode)) fail(400, "mode must be credits or byok");
+        if (b.mode === "byok" && !one("select 1 from provider_keys where workspace_id=?", req.params.id)) fail(400, "add a model key first");
+        exec("update workspaces set ai_mode=? where id=?", b.mode, req.params.id);
+      }
+      if (b.models) {
+        const models = billing.aiSettings(req.params.id).models;
+        for (const [profile, spec] of Object.entries<any>(b.models)) {
+          if (!one("select 1 from model_profiles where name=?", profile)) fail(400, `unknown profile ${profile}`);
+          if (!spec) { delete models[profile]; continue; }
+          if (typeof spec !== "string" || !(PROVIDERS as readonly string[]).includes(spec.split(":")[0]) || spec.indexOf(":") < 2 || spec.length > 200) fail(400, "model must look like provider:model-id");
+          models[profile] = spec;
+        }
+        exec("update workspaces set ai_models=? where id=?", S(models), req.params.id);
+      }
+      emit("AI_SETTINGS_CHANGED", { workspace_id: req.params.id, actor: u.id, data: { mode: b.mode, models: b.models } });
+      return json(aiView(req.params.id)); }),
+  },
+  "/v1/models": { GET: h(async (req) => {
+    const u = userOf(req), ws = new URL(req.url).searchParams.get("workspace"); member(ws, u.id);
+    const { mode } = billing.aiSettings(ws!), keys = all<any>("select provider from provider_keys where workspace_id=?", ws).map((r) => r.provider);
+    return json((await billing.catalog()).map((m) => ({ ...m, available: mode === "byok" ? keys.includes(m.provider) : !!platformKey(m.provider),
+      price_in_per_m: mode === "byok" ? m.in_per_m : Math.round(m.in_per_m * billing.MARKUP() * 1000) / 1000, price_out_per_m: mode === "byok" ? m.out_per_m : Math.round(m.out_per_m * billing.MARKUP() * 1000) / 1000 })));
+  }) },
+  "/v1/workspaces/:id/credits/checkout": { POST: h(async (req) => {
+    const u = userOf(req), b = await body(req); member(req.params.id, u.id, ["owner", "admin"]);
+    const usd = Number(b.usd); if (!(usd >= 5 && usd <= 1000)) fail(400, "top-ups are $5–$1000");
+    const url = await billing.checkout(req.params.id, usd, pub());
+    if (!url) fail(501, "payments aren't configured on this server (STRIPE_SECRET_KEY)");
+    return json({ url });
+  }) },
+  "/v1/webhooks/stripe": { POST: async (req: Request) => { const r = billing.stripeWebhook(await req.text(), req.headers.get("stripe-signature")); return new Response(r.status === 200 ? "ok" : "bad signature", { status: r.status }); } },
+  "/v1/admin/credits": { POST: h(async (req) => {
+    const u = userOf(req), b = await body(req);
+    if (!admins().includes(u.email)) fail(403, "platform admins only");
+    if (!one("select 1 from workspaces where id=?", b.workspace_id) || !(Number(b.usd) > 0)) fail(400, "workspace_id and positive usd required");
+    billing.addCredits(b.workspace_id, Number(b.usd), b.reason ?? "grant", id("grant"));
+    return json(billing.balance(b.workspace_id));
+  }) },
   "/v1/workspaces/:id/settings": { GET: h((req) => { const u = userOf(req); member(req.params.id, u.id);
     return json({ workspace: one("select * from workspaces where id=?", req.params.id), plan: PLANS[one<any>("select plan from workspaces where id=?", req.params.id).plan],
-      byok: all<any>("select provider from provider_keys where workspace_id=?", req.params.id).map((r) => r.provider),
+      byok: all<any>("select provider from provider_keys where workspace_id=?", req.params.id).map((r) => r.provider), ai: aiView(req.params.id),
       model_profiles: all("select * from model_profiles") }); }) },
 
   // ---- home ----
@@ -250,9 +355,18 @@ export const routes: Record<string, any> = {
       if (one<any>("select count(*) n from agents where workspace_id=? and status!='deleted'", b.workspace_id).n >= PLANS[plan].agents) fail(402, `the ${plan} plan allows ${PLANS[plan].agents} agents`);
       if (!b.name || !b.job) fail(400, "name and job required");
       const skills = (b.skills ?? []).filter((s: string) => tpl.SKILLS[s]);
-      const a = tpl.createAgent(b.workspace_id, u.id, { name: b.name, title: b.title, job: b.job, instructions: b.instructions, skills, permissions: b.permissions, model_profile: b.model_profile });
-      rt.privateRoomFor(u.id, a); // a place to talk to it right away
-      return json(agentView(a));
+      // A confirmed Agent Spec compiles into standing instructions; its routines become schedules.
+      const sp: spec.AgentSpec | null = b.spec && typeof b.spec === "object" ? { ...b.spec, skills } : null;
+      const answers = Object.fromEntries(Object.entries(b.answers ?? {}).filter(([, v]) => typeof v === "string").map(([k, v]) => [k, String(v).slice(0, 300)]));
+      const a = tpl.createAgent(b.workspace_id, u.id, { name: b.name, title: b.title, job: b.job, instructions: sp ? spec.compile(sp, answers) : b.instructions, skills, permissions: b.permissions, model_profile: b.model_profile,
+        avatar: typeof b.avatar === "string" && [...b.avatar].length <= 4 ? b.avatar : undefined });
+      const room = rt.privateRoomFor(u.id, a); // a place to talk to it right away
+      if (sp) {
+        exec("update agents set spec=? where id=?", S({ ...sp, answers }), a.id);
+        for (const r of (sp.routines ?? []).filter((r) => ["daily", "weekdays", "weekly"].includes(r.every) && r.hour >= 0 && r.hour < 24 && r.objective).slice(0, 3))
+          rt.createSchedule({ agent_id: a.id, room_id: room.id, kind: "recurring", spec: { every: r.every, hour: r.hour, ...(r.every === "weekly" ? { day: r.day ?? 1 } : {}) }, objective: String(r.objective).slice(0, 500), created_by: u.id });
+      }
+      return json(agentView(one<any>("select * from agents where id=?", a.id)));
     }),
   },
   "/v1/agents/:id": {
@@ -271,12 +385,18 @@ export const routes: Record<string, any> = {
     }),
   },
   "/v1/agents/:id/upgrade": { POST: h((req) => { const u = userOf(req); agentFor(req.params.id, u.id); return json(tpl.upgradeInstance(req.params.id)); }) },
-  "/v1/agents/:id/test-room": { POST: h((req) => {
+  "/v1/agents/:id/test-room": { POST: h((req) => { const u = userOf(req); return json(testRoom(u.id, agentFor(req.params.id, u.id))); }) },
+  "/v1/agents/interpret": { POST: h(async (req) => {
+    const u = userOf(req), b = await body(req);
+    if (!b.description?.trim()) fail(400, "describe what the agent should do");
+    if (b.workspace_id) member(b.workspace_id, u.id);
+    limit(`interpret:${u.id}`, 20);
+    return json(await spec.interpret(String(b.description).slice(0, 2000), ["me", "group", "team"].includes(b.audience) ? b.audience : "me", b.workspace_id));
+  }) },
+  "/v1/agents/:id/rehearse": { POST: h(async (req) => {
     const u = userOf(req), a = agentFor(req.params.id, u.id);
-    const r = one<any>(`select r.* from rooms r join room_members m on m.room_id=r.id where r.mode='test' and r.status='active' and m.principal_id=? and exists
-      (select 1 from room_members x where x.room_id=r.id and x.principal_id=?)`, u.id, a.id)
-      ?? rt.createRoom({ workspace_id: a.workspace_id, name: `Test · ${a.name}`, kind: "private", participation: "manager", mode: "test", members: [{ id: u.id, kind: "human" }, { id: a.id, kind: "agent" }] });
-    return json(r);
+    limit(`rehearse:${u.id}`, 10);
+    return json({ results: await spec.rehearse(a, u.id, testRoom(u.id, a)) });
   }) },
   "/v1/agents/:id/deploy": { GET: h((req) => {
     const u = userOf(req), a = agentFor(req.params.id, u.id);
@@ -320,15 +440,14 @@ export const routes: Record<string, any> = {
   "/v1/slack/install": { GET: h((req) => {
     const u = userOf(req), agentId = new URL(req.url).searchParams.get("agent") ?? "", a = agentFor(agentId, u.id);
     if (!process.env.SLACK_CLIENT_ID) fail(501, "Slack isn't configured (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_SIGNING_SECRET)");
-    const state = Buffer.from(seal({ ws: a.workspace_id, user: u.id, agent: a.id, exp: now() + 6e5 })).toString("base64url");
+    const { state } = issueState("slack", u.id, { ws: a.workspace_id, agent: a.id });
     const p = new URLSearchParams({ client_id: process.env.SLACK_CLIENT_ID!, redirect_uri: `${pub()}/v1/slack/oauth/callback`, state,
       scope: "app_mentions:read,channels:history,channels:join,channels:read,chat:write,groups:history,groups:read,im:history,im:write,users:read" });
     return Response.redirect(`https://slack.com/oauth/v2/authorize?${p}`, 302);
   }) },
   "/v1/slack/oauth/callback": { GET: h(async (req) => {
     const q = new URL(req.url).searchParams;
-    const st = unseal<any>(Buffer.from(q.get("state") ?? "", "base64url").toString());
-    if (!st || st.exp < now()) fail(400, "expired state");
+    const st = takeState(req, "slack", q.get("state"));
     const r: any = await (await fetch("https://slack.com/api/oauth.v2.access", { method: "POST", body: new URLSearchParams({ code: q.get("code") ?? "",
       client_id: process.env.SLACK_CLIENT_ID!, client_secret: process.env.SLACK_CLIENT_SECRET!, redirect_uri: `${pub()}/v1/slack/oauth/callback` }) })).json();
     if (!r.ok) fail(400, `Slack install failed: ${r.error}`);
@@ -470,7 +589,7 @@ export const routes: Record<string, any> = {
     if (f!.size > 15 * 1024 * 1024) fail(413, "files up to 15 MB");
     const buf = new Uint8Array(await f!.arrayBuffer());
     const fid = id("fil");
-    exec("insert into files values (?,?,?,?,?,?,?,?,?,?)", fid, r.workspace_id, r.id, f!.name, f!.type || "application/octet-stream", f!.size, buf, await extractText(f!.name, f!.type, buf), u.id, now());
+    exec("insert into files values (?,?,?,?,?,?,?,?,?,?)", fid, r.workspace_id, r.id, f!.name, f!.type || "application/octet-stream", f!.size, buf, await extractText(f!.name, f!.type, new Uint8Array(buf)), u.id, now()); // a copy: the PDF parser detaches the buffer it reads
     const note = String(form.get("text") ?? "").trim();
     const res = await rt.ingestMessage({ roomId: r.id, senderId: u.id, text: `${note || "Here's a file."}\n📎 ${f!.name} (file_id: ${fid})`, platform: "web" });
     kick();
@@ -570,7 +689,7 @@ export const routes: Record<string, any> = {
   // ---- connections (plan §2.6, §3.8) ----
   "/v1/connections": {
     GET: h((req) => { const u = userOf(req), ws = new URL(req.url).searchParams.get("workspace"); member(ws, u.id);
-      return json(all<any>("select id, workspace_id, owner_id, visibility, provider, label, account, scopes, status, last_used_at, created_at, json_extract(config, '$.site') site, json_array_length(json_extract(config, '$.tools')) tool_count from connections where workspace_id=? and status!='revoked' and (visibility='workspace' or owner_id=?)", ws, u.id)
+      return json(all<any>("select id, workspace_id, owner_id, visibility, provider, label, account, scopes, status, last_used_at, created_at, json_extract(config, '$.site') site, json_array_length(json_extract(config, '$.tools')) tool_count from connections where workspace_id=? and status not in ('revoked','pending') and (visibility='workspace' or owner_id=?)", ws, u.id)
         .map((c) => ({ ...c, owner: rt.nameOf(c.owner_id), agents: all<any>("select a.id, a.name from connection_grants g join agents a on a.id=g.agent_id where g.connection_id=?", c.id) }))); }),
     POST: h(async (req) => { // direct token / API-key connection (dev + providers without OAuth)
       const u = userOf(req), b = await body(req); member(b.workspace_id, u.id, b.visibility === "workspace" ? ["owner", "admin"] : undefined);
@@ -603,7 +722,7 @@ export const routes: Record<string, any> = {
     if (c.owner_id !== u.id) member(c.workspace_id, u.id, ["owner", "admin"]);
     const { listTools, parseHeaders } = await import("./mcp");
     const tools = await listTools(c.id, J(c.config).url, parseHeaders(unseal<any>(c.cred_enc)?.headers)).catch((e: any) => fail(400, e.message));
-    exec("update connections set config=json_set(config, '$.tools', json(?)) where id=?", S(tools.map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations }))), c.id);
+    patchJson("connections", "config", c.id, (cfg) => ({ ...cfg, tools: tools.map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations })) }));
     return json({ tools: tools.length });
   }) },
   "/v1/connections/:id": { GET: h((req) => {
@@ -628,9 +747,14 @@ export const routes: Record<string, any> = {
     if (c.owner_id !== u.id) member(c.workspace_id, u.id, ["owner", "admin"]);
     exec("delete from connection_grants where connection_id=? and agent_id=?", c.id, req.params.agent); return json({ ok: true });
   }) },
-  "/v1/connections/:id/revoke": { POST: h((req) => {
+  "/v1/connections/:id/revoke": { POST: h(async (req) => {
     const u = userOf(req), c = one<any>("select * from connections where id=?", req.params.id) ?? fail(404, "not found");
     if (c.owner_id !== u.id) member(c.workspace_id, u.id, ["owner", "admin"]);
+    // Disconnecting also revokes the token at the provider, so a leaked copy is useless (best-effort; local revocation always happens).
+    const cred = c.cred_enc ? unseal<any>(c.cred_enc) : null;
+    if (c.provider === "browser_login" && J(c.config, {}).context_id) await bb.deleteContext(J(c.config, {}).context_id);
+    if (c.provider === "google" && (cred?.refresh_token || cred?.access_token))
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(cred.refresh_token ?? cred.access_token)}`, { method: "POST", signal: AbortSignal.timeout(5000) }).catch(() => {});
     exec("update connections set status='revoked', cred_enc=null where id=?", c.id);
     exec("delete from connection_grants where connection_id=?", c.id);
     emit("CONNECTION_REVOKED", { workspace_id: c.workspace_id, actor: u.id, data: { connection_id: c.id } });
@@ -639,17 +763,17 @@ export const routes: Record<string, any> = {
   "/v1/connections/google/start": { GET: h((req) => {
     const u = userOf(req), q = new URL(req.url).searchParams; member(q.get("workspace"), u.id);
     if (!process.env.GOOGLE_CLIENT_ID) fail(501, "Google OAuth isn't configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET), or add a token connection instead");
-    const state = Buffer.from(seal({ ws: q.get("workspace"), user: u.id, visibility: q.get("visibility") ?? "private", agent: q.get("agent"), conn: q.get("reconnect"), exp: now() + 6e5 })).toString("base64url");
+    const { state, challenge } = issueState("google", u.id, { ws: q.get("workspace"), visibility: q.get("visibility") ?? "private", agent: q.get("agent"), conn: q.get("reconnect") }, true);
     const p = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID!, redirect_uri: `${pub()}/v1/connections/google/callback`, response_type: "code", access_type: "offline", prompt: "consent", state,
+      code_challenge: challenge!, code_challenge_method: "S256",
       scope: "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/contacts.readonly" });
     return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${p}`, 302);
   }) },
   "/v1/connections/google/callback": { GET: h(async (req) => {
     const q = new URL(req.url).searchParams;
-    const st = unseal<any>(Buffer.from(q.get("state") ?? "", "base64url").toString());
-    if (!st || st.exp < now()) fail(400, "expired state");
+    const st = takeState(req, "google", q.get("state"));
     const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", body: new URLSearchParams({ code: q.get("code") ?? "", client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!, redirect_uri: `${pub()}/v1/connections/google/callback`, grant_type: "authorization_code" }) });
+      client_secret: process.env.GOOGLE_CLIENT_SECRET!, redirect_uri: `${pub()}/v1/connections/google/callback`, grant_type: "authorization_code", code_verifier: st.verifier }) });
     if (!r.ok) fail(400, "Google token exchange failed");
     const t: any = await r.json();
     const email = JSON.parse(Buffer.from(String(t.id_token).split(".")[1], "base64url").toString()).email; // id_token came straight from Google over TLS
@@ -784,7 +908,7 @@ export const routes: Record<string, any> = {
       metrics: {
         completed_runs: one<any>("select count(*) n from runs where workspace_id=? and status='completed'", ws).n,
         autonomous_completion_rate: one<any>(`select round(1.0 * sum(case when not exists (select 1 from approvals a where a.run_id=r.id) then 1 else 0 end) / max(count(*), 1), 2) v from runs r where r.workspace_id=? and r.status='completed'`, ws).v,
-        approval_acceptance_rate: one<any>("select round(1.0 * sum(a.status='approved') / max(sum(a.status in ('approved','rejected')), 1), 2) v from approvals a join rooms r on r.id=a.room_id where r.workspace_id=?", ws).v,
+        approval_acceptance_rate: one<any>("select round(1.0 * sum(case when a.status='approved' then 1 else 0 end) / max(sum(case when a.status in ('approved','rejected') then 1 else 0 end), 1), 2) v from approvals a join rooms r on r.id=a.room_id where r.workspace_id=?", ws).v,
         cross_channel_rooms: one<any>("select count(*) n from (select room_id from events where workspace_id=? and type='message' group by room_id having count(distinct json_extract(data, '$.platform')) > 1)", ws).n,
       },
     });
@@ -801,8 +925,8 @@ export const routes: Record<string, any> = {
   "/v1/webhooks/slack/app": h(async (req) => { const r = await ch.handleSlackApp(req); kick(); return r; }),
   "/v1/webhooks/:platform/:cid": h(async (req) => { const r = await ch.handleWebhook(req.params.platform, req.params.cid, req); kick(); return r; }),
   "/v1/*": () => err(404, "not found"),
-  "/manifest.webmanifest": () => new Response(Bun.file(new URL("../public/manifest.webmanifest", import.meta.url).pathname), { headers: { "content-type": "application/manifest+json" } }),
-  "/icon.svg": () => new Response(Bun.file(new URL("../public/icon.svg", import.meta.url).pathname), { headers: { "content-type": "image/svg+xml" } }),
+  "/manifest.webmanifest": () => new Response(Bun.file(new URL("../public/manifest.webmanifest", import.meta.url)), { headers: { "content-type": "application/manifest+json" } }),
+  "/icon.svg": () => new Response(Bun.file(new URL("../public/icon.svg", import.meta.url)), { headers: { "content-type": "image/svg+xml" } }),
   "/*": app,
 };
 

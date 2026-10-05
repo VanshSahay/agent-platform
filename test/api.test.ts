@@ -129,13 +129,15 @@ test("AC-A6 invitations, roles, plan limits", async () => {
 test("AC-PUB1 discovery lists curated first-party agents; install asks only for what's needed", async () => {
   const e = await signup("Ellie");
   const list = await api("/v1/agent-templates");
-  expect(list.data.map((t: any) => t.slug).sort()).toEqual(["atlas-research", "ava-executive-assistant", "pool-group-buying", "recruiter-healthcare", "reese-reservations", "relay-ops", "scout-travel"]);
+  const { readdirSync } = await import("node:fs");
+  expect(list.data.map((t: any) => t.slug).sort()).toEqual(readdirSync("agents").map((f) => f.replace(/\.json$/, "")).sort());
+  expect(list.data.map((t: any) => t.slug)).toEqual(expect.arrayContaining(["atlas-research", "pool-group-buying", "tab-split-expenses", "plans-party-planner", "juno-support"]));
   const atlas = await api("/v1/agent-templates/atlas-research");
   expect(atlas.data.connections).toEqual([]); // research needs no account access
   expect(atlas.data.manifest.evals).toContain("citation_coverage");
   const inst = await api("/v1/agent-templates/atlas-research/install", { token: e.token, body: { workspace_id: e.ws, answers: { research_style: "biotech" } } });
   expect(inst.data.agent.instructions).toContain("biotech");
-  expect(inst.data.agent.template_version).toBe("1.5.0");
+  expect(inst.data.agent.template_version).toBe("1.5.1");
   const relay = await api("/v1/agent-templates/relay-ops/install", { token: e.token, body: { workspace_id: e.ws } });
   expect(relay.data.agent.schedules[0]).toMatchObject({ kind: "recurring", spec: { every: "weekdays", hour: 9 } }); // declared proactivity
 });
@@ -267,4 +269,32 @@ test("AC-F1 files: upload text or PDF into a room, the agent reads it; files are
   scriptModel(call("files.read", { file_id: t.file_id }), (r) => ({ text: r.messages.at(-1)!.content }));
   await api(`/v1/rooms/${other.data.id}/messages`, { token: e.token, body: { text: "read that file" } }); await settle();
   expect(J(one<any>("select data from events where room_id=? and type='message' and actor=? order by seq desc limit 1", other.data.id, ag.data.id).data).text).toMatch(/no such file in this room/);
+});
+
+test("AC-A8 Clerk sign-in: token traded for a session; links by verified email; password auth off while Clerk is on", async () => {
+  const { mock } = await import("bun:test");
+  const users: Record<string, any> = {
+    user_old: { id: "user_old", firstName: "Ellie", primaryEmailAddressId: "e1", emailAddresses: [{ id: "e1", emailAddress: "Ellie@example.com", verification: { status: "verified" } }] },
+    user_new: { id: "user_new", firstName: "Sam", lastName: "Lee", primaryEmailAddressId: "e2", emailAddresses: [{ id: "e2", emailAddress: "sam@example.com", verification: { status: "verified" } }] },
+    user_unv: { id: "user_unv", primaryEmailAddressId: "e3", emailAddresses: [{ id: "e3", emailAddress: "x@example.com", verification: { status: "unverified" } }] },
+  };
+  mock.module("@clerk/backend", () => ({
+    verifyToken: async (t: string) => { if (!users[t]) throw new Error("bad"); return { sub: t }; },
+    createClerkClient: () => ({ users: { getUser: async (sub: string) => users[sub] } }),
+  }));
+  const old = await signup("Ellie"); // existing password account, same email as the Clerk user
+  process.env.CLERK_SECRET_KEY = "sk_test_x"; process.env.CLERK_PUBLISHABLE_KEY = "pk_test_x";
+  try {
+    expect((await api("/v1/auth/config")).data.clerk).toBe("pk_test_x");
+    expect((await api("/v1/auth/login", { body: { email: "ellie@example.com", password: "password123" } })).status).toBe(404);
+    expect((await api("/v1/auth/clerk", { body: { token: "forged" } })).status).toBe(401);
+    expect((await api("/v1/auth/clerk", { body: { token: "user_unv" } })).status).toBe(403);
+    const a = await api("/v1/auth/clerk", { body: { token: "user_old" } });
+    expect(a.data.user.id).toBe(old.id); // linked, not duplicated: keeps workspaces and agents
+    const b = await api("/v1/auth/clerk", { body: { token: "user_new" } });
+    const me = await api("/v1/me", { token: b.data.token });
+    expect(me.data.user.name).toBe("Sam Lee");
+    expect(me.data.workspaces).toHaveLength(1); // personal workspace created on first sign-in
+    expect((await api("/v1/auth/clerk", { body: { token: "user_new" } })).data.user.id).toBe(b.data.user.id);
+  } finally { delete process.env.CLERK_SECRET_KEY; delete process.env.CLERK_PUBLISHABLE_KEY; }
 });
