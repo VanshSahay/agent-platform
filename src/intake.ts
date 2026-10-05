@@ -115,6 +115,14 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is
   // decided by the tools in the plan: only external writes (send, book, create events, pay) count.
   b.side_effects = sideEffects(arr(b.plan).map((p: any) => p?.tool).filter(Boolean), arr(b.side_effects));
+  // Don't ask what a tool can look up: with contacts available, "what's Sam's email/number?" becomes a lookup step.
+  if (tools.includes("contacts.search")) {
+    const lookups = arr(b.questions).filter((q: any) => /\b(e-?mail|address|phone|number|contact)\b/i.test(String(q?.q ?? q)));
+    if (lookups.length) {
+      b.questions = arr(b.questions).filter((q: any) => !lookups.includes(q));
+      if (!arr(b.plan).some((p: any) => p?.tool === "contacts.search")) b.plan = [{ text: "Look up the person in your contacts", tool: "contacts.search" }, ...arr(b.plan)];
+    }
+  }
   const draft = {
     version: (prev?.version ?? 0) + 1, goal: String(b.goal ?? run.objective), deliverable: String(b.deliverable ?? ""),
     constraints: arr(b.constraints).map(String), assumptions: arr(b.assumptions).map(String), side_effects: arr(b.side_effects).map(String),
