@@ -15,6 +15,7 @@ import * as intake from "./intake";
 import * as reservations from "./reservations";
 import * as orders from "./orders";
 import * as groupkit from "./groupkit";
+import * as jobs from "./jobs";
 import * as jev from "./jev";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
@@ -283,6 +284,9 @@ async function stepRunInner(runId: string) {
   if (now() - run.created_at > budget.maxWallClockSeconds * 1000) return fail(run, "run exceeded its wall-clock budget");
   // Requirement layer: brief -> clarify/confirm/auto before any tool runs.
   if (run.brief_status === "pending") {
+    // A contracted job that needs a connection this agent doesn't have: the honest answer is known now, before any planning.
+    const miss = !run.parent_run_id && !J(run.brief) ? jobs.missingConnection(agent, String(run.objective ?? ""), room) : null;
+    if (miss) { exec("update runs set brief_status='skipped' where id=?", run.id); jobs.recordOutcome(run, { job: miss.job, ok: false, evidence: "missing connection" }); return complete(run, agent, room, miss.message); }
     if ((await intake.intake(run, agent, room, live)) === "wait" || !live()) return;
     run = one<any>("select * from runs where id=?", runId);
   }
@@ -365,6 +369,16 @@ async function stepRunInner(runId: string) {
         appendStep(run.id, "signal", { text: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed. Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` });
         continue;
       }
+      // Contracted jobs (calendar, reminder, email) need evidence in our records, not just a confident reply.
+      const job = jobs.outcome(run, res.text);
+      if (!job.ok && !spent.contractRetry && !run.parent_run_id) {
+        patchJson("runs", "spent", run.id, (x) => ({ ...x, contractRetry: 1 }));
+        appendStep(run.id, "signal", { text: `[CHECK] This request is a ${job.job} job, but nothing shows it was done (${job.evidence}). Call the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.` });
+        continue;
+      }
+      jobs.recordOutcome(run, job);
+      if (!job.ok && !run.parent_run_id && !/couldn'?t|can'?t|unable|wasn'?t able|not able/i.test(res.text))
+        res.text = `${res.text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
       // Don't claim "done" until the result is checked against the brief's success criteria.
       const b = J(run.brief);
       if (b?.done_when?.length && ["confirmed", "auto"].includes(run.brief_status) && !run.parent_run_id) {
@@ -516,7 +530,7 @@ export function requestApproval(run: any, agent: any, d: any, input: any, fp: st
   const who = approvers.map(nameOf).join(" or ");
   postMessage(run.room_id, { sender: agent.id, runId: run.id, approvalId: aid, targets: replyTargets(run.room_id, run.origin_endpoint_id),
     buttons: [{ label: strong ? "Confirm" : "Approve", data: `apr:${aid}:approve` }, { label: "Reject", data: `apr:${aid}:reject` }],
-    text: `${agent.name} wants to: ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}` });
+    text: `${agent.name} wants to: ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${d.preview ? `\n${d.preview(input)}\n\n` : ""}${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}` });
   return wid;
 }
 

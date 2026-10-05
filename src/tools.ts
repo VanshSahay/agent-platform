@@ -18,6 +18,7 @@ export interface ToolDef {
   id: string; description: string; inputSchema: any; risk: Risk;
   idempotency: "safe" | "key_required" | "unsafe"; requiresConnection?: string; defaultApproval: "none" | "first_time" | "always";
   connectionId?: string;                              // MCP tools: bound to one specific connection
+  preview?: (input: any) => string;                   // the exact thing being approved (e.g. the full email), shown on the approval request
   riskOf?: (input: any) => Risk;                      // input-dependent risk (e.g. a booking with a deposit is financial)
   siteLogin?: (input: any) => string | undefined;     // which website login (host) this call would use
   siteLoginRequired?: boolean;
@@ -34,14 +35,16 @@ const num = (description?: string) => ({ type: "number", description });
 
 const pubUrl = () => (process.env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/$/, "");
 // ---------- outbound HTTP with retry taxonomy ----------
-async function call(url: string, init: RequestInit & { write?: boolean; timeoutMs?: number } = {}) {
+// write: the call changes something at the provider. idempotent: repeating it can't duplicate (e.g. our key is the object id).
+// A non-idempotent write that gets no clean answer (network error, any 5xx) is UNKNOWN — it may have happened — and is never retried.
+async function call(url: string, init: RequestInit & { write?: boolean; idempotent?: boolean; timeoutMs?: number } = {}) {
   let r: Response;
+  const risky = init.write && !init.idempotent;
   try { r = await fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 20000) }); }
-  catch (e: any) { throw new ToolError(init.write ? "UNKNOWN_SIDE_EFFECT" : "TRANSIENT", `network error: ${e.message}`); }
+  catch (e: any) { throw new ToolError(risky ? "UNKNOWN_SIDE_EFFECT" : "TRANSIENT", `network error: ${e.message}`); }
   if (r.status === 401 || r.status === 403) throw new ToolError("AUTH", `provider rejected credentials (${r.status})`);
   if (r.status === 429) throw new ToolError("RATE_LIMIT", "rate limited", Number(r.headers.get("retry-after") ?? 30) * 1000);
-  if (r.status === 502 || r.status === 503) throw new ToolError("TRANSIENT", `provider unavailable (${r.status})`, 5000);
-  if (r.status >= 500) throw new ToolError(init.write ? "UNKNOWN_SIDE_EFFECT" : "TRANSIENT", `provider error ${r.status}`, 5000);
+  if (r.status >= 500) throw new ToolError(risky ? "UNKNOWN_SIDE_EFFECT" : "TRANSIENT", `provider ${r.status >= 502 && r.status <= 504 ? "unavailable" : "error"} (${r.status})`, 5000);
   if (!r.ok && !(r.status >= 300 && r.status < 400)) throw new ToolError("BUSINESS_RULE", `provider returned ${r.status}: ${(await r.text()).slice(0, 300)}`);
   return r;
 }
@@ -443,15 +446,34 @@ def({
   },
 });
 
+/** The Gmail id of a sent message with this Message-ID, "" if Gmail has none, throws if Gmail can't be asked. */
+async function gmailSentById(headers: Record<string, string>, msgId: string): Promise<string> {
+  await new Promise((r) => setTimeout(r, Number(process.env.EMAIL_RECONCILE_DELAY_MS ?? 2000))); // let a just-accepted send land
+  const j: any = await (await call(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(`rfc822msgid:${msgId}`)}&maxResults=1`, { headers })).json();
+  return j.messages?.[0]?.id ?? "";
+}
 def({
   id: "email.send", description: "Send an email from the connected Gmail account.", risk: "write_external", idempotency: "key_required", defaultApproval: "always",
   requiresConnection: "google", inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str(), thread_id: str() }, ["to", "subject", "body"]),
   summarize: (i) => `Send email to ${i.to.join(", ")}: "${i.subject}"`,
+  preview: (i) => `To: ${(i.to ?? []).join(", ")}\nSubject: ${i.subject}\n\n${String(i.body ?? "").slice(0, 1500)}`,
   async execute({ to, subject, body, thread_id }, ctx) {
     if (to.some((a: string) => !/^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(a))) throw new ToolError("BUSINESS_RULE", "invalid recipient address");
     subject = subject.replace(/[\r\n]+/g, " "); // no header injection (e.g. a smuggled Bcc:)
-    const raw = b64url(`To: ${to.join(", ")}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
-    const r: any = await (await call("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { method: "POST", write: true, headers: await googleToken(ctx), body: S({ raw, threadId: thread_id }) })).json();
+    // Our own Message-ID (from the idempotency key) lets us ask Gmail afterwards whether this exact email went out.
+    const msgId = `<${ctx.idempotencyKey.replace(/[^\w.-]/g, "").slice(0, 60)}@agents.mail>`;
+    const raw = b64url(`To: ${to.join(", ")}\r\nSubject: ${subject}\r\nMessage-ID: ${msgId}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
+    const headers = await googleToken(ctx);
+    let r: any;
+    try { r = await (await call("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { method: "POST", write: true, headers, body: S({ raw, threadId: thread_id }) })).json(); }
+    catch (e: any) {
+      if (!(e instanceof ToolError) || e.kind !== "UNKNOWN_SIDE_EFFECT") throw e;
+      // No clean answer: reconcile instead of guessing. Found in the mailbox → it was sent. Provably absent → safe to retry.
+      const found = await gmailSentById(headers, msgId).catch(() => undefined);
+      if (found === undefined) throw e;                                  // can't tell: stays UNKNOWN, the person is asked to check
+      if (!found) throw new ToolError("TRANSIENT", `${e.message}; verified not sent, retrying`, 5000);
+      r = { id: found };
+    }
     if (!r.id) return { status: "UNKNOWN", output: r };
     recordUsage({ workspace_id: ctx.run.workspace_id, agent_id: ctx.agent.id, run_id: ctx.run.id, kind: "emails_sent", qty: to.length });
     return { status: "SUCCEEDED", output: { id: r.id, to, subject, from: ctx.connection!.account } };

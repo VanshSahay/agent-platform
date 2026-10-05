@@ -84,7 +84,7 @@ test("AC-IM4 several agents share one 1:1 thread: a second code adds (not replac
   const seen = scriptModel((r) => ({ text: r.system.includes("You are Ava") ? "Ava here" : "Reese here" }));
   await text("chat-ellie", "+15551110000", "what's good friday?");
   expect(sent("chat-ellie").at(-1)).toBe("Reese: Reese here"); // the newest agent is current; labeled since the thread is shared
-  await text("chat-ellie", "+15551110000", "@Ava what's on my calendar?");
+  await text("chat-ellie", "+15551110000", "@Ava what's up?");
   expect(sent("chat-ellie").at(-1)).toBe("Ava: Ava here");
   await text("chat-ellie", "+15551110000", "and tomorrow?"); // sticks with Ava
   expect(sent("chat-ellie").at(-1)).toBe("Ava: Ava here");

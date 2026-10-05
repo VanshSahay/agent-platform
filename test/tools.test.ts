@@ -59,6 +59,7 @@ test("AC-T3 retry taxonomy: transient, rate limit, auth, unknown side effect", a
   // UNKNOWN_SIDE_EFFECT on a write stops for human verification and never blindly resends
   let sends = 0;
   net.on(/messages\/send/, () => { sends++; return new Response("boom", { status: 500 }); });
+  net.on(/messages\?q=rfc822msgid/, () => new Response("down", { status: 500 })); // and Gmail can't be asked whether it went out
   scriptModel(call("email.send", { ...send, subject: "unknown" }), { text: "ok" });
   await say(room.id, ellie, "send a third");
   run = runsIn(room.id).at(-1);

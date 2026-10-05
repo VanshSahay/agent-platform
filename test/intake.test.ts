@@ -134,6 +134,8 @@ test("AC-B8 per-agent confirmation mode (always / never) and the deterministic p
 
 test("AC-B9 unanswered questions expire after 72h instead of guessing", async () => {
   const ava = installAgent("ava-executive-assistant", ws, ellie);
+  googleConnection(ws, ellie, [ava.id]);
+  patchJson("agents", "permissions", ava.id, (p) => ({ ...p, "contacts.search": "never" })); // can't look Sam up -> must ask
   const room = rt.privateRoomFor(ellie, ava);
   await say(room.id, ellie, "Email Sam about Friday");
   advance(73 * 3600e3); await rt.drain();

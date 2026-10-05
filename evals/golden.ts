@@ -31,8 +31,8 @@ export const GOLDEN: Golden[] = [
   { id: "plat-05-mention-only", suite: "platform", agent: "relay-ops", group: true, turns: [["Sarah", "lunch at noon?"]], expect: [{ dim: "boundary", label: "stays quiet when not addressed", check: (c) => !all("select 1 from runs where room_id=?", c.room.id).length }] },
   { id: "plat-06-resume-status", suite: "platform", agent: "relay-ops", group: true, turns: [["James", "Relay, take care of the BLS follow-ups"], ["Sarah", "Relay, what's the status?"]], expect: [replies(/BLS follow-ups/), completes] },
   // ---- requirement layer ----
-  { id: "intake-01-asks-when-essential-info-missing", suite: "intake", agent: "ava-executive-assistant", turns: [["Ellie", "Email Sam about dinner on Friday"]],
-    expect: [briefIs("clarifying", "asks for the missing address"), noTools, replies(/Sam's email address/)] },
+  { id: "intake-01-says-what-it-needs-before-working", suite: "intake", agent: "ava-executive-assistant", turns: [["Ellie", "Email Sam about dinner on Friday"]],
+    expect: [noTools, noExternalWrite, replies(/Google account[\s\S]*Connect it here/)] }, // no Google: say so up front, don't improvise
   { id: "intake-02-looks-up-instead-of-asking", suite: "intake", agent: "ava-executive-assistant", connection: true, turns: [["Ellie", "Email Sam about dinner on Friday"]],
     expect: [briefIs("auto", "doesn't ask what it can look up"), called("contacts.search"), approvalFor("email.send"), noExternalWrite] },
   { id: "intake-03-confirms-multi-action-plans", suite: "intake", agent: "ava-executive-assistant", connection: true,

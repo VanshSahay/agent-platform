@@ -41,6 +41,7 @@ export { realFetch };
 // Google API fakes used by most scenarios.
 export function fakeGoogle() {
   net.on(/gmail\.googleapis\.com\/.*\/messages\/send/, () => Response.json({ id: id("gm") }));
+  net.on(/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages\?q=rfc822msgid/, () => Response.json({ resultSizeEstimate: 0 })); // reconcile: not in the mailbox
   net.on(/calendar\/v3\/calendars\/primary\/events\?/, () => Response.json({ items: [{ id: "ev1", summary: "Board meeting", start: { dateTime: "2026-10-02T15:00:00Z" } }] }));
   net.on(/calendar\/v3\/calendars\/primary\/events$/, (_r, b) => Response.json({ id: b.id, start: b.start, htmlLink: "https://cal/x" }));
   net.on(/people\.googleapis\.com/, (r) => Response.json({ results: /query=Sam/i.test(r.url) ? [{ person: { names: [{ displayName: "Sam Lee" }], emailAddresses: [{ value: "sam.lee@example.com" }] } }] : [] }));
@@ -61,7 +62,7 @@ export const call = (name: string, input: any, cid = id("call")) => ({ toolCalls
 
 // ---------- world ----------
 export function setup() {
-  process.env.DEBOUNCE_MS = "0"; process.env.DDG_PACE_MS = "0";
+  process.env.DEBOUNCE_MS = "0"; process.env.DDG_PACE_MS = "0"; process.env.EMAIL_RECONCILE_DELAY_MS = "0";
   openDb(":memory:"); resetClock(); hooks.model = null; net.reset(); fakeGoogle(); seedFirstParty();
 }
 export function user(name: string, email = `${name.toLowerCase()}@example.com`) {
