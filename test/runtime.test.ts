@@ -118,9 +118,8 @@ test("AC-R6 wake conditions: one-off reminders, recurring schedules, timeouts, s
   link("telegram", "42", ellie);
   await deliver("telegram", t.id, tg(42, 42, "Ellie", "remind me to call mom in 30 minutes")); // offline heuristic model
   expect(lastFrom(room.id, a.id)).toMatch(/Reminder set/);
-  scriptModel({ text: "Time to call mom!" });
   advance(31 * 60e3); await rt.drain();
-  expect(net.to(/api\.telegram\.org/).at(-1)!.body.text).toBe("Time to call mom!"); // proactive message goes to the last-used channel
+  expect(net.to(/api\.telegram\.org/).at(-1)!.body.text).toBe("⏰ call mom"); // delivered word for word (no model), to the chat it was asked in
 
   rt.createSchedule({ agent_id: a.id, room_id: room.id, kind: "recurring", spec: { every: "daily", hour: 9 }, objective: "morning agenda", created_by: ellie });
   advance(25 * 3600e3); await rt.drain();

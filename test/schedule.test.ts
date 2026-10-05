@@ -38,7 +38,7 @@ test("AC-SC2 the agent schedules in the requester's zone: Mon/Wed/Fri at 7:30, '
 
   scriptModel(call("reminder.schedule", { text: "stretch", every_minutes: 180 }), { text: "ok" });
   await say(room.id, ellie, "remind me to stretch every 3 hours");
-  expect(J(one<any>("select spec from schedules where objective='stretch'").spec)).toEqual({ interval_minutes: 180 });
+  expect(J(one<any>("select spec from schedules where objective='stretch'").spec)).toMatchObject({ interval_minutes: 180, deliver: "message" });
 
   scriptModel(call("reminder.schedule", { text: "call mom", at: "2027-01-10T18:00" }), { text: "ok" }); // no offset: 6pm in *her* zone
   await say(room.id, ellie, "remind me to call mom jan 10 at 6pm");

@@ -610,7 +610,12 @@ export function createSchedule(s: { agent_id: string; room_id: string; kind: str
 function fireSchedule(s: any, eventText?: string) {
   const room = one<any>("select * from rooms where id=?", s.room_id), agent = one<any>("select * from agents where id=?", s.agent_id);
   if (!room || !agent || agent.status !== "active") return;
-  createRun({ room, agent, objective: eventText ? `${s.objective}\n(Triggered by: ${eventText})` : s.objective, requestedBy: s.created_by, kind: "schedule" });
+  const spec = J(s.spec, {});
+  if (spec.deliver === "message" && !eventText) {
+    // A plain reminder is delivered word for word, to the chat it was asked in — no model in the loop, so it can't be garbled or lost.
+    const ev = postMessage(room.id, { sender: agent.id, text: `⏰ ${s.objective}`, targets: replyTargets(room.id, spec.endpoint_id ?? null) });
+    emit("REMINDER_SENT", { room_id: room.id, actor: agent.id, data: { schedule_id: s.id, event_id: ev, endpoint_id: spec.endpoint_id ?? null } });
+  } else createRun({ room, agent, objective: eventText ? `${s.objective}\n(Triggered by: ${eventText})` : s.objective, requestedBy: s.created_by, kind: "schedule" });
   if (s.kind === "recurring") exec("update schedules set next_at=? where id=?", nextRecurring(J(s.spec), now()), s.id);
   else if (s.kind === "time") exec("update schedules set status='done' where id=?", s.id);
 }

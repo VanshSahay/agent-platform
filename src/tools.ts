@@ -1,5 +1,5 @@
 // Tool contract + Tool Gateway (plan §10). Every call: schema validation -> policy -> approval -> credential resolution -> idempotent execute -> audit.
-import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage, tzOf, setTz, zoned, fromZoned, fmtLocal } from "./db";
+import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage, tzOf, setTz, zoned, fromZoned, fmtLocal, serverTz } from "./db";
 import { evaluatePolicy, type Risk } from "./policy";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -32,6 +32,7 @@ const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "o
 const str = (description?: string) => ({ type: "string", description });
 const num = (description?: string) => ({ type: "number", description });
 
+const pubUrl = () => (process.env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/$/, "");
 // ---------- outbound HTTP with retry taxonomy ----------
 async function call(url: string, init: RequestInit & { write?: boolean; timeoutMs?: number } = {}) {
   let r: Response;
@@ -458,12 +459,23 @@ def({
 });
 
 def({
-  id: "calendar.list_events", description: "List upcoming calendar events.", risk: "read", idempotency: "safe", defaultApproval: "none",
-  requiresConnection: "google", inputSchema: obj({ days: num() }),
-  async execute({ days = 7 }, ctx) {
-    const qs = new URLSearchParams({ timeMin: new Date(now()).toISOString(), timeMax: new Date(now() + days * 864e5).toISOString(), singleEvents: "true", orderBy: "startTime", maxResults: "25" });
+  id: "calendar.list_events", description: "Events on the connected Google Calendar for a day or range, in the person's time zone (today includes events already past, marked). Use for 'what's my day', 'am I free Thursday', 'when is X'.",
+  risk: "read", idempotency: "safe", defaultApproval: "none",
+  requiresConnection: "google", inputSchema: obj({ from: str("today | tomorrow | YYYY-MM-DD (default today)"), days: num("how many days (default 1, max 31)"), query: str("optional text to match, e.g. 'board'") }),
+  async execute({ from = "today", days = 1, query }, ctx) {
+    const tz = tzOf(ctx.run?.requested_by), z = zoned(now(), tz);
+    const off = { today: 0, tomorrow: 1, yesterday: -1 }[String(from).toLowerCase() as "today"];
+    const d = off !== undefined ? { y: z.y, mo: z.mo, d: z.d + off } : (() => { const m = String(from).match(/(\d{4})-(\d\d)-(\d\d)/); if (!m) throw new ToolError("BUSINESS_RULE", "from must be today, tomorrow or YYYY-MM-DD"); return { y: +m[1], mo: +m[2] - 1, d: +m[3] }; })();
+    const n = Math.min(31, Math.max(1, Math.round(days)));
+    const start = fromZoned(d.y, d.mo, d.d, 0, 0, tz), end = fromZoned(d.y, d.mo, d.d + n, 0, 0, tz);
+    const qs = new URLSearchParams({ timeMin: new Date(start).toISOString(), timeMax: new Date(end).toISOString(), singleEvents: "true", orderBy: "startTime", maxResults: "50", ...(query ? { q: String(query) } : {}) });
     const j: any = await (await call(`https://www.googleapis.com/calendar/v3/calendars/primary/events?${qs}`, { headers: await googleToken(ctx) })).json();
-    return { status: "SUCCEEDED", untrusted: true, output: { events: (j.items ?? []).map((e: any) => ({ id: e.id, summary: e.summary, start: e.start?.dateTime ?? e.start?.date, attendees: e.attendees?.map((a: any) => a.email) })) } };
+    const events = (j.items ?? []).filter((e: any) => e.status !== "cancelled").map((e: any) => {
+      const allDay = !e.start?.dateTime, s0 = Date.parse(e.start?.dateTime ?? `${e.start?.date}T00:00:00`), e0 = Date.parse(e.end?.dateTime ?? `${e.end?.date}T00:00:00`);
+      return { id: e.id, summary: e.summary ?? "(no title)", all_day: allDay, start: allDay ? e.start?.date : fmtLocal(s0, tz), end: allDay ? e.end?.date : fmtLocal(e0, tz),
+        past: !allDay && e0 < now(), happening_now: !allDay && s0 <= now() && e0 > now(), location: e.location, attendees: e.attendees?.map((a: any) => a.email).slice(0, 10) };
+    });
+    return { status: "SUCCEEDED", untrusted: true, output: { time_zone: tz, range: `${fmtLocal(start, tz)} → ${fmtLocal(end - 1, tz)}`, events, note: events.length ? undefined : "no events in this range" } };
   },
 });
 
@@ -493,14 +505,14 @@ def({
 });
 
 /** Free slots between busy intervals, inside working hours, for a meeting of `minutes`. Pure, so it's unit-tested. */
-export function freeSlots(busy: { start: number; end: number }[], from: number, to: number, minutes: number, workStart = 9, workEnd = 18, max = 5) {
-  const out: { start: string; end: string }[] = [], step = 30 * 6e4, len = minutes * 6e4;
+export function freeSlots(busy: { start: number; end: number }[], from: number, to: number, minutes: number, workStart = 9, workEnd = 18, max = 5, tz = serverTz()) {
+  const out: { start: string; end: string; local?: string }[] = [], step = 30 * 6e4, len = minutes * 6e4;
   const b = [...busy].sort((x, y) => x.start - y.start);
   for (let t = Math.ceil(from / step) * step; t + len <= to && out.length < max; t += step) {
-    const d = new Date(t), h = d.getHours() + d.getMinutes() / 60, end = new Date(t + len), he = end.getHours() + end.getMinutes() / 60;
-    if (d.getDay() === 0 || d.getDay() === 6 || h < workStart || he > workEnd || end.getDate() !== d.getDate()) continue;
+    const a = zoned(t, tz), e = zoned(t + len, tz), h = a.h + a.mi / 60, he = e.h + e.mi / 60; // working hours in the person's zone
+    if (a.dow === 0 || a.dow === 6 || h < workStart || he > workEnd || e.d !== a.d) continue;
     if (b.some((x) => x.start < t + len && x.end > t)) continue;
-    out.push({ start: d.toISOString(), end: end.toISOString() });
+    out.push({ start: new Date(t).toISOString(), end: new Date(t + len).toISOString(), local: `${fmtLocal(t, tz)} – ${fmtLocal(t + len, tz).split(", ").at(-1)}` });
     t += len - step; // don't offer overlapping slots
   }
   return out;
@@ -516,7 +528,8 @@ def({
     const j: any = await (await call("https://www.googleapis.com/calendar/v3/freeBusy", { method: "POST", headers: await googleToken(ctx),
       body: S({ timeMin, timeMax, items: [{ id: "primary" }, ...attendees.map((id: string) => ({ id }))] }) })).json();
     const busy = Object.values(j.calendars ?? {}).flatMap((c: any) => (c.busy ?? []).map((x: any) => ({ start: Date.parse(x.start), end: Date.parse(x.end) })));
-    return { status: "SUCCEEDED", output: { slots: freeSlots(busy, now(), now() + days * 864e5, duration_minutes), duration_minutes } };
+    const tz = tzOf(ctx.run?.requested_by);
+    return { status: "SUCCEEDED", output: { time_zone: tz, slots: freeSlots(busy, now(), now() + days * 864e5, duration_minutes, 9, 18, 5, tz), duration_minutes } };
   },
 });
 
@@ -552,24 +565,81 @@ def({
   },
 });
 
+// When a reminder fires: shared by reminder.schedule and reminder.update.
+const WHEN = { in_minutes: num(), at: str("ISO datetime, with offset if known"), recurring: { type: "string", enum: ["daily", "weekdays", "weekends", "weekly"] },
+  days: { type: "array", items: { type: "string", enum: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] } }, time: str("HH:MM, 24h, local"), hour: num("hour of day (if no time)"), every_minutes: num("repeat interval, minimum 15") };
+function whenSpec(i: any, tz: string): { kind: "time" | "recurring"; spec: any } {
+  const [hh, mm] = String(i.time ?? "").match(/^(\d{1,2}):(\d{2})$/)?.slice(1).map(Number) ?? [i.hour ?? 9, 0];
+  const days = (i.days ?? []).map((d: string) => ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(String(d).slice(0, 3).toLowerCase())).filter((d: number) => d >= 0);
+  if (i.every_minutes) return { kind: "recurring", spec: { interval_minutes: Math.max(15, Number(i.every_minutes)) } };
+  if (i.recurring || days.length)
+    return { kind: "recurring", spec: { every: i.recurring ?? "daily", ...(days.length ? { days } : {}), ...(i.recurring === "weekly" && !days.length ? { day: zoned(now(), tz).dow } : {}), hour: hh, minute: mm, tz } };
+  // "at" without an offset is wall-clock time in the person's zone, not the server's.
+  const at = i.at ? (/[zZ]|[+-]\d\d:?\d\d$/.test(i.at) ? Date.parse(i.at) : (() => { const m = String(i.at).match(/(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)/); return m ? fromZoned(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], tz) : Date.parse(i.at); })())
+    : i.time ? (() => { const z = zoned(now(), tz); let t = fromZoned(z.y, z.mo, z.d, hh, mm, tz); if (t <= now()) t = fromZoned(z.y, z.mo, z.d + 1, hh, mm, tz); return t; })()
+    : now() + (i.in_minutes ?? 60) * 6e4;
+  if (!(at > now())) throw new ToolError("BUSINESS_RULE", "that time is in the past; pick a future time");
+  return { kind: "time", spec: { at } };
+}
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function describeRepeat(sp: any) {
+  if (sp.interval_minutes) return `every ${sp.interval_minutes >= 60 && sp.interval_minutes % 60 === 0 ? `${sp.interval_minutes / 60}h` : `${sp.interval_minutes} min`}`;
+  const at = `${sp.hour ?? 9}:${String(sp.minute ?? 0).padStart(2, "0")}`;
+  return sp.days?.length ? `${sp.days.map((d: number) => DOW[d]).join("/")} at ${at}` : `${sp.every ?? "daily"} at ${at}`;
+}
+
 def({
-  id: "reminder.schedule", description: "Schedule a one-off reminder or a recurring wake-up for this room, in the requester's time zone. The agent wakes then with the text as its objective. One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes for intervals (e.g. 180 = every 3 hours). Confirm the returned next time back to the person.",
+  id: "reminder.schedule", description: "Set a reminder or a recurring job for this chat, in the requester's time zone. deliver=\"message\" (default) sends the text word for word at that time — use it for plain reminders (\"call mom\", \"pay rent\"). deliver=\"task\" wakes you to do work then (a briefing, a price check). One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes. Confirm the returned next time back to the person.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
-  inputSchema: obj({ text: str(), in_minutes: num(), at: str("ISO datetime, with offset if known"), recurring: { type: "string", enum: ["daily", "weekdays", "weekends", "weekly"] },
-    days: { type: "array", items: { type: "string", enum: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] } }, time: str("HH:MM, 24h, local"), hour: num("hour of day (if no time)"), every_minutes: num("repeat interval, minimum 15") }, ["text"]),
+  inputSchema: obj({ text: str("what to send / do"), deliver: { type: "string", enum: ["message", "task"] }, ...WHEN }, ["text"]),
   async execute(i, ctx) {
+    const tz = tzOf(ctx.run.requested_by), { kind, spec } = whenSpec(i, tz);
+    const s = rt.createSchedule({ agent_id: ctx.agent.id, room_id: ctx.room.id, created_by: ctx.run.requested_by, objective: i.text, kind,
+      spec: { ...spec, deliver: i.deliver === "task" ? "task" : "message", endpoint_id: ctx.run.origin_endpoint_id ?? null } });
+    return { status: "SUCCEEDED", output: { reminder_id: s.id.slice(-6), next: fmtLocal(s.next_at, tz), time_zone: tz, repeats: kind === "recurring", text: i.text } };
+  },
+});
+
+def({
+  id: "reminder.list", description: "List the active reminders and recurring jobs in this chat (id, text, next time, repeat).", risk: "read", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({}, []),
+  async execute(_i, ctx) {
     const tz = tzOf(ctx.run.requested_by);
-    const [hh, mm] = String(i.time ?? "").match(/^(\d{1,2}):(\d{2})$/)?.slice(1).map(Number) ?? [i.hour ?? 9, 0];
-    const days = (i.days ?? []).map((d: string) => ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(String(d).slice(0, 3).toLowerCase())).filter((d: number) => d >= 0);
-    const recurring = !!(i.recurring || days.length || i.every_minutes);
-    // "at" without an offset is wall-clock time in the person's zone, not the server's.
-    const at = i.at ? (/[zZ]|[+-]\d\d:?\d\d$/.test(i.at) ? Date.parse(i.at) : (() => { const m = String(i.at).match(/(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)/); return m ? fromZoned(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], tz) : Date.parse(i.at); })()) : now() + (i.in_minutes ?? 60) * 6e4;
-    if (!recurring && !(at > now())) throw new ToolError("BUSINESS_RULE", "that time is in the past; pick a future time");
-    const spec = i.every_minutes ? { interval_minutes: Math.max(15, Number(i.every_minutes)) }
-      : recurring ? { every: i.recurring ?? "daily", ...(days.length ? { days } : {}), ...(i.recurring === "weekly" && !days.length ? { day: zoned(now(), tz).dow } : {}), hour: hh, minute: mm, tz }
-      : { at };
-    const s = rt.createSchedule({ agent_id: ctx.agent.id, room_id: ctx.room.id, created_by: ctx.run.requested_by, objective: i.text, kind: recurring ? "recurring" : "time", spec });
-    return { status: "SUCCEEDED", output: { schedule_id: s.id, next: fmtLocal(s.next_at, tz), time_zone: tz, repeats: recurring, text: i.text } };
+    const rows = all<any>("select * from schedules where room_id=? and agent_id=? and status='active' and kind in ('time','recurring') order by next_at", ctx.room.id, ctx.agent.id);
+    return { status: "SUCCEEDED", output: { time_zone: tz, reminders: rows.map((r) => ({ id: r.id.slice(-6), text: r.objective, next: r.next_at ? fmtLocal(r.next_at, tz) : null, repeats: r.kind === "recurring" ? describeRepeat(J(r.spec)) : "once" })) } };
+  },
+});
+
+/** A reminder in this chat by its short id (as reminder.list shows it) or by words from its text. Ambiguous → error listing the matches. */
+function findReminder(ctx: ToolCtx, ref: string) {
+  const rows = all<any>("select * from schedules where room_id=? and agent_id=? and status='active' and kind in ('time','recurring')", ctx.room.id, ctx.agent.id);
+  const q = String(ref ?? "").toLowerCase().trim();
+  const hits = rows.filter((r) => r.id.endsWith(q) || (q.length > 2 && r.objective.toLowerCase().includes(q)));
+  if (!hits.length) throw new ToolError("BUSINESS_RULE", `no active reminder matches "${ref}" — call reminder.list`);
+  if (hits.length > 1) throw new ToolError("BUSINESS_RULE", `"${ref}" matches ${hits.length} reminders (${hits.map((h) => `${h.id.slice(-6)}: ${h.objective}`).join("; ")}); use the id`);
+  return hits[0];
+}
+def({
+  id: "reminder.cancel", description: "Cancel a reminder or recurring job in this chat, by its id from reminder.list or words from its text.", risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ reminder: str("id or words from the text") }, ["reminder"]),
+  async execute(i, ctx) {
+    const r = findReminder(ctx, i.reminder);
+    exec("update schedules set status='cancelled' where id=?", r.id);
+    emit("SCHEDULE_CANCELLED", { room_id: r.room_id, actor: ctx.agent.id, data: { schedule_id: r.id, by: ctx.run.requested_by } });
+    return { status: "SUCCEEDED", output: { cancelled: r.objective, id: r.id.slice(-6) } };
+  },
+});
+def({
+  id: "reminder.update", description: "Change a reminder's text and/or time (same time fields as reminder.schedule). Unspecified parts stay as they were.", risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+  inputSchema: obj({ reminder: str("id or words from the text"), text: str("new text (optional)"), ...WHEN }, ["reminder"]),
+  async execute(i, ctx) {
+    const r = findReminder(ctx, i.reminder), tz = tzOf(ctx.run.requested_by), old = J(r.spec, {});
+    const timeChanged = ["in_minutes", "at", "recurring", "days", "time", "hour", "every_minutes"].some((k) => i[k] != null);
+    const next = timeChanged ? whenSpec(i, tz) : { kind: r.kind, spec: old };
+    const spec = { ...next.spec, deliver: old.deliver ?? "message", endpoint_id: old.endpoint_id ?? null };
+    const next_at = next.kind === "time" ? spec.at : rt.nextRecurring(spec, now());
+    exec("update schedules set objective=?, kind=?, spec=?, next_at=? where id=?", i.text ?? r.objective, next.kind, S(spec), next_at, r.id);
+    return { status: "SUCCEEDED", output: { id: r.id.slice(-6), text: i.text ?? r.objective, next: fmtLocal(next_at, tz), repeats: next.kind === "recurring" ? describeRepeat(spec) : "once" } };
   },
 });
 
@@ -794,11 +864,14 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
       exec("delete from tool_executions where id=?", exId);
       exec("update connections set status='needs_reauth' where id=?", conn.id);
       const w = rt.createWait(run, { kind: "reconnect", reason: `${d.requiresConnection} connection needs to be reconnected`, owner: conn.owner_id, wake_key: `connection:${conn.id}` });
+      const what = d.requiresConnection === "google" ? "your Google account" : `your ${d.requiresConnection} connection`;
+      rt.postMessage(run.room_id, { sender: run.agent_id, runId: run.id, text: `I can't reach ${what} — the access expired or was revoked. Reconnect it here and I'll pick this up where I left off: ${pubUrl()}/#/connections`, targets: rt.replyTargets(run.room_id, run.origin_endpoint_id) });
       return { kind: "wait", waitId: w };
     }
     if (k === "UNKNOWN_SIDE_EFFECT" && d.risk !== "read") {
       exec("update tool_executions set status='unknown', result=? where id=?", S({ error: e.message }), exId);
       const w = rt.createWait(run, { kind: "verify", reason: `${d.id} failed mid-flight (${e.message}); verify before retrying`, owner: run.requested_by });
+      rt.postMessage(run.room_id, { sender: run.agent_id, runId: run.id, text: `I'm not sure that went through — ${d.summarize?.(call.input) ?? d.id} didn't get a clear answer from the provider. Please check (e.g. your Sent folder) before I try again; tell me "it went" or "try again".`, targets: rt.replyTargets(run.room_id, run.origin_endpoint_id) });
       return { kind: "wait", waitId: w };
     }
     exec("delete from tool_executions where id=?", exId);
