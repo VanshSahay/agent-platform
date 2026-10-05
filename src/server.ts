@@ -100,6 +100,19 @@ function testRoom(userId: string, a: any) {
     ?? rt.createRoom({ workspace_id: a.workspace_id, name: `Test · ${a.name}`, kind: "private", participation: "manager", mode: "test", members: [{ id: userId, kind: "human" }, { id: a.id, kind: "agent" }] });
 }
 
+/** What a running agent is doing right now, in words ("searching “Lisbon hotels”", "reading booking.com"). */
+function activityOf(runId: string) {
+  const e = one<any>("select data from events where run_id=? and type='TOOL_CALL_REQUESTED' order by seq desc limit 1", runId);
+  if (!e) return "thinking";
+  const { tool, input = {} } = J(e.data, {});
+  const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return "a page"; } };
+  if (tool === "web.search") return `searching “${String(input.query ?? "").slice(0, 60)}”`;
+  if (tool === "web.fetch") return `reading ${host(input.url)}`;
+  if (tool === "browser.task") return `using a browser${input.site ? ` on ${input.site}` : ""}`;
+  if (tool === "plan.update") return "planning";
+  return (getTool(tool)?.summarize?.(input) ?? tool ?? "working").toString().replace(/^./, (c: string) => c.toLowerCase()).slice(0, 80);
+}
+
 function aiView(ws: string) {
   const b = billing.balance(ws), d = new Date(now()), monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
   return { ...billing.aiSettings(ws), balance: { ...b, available: b.available === Infinity ? null : Math.round(b.available * 100) / 100 },
@@ -135,6 +148,7 @@ function roomView(r: any, after = 0) {
     tasks: all<any>("select * from tasks where room_id=? order by status='done', created_at", r.id).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner) })),
     approvals: all<any>("select * from approvals where room_id=? and status='pending' order by created_at", r.id).map((a) => ({ ...a, input: J(a.input), approvers: J(a.approvers, []).map((x: string) => ({ id: x, name: rt.nameOf(x) })), agent_name: rt.nameOf(a.agent_id) })),
     runs: all<any>("select * from runs where room_id=? and status not in ('completed','failed_terminal','cancelled') order by created_at", r.id).map((x) => ({ ...x, brief: J(x.brief), agent_name: rt.nameOf(x.agent_id),
+      activity: x.status === "running" ? activityOf(x.id) : null, steps: J(x.spent, {}).toolCalls ?? 0,
       waits: all<any>("select kind, reason, owner from waits where run_id=? and status='open'", x.id).map((w) => ({ ...w, owner_name: rt.nameOf(w.owner) })) })),
     events: all<any>("select seq, id, type, actor, run_id, data, ts from events where room_id=? and seq>? order by seq limit 500", r.id, after).map((e) => ({ ...e, data: J(e.data), actor_name: rt.nameOf(e.actor) })),
   };

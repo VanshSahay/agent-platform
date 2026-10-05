@@ -351,8 +351,24 @@ async function stepRunInner(runId: string) {
       return complete(run, agent, room, res.text);
     }
     if ((await runCalls(res.toolCalls, c.allowed)) === "wait") return;
+    wrapUpNudge(run.id);
   }
   return fail(run, "step limit reached without finishing");
+}
+
+/** Keeps research from spiralling (a live run made 20+ searches for "three hotel options"): once, after WRAP_UP_TOOL_CALLS tool
+ *  calls, tell the model to answer with what it has; and when search keeps coming back empty, say so instead of letting it retry. */
+function wrapUpNudge(runId: string) {
+  const spent = J(one<any>("select spent from runs where id=?", runId).spent, {});
+  const results = all<any>("select data from run_steps where run_id=? and type='tool_result' order by id desc limit 3", runId).map((r) => J(r.data, {}));
+  const searchDown = results.length === 3 && results.every((r) => r.tool === "web.search" && /"results":\s*\[\]/.test(String(r.content)));
+  if (searchDown && !spent.searchDownNoted) {
+    patchJson("runs", "spent", runId, (x) => ({ ...x, searchDownNoted: 1 }));
+    appendStep(runId, "signal", { text: "[CHECK] Web search isn't returning results right now. Don't keep searching: answer from what you already found (open pages you have links for if needed) and say what you couldn't verify." });
+  } else if ((spent.toolCalls ?? 0) >= Number(process.env.WRAP_UP_TOOL_CALLS ?? 12) && !spent.wrapUpNoted) {
+    patchJson("runs", "spent", runId, (x) => ({ ...x, wrapUpNoted: 1 }));
+    appendStep(runId, "signal", { text: "[CHECK] You've gathered plenty. Stop researching and answer now with the best of what you have — concrete options with links — and say plainly what's unverified (e.g. live prices)." });
+  }
 }
 
 const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;

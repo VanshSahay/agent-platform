@@ -552,3 +552,6 @@ table.t td, table.t th { border-top: 1.5px solid var(--line); }
 .ios-field svg { fill: #8e8e93; stroke: #8e8e93; }
 .story .phone.ios { width: 300px; } .story .ios-thread { min-height: 330px; }
 @media (max-width: 720px) { .story .phone.ios { width: 270px; } .story .ios-thread { min-height: 280px; } }
+
+.working-line .dots { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #c6f432; box-shadow: 0 0 0 1.5px var(--ink, #111); margin-right: 4px; animation: work-pulse .9s ease-in-out infinite alternate; }
+@keyframes work-pulse { from { opacity: .35; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }

@@ -244,7 +244,20 @@ def({
 });
 
 type Hit = { title: string; url: string; snippet: string };
+// DuckDuckGo starts returning nothing after a burst from one IP: pace requests and reuse recent answers.
+const ddgCache = new Map<string, { at: number; hits: Hit[] }>();
+let ddgNext = 0;
 const ddg = async (url: string, re: RegExp) => {
+  const pace = Number(process.env.DDG_PACE_MS ?? 1500); // tests set 0 (no pacing, no cache)
+  const cached = pace ? ddgCache.get(url) : undefined;
+  if (cached && Date.now() - cached.at < 10 * 6e4) return cached.hits;
+  const wait = Math.max(0, ddgNext - Date.now()); ddgNext = Math.max(Date.now(), ddgNext) + pace;
+  if (wait) await new Promise((r) => setTimeout(r, wait));
+  const hits = await ddgFetch(url, re);
+  if (hits.length && pace) ddgCache.set(url, { at: Date.now(), hits });
+  return hits;
+};
+const ddgFetch = async (url: string, re: RegExp) => {
   const r = await call(url, { headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" } });
   const html = await r.text(), out: Hit[] = [];
   for (const m of html.matchAll(re)) {

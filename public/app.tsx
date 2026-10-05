@@ -291,8 +291,9 @@ function Room({ id, compact }: { id: string; compact?: boolean }) {
       </div>
       {data.starters?.length > 0 && events.filter((e) => e.type === "message").length < 4 && <div className="row wrap" style={{ padding: "8px 16px 0", gap: 6 }}>
         <span className="small faint">Try:</span>{data.starters.map((s: string) => <button key={s} className="pill" style={{ cursor: "pointer", border: 0 }} onClick={() => edit(s.replace(/…/g, "").replace(/\s+/g, " ").trim() + (s.includes("…") ? " " : ""))}>{s}</button>)}</div>}
-      {data.runs.some((r: any) => ["queued", "running", "retrying"].includes(r.status)) && <div className="small muted" style={{ padding: "4px 20px" }}>
-        {data.runs.filter((r: any) => ["queued", "running", "retrying"].includes(r.status)).map((r: any) => r.agent_name).join(", ")} is working…</div>}
+      {data.runs.some((r: any) => ["queued", "running", "retrying"].includes(r.status)) && <div className="small muted working-line" style={{ padding: "4px 20px" }}>
+        {data.runs.filter((r: any) => ["running", "retrying"].includes(r.status)).map((r: any) => <div key={r.id}><span className="dots" /> {r.agent_name} is {r.activity ?? "working"}…{r.steps > 2 ? ` · ${r.steps} steps` : ""}</div>)}
+        {data.runs.filter((r: any) => r.status === "queued").map((r: any) => <div key={r.id} className="faint">Up next for {r.agent_name}: “{String(r.objective).slice(0, 70)}{String(r.objective).length > 70 ? "…" : ""}”</div>)}</div>}
       <div className="composer"><label className="btn ghost" title="Attach a file" style={{ alignSelf: "center" }}>📎<input type="file" hidden onChange={async (e) => {
           const f = e.target.files?.[0]; if (!f) return;
           const fd = new FormData(); fd.append("file", f); fd.append("text", text); setText("");
