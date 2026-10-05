@@ -1,6 +1,6 @@
 // Regression tests for the third review (shared lines, deploy codes, reservations, orders, MCP, run robustness).
 import { test, expect, beforeEach, beforeAll, afterAll } from "bun:test";
-import { one, all, J, S, exec, now, advance } from "../src/db";
+import { one, all, J, S, exec, now, advance, patchJson } from "../src/db";
 import * as rt from "../src/runtime";
 import * as ch from "../src/channels";
 import { resolver } from "../src/tools";
@@ -75,7 +75,7 @@ test("AC-S20 a pre-approval covers only its own watch, person and conversation",
   expect(one<any>("select uses from standing_approvals").uses).toBe(0);
   // ...and not even inside the same group chat: only the person who granted it.
   const grp = rt.createRoom({ workspace_id: ws, name: "Dinner crew", participation: "manager", members: [{ id: ellie, kind: "human" }, { id: guest, kind: "human" }, { id: reese.id, kind: "agent" }] });
-  exec("update standing_approvals set constraints=json_set(constraints, '$.room_id', ?)", grp.id);
+  for (const r of all<any>("select id from standing_approvals")) patchJson("standing_approvals", "constraints", r.id, (c) => ({ ...c, room_id: grp.id }));
   exec("update reservation_watches set room_id=?", grp.id);
   scriptModel(call("reservations.book", { venue_id: "sb-lumen", venue: "Lumen", date, time: "19:30", party_size: 2, watch_id: one<any>("select id from reservation_watches").id }), { text: "ok" });
   await say(grp.id, guest, "book lumen");
@@ -161,9 +161,32 @@ test("AC-S25 Slack can't be re-pointed to another workspace by re-installing", a
     const ag = customAgent(ws, wsUser, [], {}, "Bot");
     const go = await realFetch(new URL(`/v1/slack/install?agent=${ag.id}`, server.url), { headers: { authorization: `Bearer ${tok}` }, redirect: "manual" });
     const state = new URL(go.headers.get("location")!).searchParams.get("state")!;
-    return (await realFetch(new URL(`/v1/slack/oauth/callback?code=x&state=${state}`, server.url), { redirect: "manual" })).status;
+    return (await realFetch(new URL(`/v1/slack/oauth/callback?code=x&state=${state}`, server.url), { headers: { authorization: `Bearer ${tok}` }, redirect: "manual" })).status;
   };
   expect(await install(a.token, a.user.id)).toBe(302);
   expect(await install(b.token, b.user.id)).toBe(409);
   expect(J(one<any>("select config from channel_identities where id='chi_slack_T9'").config).workspace_id).toBe(one<any>("select workspace_id from memberships where user_id=?", a.user.id).workspace_id);
+});
+
+test("AC-S30 OAuth state is single-use, short-lived and bound to the person who started it; Google uses PKCE and disconnect revokes at Google", async () => {
+  const a: any = await (await realFetch(new URL("/v1/auth/signup", server.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "A", email: "a@x.test", password: "password123" }) })).json();
+  const b: any = await (await realFetch(new URL("/v1/auth/signup", server.url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "B", email: "b@x.test", password: "password123" }) })).json();
+  const ws = one<any>("select workspace_id from memberships where user_id=?", a.user.id).workspace_id;
+  process.env.GOOGLE_CLIENT_ID = "gid"; process.env.GOOGLE_CLIENT_SECRET = "gsecret";
+  const start = await realFetch(new URL(`/v1/connections/google/start?workspace=${ws}`, server.url), { headers: { authorization: `Bearer ${a.token}` }, redirect: "manual" });
+  const loc = new URL(start.headers.get("location")!), state = loc.searchParams.get("state")!;
+  expect(loc.searchParams.get("code_challenge_method")).toBe("S256");
+  const idToken = `x.${Buffer.from(JSON.stringify({ email: "a@gmail.test" })).toString("base64url")}.y`;
+  net.on(/oauth2\.googleapis\.com\/token/, () => Response.json({ access_token: "ya29.A", refresh_token: "1//R", expires_in: 3600, id_token: idToken, scope: "email" }));
+  const cb = (tok: string) => realFetch(new URL(`/v1/connections/google/callback?code=c&state=${state}`, server.url), { headers: { authorization: `Bearer ${tok}` }, redirect: "manual" });
+  expect((await cb(b.token)).status).toBe(403); // someone else can't finish my sign-in (login CSRF)
+  expect((await cb(a.token)).status).toBe(302);
+  expect(net.to(/googleapis\.com\/token/).at(-1)!.body).toContain("code_verifier=");
+  expect((await cb(a.token)).status).toBe(400); // replay
+  const conn = one<any>("select * from connections where provider='google'");
+  net.on(/oauth2\.googleapis\.com\/revoke/, () => new Response("{}"));
+  await realFetch(new URL(`/v1/connections/${conn.id}/revoke`, server.url), { method: "POST", headers: { authorization: `Bearer ${a.token}` } });
+  expect(net.to(/googleapis\.com\/revoke/)[0].url).toContain("token=1%2F%2FR");
+  expect(one<any>("select status, cred_enc from connections where id=?", conn.id)).toEqual({ status: "revoked", cred_enc: null });
+  delete process.env.GOOGLE_CLIENT_ID; delete process.env.GOOGLE_CLIENT_SECRET;
 });

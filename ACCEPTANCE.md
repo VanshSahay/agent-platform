@@ -25,6 +25,13 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-J7 | Real-time group chats: replies sent while an order is still being opened aren't lost (per-conversation run ordering); short orders don't get an instant "24h left". | §5.2 |
 | AC-MCP1 | Connecting an MCP server discovers its tools (risk from tool annotations); granted agents call them through policy, approvals and audit; the server's credentials never appear in events. | §10, §27 |
 | AC-MCP2 | browser.task runs on a granted MCP browser server; stored website logins (OpenTable/Resy) are passed only to the HTTP browser runner, follow ownership rules, and never reach the model or the logs. | §11.2 |
+| AC-BR1 | A website login made in a live Browserbase session keeps only the Context id (no password, cookie or sealed secret); only its starter can finish it; cancel releases it; without BROWSERBASE_API_KEY the flow answers 501. | §11.2, §21.3 |
+| AC-BR2 | One active live login per person and site: reconnecting revokes the old one, keeps its agents and resumes runs parked on the reconnect. | §11.2 |
+| AC-BR3 | browser.task on a granted live login (preferred over a stored password) still needs approval, passes only the Browserbase context to the runner, and records the session with a replay link the agent and trace can show. | §10, §11.2 |
+| AC-BR4 | A logged-out pre-flight marks the live login needs_reauth and does not run the task; later calls are denied until the owner reconnects. | §11.2, §35 |
+| AC-BR5 | One Browserbase session per login at a time: a concurrent task starts only after the first session is released and the Context has synced. | §35 |
+| AC-BR6 | Stored site logins keep working without a live login; MCP browser servers get the contextId; a live login with no browser runner fails clearly. | §11.2 |
+| AC-BR7 | Starting a live login opens the site's login page in the live view over CDP (find the tab, attach, navigate, detach; never close the browser), since the fullscreen live view has no address bar. | §11.2 |
 
 ## Requirement layer: brief → confirm → execute → verify
 
@@ -39,6 +46,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-B7 | Brief cards work from channel buttons, scoped to their room. | §5.3 |
 | AC-B8 | Confirmation is decided by a deterministic policy with a per-agent mode (smart / always / never); a single external write relies on its approval card instead of asking twice. | §19.3 |
 | AC-B9 | Unanswered questions and unconfirmed plans expire after 72h instead of guessing. | §2.8 |
+| AC-B10 | Internal-only work (to-dos, reminders, lists) runs without asking "go"; plans that write outside, delegate or wait on people still show first. Every agent and brief prompt carries the current date, time and zone. | §3.4 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |
@@ -78,6 +86,14 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-R7 | One agent in many rooms: room memory and work state never cross rooms. | §41 B |
 | AC-R8 | Model outage: retry with backoff, then fail terminally with a message. | §8.3 |
 | AC-R10 | Platform-hosted inference stops at the plan's monthly allowance with a clear message; BYOK usage isn't counted. | §22 |
+| AC-R11 | A reply that promises or claims a side effect ("I'll book…", "reply approve") with no successful write and no pending approval behind it is sent back once, on the escalation tier, to call the tool; the false instruction never reaches the user. | §35.3 |
+| AC-R12 | With `JEV_API_KEY` set, "relevant" group participation and the unbacked-claim check are judged by JEV (typed yes/no probability, threshold 0.5); when JEV errors or is unset, the previous model/keyword and regex checks still apply. | §35.3 |
+| AC-IM1 | Replies are shaped per app: plain text on iMessage/SMS/Telegram (no markdown symbols, tables become lines, links readable), WhatsApp `*bold*`, Slack mrkdwn; web unchanged. Long replies are split at paragraph/sentence boundaries into normal-sized texts. | §6 |
+| AC-IM2 | People known only by phone number appear as "someone (…1234)" (never the full number) until they say their name ("I'm Maria"); the agent is told to ask once when it needs a name. | §20.2 |
+| AC-IM3 | A 👍/❤️/‼️ tapback on an approval or plan message counts as its first button (approve/go), 👎 as the second; other tapbacks do nothing, and only people allowed to decide can. | §3.7, §6 |
+| AC-IM4 | One 1:1 thread on a shared line can hold several of the person's agents: a second deploy code adds rather than replaces, "@Name" switches and sticks, "agents" lists them, and every agent's messages (reminders, results) still arrive in the thread, labeled. | §6 |
+| AC-IM5 | Photos are described (text in them transcribed), voice notes transcribed and files read, then handled as ordinary messages; the bytes are kept for files.read; without a media model the agent says plainly it can't see/hear it. | §6 |
+| AC-IM6 | The chat shows "…is typing" while the agent works (iMessage, Telegram), and a server restart doesn't strand replies: chats are looked up again by id. | §6 |
 | AC-R9 | Cancelling a run cancels its waits and pending approvals. | §2.8 |
 
 ## Memory (§9, §15.4)
@@ -115,6 +131,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-A5 | BYOK keys and connection credentials are sealed at rest and never returned or logged; revoke wipes credentials and grants. | §8.4, §21.3 |
 | AC-A6 | Invitations, roles and plan limits (agent count, channel availability) are enforced. | §22.1, §29 |
 | AC-A7 | Audit export is admin-only; the usage ledger tracks raw resources independently of billing. | §21.5, §22.2 |
+| AC-A8 | With `CLERK_SECRET_KEY` set, sign-in is Clerk: the browser trades a verified Clerk session token for the app session; a forged token is refused, an unverified email is refused, an existing account with the same verified email is linked (not duplicated), a new user gets a personal workspace, and password sign-up/login are disabled. | §2.1 |
 | AC-PUB1 | Discovery lists the curated first-party agents; install runs onboarding and requests only needed connections. | §17, §18.2 |
 | AC-PUB2 | Fork copies configuration only; publishing is curated; risky manifests are flagged for review; invalid manifests are rejected. | §18.4, §18.5 |
 | AC-PUB3 | Reviews require meaningful usage; creators see aggregates only. | §18.3, §30 |
@@ -151,6 +168,46 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-S24 | MCP requests re-validate the address on every call and refuse redirects (no SSRF via DNS changes or redirects). | §21.1 |
 | AC-S25 | Re-installing Slack from another workspace can't take over an existing Slack connection. | §21.4 |
 
+## Group-chat tools and the agent catalog
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-G1 | Polls & RSVPs in a group chat: numbered options; a bare number, option text, "I vote X" or "I'm in" counts as that person's own vote without tagging; re-votes replace; only the creator or an admin closes; polls close themselves at their deadline. | §15 |
+| AC-G2 | Expense splitting: cent-exact splits (the payer absorbs leftover cents), the fewest "X pays Y" transfers, paybacks recorded only from the payer, only people in the chat. Never moves money. | §15 |
+| AC-G3 | Shared lists: add with dedupe, check off, show, clear (all or checked-off only). | §15 |
+| AC-G4 | Every first-party manifest is valid, categorized (personal / group / team) with an emoji avatar; each new agent's starters do real work on the offline model; plain-words ideas draft the matching agent. | §17, §3.4 |
+
+## Agent interpretation (before deploy)
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-SP1 | A one-line request becomes an explicit Agent Spec the user confirms: a plain-words restatement ("you", not "me"), concrete jobs, gap questions only where the request is silent, boundaries (approvals, never moves money), success signs and rehearsal scenarios. | §3.4 |
+| AC-SP2 | Routines stated in plain words ("every Friday at 10am", "weekdays at 7pm", "every morning") become recurring schedules, including weekly ones. | §37 |
+| AC-SP3 | The confirmed spec and answers compile into the agent's standing instructions and schedules; rehearsal runs every scenario in the sandbox (nothing reaches a real channel) and grades each one before the agent is added to a chat. | §23 |
+
+## Email & delivery reliability
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-E1 | Agent emails carry a per-conversation Reply-To token (lowercase-safe); a reply or forward to it from any address lands in that same conversation. | §20 |
+| AC-E2 | Metadata-only inbound webhooks fetch the message body; HTML-only mail becomes readable text with quoted history (blockquotes) dropped. | §20 |
+| AC-E3 | Bounces and complaints mark the address undeliverable; queued messages to it are skipped, not retried. | §20 |
+| AC-E4 | Outbound messages are claimed before sending and confirmed after; an interrupted send is parked as 'unconfirmed' and never resent automatically, while a provider refusal is retried normally. | §21.6 |
+| AC-S30 | OAuth state is random, stored, single-use, short-lived and bound to the signed-in person who started it; Google uses PKCE (S256); disconnecting revokes the token at Google. | §21 |
+
+## Models & AI billing
+
+| ID | Criterion | Plan |
+|---|---|---|
+| AC-CR1 | Platform credits mode: open models via OpenRouter with the platform key (tiered defaults, see AC-CR8); OpenRouter's reported cost × markup is billed from the monthly plan allowance. | §8, §22.1 |
+| AC-CR2 | A workspace picks its model per profile (any provider:model); a model that returns a malformed tool call falls through to the next in the chain. | §8.3 |
+| AC-CR3 | Bring-your-own-key: the workspace's key is used and nothing is billed; keys are sealed and never shown or logged; BYOK never silently spends platform credits; removing the last key returns to credits. | §8, §22.1 |
+| AC-CR4 | Any OpenAI-compatible server (Together, Groq, self-hosted Ollama/vLLM) works as a provider; its URL may not point into a private network; model ids with colons survive. | §8, §21 |
+| AC-CR5 | When the allowance and credits run out, every platform model call stops (runs fail with a clear message); Stripe Checkout top-ups credit exactly the amount paid, once per session, only with a valid signature; platform admins can grant credits. | §22.1 |
+| AC-CR6 | The model catalog lists tool-capable OpenRouter models (live, cached; offline fallback) with open-weight flags, availability for the workspace's mode, and marked-up prices in credits mode. | §8 |
+| AC-CR7 | Non-model usage (web searches, browser tasks, platform chat-line messages, phone turns) is priced per unit (overridable) and charged from the same allowance/credits; pre-priced model usage is never charged twice. | §22.1 |
+| AC-CR8 | Step-aware routing: short single-step asks run on the cheap tier, research or long plans on the research tier, scheduled work on standard, a pinned profile wins, and stuck tasks escalate to a frontier model (reachable via OpenRouter); every tier is overridable by env. OpenRouter only routes tool calls to providers that support them. | §8.3 |
+
 ## Quality gates
 
 | ID | Criterion | Plan |
@@ -159,3 +216,5 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-EV2 | Any real run exports as a golden case (evals/cases/*.json) that replays and passes. | §23.4 |
 | AC-Q1 | TypeScript typecheck passes with `strict`. | — |
 | AC-UI1 | The web app bundles without errors (Home, Agents, Create Agent, Agent page tabs, Rooms with work panel, Discover/trial, Connections, Activity, Settings). | §3 |
+| AC-PG1 | The whole test suite passes on Postgres (DATABASE_URL) as well as SQLite: one SQLite-flavoured SQL source, translated for Postgres; full-text memory search via a GIN index. | §27 |
+| AC-TP1 | Temporal engine end to end (real Temporal server + Postgres): a message becomes a workflow that completes; an approval parks the workflow durably and deciding it wakes the same workflow; requests in one conversation run in order. | §27, §37 |

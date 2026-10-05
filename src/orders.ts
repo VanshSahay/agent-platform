@@ -154,7 +154,7 @@ export function registerOrderTools(def: (d: tools.ToolDef) => void) {
   });
 }
 
-function parseDeadline(s: string): number | null {
+export function parseDeadline(s: string): number | null {
   const iso = Date.parse(s); if (!isNaN(iso) && /\d{4}-\d{2}-\d{2}/.test(s)) return iso;
   const d = parseDates(s)[0]; if (!d) return null;
   const t = s.toLowerCase().match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);

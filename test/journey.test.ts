@@ -90,7 +90,7 @@ test("AC-J2 team: create for my team → Add to Slack → pick a channel → tea
   const state = new URL(go.headers.get("location")!).searchParams.get("state")!;
   net.on(/oauth\.v2\.access/, () => Response.json({ ok: true, access_token: "xoxb-team", bot_user_id: "UBOT", team: { id: "T1", name: "Acme" } }));
   net.on(/conversations\.list/, () => Response.json({ ok: true, channels: [{ id: "C42", name: "ops", is_private: false }] }));
-  expect((await api(`/v1/slack/oauth/callback?code=x&state=${state}`)).status).toBe(302);
+  expect((await api(`/v1/slack/oauth/callback?code=x&state=${state}`, lead.token)).status).toBe(302); // same signed-in person finishes it
   const chans = (await api(`/v1/agents/${relay.id}/slack/channels`, lead.token)).data;
   expect(chans[0]).toMatchObject({ id: "C42", name: "ops" });
   const bound = (await api(`/v1/agents/${relay.id}/slack/channels`, lead.token, { identity: chans[0].identity, channel_id: "C42", name: "ops" })).data;
@@ -221,8 +221,9 @@ test("AC-J7 real-time group chat: quick replies while an order is still opening 
   const g = (await api(`/v1/agents/${pool.id}/deploy/imessage`, maria.token, { kind: "group" })).data;
   const raw = (h: string, n: string, t: string) => ch.handleWebhook("imessage", "chi_shared_imessage", signed("imessage", "chi_shared_imessage", imsg("grp-q", h, n, t, true)));
   await raw("+1555maria", "Maria", g.message); await settle();
-  const tonight = new Date(now()); tonight.setHours(23, 0, 0, 0);
-  await raw("+1555maria", "Maria", `@Pool let's do a group order of dumplings $12 each, closes ${ymd(tonight)} 11pm, venmo @maria-k`);
+  // A short order: closes 3-4 hours from now (not "11pm tonight", which has already passed late in the day).
+  const soon = new Date(now() + 4 * 36e5); soon.setMinutes(0, 0, 0); const h = soon.getHours();
+  await raw("+1555maria", "Maria", `@Pool let's do a group order of dumplings $12 each, closes ${ymd(soon)} ${h % 12 || 12}${h < 12 ? "am" : "pm"}, venmo @maria-k`);
   await raw("+1555ana", "Ana", "in for 2"); // arrives before the order exists
   await settle(); advance(2000); await settle(); advance(2000); await settle();
   expect(photon().filter((m) => m.chat_id === "grp-q").map((m) => m.text).join("\n")).toMatch(/Got it, Ana: 2 × dumplings/);

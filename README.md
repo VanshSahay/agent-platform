@@ -36,11 +36,81 @@ One-tap deploy uses platform-owned lines; set whichever you have. Each enables i
 
 ## Ready-made agents
 
+Twenty first-party agents (`agents/*.json`), each tagged with a `category`:
+
+- **Personal**
+  - 💼 Ava: inbox, calendar, meeting prep and follow-ups.
+  - 🍽️ Reese: grabs hard-to-get Resy/OpenTable tables the moment they open.
+  - ✈️ Scout: plans trips, compares options, coordinates travelers.
+  - 🔭 Atlas: research briefs with citations; monitors topics.
+  - ☀️ Dash: a weekday morning briefing with your calendar plus the news you follow.
+  - 🦅 Hawk: watches for price drops and restocks.
+  - 🗂️ Ollie: life admin (bills, renewals, appointments, paperwork deadlines).
+  - 🦉 Sage: study buddy; explains, quizzes, keeps you on your study plan.
+  - 💪 Coach: habit and workout accountability, one-on-one or in a group.
+- **Group** (work untagged in group chats)
+  - 🛒 Pool: group buying with a tally, deadline and pay links.
+  - 🧾 Tab: splits expenses; who owes whom, to the cent, in the fewest payments.
+  - 🎉 Plans: polls, RSVPs and the who-brings-what list.
+  - 🏠 Roomie: shared groceries, chores with owners, split bills.
+  - 🍳 Chef: meal plans, recipes and one shared grocery list.
+- **Team**
+  - 📋 Relay: team ops; owners, follow-ups, blockers.
+  - 🩺 Recruiter: healthcare staffing; matching and credential chasing.
+  - 💬 Juno: answers support questions from your docs; escalates the rest.
+  - 📈 Leo: prospect research and outreach drafts.
+  - 📝 Max: meeting notes, action items and follow-ups.
+  - 📣 Echo: social and content drafts from what's happening in your space.
+
+Group-chat tool packs (`src/groupkit.ts`): **polls** (`poll.create/vote/results/close`; a bare "2", "Saturday" or "I'm in" counts as that person's vote without tagging), **expense splitting** (`expense.add/balances/settle`; cent-exact, fewest transfers, never moves money) and **shared lists** (`list.add/check/show/clear`).
+
 | Agent | What it does |
 |---|---|
 | **Reese**, reservations | Searches and books Resy/OpenTable tables. **Watches** hot spots and polls every 5 seconds around release time. Books instantly within limits you **pre-approve once** (strong confirmation); otherwise it texts a one-tap card the moment a table opens. Without a browser runner it uses **sandbox** restaurants (fictional venues with scheduled releases) so the whole flow is testable. |
 | **Pool**, group buying | Runs a group order in an iMessage/WhatsApp/Slack/Telegram group. People reply "in for 2" without tagging. Keeps the tally, reminds before the deadline, and closes with per-person totals, a shipping split and Venmo/PayPal/Cash App links. Never moves money. |
-| Ava, Atlas, Scout, Relay, Recruiter | Executive assistant, research, travel, team ops, healthcare recruiting. |
+
+## Run it on Postgres + Temporal (production shape)
+
+Locally, the platform runs as one Bun process on SQLite. In production it's three pieces sharing one Postgres database:
+- **API server** (`bun run src/index.ts`, `ENGINE=temporal`): web app, API, channel webhooks, Photon, outbox, schedules and watches.
+- **Temporal worker** (`bun run worker`, which runs on Node via tsx): each agent run is one `agentRun` workflow. Each step is an `advanceRun` activity over the same runtime code. Between steps the workflow sleeps durably until a wake signal (approval, reply, "go", reconnect, its turn in the conversation) or its next timer.
+- **Temporal + Postgres**.
+
+```
+DATABASE_URL=postgres://agents@localhost:5433/agents ENGINE=temporal bun run src/index.ts   # server
+DATABASE_URL=postgres://agents@localhost:5433/agents bun run worker                          # worker (run several)
+temporal server start-dev                                                                     # local Temporal (UI on :8233)
+```
+
+- Give each environment its own `TEMPORAL_TASK_QUEUE` (or namespace): a worker only knows its own database, so a shared queue would hand it another environment's runs.
+- `deploy/docker-compose.yml` runs the whole stack: Postgres, Temporal, Temporal UI, the server, and 2 workers.
+- Move existing data across with `DATABASE_URL=… bun scripts/sqlite-to-pg.ts data.sqlite`.
+- SQL is written once (SQLite-flavoured) and translated for Postgres in `src/pg.ts`. The whole test suite runs on both:
+  - `TEST_DATABASE_URL=… bun run criteria` adds the Postgres gate (AC-PG1) and the end-to-end Temporal gate (AC-TP1, `bun run test:temporal`).
+- ponytail: Postgres is reached through a synchronous one-connection bridge (`src/pg.ts`), the same blocking model as bun:sqlite. Move hot paths to an async pool when load needs it.
+
+## AI models & billing
+
+Each workspace chooses how its agents pay for AI (Settings → AI models & billing):
+
+- **Use our models (credits).** Agents run on the platform's keys. Each call is billed at the provider's cost × `CREDIT_MARKUP` (default 1.25): first from the plan's monthly allowance (free $2, personal $20, pro $60, team $250), then from purchased credits. When both run out, model calls stop with a clear message. Top-ups go through Stripe Checkout; credits are added only from the signed `checkout.session.completed` webhook, exactly the amount paid, once.
+- **Bring your own key.** Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible server (Together, Groq, Fireworks, self-hosted vLLM/Ollama). Nothing is billed, and a BYOK workspace never falls back to platform keys. Keys are sealed and never shown again.
+
+Per workspace you can pick the model for each profile (everyday work, quick steps, research, hard problems) from the live OpenRouter catalog: about 400 tool-capable models, with an "open-source only" filter. Each step is routed to a tier: quick single-step asks, intake briefs, memory and grading use `qwen/qwen3.7-flash`; the agent's tool loop and research use `deepseek/deepseek-v4-pro`; a task that keeps failing escalates to `anthropic/claude-sonnet-5.5`, all through one OpenRouter key. Override any tier with `OPENROUTER_MODEL_<FAST|STANDARD|RESEARCH_STANDARD|ESCALATION>`. If a model returns a malformed tool call, the next model in the chain takes over.
+
+| Env | Purpose |
+|---|---|
+| `OPENROUTER_API_KEY` | Platform key for open-source models (credits mode) |
+| `JEV_API_KEY` | Optional. TypeSafe JEV for fast yes/no gates: group "relevant" replies and the unbacked-claim check (~150ms each; falls back without it) |
+| `MEDIA_MODEL` | Optional. Multimodal model (OpenRouter) that describes photos and transcribes voice notes people send; default `google/gemini-2.5-flash`. `MEDIA_UNDERSTANDING=off` disables |
+| `DEFAULT_TZ` | Time zone agents use for "today", "Saturday 7pm" (default: the server's) |
+| `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Optional. Clerk sign-in (Google, email codes, phone) instead of built-in email/password. `clerk link --app <id> && clerk env pull --file .env.clerk` fills them. `CLERK_AUTHORIZED_PARTIES` adds extra allowed origins besides `PUBLIC_URL` |
+| `OPENROUTER_MODEL`, `OPENROUTER_FAST_MODEL` | Override the open-model defaults (`openrouter:<model-id>`) |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Optional platform keys for closed models |
+| `CREDIT_MARKUP` | Platform price multiplier on provider cost |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Credit top-ups; point Stripe at `POST /v1/webhooks/stripe` |
+| `PLATFORM_ADMINS` | Emails that may grant credits (`POST /v1/admin/credits`) |
+| `ALLOW_PRIVATE_MODEL_URLS` | Allow BYOK base URLs on private networks (self-hosting only; off on a shared server) |
 
 ## Browser automation and MCP
 
@@ -48,6 +118,14 @@ One-tap deploy uses platform-owned lines; set whichever you have. Each enables i
 - Hosted presets: Browserbase and Browserless (verified endpoints). Browser Use: run its MCP server and paste the URL (API key header `X-Browser-Use-API-Key`).
 - `browser.task` (and Reese's real bookings) run on a granted MCP browser server whose tool takes a `task`, or on an HTTP runner (`BROWSER_TASK_URL`: `{task, start_url, secrets, allowed_domains} → {status, output}`).
 - **Website logins** (Connections → Add site login) are sealed and handed only to the HTTP runner, which substitutes `{{username}}`/`{{password}}`. They follow the same ownership rules as any credential, and never reach a model, event or log. MCP browser servers should use a saved browser profile instead.
+
+### Live-browser logins (Browserbase) — no stored passwords
+
+Connections → **Sign in with a live browser**: the user logs into the site (including 2FA) inside a Browserbase session embedded in the page. On "I'm logged in" the session is released, which saves the browser profile at Browserbase; the platform keeps only its Context id (`provider='browser_login'`, `config={site, context_id}`, no `cred_enc`). One active login per person and site; reconnecting replaces the old one and keeps its agents. Routes: `POST /v1/browser-logins/{start,finish,cancel}` (`src/browser.ts`).
+
+- `browser.task` (and bookings) prefer a granted live login over a stored password. They run one session per login at a time (in-process lock held until `BROWSERBASE_CONTEXT_SYNC_MS`, default 5000, after release — reusing a Context before it syncs reads as logged out) and record each run in `browser_sessions` with a replay link returned to the agent.
+- HTTP runner contract with a live login: `{task, start_url, allowed_domains, browserbase: {context_id, session_id}}` (never `secrets`); connect to that existing session. A pre-flight first sends `{probe: {url}, browserbase}` and expects `{url, title}` back; a logged-out match (config `probe_url`/`logged_out_pattern`, or built-ins for resy.com, opentable.com, linkedin.com) marks the login `needs_reauth` and the task is not run. MCP browser servers get `contextId` when their tool accepts it (no pre-flight there).
+- Env: `BROWSERBASE_API_KEY` (no project id needed). Without it, live logins answer 501.
 
 ## How a request is handled
 
@@ -93,6 +171,9 @@ bun test                 # 93 tests: user journeys, scenarios, intake, MCP, poli
 bun run criteria         # checks every criterion in ACCEPTANCE.md (tests + typecheck + UI bundle)
 bun run eval             # golden tasks against whatever model is configured; writes reports/eval-*.json
 bun run eval scout --min=0.9
+bun run eval:live                      # 24 real-usage scenarios: every catalog agent over iMessage/WhatsApp/Telegram/Slack/email/web,
+bun run eval:live group --repeat=3     #   group chats with chatter, wrong-person approvals, follow-ups; hard checks + LLM judge
+bun run eval:live reese --show         #   (judge: EVAL_JUDGE_MODEL, default anthropic/claude-sonnet-5.5; EVAL_JUDGE=off to skip)
 ```
 
 - **`test/journey.test.ts`**: end-user journeys driven like a person would: HTTP API for the web app, signed webhooks for phones and Slack.

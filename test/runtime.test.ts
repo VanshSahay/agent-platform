@@ -1,3 +1,4 @@
+import * as billing from "../src/billing";
 import { test, expect, beforeEach } from "bun:test";
 import { one, all, J, exec, advance, now } from "../src/db";
 import * as rt from "../src/runtime";
@@ -174,15 +175,54 @@ test("AC-R9 cancelling a run cancels its waits and pending approvals", async () 
   expect(pendingApprovals(room.id)).toHaveLength(0);
 });
 
-test("AC-R10 hosted inference stops at the plan's monthly allowance (BYOK isn't counted)", async () => {
+test("AC-R10 hosted inference stops when the monthly allowance and credits run out; topping up resumes it", async () => {
   const a = customAgent(ws, ellie, ["web-research"]);
   const room = rt.privateRoomFor(ellie, a);
   exec("update workspaces set plan='free' where id=?", ws);
-  exec("insert into usage (workspace_id, kind, qty, cost_usd, byok, ts) values (?, 'model_input_tokens', 1, 5, 1, ?)", ws, now()); // BYOK: ignored
   scriptModel({ text: "fine" });
   await say(room.id, ellie, "hello");
   expect(lastFrom(room.id, a.id)).toBe("fine");
-  exec("insert into usage (workspace_id, kind, qty, cost_usd, byok, ts) values (?, 'model_input_tokens', 1, 2.5, 0, ?)", ws, now());
+  billing.charge(ws, 2.5); // $2 allowance, then $0.50 into credits
+  expect(billing.balance(ws)).toMatchObject({ allowance_left: 0, credits: -0.5 });
   await say(room.id, ellie, "hello again");
-  expect(lastFrom(room.id, a.id)).toMatch(/used its \$2 monthly AI allowance/);
+  expect(lastFrom(room.id, a.id)).toMatch(/out of AI credits/);
+  billing.addCredits(ws, 10, "test", "ref-1");
+  expect(billing.addCredits(ws, 10, "test", "ref-1")).toBe(false); // once per reference
+  await say(room.id, ellie, "and again");
+  expect(lastFrom(room.id, a.id)).toBe("fine");
+});
+
+test("AC-R11 a reply that promises an action without calling its tool is sent back once, on a stronger model, to actually do it", async () => {
+  const a = customAgent(ws, ellie, ["task-tracking"], { "task.create": "always_ask" });
+  const room = rt.privateRoomFor(ellie, a);
+  const seen = scriptModel(
+    { text: "I'll create that task for you. Reply \"approve\" to confirm." }, // the failure a live model showed: narrating, not acting
+    call("task.create", { title: "BLS follow-ups", owner: "agent" }),
+  );
+  await say(room.id, ellie, "Take care of the BLS follow-ups");
+  expect(events("UNBACKED_CLAIM")).toHaveLength(1);
+  expect(seen.at(-1)!.escalate).toBe(true); // the retry goes to the stronger tier
+  expect(seen.at(-1)!.messages.some((m) => m.content.includes("You described an action but didn't call a tool"))).toBe(true);
+  expect(pendingApprovals(room.id)[0]).toMatchObject({ tool_id: "task.create" }); // a real approval now exists
+  expect(messages(room.id).some((m) => /I'll create that task/.test(m.text ?? ""))).toBe(false); // the model's false promise never reached the user
+});
+
+test("AC-R12 with JEV configured, group relevance and unbacked claims are judged by JEV; failures fall back", async () => {
+  process.env.JEV_API_KEY = "test";
+  try {
+    // JEV answers by keyword so the test controls each decision; "Done!" isn't caught by the regex, only by JEV.
+    net.on(/typesafe\.ai/, (_r, b) => Response.json({ answers: { q: { type: "noul", noul: /hotels|Done!/.test(JSON.stringify(b.state)) ? 0.9 : 0.1 } } }));
+    const a = customAgent(ws, ellie, ["task-tracking"], { "task.create": "always_ask" }, "Scout");
+    const room = rt.createRoom({ workspace_id: ws, name: "G", participation: "relevant", members: [{ id: ellie, kind: "human" }, { id: sam, kind: "human" }, { id: a.id, kind: "agent" }] });
+    scriptModel({ text: "Done! The task is created." }, call("task.create", { title: "Hotels", owner: "agent" }));
+    await say(room.id, sam, "running late");
+    expect(runsIn(room.id)).toHaveLength(0);
+    await say(room.id, sam, "can someone sort out hotels?");
+    expect(runsIn(room.id)).toHaveLength(1);
+    expect(events("UNBACKED_CLAIM")).toHaveLength(1);
+    expect(pendingApprovals(room.id)[0]).toMatchObject({ tool_id: "task.create" });
+    net.on(/typesafe\.ai/, () => new Response("down", { status: 503 })); // JEV down: keyword fallback still gates
+    await say(room.id, sam, "dinner at 8");
+    expect(runsIn(room.id)).toHaveLength(1);
+  } finally { delete process.env.JEV_API_KEY; }
 });

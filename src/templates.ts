@@ -7,15 +7,7 @@ import { defaultMode } from "./policy";
 import { structured } from "./model";
 import * as rt from "./runtime";
 
-// Plan limits (plan §22.1). ponytail: enforced here from the usage ledger; Stripe becomes a billing sink later.
-// monthlyModelUsd caps platform-hosted inference; BYOK usage isn't counted.
-export const PLANS: Record<string, { agents: number; channels: string[]; monthlyModelUsd: number | null }> = {
-  free: { agents: 2, channels: ["web", "telegram"], monthlyModelUsd: 2 },
-  personal: { agents: 5, channels: ["web", "telegram", "imessage", "email", "whatsapp"], monthlyModelUsd: 20 },
-  pro: { agents: 20, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone"], monthlyModelUsd: 60 },
-  team: { agents: 50, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone", "slack"], monthlyModelUsd: 250 },
-  enterprise: { agents: 1000, channels: ["web", "telegram", "imessage", "email", "whatsapp", "phone", "slack"], monthlyModelUsd: null },
-};
+export { PLANS } from "./billing"; // plan limits live with billing (no import cycle with the model gateway)
 
 export interface Skill { id: string; name: string; tools: string[]; procedure: string }
 export const SKILLS: Record<string, Skill> = Object.fromEntries(([
@@ -33,6 +25,12 @@ export const SKILLS: Record<string, Skill> = Object.fromEntries(([
     "Search first, offer 2-4 concrete options. For hot spots, set a watch (it checks every few seconds when tables drop) and, if they want it booked automatically, call reservations.preauthorize so they approve the limits once. Never book outside approved limits; never pay a deposit they didn't approve."],
   ["group-buying", "Group buying", ["order.create", "order.join", "order.status", "order.close", "order.mark_paid"],
     "Open one order per chat with clear items, prices, minimum and deadline. Record each person's own line from what they say; post the tally when asked; close at the deadline with pay links. Never mark someone else paid unless you're asked by the organizer."],
+  ["polls", "Group polls & RSVPs", ["poll.create", "poll.vote", "poll.results", "poll.close"],
+    "One clear question, 2-6 short numbered options (RSVPs: Yes/No/Maybe). Record each person's own vote from what they say; post the tally when asked; close at the deadline or when the creator says so, and announce the winner."],
+  ["expense-splitting", "Expense splitting", ["expense.add", "expense.balances", "expense.settle"],
+    "Log who paid what and who it's split between (default: everyone in the chat). Answer \"who owes what\" with the fewest payments, to the cent. Record paybacks only from the person who paid. Never move money."],
+  ["shared-lists", "Shared lists", ["list.add", "list.check", "list.show", "list.clear"],
+    "Keep the chat's lists (groceries, packing, who-brings-what) short and deduplicated. Add what people mention, check items off when someone got them, and show what's still needed."],
   ["browser", "Browser tasks", ["browser.task"], "Use the browser only when there is no API and search/fetch can't do it."],
   ["task-tracking", "Task tracking", ["task.create", "task.update"], "Every commitment becomes a task with an owner. Respect tasks marked blocked: a human owns those."],
   ["delegation", "Delegation", ["agent.delegate"], "Delegate only when another agent has different permissions, knowledge or ownership. Pass only the context it needs."],
@@ -55,7 +53,8 @@ export function agentTools(agent: { skills: string | string[]; id?: string }): S
 // ---------- skills learned from repeated work (plan §11.3) ----------
 const NON_SIGNATURE = new Set(CORE_TOOLS.filter((t) => t !== "files.read"));
 /** The shape of a run: the distinct non-bookkeeping tools it used, in order. */
-export function runSignature(toolNames: string[]) { return [...new Set(toolNames.filter((t) => !NON_SIGNATURE.has(t)))].join(">"); }
+// Group-chat bookkeeping (votes, expenses, list items, order lines) isn't a reusable procedure worth saving as a skill.
+export function runSignature(toolNames: string[]) { return [...new Set(toolNames.filter((t) => !NON_SIGNATURE.has(t) && !/^(poll|expense|list|order)\./.test(t)))].join(">"); }
 
 /** After the same kind of task succeeds 3 times, offer to save it as a skill (once per shape). */
 export function maybeSuggestSkill(run: any) {
@@ -99,6 +98,7 @@ const SKILL_STARTERS: Record<string, string> = {
   "group-buying": "Let's do a group order of … $… each, minimum …, closes Friday 6pm, venmo @…", "meeting-prep": "Prep me for my next meeting", "follow-up-tracking": "Follow up with … and wait for their reply",
   reminders: "Remind me tomorrow to …", "travel-planning": "Find three hotel options in … for …", "group-coordination": "What's the status?",
   "task-tracking": "Take care of the … follow-ups", documents: "Find the … doc and summarize it", "monitor-topic": "Every morning, check … and tell me what changed",
+  polls: "Poll: Friday or Saturday?", "expense-splitting": "I paid $… for …", "shared-lists": "Add … to the grocery list",
 };
 /** Starter prompts that get a new user to a first useful result ("…" marks the blank to fill). */
 export function starters(agent: any): string[] {
@@ -118,10 +118,24 @@ export function permissionTable(skills: string[], overrides: Record<string, stri
 }
 
 // ---------- natural-language agent creation (plan §3.4) ----------
+// First match wins: specific ideas before broad ones ("morning briefing" before research's "brief", "split expenses on our trip" before travel).
 const ROLE_RULES: [RegExp, string, string, string[]][] = [
-  [/\b(reservations?|resy|opentable|hottest (spots|restaurants)|restaurant)/i, "Reese", "Reservation Agent", ["reservations", "reminders"]],
+  [/\b(reservations?|resy|opentable|hot(test)? (new )?(spots|restaurants)|restaurants?|a table|tables? (at|for))\b/i, "Reese", "Reservation Agent", ["reservations", "reminders"]],
   [/\b(group (buy|order)|bulk (buy|order)|community buying|co-?op|pool(ed)? order)/i, "Pool", "Group Buying Coordinator", ["group-buying", "reminders"]],
+  [/\b(split(ting)? (the |our )?(expenses?|bills?|costs?|check|tab)|splitwise|who owes|ious?\b|(shared|group|trip) (expenses|costs))/i, "Tab", "Expense Splitter", ["expense-splitting", "reminders"]],
+  [/\b(room-?mates?|house-?mates?|flat-?mates?|household|apartment|chores?)\b/i, "Roomie", "Household Manager", ["shared-lists", "expense-splitting", "task-tracking", "reminders"]],
+  [/\b(meal ?plan|recipes?|cook(ing)?|dinner ideas|grocer(y|ies))/i, "Chef", "Meal Planner", ["shared-lists", "polls", "web-research", "reminders"]],
+  [/\b(part(y|ies)|events? plann|plan (an?|the|our) (event|party|dinner|get-?together|reunion)|polls?\b|rsvps?|birthday|bbq|get-?together)/i, "Plans", "Event Planner", ["polls", "shared-lists", "reminders", "group-coordination"]],
+  [/\b(price drops?|restocks?|back in stock|price (alerts?|tracker|watch)|deal alerts?|price changes?)/i, "Hawk", "Price & Restock Watcher", ["monitor-topic", "web-research", "reminders"]],
+  [/\b((morning|daily) (brief(ing)?|digest|update|rundown)|briefing)/i, "Dash", "Morning Briefer", ["calendar", "monitor-topic", "web-research", "reminders"]],
   [/\b(recruit|candidate|staffing|nurse|credential)/i, "Recruiter", "Healthcare Recruiter", ["candidate-matching", "credential-followup", "task-tracking", "web-research"]],
+  [/\b(customer (support|service|questions)|support (inbox|tickets?|agent|questions)|help ?desk|faqs?)\b/i, "Juno", "Support Agent", ["documents", "web-research", "task-tracking", "follow-up-tracking"]],
+  [/\b(sales|leads?|prospect|outreach|pipeline|cold e-?mails?)\b/i, "Leo", "Sales Prospector", ["web-research", "email-drafting", "follow-up-tracking", "task-tracking"]],
+  [/\b(meeting notes|action items|minutes|note-?taker|recaps?)\b/i, "Max", "Meeting Notes & Follow-ups", ["meeting-prep", "task-tracking", "follow-up-tracking", "reminders"]],
+  [/\b(study|studying|quiz|exams?|flash ?cards?|tutor|homework)\b/i, "Sage", "Study Buddy", ["web-research", "reminders"]],
+  [/\b(workouts?|habits?|fitness|gym|accountab|exercise|coach)/i, "Coach", "Habit & Fitness Coach", ["reminders", "task-tracking", "polls"]],
+  [/\b(bills?|renewals?|renew|subscriptions?|life admin|appointments?|paperwork)\b/i, "Ollie", "Life Admin Assistant", ["reminders", "follow-up-tracking", "task-tracking", "calendar"]],
+  [/\b(social (media|posts?)|content|linkedin|twitter|instagram|tiktok|newsletter|posts?)\b/i, "Echo", "Content Drafter", ["web-research", "monitor-topic", "reminders"]],
   [/\b(travel|trip|hotel|flight|vacation|concierge|restaurant)/i, "Scout", "Travel Planner", ["travel-planning", "web-research", "reminders"]],
   [/\b(research|analy[sz]|monitor|brief|news|competitor)/i, "Atlas", "Research Analyst", ["web-research", "source-verification", "monitor-topic"]],
   [/\b(team|ops|operations|coordinat|standup|status|project)/i, "Relay", "Team Operations Coordinator", ["group-coordination", "task-tracking", "follow-up-tracking", "reminders"]],
@@ -137,11 +151,14 @@ const KEYWORD_SKILLS: [RegExp, string[]][] = [
   [/\b(reservations?|resy|opentable|restaurants?|tables?|dinner spots?)\b/i, ["reservations"]],
   [/\b(group (buy|order)|bulk (buy|order)|community buying|co-?op|pool(ed)? order)/i, ["group-buying"]],
   [/\b(monitor|keep .* (updated|current))/i, ["monitor-topic"]],
+  [/\b(polls?|vote|rsvps?|who'?s coming)\b/i, ["polls"]],
+  [/\b(split|expenses?|who owes|splitwise)\b/i, ["expense-splitting"]],
+  [/\b(grocer(y|ies)|shopping list|to-?buy|packing list|checklist|shared list|bring list)\b/i, ["shared-lists"]],
 ];
 
 export async function draftAgent(description: string, workspaceId?: string) {
   const fallback = () => {
-    const role = ROLE_RULES.find(([re]) => re.test(description)) ?? [null, "Sage", "Assistant", []];
+    const role = ROLE_RULES.find(([re]) => re.test(description)) ?? [null, "Kit", "Assistant", []];
     const skills = new Set<string>(role[3]);
     for (const [re, s] of KEYWORD_SKILLS) if (re.test(description)) s.forEach((x) => skills.add(x));
     if (!skills.size) skills.add("web-research");
@@ -163,7 +180,7 @@ export async function draftAgent(description: string, workspaceId?: string) {
 
 // ---------- manifests ----------
 export interface Manifest {
-  name: string; slug: string; version: string; publisher: string; tagline: string; avatar?: string; title: string;
+  name: string; slug: string; version: string; publisher: string; tagline: string; avatar?: string; title: string; category?: "personal" | "group" | "team";
   job: string; scope?: string; instructions?: string; skills: string[]; permissions?: Record<string, string>;
   model_profile?: string; channels?: string[]; onboarding?: { id: string; question: string }[];
   proactivity?: string[]; starters?: string[]; schedules?: { every: "daily" | "weekdays"; hour: number; objective: string }[]; escalation?: string[]; memory_rules?: string[]; network?: string[]; evals?: string[]; pricing?: string; data_retention?: string;
@@ -175,6 +192,7 @@ export function validateManifest(m: Manifest): string[] {
   if (!/^\d+\.\d+\.\d+$/.test(m.version ?? "")) errs.push("version must be semver");
   if (!/^[a-z0-9-]+$/.test(m.slug ?? "")) errs.push("slug must be lowercase-kebab");
   for (const s of m.skills ?? []) if (!SKILLS[s]) errs.push(`unknown skill ${s}`);
+  if (m.category && !["personal", "group", "team"].includes(m.category)) errs.push("category must be personal, group or team");
   const tools = agentTools({ skills: m.skills ?? [] });
   for (const [t, mode] of Object.entries(m.permissions ?? {})) {
     if (!tools.has(t)) errs.push(`permission for ${t} but no skill provides it`);
@@ -236,7 +254,7 @@ export function reviewTemplate(templateId: string, decision: "approve" | "reject
   return { ok: true, version: v.version };
 }
 
-export function seedFirstParty(dir = join(import.meta.dir, "..", "agents")) {
+export function seedFirstParty(dir = join(import.meta.dirname ?? (import.meta as any).dir, "..", "agents")) {
   const pub = ensurePublisher("platform", null, true);
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
     const m: Manifest = JSON.parse(readFileSync(join(dir, f), "utf8"));

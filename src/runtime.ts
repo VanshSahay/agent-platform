@@ -2,7 +2,8 @@
 // Durable by construction: every state change is a DB row, so a crashed process resumes from the last persisted step.
 // ponytail: a SQLite-backed run queue + timer table instead of Temporal; one worker process. Move RunWorkflow/RoomWorkflow
 // to Temporal when you need multiple workers or > ~50 runs/sec. The run/wait/step model below maps 1:1 onto workflow + signals.
-import { all, one, exec, emit, id, now, S, J, tx } from "./db";
+import * as billing from "./billing";
+import { all, one, exec, emit, id, now, S, J, tx, recordUsage, patchJson } from "./db";
 import { generate } from "./model";
 import { runSignature, maybeSuggestSkill, PLANS } from "./templates";
 import { buildContext } from "./context";
@@ -13,6 +14,8 @@ import * as channels from "./channels";
 import * as intake from "./intake";
 import * as reservations from "./reservations";
 import * as orders from "./orders";
+import * as groupkit from "./groupkit";
+import * as jev from "./jev";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
 const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", clarify: "waiting_for_human", confirm: "waiting_for_human", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
@@ -79,7 +82,7 @@ export function postMessage(roomId: string, m: { sender: string; text: string; p
   if (m.endpointId) exec("update room_endpoints set last_active_at=? where id=?", now(), m.endpointId);
   if (m.sender.startsWith("agt_")) {
     for (const ep of m.targets ?? []) channels.enqueue(ep, roomId, eid, { text: m.text, agentName: nameOf(m.sender), buttons: m.buttons });
-    exec("insert into usage (workspace_id, agent_id, kind, qty, ts) values (?,?,?,?,?)", room.workspace_id, m.sender, "channel_messages", (m.targets ?? []).length, now());
+    if (m.sender?.startsWith("agt_") && (m.targets ?? []).length) recordUsage({ workspace_id: room.workspace_id, agent_id: m.sender, kind: "channel_messages", qty: (m.targets ?? []).length });
   }
   return eid;
 }
@@ -129,7 +132,8 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
 
   // 4. Participation policy (plan §15.2): who should respond?
   const agents = roomAgents(room.id);
-  const orderAgent = orders.orderAgentFor(room.id, i.text); // "in for 2" in a chat with an open group order
+  // "in for 2" in a chat with an open group order, "2" / "Saturday" in a chat with an open poll
+  const orderAgent = orders.orderAgentFor(room.id, i.text) ?? groupkit.pollAgentFor(room.id, i.text);
   for (const a of agents) {
     let respond = false;
     if (orderAgent) respond = orderAgent === a.id;
@@ -137,9 +141,14 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
     else if (room.participation === "manager" || (room.kind === "private" && agents.length === 1)) respond = true;
     else if (mentions(i.text, a.name)) respond = true;
     else if (room.participation === "relevant") {
+      const p = await jev.noul({ agent: a.name, agent_job: a.job, message: i.text }, `Should ${a.name} reply to this group-chat message?`,
+        "Addressed to the agent or asks for something within its job", "Chatter between people; the agent should stay quiet");
+      if (p != null) { respond = p >= 0.5; if (!respond) continue; }
+      else {
       const r = await structured<{ relevant: boolean }>("fast", `Should ${a.name} (job: ${a.job}) respond to this group message? Only if it is clearly asking for or about its job. {"relevant": boolean}`,
         i.text, () => ({ relevant: a.job.toLowerCase().split(/\W+/).filter((w: string) => w.length > 4).some((w: string) => i.text.toLowerCase().includes(w)) }), room.workspace_id);
       respond = r.relevant;
+      }
     }
     if (!respond) continue;
     // Burst combining (plan §5.2): people text in bursts on messaging channels; fold them into one run.
@@ -160,6 +169,15 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
 }
 
 // ---------------- runs ----------------
+// ---------------- execution engine ----------------
+// "local": this process steps runs in tick() (tests, single-box dev). "temporal": each run is a Temporal workflow that calls
+// advanceRun(); anything that makes a run runnable notifies it (start-or-wake), and Temporal owns retries, timers and history.
+const TERMINAL = ["completed", "failed_terminal", "cancelled"];
+export const engine = { temporal: () => process.env.ENGINE === "temporal", onQueued: null as null | ((runId: string) => void) };
+function notifyQueued(runId: string) { if (engine.temporal()) engine.onQueued?.(runId); }
+/** A run became runnable again (resumed, revised, retried). */
+export function requeue(runId: string) { setStatus(runId, "queued"); }
+
 export function createRun(r: { room: any; agent: any; objective: string; requestedBy?: string | null; triggerEventId?: string | null; originEndpointId?: string | null;
   kind?: string; parentRunId?: string; budget?: Partial<typeof DEFAULT_BUDGET>; tainted?: boolean; result?: any; intake?: boolean }) {
   const rid = id("run");
@@ -169,6 +187,7 @@ export function createRun(r: { room: any; agent: any; objective: string; request
     r.tainted ? 1 : 0, r.result ? S(r.result) : null, now(), now());
   if (r.intake) exec("update runs set brief_status='pending' where id=?", rid);
   emit("RUN_STARTED", { workspace_id: r.room.workspace_id, room_id: r.room.id, run_id: rid, actor: r.agent.id, data: { objective: r.objective, requested_by: r.requestedBy, kind: r.kind ?? "respond" } });
+  notifyQueued(rid);
   return one<any>("select * from runs where id=?", rid);
 }
 
@@ -180,8 +199,15 @@ export function addSpent(runId: string, d: { cost?: number; toolCalls?: number; 
 }
 const setStatus = (runId: string, status: string, extra: { error?: string; result?: any } = {}) => {
   // A finished run stays finished: late writers (an in-flight model call after a cancel) can't resurrect it.
-  return exec(`update runs set status=?, error=coalesce(?, error), result=coalesce(?, result), updated_at=?, completed_at=? where id=? and status not in ('completed','failed_terminal','cancelled')`,
-    status, extra.error ?? null, extra.result ? S(extra.result) : null, now(), ["completed", "failed_terminal", "cancelled"].includes(status) ? now() : null, runId).changes > 0;
+  const changed = exec(`update runs set status=?, error=coalesce(?, error), result=coalesce(?, result), updated_at=?, completed_at=? where id=? and status not in ('completed','failed_terminal','cancelled')`,
+    status, extra.error ?? null, extra.result ? S(extra.result) : null, now(), TERMINAL.includes(status) ? now() : null, runId).changes > 0;
+  if (changed && status === "queued") notifyQueued(runId);
+  if (changed && TERMINAL.includes(status) && engine.temporal()) { // the next request in this conversation may have been waiting its turn
+    const r = one<any>("select agent_id, room_id from runs where id=?", runId);
+    const next = r && one<any>("select id from runs where agent_id=? and room_id=? and status='queued' order by created_at limit 1", r.agent_id, r.room_id);
+    if (next) notifyQueued(next.id);
+  }
+  return changed;
 };
 export const appendStep = (runId: string, type: string, data: any) => exec("insert into run_steps (run_id, type, data, ts) values (?,?,?,?)", runId, type, S(data), now());
 export function appendToolResult(runId: string, call: { id: string; name: string }, content: string) {
@@ -280,19 +306,16 @@ async function stepRunInner(runId: string) {
     if (spent.modelCalls >= budget.maxModelCalls) break;
     if (spent.cost >= budget.maxModelCostUsd) return fail(run, `model cost budget ($${budget.maxModelCostUsd}) exhausted`);
     const c = buildContext(run, agent, room);
-    const cap = PLANS[one<any>("select plan from workspaces where id=?", run.workspace_id)?.plan ?? "free"]?.monthlyModelUsd;
-    if (cap != null) {
-      const d = new Date(now()); const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-      const spentMonth = one<any>("select coalesce(sum(cost_usd), 0) s from usage where workspace_id=? and byok=0 and ts>=?", run.workspace_id, monthStart).s;
-      if (spentMonth >= cap) return fail(run, `this workspace has used its $${cap} monthly AI allowance — add your own model key in Settings or upgrade the plan`);
-    }
+    if (!billing.canSpend(run.workspace_id))
+      return fail(run, "this workspace is out of AI credits — add credits or your own model key in Settings → AI");
     let res;
     try {
-      res = await generate({ profile: agent.model_profile, system: c.system, messages: c.messages, tools: c.tools,
-        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || i >= budget.maxModelCalls - 2 });
+      channels.typing(run.origin_endpoint_id); // "…is typing" in the chat this came from while the model works
+      res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: c.tools,
+        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || !!spent.unbackedRetries || i >= budget.maxModelCalls - 2 });
     } catch (e: any) {
       const errs = (spent.modelErrors ?? 0) + 1;
-      exec("update runs set spent=json_set(spent, '$.modelErrors', ?) where id=?", errs, run.id);
+      patchJson("runs", "spent", run.id, (s) => ({ ...s, modelErrors: errs }));
       emit("MODEL_CALL_FAILED", { ...base, data: { error: e.message, attempt: errs } });
       if (errs >= 3) return fail(run, `model unavailable: ${e.message}`);
       createWait(run, { kind: "retry", reason: "model call failed; retrying", wake_at: now() + 2 ** errs * 1000 });
@@ -303,13 +326,21 @@ async function stepRunInner(runId: string) {
     appendStep(run.id, "assistant", { text: res.text, toolCalls: res.toolCalls, model: res.model, raw: res.raw });
     emit("MODEL_CALL", { ...base, data: { model: res.model, tool_calls: res.toolCalls.map((t) => t.name), usage: res.usage, cost_usd: res.costUsd } });
     if (!res.toolCalls.length) {
+      // A reply that promises or claims an action with nothing behind it ("I'll book…", "reply approve") gets one corrective
+      // retry on a stronger model — live models do this, and it leaves the user waiting on an approval that doesn't exist.
+      if (!spent.unbackedRetries && await claimsUnbackedAction(run.id, res.text)) {
+        patchJson("runs", "spent", run.id, (s) => ({ ...s, unbackedRetries: 1 }));
+        emit("UNBACKED_CLAIM", { ...base, data: { text: res.text.slice(0, 300), model: res.model } });
+        appendStep(run.id, "signal", { text: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed. Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` });
+        continue;
+      }
       // Don't claim "done" until the result is checked against the brief's success criteria.
       const b = J(run.brief);
       if (b?.done_when?.length && ["confirmed", "auto"].includes(run.brief_status) && !run.parent_run_id) {
         const v = await intake.verify(run, res.text);
         if (!live()) return;
         const checks = (spent.verifications ?? 0) + 1;
-        exec("update runs set spent=json_set(spent, '$.verifications', ?) where id=?", checks, run.id);
+        patchJson("runs", "spent", run.id, (s) => ({ ...s, verifications: checks }));
         emit("RESULT_CHECKED", { ...base, data: { pass: v.pass, missing: v.missing, acknowledged: v.acknowledged } });
         if (!v.pass && !v.acknowledged && checks < 2) {
           appendStep(run.id, "signal", { text: `[CHECK] Not done yet. Still missing: ${v.missing.join("; ")}. Keep working, or explain exactly what's blocking it.` });
@@ -322,6 +353,19 @@ async function stepRunInner(runId: string) {
     if ((await runCalls(res.toolCalls, c.allowed)) === "wait") return;
   }
   return fail(run, "step limit reached without finishing");
+}
+
+const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;
+/** The reply promises/claims a side effect, yet this run has no successful write and no pending approval to show for it. */
+async function claimsUnbackedAction(runId: string, text: string) {
+  if (one("select 1 from approvals where run_id=? and status='pending'", runId)) return false;
+  if (all<any>("select data from run_steps where run_id=? and type='tool_result'", runId).some((s) => {
+    const d = J(s.data, {}); return getTool(d.tool)?.risk !== "read" && !/^(FAILED|DENIED|REJECTED|SUPERSEDED)/.test(String(d.content ?? ""));
+  })) return false;
+  // Nothing backs a claim, so judge the wording: JEV catches phrasings the regex misses ("Done! Invite's out"); regex if JEV is off.
+  const p = await jev.noul({ reply: text.slice(0, 2000) }, "Does this reply claim or promise an action (booking, sending, scheduling, ordering, cancelling) as done or about to happen, or ask the user to reply 'approve'?",
+    "Claims or promises an action", "Only information, options or questions");
+  return p != null ? p >= 0.5 : ACTION_CLAIM.test(text);
 }
 
 /** Structured run classification (plan §7.4), derived from what the run actually did. */
@@ -450,10 +494,22 @@ export function delegate(parent: any, agentName: string, objective: string, cont
   return { childRunId: child.id };
 }
 
+/** Step-aware model routing: a short single-step message runs on the cheap tier, research or long plans on the research tier,
+ *  everything else on standard; failures escalate (see generate). An agent pinned to a non-default profile keeps it. */
+export function routeProfile(agent: any, run: any) {
+  if (agent.model_profile && agent.model_profile !== "standard") return agent.model_profile;
+  const brief = J(run.brief, null), steps = brief?.plan?.length ?? 0, o = String(run.objective ?? "");
+  if (brief?.kind === "research" || steps >= 4 || /\b(research|compare|analy[sz]e|itinerary|plan (a|our|my) trip|deep dive)\b/i.test(o)) return "research-standard";
+  // The cheap tier only answers small talk; anything that may call tools runs on standard (a live test showed the cheap
+  // model narrating "I'll book it, reply approve" instead of calling the tool).
+  if (brief && !(brief.plan ?? []).some((p: any) => p.tool) && !(brief.side_effects ?? []).length && o.length < 160 && run.kind !== "schedule") return "fast";
+  return "standard";
+}
+
 // ---------------- schedules / wake conditions (plan §37) ----------------
-function nextRecurring(spec: { every: string; hour: number }, after: number) {
+function nextRecurring(spec: { every: string; hour: number; day?: number }, after: number) {
   const d = new Date(after); d.setMinutes(0, 0, 0); d.setHours(spec.hour);
-  while (+d <= after || (spec.every === "weekdays" && (d.getDay() === 0 || d.getDay() === 6))) d.setDate(d.getDate() + 1);
+  while (+d <= after || (spec.every === "weekdays" && (d.getDay() === 0 || d.getDay() === 6)) || (spec.every === "weekly" && d.getDay() !== (spec.day ?? 1))) d.setDate(d.getDate() + 1);
   return +d;
 }
 export function createSchedule(s: { agent_id: string; room_id: string; kind: string; spec: any; objective: string; created_by?: string | null }) {
@@ -474,11 +530,12 @@ function fireSchedule(s: any, eventText?: string) {
 
 // ---------------- worker ----------------
 /** One pass of the worker. Returns how much work it did; tests call drain() to run to quiescence. */
-export async function tick() {
-  let n = await channels.processInbound();
-  const t = now();
-  for (const w of all<any>("select * from waits where status='open' and wake_at is not null and wake_at<=?", t)) n += +resumeWait(w.id);
-  for (const w of all<any>("select * from waits where status='open' and timeout_at is not null and timeout_at<=?", t)) {
+/** Fire due timers and timeouts (all runs, or one run's). */
+export function processDueWaits(runId?: string) {
+  let n = 0;
+  const t = now(), only = runId ? " and run_id=?" : "", p = runId ? [runId] : [];
+  for (const w of all<any>(`select * from waits where status='open' and wake_at is not null and wake_at<=?${only}`, t, ...p)) n += +resumeWait(w.id);
+  for (const w of all<any>(`select * from waits where status='open' and timeout_at is not null and timeout_at<=?${only}`, t, ...p)) {
     if (w.kind === "clarify" || w.kind === "confirm") { // no answer in 72h: drop it rather than guess
       const r = one<any>("select * from runs where id=?", w.run_id);
       cancelRun(w.run_id, "system");
@@ -495,9 +552,34 @@ export async function tick() {
     if (r && !one("select 1 from waits where run_id=? and status='open'", r.id)) setStatus(r.id, "queued");
     n++;
   }
+  return n;
+}
+
+/** One workflow step (Temporal activity body): fire this run's due timers, then step it if it's its turn in the conversation.
+ *  Returns what the workflow needs to decide whether to loop, sleep until a timer, or wait for a wake signal. */
+export async function advanceRun(runId: string) {
+  processDueWaits(runId);
+  let r = one<any>("select * from runs where id=?", runId);
+  if (!r) return { done: true, status: "missing" };
+  if (r.status === "running" && r.updated_at < now() - 15 * 6e4) setStatus(runId, "queued"); // a worker died mid-step: Temporal retried us
+  r = one<any>("select * from runs where id=?", runId);
+  const busy = r.status === "queued" && one("select 1 from runs where agent_id=? and room_id=? and status='running' and id<>?", r.agent_id, r.room_id, r.id)
+    || one("select 1 from runs where agent_id=? and room_id=? and status='queued' and created_at<? and id<>?", r.agent_id, r.room_id, r.created_at, r.id);
+  if (r.status === "queued" && !busy) await stepRun(runId);
+  r = one<any>("select * from runs where id=?", runId);
+  const next = one<any>("select min(coalesce(wake_at, timeout_at)) t from waits where run_id=? and status='open'", runId)?.t ?? null;
+  return { done: TERMINAL.includes(r.status), status: r.status as string, blocked: !!busy, nextWakeAt: next as number | null };
+}
+
+export async function tick() {
+  let n = await channels.processInbound();
+  const t = now();
+  n += processDueWaits();
   for (const s of all<any>("select * from schedules where status='active' and next_at is not null and next_at<=?", t)) { fireSchedule(s); n++; }
   n += await reservations.checkWatches();
   n += await orders.checkOrders();
+  n += await groupkit.checkPolls();
+  if (engine.temporal()) return n + (await channels.flushOutbox()); // Temporal workers step the runs
   // Runs step concurrently (a slow model call shouldn't block everyone); stepRun's atomic claim makes this safe.
   // Lease: a run 'running' for 15+ minutes belongs to a dead worker — requeue it (tool fingerprints prevent double writes).
   exec("update runs set status='queued' where status='running' and updated_at<?", t - 15 * 6e4);

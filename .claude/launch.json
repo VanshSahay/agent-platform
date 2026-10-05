@@ -1,6 +1,29 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "agent-platform", "runtimeExecutable": "bun", "runtimeArgs": ["--env-file=.env.demo", "run", "src/index.ts"], "port": 3000 }
+    {
+      "name": "agent-platform",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "--env-file=.env.demo",
+        "--env-file=.env.local", "--env-file=.env.clerk",
+        "--env-file=.env.stack",
+        "run",
+        "src/index.ts"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "agent-platform-photon",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "--env-file=agent/.env",
+        "--env-file=.env.photon",
+        "--env-file=.env.local", "--env-file=.env.clerk",
+        "run",
+        "src/index.ts"
+      ],
+      "port": 3001
+    }
   ]
 }

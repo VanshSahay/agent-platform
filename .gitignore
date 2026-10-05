@@ -3,3 +3,11 @@ data.sqlite*
 *.log
 .env
 reports/
+photon.sqlite*
+.pgdata/
+.temporal/
+.env.local
+.env.production
+.env.clerk
+agent/
+.env.photon

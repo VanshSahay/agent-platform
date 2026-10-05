@@ -4,11 +4,15 @@ import { evaluatePolicy, type Risk } from "./policy";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import * as rt from "./runtime";
+import { bb, withLoginLock, loginProbe } from "./browser";
 
 export type ErrKind = "TRANSIENT" | "AUTH" | "RATE_LIMIT" | "BUSINESS_RULE" | "PERMISSION" | "UNKNOWN_SIDE_EFFECT";
 export class ToolError extends Error { constructor(public kind: ErrKind, msg: string, public retryAfterMs = 0) { super(msg); } }
 
-export interface ToolCtx { run: any; agent: any; room: any; connection?: { id: string; cred: any; account: string }; idempotencyKey: string; siteLogin?: { username: string; password: string; site: string } }
+export interface ToolCtx { run: any; agent: any; room: any; connection?: { id: string; cred: any; account: string }; idempotencyKey: string; siteLogin?: { username: string; password: string; site: string }
+  browserLogin?: BrowserLogin }
+/** A website login the user made in a live Browserbase session: only a Context id, no secrets. */
+export interface BrowserLogin { id: string; site: string; context_id: string; config: any }
 export interface ToolOutcome { status: "SUCCEEDED" | "FAILED" | "UNKNOWN" | "PARTIAL"; output: any; untrusted?: boolean; wait?: { kind: string; reason: string; wake_key?: string; owner?: string; timeout_at?: number } }
 export interface ToolDef {
   id: string; description: string; inputSchema: any; risk: Risk;
@@ -29,9 +33,9 @@ const str = (description?: string) => ({ type: "string", description });
 const num = (description?: string) => ({ type: "number", description });
 
 // ---------- outbound HTTP with retry taxonomy ----------
-async function call(url: string, init: RequestInit & { write?: boolean } = {}) {
+async function call(url: string, init: RequestInit & { write?: boolean; timeoutMs?: number } = {}) {
   let r: Response;
-  try { r = await fetch(url, { ...init, signal: AbortSignal.timeout(20000) }); }
+  try { r = await fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 20000) }); }
   catch (e: any) { throw new ToolError(init.write ? "UNKNOWN_SIDE_EFFECT" : "TRANSIENT", `network error: ${e.message}`); }
   if (r.status === 401 || r.status === 403) throw new ToolError("AUTH", `provider rejected credentials (${r.status})`);
   if (r.status === 429) throw new ToolError("RATE_LIMIT", "rate limited", Number(r.headers.get("retry-after") ?? 30) * 1000);
@@ -41,19 +45,30 @@ async function call(url: string, init: RequestInit & { write?: boolean } = {}) {
   return r;
 }
 
-/** Google access token with refresh. ponytail: direct Google OAuth; put Nango in front when there are >5 providers. */
+const BROWSER_TIMEOUT = () => Number(process.env.BROWSER_TASK_TIMEOUT_MS ?? 300_000); // real bookings take minutes, not 20s
+const refreshing = new Map<string, Promise<void>>();
+/** Google access token with refresh. One refresh per connection at a time (concurrent runs would race and, with rotating refresh
+ *  tokens, invalidate each other); a failed refresh marks the connection needs_reauth via the AUTH error path.
+ *  ponytail: direct Google OAuth, in-process lock; put Nango in front when there are >5 providers. */
 async function googleToken(ctx: ToolCtx) {
   const c = ctx.connection!;
+  if (refreshing.has(c.id)) { await refreshing.get(c.id)!.catch(() => {}); c.cred = unseal(one<any>("select cred_enc from connections where id=?", c.id)?.cred_enc) ?? c.cred; }
   if (c.cred.expires_at && c.cred.expires_at < now() + 60000 && c.cred.refresh_token) {
+    const p = refreshGoogle(c); refreshing.set(c.id, p);
+    try { await p; } finally { refreshing.delete(c.id); }
+  }
+  return { authorization: `Bearer ${c.cred.access_token}`, "content-type": "application/json" };
+}
+async function refreshGoogle(c: any) {
+  {
     const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", body: new URLSearchParams({
       client_id: process.env.GOOGLE_CLIENT_ID ?? "", client_secret: process.env.GOOGLE_CLIENT_SECRET ?? "",
       refresh_token: c.cred.refresh_token, grant_type: "refresh_token" }) });
     if (!r.ok) throw new ToolError("AUTH", "token refresh failed");
     const t: any = await r.json();
-    c.cred = { ...c.cred, access_token: t.access_token, expires_at: now() + t.expires_in * 1000 };
+    c.cred = { ...c.cred, access_token: t.access_token, refresh_token: t.refresh_token ?? c.cred.refresh_token, expires_at: now() + t.expires_in * 1000 }; // keep the old refresh token if none came back
     exec("update connections set cred_enc=? where id=?", seal(c.cred), c.id);
   }
-  return { authorization: `Bearer ${c.cred.access_token}`, "content-type": "application/json" };
 }
 
 export const resolver = { lookup: (host: string) => dnsLookup(host, { all: true }) as Promise<{ address: string }[]> };
@@ -77,8 +92,10 @@ const hostOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\.
 
 /** Browser runner seam, in order: an MCP browser server granted to the agent (Browser Use, Browserbase...), then an HTTP
  * runner (BROWSER_TASK_URL: {task, start_url, secrets} -> {status, output}). Site logins go only to the HTTP runner, which
- * substitutes {{username}}/{{password}} itself; MCP browser servers should use a saved browser profile instead. */
+ * substitutes {{username}}/{{password}} itself; MCP browser servers should use a saved browser profile instead.
+ * A live-browser login (browser_login) instead runs on its Browserbase Context and never sends secrets. */
 export async function runBrowser(task: string, start_url: string | undefined, ctx: ToolCtx): Promise<any | null> {
+  if (ctx.browserLogin) return runOnLogin(task, start_url, ctx, ctx.browserLogin);
   const m = browserMcp(ctx.agent.id);
   if (m) {
     const { callTool, parseHeaders } = await import("./mcp");
@@ -88,12 +105,68 @@ export async function runBrowser(task: string, start_url: string | undefined, ct
     return { status: r.isError ? "failed" : "succeeded", output: parsed ?? r.text.slice(0, 20000), via: m.conn.label };
   }
   if (process.env.BROWSER_TASK_URL) {
-    const r = await call(process.env.BROWSER_TASK_URL, { method: "POST", write: true, headers: { "content-type": "application/json", "idempotency-key": ctx.idempotencyKey,
+    const r = await call(process.env.BROWSER_TASK_URL, { method: "POST", write: true, timeoutMs: BROWSER_TIMEOUT(), headers: { "content-type": "application/json", "idempotency-key": ctx.idempotencyKey,
       authorization: `Bearer ${process.env.BROWSER_TASK_KEY ?? ""}` }, body: S({ task, start_url, secrets: ctx.siteLogin ? { username: ctx.siteLogin.username, password: ctx.siteLogin.password } : undefined,
         allowed_domains: ctx.siteLogin ? [ctx.siteLogin.site] : undefined }) });
     return r.json();
   }
   return null;
+}
+
+/** Runs a browser task signed in as the user via their Browserbase Context: one session per login at a time, a logged-out
+ * pre-flight, and a recorded replay. Runners get the Context (HTTP: `browserbase: {context_id, session_id}`; MCP: `contextId`). */
+async function runOnLogin(task: string, start_url: string | undefined, ctx: ToolCtx, login: BrowserLogin) {
+  const m = browserMcp(ctx.agent.id), mcpProps = m && (J(m.conn.config, {}).tools ?? []).find((t: any) => t.name === m.tool)?.inputSchema?.properties;
+  const useMcp = !!mcpProps?.contextId, http = process.env.BROWSER_TASK_URL;
+  if (!useMcp && !http) throw new ToolError("BUSINESS_RULE", `connect a browser runner (Connections → MCP server that accepts a Browserbase contextId, or BROWSER_TASK_URL) to use the ${login.site} login`);
+  if (!useMcp && !process.env.BROWSERBASE_API_KEY) throw new ToolError("BUSINESS_RULE", "Browserbase isn't set up on this server (BROWSERBASE_API_KEY)");
+  const record = (session_id: string | null, status: string) => {
+    const bid = id("bbs");
+    exec("insert into browser_sessions (id, connection_id, workspace_id, purpose, session_id, status, replay_url, run_id, created_at) values (?,?,?,?,?,?,?,?,?)",
+      bid, login.id, ctx.run.workspace_id, "task", session_id, status, session_id ? bb.replayUrl(session_id) : null, ctx.run.id, now());
+    return (s: string) => exec("update browser_sessions set status=?, ended_at=? where id=?", s, now(), bid);
+  };
+  return withLoginLock(login.id, async () => {
+    if (useMcp) {
+      // The MCP server opens its own session on the Context. ponytail: no pre-flight here — a free-text agent reply can't be matched reliably.
+      const end = record(null, "running");
+      const { callTool, parseHeaders } = await import("./mcp");
+      const r = await callTool(m!.conn.id, J(m!.conn.config).url, parseHeaders(unseal<any>(m!.conn.cred_enc)?.headers), m!.tool,
+        { task: start_url ? `${task}\nStart at ${start_url}` : task, contextId: login.context_id, ...(mcpProps.persist ? { persist: true } : {}) })
+        .catch((e: any) => { end("failed"); throw new ToolError(e.auth ? "AUTH" : "UNKNOWN_SIDE_EFFECT", e.message); });
+      end(r.isError ? "failed" : "completed");
+      let parsed: any = null; try { parsed = JSON.parse(r.text.match(/\{[\s\S]*\}/)?.[0] ?? ""); } catch {}
+      return { status: r.isError ? "failed" : "succeeded", output: parsed ?? r.text.slice(0, 20000), via: m!.conn.label };
+    }
+    const probe = loginProbe(login.site, login.config);
+    // keepAlive only when the probe and the task share the session; otherwise it ends when the runner disconnects.
+    const session_id = await bb.createSession({ contextId: login.context_id, persist: true, keepAlive: !!probe, timeoutSec: 900 })
+      .catch((e: any) => { throw new ToolError("BUSINESS_RULE", `couldn't start a browser session: ${e.message}`); });
+    const replay_url = bb.replayUrl(session_id), end = record(session_id, "running"), browserbase = { context_id: login.context_id, session_id };
+    const runner = async (body: any, key: string, write: boolean) => (await call(http!, { method: "POST", write, timeoutMs: BROWSER_TIMEOUT(), headers: { "content-type": "application/json", "idempotency-key": key,
+      authorization: `Bearer ${process.env.BROWSER_TASK_KEY ?? ""}` }, body: S({ ...body, allowed_domains: [login.site], browserbase }) })).json();
+    let status = "failed";
+    try {
+      if (probe) { // pre-flight: the runner opens probe.url and reports where it landed ({url, title}); we never attempt a login
+        const p: any = await runner({ probe: { url: probe.url } }, `${ctx.idempotencyKey}:probe`, false);
+        if (probe.pattern.test(`${p?.url ?? p?.output?.url ?? ""} ${p?.title ?? p?.output?.title ?? ""}`)) {
+          status = "logged_out";
+          exec("update connections set status='needs_reauth' where id=?", login.id);
+          emit("CONNECTION_NEEDS_REAUTH", { workspace_id: ctx.run.workspace_id, room_id: ctx.run.room_id, run_id: ctx.run.id, data: { connection_id: login.id, site: login.site, replay_url } });
+          throw new ToolError("BUSINESS_RULE", `the ${login.site} login has expired. The owner needs to reconnect it (Connections → ${login.site} → Reconnect); the task was not run. Replay: ${replay_url}`);
+        }
+      }
+      const j: any = await runner({ task, start_url }, ctx.idempotencyKey, true);
+      status = j?.status === "succeeded" ? "completed" : j?.status ?? "unknown";
+      return { ...j, replay_url };
+    } catch (e: any) {
+      if (e instanceof ToolError && !e.message.includes(replay_url)) e.message += ` (replay: ${replay_url})`;
+      throw e;
+    } finally {
+      await bb.releaseSession(session_id).catch(() => {}); // persists the Context; a lost release ends at the session timeout
+      end(status);
+    }
+  });
 }
 /** An MCP connection granted to this agent whose tool takes a natural-language `task` (how browser agents expose themselves). */
 export function browserMcp(agentId: string): { conn: any; tool: string } | null {
@@ -177,7 +250,7 @@ def({
 });
 
 def({
-  id: "browser.task", description: "Operate a website in a cloud browser for tasks that need interaction (forms, logins, bookings). If the site needs the user's login, reference it as {{username}} / {{password}} — the platform fills them in; you never see them.",
+  id: "browser.task", description: "Operate a website in a cloud browser for tasks that need interaction (forms, logins, bookings). If the user connected that site, the browser is already signed in, or (for a saved password) reference it as {{username}} / {{password}} and the platform fills them in; you never see them. Share the replay_url from the result when useful.",
   risk: "write_external", idempotency: "unsafe", defaultApproval: "first_time", inputSchema: obj({ task: str(), start_url: str(), site: str("e.g. resy.com") }, ["task"]),
   summarize: (i) => `Use a browser: ${i.task}`,
   siteLogin: (i) => i.site ?? (i.start_url ? hostOf(i.start_url) : undefined),
@@ -516,7 +589,8 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
   exec("insert into tool_executions (id, run_id, tool_id, fingerprint, status, input, connection_id, created_at) values (?,?,?,?,?,?,?,?)",
     exId, run.id, d.id, fp, "started", S(call.input), conn?.id ?? null, now());
   const ctx: ToolCtx = { run, agent, room, idempotencyKey: fp, connection: conn && conn !== login ? { id: conn.id, cred: unseal(conn.cred_enc), account: conn.account } : undefined,
-    siteLogin: login ? { ...unseal<any>(login.cred_enc), site } : undefined };
+    siteLogin: login && login.provider !== "browser_login" ? { ...unseal<any>(login.cred_enc), site } : undefined,
+    browserLogin: login?.provider === "browser_login" ? ((config) => ({ id: login.id, site: config.site, context_id: config.context_id, config }))(J(login.config, {})) : undefined };
   try {
     const out = simulateWrite || simulateRead ? simulate(d, call.input, simulateRead) : await d.execute(call.input, ctx);
     const stored = { ...out.output, __untrusted: !!out.untrusted, __status: out.status };
@@ -580,15 +654,21 @@ function wrap(d: ToolDef, stored: string, untrusted: boolean) {
 
 export const toolSpecs = (ids: Iterable<string>) => [...ids].map(getTool).filter(Boolean).map((t) => ({ name: t!.id, description: t!.description, input_schema: t!.inputSchema }));
 
+/** Stored login (site_login) or live-browser login (browser_login) for a site. An expired browser_login is still returned when
+ * nothing usable is, so policy tells the owner to reconnect instead of the task silently running signed out. */
 export function resolveSiteLogin(site: string, agentId: string, run: any, roomHumans: string[]) {
   const rows = all<any>(`select c.*, (g.agent_id is not null) granted from connections c left join connection_grants g on g.connection_id=c.id and g.agent_id=?
-    where c.workspace_id=? and c.provider='site_login' and c.status='active' and (json_extract(c.config, '$.site')=? or ? like '%.' || json_extract(c.config, '$.site'))`, agentId, run.workspace_id, site, site);
-  const score = (c: any) => (c.granted ? 8 : 0) + (c.owner_id === run.requested_by ? 4 : 0) + (roomHumans.includes(c.owner_id) ? 1 : 0);
+    where c.workspace_id=? and (c.provider='site_login' and c.status='active' or c.provider='browser_login' and c.status in ('active','needs_reauth'))
+    and (json_extract(c.config, '$.site')=? or ? like '%.' || json_extract(c.config, '$.site'))`, agentId, run.workspace_id, site, site);
+  // Ownership ranks first; a live-browser login beats a stored password only between otherwise equal candidates.
+  const score = (c: any) => (c.status === "active" ? 16 : 0) + (c.granted ? 8 : 0) + (c.owner_id === run.requested_by ? 4 : 0) + (roomHumans.includes(c.owner_id) ? 1 : 0) + (c.provider === "browser_login" ? 0.5 : 0);
   return rows.sort((a, b) => score(b) - score(a))[0] ?? null;
 }
 
 // Domain tool packs (registered after the core tools exist).
 import { registerReservationTools } from "./reservations";
 import { registerOrderTools } from "./orders";
+import { registerGroupTools } from "./groupkit";
 registerReservationTools(def);
 registerOrderTools(def);
+registerGroupTools(def);

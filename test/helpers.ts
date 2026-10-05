@@ -11,7 +11,7 @@ import { resolver } from "../src/tools";
 // Fake DNS: *.internal.test resolves to a private address, everything else to a public one.
 resolver.lookup = async (h: string) => [{ address: /internal\.test$/.test(h) ? "10.0.0.5" : "93.184.216.34" }];
 
-if (!process.env.KEEP_MODEL_KEYS) { delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY; }
+if (!process.env.KEEP_MODEL_KEYS) { delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY; delete process.env.OPENROUTER_API_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.JEV_API_KEY; delete process.env.CLERK_SECRET_KEY; }
 
 // ---------- fake network ----------
 type Handler = (req: Request, body: any) => Response | Promise<Response>;
@@ -23,12 +23,15 @@ export const net = {
   reset() { this.routes = []; this.calls = []; },
 };
 const realFetch = globalThis.fetch;
+const INTEGRATIONS = /googleapis\.com|slack\.com|telegram\.org|graph\.facebook\.com|photon\.test|twilio\.com|resend\.com|browserbase|stripe\.com|exa\.ai|\.test\//;
 globalThis.fetch = (async (input: any, init?: any) => {
   const req = new Request(input, init);
   const text = init?.body instanceof URLSearchParams ? init.body.toString() : typeof init?.body === "string" ? init.body : "";
   let body: any = text; try { body = JSON.parse(text); } catch {}
   net.calls.push({ method: req.method, url: req.url, body, headers: Object.fromEntries(req.headers) });
-  if (/api\.anthropic\.com|api\.openai\.com/.test(req.url)) return realFetch(input, init); // real models pass through (evals)
+  if (/api\.anthropic\.com|api\.openai\.com/.test(req.url) || (process.env.KEEP_MODEL_KEYS && /openrouter\.ai\/api|api\.typesafe\.ai/.test(req.url))) return realFetch(input, init); // real models (and JEV) pass through (evals)
+  // Live evals: public web reads are real (search + page fetches); anything that writes or talks to an integration stays faked.
+  if (process.env.EVAL_LIVE_WEB && (/duckduckgo\.com/.test(req.url) || (req.method === "GET" && !INTEGRATIONS.test(req.url)))) return realFetch(input, init);
   const r = net.routes.find((x) => x.re.test(req.url));
   if (r) return r.fn(req, body);
   return Response.json({ ok: true, id: id("ext"), result: { message_id: 1 }, messages: [{ id: "wamid.1" }], ts: "1.0" });

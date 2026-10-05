@@ -3,7 +3,7 @@
 // person pre-approved (a standing approval), otherwise they get a one-tap approval card on their phone.
 // Providers: "browser" (Browser Use / Stagehand via the browser runner, with the user's site login) and "sandbox"
 // (fictional venues that release tables on a schedule; used in test mode and when no browser runner is configured).
-import { all, one, exec, emit, id, now, S, J, tx } from "./db";
+import { all, one, exec, emit, id, now, S, J, tx, patchJson } from "./db";
 import { extraPlanners, extraChains, extraSummaries, type Msg } from "./model";
 import * as rt from "./runtime";
 import * as tools from "./tools";
@@ -86,7 +86,7 @@ function sandboxSearch(venues: typeof SANDBOX_VENUES, date: string, party: numbe
   for (const v of venues) {
     if (party > 8) continue;
     const times: string[] = [];
-    if (!v.hot) { for (let m = 17 * 60 + 30; m <= 22 * 60; m += 15) if (hash(`${v.id}|${date}|${m}`) % 3 === 0) times.push(hhmm(Math.floor(m / 60), m % 60)); }
+    if (!v.hot) { for (let m = 17 * 60 + 30; m <= 22 * 60; m += 15) if (m % 60 === 0 || hash(`${v.id}|${date}|${m}`) % 3 === 0) times.push(hhmm(Math.floor(m / 60), m % 60)); }
     else {
       const rel = releaseAt(v, date);
       if (now() >= rel && now() < rel + SNAP_MS) times.push("19:30", "20:15", "17:00", "22:00");
@@ -199,7 +199,8 @@ export async function checkWatches() {
       objective: `${auto ? "Book" : "Ask to book"} the table that just opened: ${hit.venue}, ${hit.date} at ${hit.time} for ${hit.party_size} (watch ${w.id}).` });
     exec("update runs set brief_status='skipped' where id=?", run.id);
     rt.appendStep(run.id, "assistant", { text: "", toolCalls: [{ id: `watch_${w.id}`, name: "reservations.book", input }] });
-    exec("update reservation_watches set pending_run_id=?, tried=json_insert(coalesce(tried, '[]'), '$[#]', ?) where id=?", run.id, hit.slot_id ?? `${hit.venue_id}|${hit.date}|${hit.time}`, w.id);
+    exec("update reservation_watches set pending_run_id=? where id=?", run.id, w.id);
+    patchJson("reservation_watches", "tried", w.id, (t) => [...(t ?? []), hit.slot_id ?? `${hit.venue_id}|${hit.date}|${hit.time}`], []);
     emit("WATCH_HIT", { workspace_id: w.workspace_id, room_id: w.room_id, run_id: run.id, actor: w.agent_id, data: { watch_id: w.id, slot: hit, auto } });
   }
   return n;
@@ -264,7 +265,8 @@ export function registerReservationTools(def: (d: tools.ToolDef) => void) {
       exec("insert into standing_approvals (id, agent_id, tool_id, constraints, max_uses, uses, expires_at, granted_by, ref, status, created_at) values (?,?,?,?,?,0,?,?,?, 'active', ?)",
         sid, ctx.agent.id, "reservations.book", S({ venue_ids: c.venue_ids, venue: c.query, room_id: w.room_id, dates: c.dates, time_from: c.time_from, time_to: c.time_to, party_size: c.party_size, max_deposit_per_person: i.max_deposit_per_person ?? 0 }),
         i.max_bookings ?? 1, Date.parse(`${c.dates.at(-1)}T23:59:59`), ctx.run.requested_by, w.id, now());
-      exec("update reservation_watches set auto_book=1, criteria=json_set(criteria, '$.max_deposit_per_person', ?) where id=?", i.max_deposit_per_person ?? 0, w.id);
+      exec("update reservation_watches set auto_book=1 where id=?", w.id);
+      patchJson("reservation_watches", "criteria", w.id, (c) => ({ ...c, max_deposit_per_person: i.max_deposit_per_person ?? 0 }));
       return { status: "SUCCEEDED", output: { standing_approval_id: sid, watch_id: w.id, auto_book: true, query: c.query, dates: c.dates } };
     },
   });

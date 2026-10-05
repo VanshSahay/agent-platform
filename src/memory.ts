@@ -1,6 +1,6 @@
 // Scoped memory (plan §9). Chat history is not memory; memory is selected, scoped, retrievable knowledge with provenance.
 // ponytail: FTS5 keyword + recency ranking; add pgvector embeddings when recall on paraphrases becomes the bottleneck.
-import { all, one, exec, id, now, S, J } from "./db";
+import { all, one, exec, id, now, S, J, patchJson, dialect } from "./db";
 import { structured } from "./model";
 
 export type Scope = "user_private" | "room" | "workspace" | "agent" | "entity";
@@ -30,14 +30,15 @@ export function remember(a: { run?: any; room: any; text: string; scope: Scope; 
 
   const existing = all<any>("select id, text from memories where scope_type=? and scope_id=?", a.scope, scopeId).find((m) => norm(m.text) === norm(a.text));
   if (existing) {
-    exec("update memories set source_event_ids=json_insert(source_event_ids, '$[#]', ?), created_at=? where id=?", a.sourceEventIds?.[0] ?? null, now(), existing.id);
+    patchJson("memories", "source_event_ids", existing.id, (ids) => [...(ids ?? []), a.sourceEventIds?.[0] ?? null], []);
+    exec("update memories set created_at=? where id=?", now(), existing.id);
     return { id: existing.id, scope: a.scope, deduped: true };
   }
   const mid = id("mem");
   exec(`insert into memories (id, workspace_id, scope_type, scope_id, kind, text, source_event_ids, created_by, confidence, sensitivity, created_at)
     values (?,?,?,?,?,?,?,?,?,?,?)`, mid, a.room.workspace_id, a.scope, scopeId, a.kind ?? "fact", a.text, S(a.sourceEventIds ?? []), a.createdBy,
     a.confidence ?? 0.8, a.sensitivity ?? "normal", now());
-  exec("insert into memories_fts (id, text) values (?, ?)", mid, a.text);
+  if (dialect === "sqlite") exec("insert into memories_fts (id, text) values (?, ?)", mid, a.text); // Postgres searches memories directly (GIN index)
   return { id: mid, scope: a.scope, text: a.text };
 }
 
@@ -58,9 +59,13 @@ export function retrieve(room: any, agentId: string, query: string, requesterId?
   const terms = (query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).slice(0, 12);
   let hits: any[] = [];
   if (terms.length) {
-    hits = all<any>(`select m.*, bm25(memories_fts) score from memories_fts f join memories m on m.id=f.id
-      where memories_fts match ? and (${where}) and (m.expires_at is null or m.expires_at > ?) order by score limit ?`,
-      terms.map((t) => `"${t}"`).join(" OR "), ...params, now(), limit);
+    hits = dialect === "pg"
+      ? all<any>(`select m.*, ts_rank(to_tsvector('simple', m.text), to_tsquery('simple', ?)) score from memories m
+          where to_tsvector('simple', m.text) @@ to_tsquery('simple', ?) and (${where}) and (m.expires_at is null or m.expires_at > ?) order by score desc limit ?`,
+          ...[0, 1].map(() => terms.map((t) => t.replace(/[^\p{L}\p{N}]/gu, "")).filter(Boolean).join(" | ")), ...params, now(), limit)
+      : all<any>(`select m.*, bm25(memories_fts) score from memories_fts f join memories m on m.id=f.id
+          where memories_fts match ? and (${where}) and (m.expires_at is null or m.expires_at > ?) order by score limit ?`,
+          terms.map((t) => `"${t}"`).join(" OR "), ...params, now(), limit);
   }
   const recent = all<any>(`select m.* from memories m where (${where}) and (m.expires_at is null or m.expires_at > ?) order by created_at desc limit ?`, ...params, now(), limit);
   const seen = new Set<string>(), out: any[] = [];
@@ -92,4 +97,4 @@ export function listFor(workspaceId: string, filter: { scope_type?: string; scop
   return all<any>(`select * from memories where workspace_id=? ${filter.scope_type ? "and scope_type=?" : ""} ${filter.scope_id ? "and scope_id=?" : ""} order by created_at desc limit 200`,
     workspaceId, ...[filter.scope_type, filter.scope_id].filter(Boolean)).map((m) => ({ ...m, source_event_ids: J(m.source_event_ids, []) }));
 }
-export function forget(memId: string) { exec("delete from memories where id=?", memId); exec("delete from memories_fts where id=?", memId); }
+export function forget(memId: string) { exec("delete from memories where id=?", memId); if (dialect === "sqlite") exec("delete from memories_fts where id=?", memId); }

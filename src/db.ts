@@ -1,9 +1,11 @@
-// Canonical product database. SQLite (bun:sqlite) with FTS5.
-// ponytail: single-file SQLite; move to Postgres + pgvector + RLS when you need multi-node workers.
-import { Database } from "bun:sqlite";
+// Canonical product database: Postgres in production (DATABASE_URL), SQLite (bun:sqlite + FTS5) for local dev and tests.
+// Both sit behind the same synchronous one/all/exec/tx API; SQL is written once (SQLite-flavoured) and translated in pg.ts.
+import type { Database } from "bun:sqlite";
+import * as pg from "./pg";
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
 
 export let db: Database;
+export let dialect: "sqlite" | "pg" = "sqlite";
 
 const SCHEMA = `
 create table if not exists users (id text primary key, email text unique, name text not null, password_hash text, guest int default 0, created_at int);
@@ -80,6 +82,13 @@ create table if not exists reservation_watches (id text primary key, workspace_i
 create table if not exists group_orders (id text primary key, workspace_id text, room_id text, agent_id text, organizer_id text, title text, vendor text, items text, min_total_qty int,
   deadline_at int, payment_handle text, shipping_fee real default 0, status text default 'open', reminded int default 0, closed_at int, created_at int);
 create table if not exists order_lines (id text primary key, order_id text, user_id text, item_id text, qty int, note text, paid int default 0, updated_at int);
+create table if not exists polls (id text primary key, workspace_id text, room_id text, agent_id text, created_by text, question text, options text, multi int default 0,
+  status text default 'open', closes_at int, created_at int);
+create table if not exists poll_votes (poll_id text, user_id text, option_ids text, updated_at int, primary key (poll_id, user_id));
+create table if not exists expenses (id text primary key, workspace_id text, room_id text, agent_id text, paid_by text, amount real, description text, split_among text, created_at int);
+create table if not exists settlements (id text primary key, room_id text, from_user text, to_user text, amount real, created_at int);
+create table if not exists lists (id text primary key, room_id text, name text, created_at int);
+create table if not exists list_items (id text primary key, list_id text, text text, done int default 0, added_by text, created_at int);
 create table if not exists usage (id integer primary key autoincrement, workspace_id text, agent_id text, run_id text, kind text, qty real,
   cost_usd real default 0, byok int default 0, ts int);
 create table if not exists provider_keys (workspace_id text, provider text, key_enc text, primary key (workspace_id, provider));
@@ -91,15 +100,51 @@ create table if not exists templates (id text primary key, slug text unique, pub
 create table if not exists template_versions (template_id text, version text, manifest text, review_notes text, status text, created_at int, primary key (template_id, version));
 create table if not exists installs (id text primary key, template_id text, version text, workspace_id text, agent_id text, ts int);
 create table if not exists reviews (id text primary key, template_id text, user_id text, rating int, text text, ts int);
+create table if not exists oauth_states (state text primary key, provider text, workspace_id text, user_id text, verifier text, payload text, expires_at int, used_at int);
+create table if not exists browser_sessions (id text primary key, connection_id text, workspace_id text, purpose text, session_id text, status text, replay_url text, run_id text, created_at int, ended_at int);
+create table if not exists credit_ledger (id text primary key, workspace_id text, delta_usd real, reason text, ref text unique, ts int);
 `;
 
+const COLUMN_MIGRATIONS = [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
+    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"], ["agents", "spec", "text"],
+    ["outbox", "claimed_at", "int"], ["room_endpoints", "reply_token", "text"], ["room_endpoints", "undeliverable", "int default 0"],
+    ["workspaces", "ai_mode", "text default 'credits'"], ["workspaces", "ai_models", "text default '{}'"], ["workspaces", "credit_usd", "real default 0"], ["workspaces", "allowance_month", "text"], ["workspaces", "allowance_used", "real default 0"], ["users", "clerk_id", "text"]];
+
+let pgReady = false;
+/** Postgres: DATABASE_URL. Tests pass ":memory:" for a fresh database — on Postgres that truncates every table instead. */
+function openPg(url: string, fresh: boolean) {
+  dialect = "pg"; pg.connect(url);
+  if (!pgReady) {
+    pg.query(pg.translateDdl(SCHEMA));
+    for (const [table, col, ddl] of COLUMN_MIGRATIONS) pg.query(`alter table ${table} add column if not exists ${col} ${pg.translateDdl(ddl).split("\n")[0]}`);
+    pg.query("alter table channel_identities alter column agent_id drop not null");
+    pgReady = true;
+  }
+  if (fresh) {
+    const tables = pg.query("select tablename from pg_tables where schemaname=current_schema()").rows.map((r) => r.tablename);
+    if (tables.length) pg.query(`truncate table ${tables.join(", ")} restart identity cascade`);
+  }
+  seedProfiles();
+}
+
+/** The current moment as a model should see it: weekday, date, local time, zone and UTC offset. Without this, models
+ *  guess the year and can't resolve "Saturday" or "a week before Nov 3". Zone: DEFAULT_TZ, else the server's.
+ *  ponytail: one zone for everyone; per-user zones when users span time zones. */
+export function clockLine(t = now()) {
+  const tz = process.env.DEFAULT_TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone, d = new Date(t);
+  const local = d.toLocaleString("en-US", { timeZone: tz, weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const off = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" }).formatToParts(d).find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") || "+00:00";
+  return `Now: ${local} (${tz}, UTC${off}). Write datetimes for tools as ISO 8601 with this offset, e.g. 2026-10-27T09:00:00${off}.`;
+}
 export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
+  if (process.env.DATABASE_URL) return openPg(process.env.DATABASE_URL, path === ":memory:");
+  dialect = "sqlite";
+  const { Database } = require("bun:sqlite"); // only loaded for SQLite, so the Node (Temporal) worker never touches it
   db = new Database(path, { create: true });
   db.exec("pragma journal_mode = wal; pragma foreign_keys = on;");
   db.exec(SCHEMA);
   // Additive migrations for databases created by earlier versions.
-  for (const [table, col, ddl] of [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
-    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"]]) {
+  for (const [table, col, ddl] of COLUMN_MIGRATIONS) {
     if (!(db.query(`pragma table_info(${table})`).all() as any[]).some((c) => c.name === col)) db.exec(`alter table ${table} add column ${col} ${ddl}`);
   }
   // Shared platform lines have no owning agent: relax the old NOT NULL (SQLite needs a table rebuild).
@@ -109,16 +154,15 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
     drop table channel_identities; alter table channel_identities_new rename to channel_identities;`);
   db.exec(`update templates set published_version=latest_version where published_version is null and status='published';
     update template_versions set status=coalesce((select case when t.published_version=template_versions.version then 'published' else t.status end from templates t where t.id=template_id), 'draft') where status is null;`);
-  const profiles = db.query("select count(*) n from model_profiles").get() as { n: number };
-  if (!profiles.n) {
-    // Routing lives in the DB, not in agent definitions (plan §8.3). Edit rows to re-route.
-    const ins = db.prepare("insert into model_profiles values (?,?,?,?,?)");
-    ins.run("fast", "anthropic:claude-haiku-4-5", "openai:gpt-5-mini", null, 0.05);
-    ins.run("standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 0.8);
-    ins.run("research-standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 1.5);
-    ins.run("escalation", "anthropic:claude-opus-5-5", "anthropic:claude-sonnet-5-5", null, 3);
-  }
+  seedProfiles();
   return db;
+}
+function seedProfiles() {
+  if (one<any>("select count(*) n from model_profiles")!.n) return;
+  // Routing lives in the DB, not in agent definitions (plan §8.3). Edit rows to re-route.
+  for (const r of [["fast", "anthropic:claude-haiku-4-5", "openai:gpt-5-mini", null, 0.05], ["standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 0.8],
+    ["research-standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 1.5], ["escalation", "anthropic:claude-opus-5-5", "anthropic:claude-sonnet-5-5", null, 3]])
+    exec("insert into model_profiles values (?,?,?,?,?)", ...r);
 }
 
 // ---- clock (injectable for durable-time tests) ----
@@ -129,12 +173,23 @@ export const resetClock = () => { clockOffset = 0; };
 
 // ---- helpers ----
 export const id = (prefix: string) => `${prefix}_${randomBytes(8).toString("hex")}`;
-export const all = <T = any>(sql: string, ...p: any[]) => db.query(sql).all(...p) as T[];
-export const one = <T = any>(sql: string, ...p: any[]) => (db.query(sql).get(...p) ?? undefined) as T | undefined;
-export const exec = (sql: string, ...p: any[]) => db.query(sql).run(...p);
+export const all = <T = any>(sql: string, ...p: any[]): T[] => dialect === "pg" ? pg.query(pg.translate(sql), p).rows : db.query(sql).all(...p) as T[];
+export const one = <T = any>(sql: string, ...p: any[]): T | undefined => dialect === "pg" ? pg.query(pg.translate(sql), p).rows[0] : (db.query(sql).get(...p) ?? undefined) as T | undefined;
+export const exec = (sql: string, ...p: any[]): { changes: number } => dialect === "pg" ? { changes: pg.query(pg.translate(sql), p).count } : db.query(sql).run(...p);
 export const J = (s: any, d: any = null) => { if (s == null) return d; try { return JSON.parse(s); } catch { return d; } };
 export const S = (v: any) => JSON.stringify(v ?? null);
-export const tx = <T>(fn: () => T): T => db.transaction(fn)();
+let depth = 0;
+export const tx = <T>(fn: () => T): T => {
+  if (dialect === "sqlite") return db.transaction(fn)();
+  if (depth++) try { return fn(); } finally { depth--; } // nested: join the outer transaction
+  pg.query("begin");
+  try { const r = fn(); pg.query("commit"); return r; } catch (e) { pg.query("rollback"); throw e; } finally { depth--; }
+};
+/** Read-modify-write a JSON text column in app code, so no SQL dialect needs json_set/json_insert. */
+export function patchJson(table: string, col: string, rowId: string, fn: (v: any) => any, fallback: any = {}) {
+  const cur = one<any>(`select ${col} v from ${table} where id=?`, rowId);
+  if (cur) exec(`update ${table} set ${col}=? where id=?`, S(fn(J(cur.v, fallback))), rowId);
+}
 export const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** Append-only domain event (plan §24.1). Messages, run lifecycle, tool calls and approvals all land here; it doubles as the audit log. */
@@ -174,7 +229,11 @@ export function unseal<T = any>(sealed: string | null | undefined): T | null {
   return JSON.parse(ungcm(ungcm(masterKey(), k), d).toString());
 }
 
+/** Billing plugs in here (set by billing.ts) so metered non-model usage is priced and charged without an import cycle. */
+export const usageHooks: { price?: (kind: string, qty: number) => number; charge?: (ws: string, usd: number) => void } = {};
 export function recordUsage(u: { workspace_id: string; agent_id?: string; run_id?: string; kind: string; qty: number; cost_usd?: number; byok?: boolean }) {
+  const cost = u.cost_usd ?? (usageHooks.price?.(u.kind, u.qty) ?? 0); // model calls arrive pre-priced and pre-charged
+  if (u.cost_usd === undefined && cost > 0) usageHooks.charge?.(u.workspace_id, cost);
   exec("insert into usage (workspace_id, agent_id, run_id, kind, qty, cost_usd, byok, ts) values (?,?,?,?,?,?,?,?)",
-    u.workspace_id, u.agent_id ?? null, u.run_id ?? null, u.kind, u.qty, u.cost_usd ?? 0, u.byok ? 1 : 0, now());
+    u.workspace_id, u.agent_id ?? null, u.run_id ?? null, u.kind, u.qty, cost, u.byok ? 1 : 0, now());
 }
