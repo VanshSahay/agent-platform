@@ -62,11 +62,11 @@ test("AC-R3 financial actions need strong confirmation; first_time tools remembe
 
   net.on(/browser/, () => Response.json({ status: "succeeded", output: "done" }));
   process.env.BROWSER_TASK_URL = "https://browser.test/run";
-  scriptModel(call("browser.task", { task: "check in" }), { text: "done 1" });
-  await say(room.id, ellie, "check in");
+  scriptModel(call("browser.task", { task: "submit the check-in form" }), { text: "done 1" });
+  await say(room.id, ellie, "submit the check-in form");
   await say(room.id, ellie, "approve");
-  scriptModel(call("browser.task", { task: "check in again" }), { text: "done 2" });
-  await say(room.id, ellie, "check in again");
+  scriptModel(call("browser.task", { task: "submit the check-in form again" }), { text: "done 2" });
+  await say(room.id, ellie, "submit the check-in form again");
   expect(lastFrom(room.id, a.id)).toBe("done 2"); // second use needed no approval
   expect(all("select * from approvals where tool_id='browser.task'")).toHaveLength(1);
   delete process.env.BROWSER_TASK_URL; delete TOOLS["test.pay"];

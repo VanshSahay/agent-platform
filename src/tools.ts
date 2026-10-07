@@ -407,10 +407,14 @@ def({
   },
 });
 
+const BROWSER_WRITE = /\b(book|reserve|reservation|pay|purchase|buy|order|checkout|check out|submit|apply|sign ?up|register|create an account|log ?in|sign ?in|send|post|message|cancel|delete|remove|unsubscribe|subscribe|complete the|confirm the|place (the|an|my) order)\b/i;
 def({
   id: "browser.task", description: "Operate a website in a cloud browser for tasks that need interaction (forms, logins, bookings). If the user connected that site, the browser is already signed in, or (for a saved password) reference it as {{username}} / {{password}} and the platform fills them in; you never see them. Share the replay_url from the result when useful.",
   risk: "write_external", idempotency: "unsafe", defaultApproval: "first_time", inputSchema: obj({ task: str(), start_url: str(), site: str("e.g. resy.com") }, ["task"]),
-  summarize: (i) => `Use a browser: ${i.task}`,
+  // Looking something up on a site (prices, availability, opening hours) is a read: no sign-off, and the runner never completes an
+  // irreversible step unless the task says to. Anything that books, pays, submits, signs in or sends stays an external write.
+  riskOf: (i) => BROWSER_WRITE.test(String(i.task ?? "")) || i.site_login || /\{\{(username|password)\}\}/.test(String(i.task ?? "")) ? "write_external" : "read",
+  summarize: (i) => `${BROWSER_WRITE.test(String(i.task ?? "")) ? "Act on" : "Look something up on"} ${i.site ?? (i.start_url ? hostOf(i.start_url) : "a website")}: ${String(i.task ?? "").replace(/\s+/g, " ").slice(0, 140)}${String(i.task ?? "").length > 140 ? "…" : ""}`,
   siteLogin: (i) => i.site ?? (i.start_url ? hostOf(i.start_url) : undefined),
   async execute({ task, start_url }, ctx) {
     const j = await runBrowser(task, start_url, ctx);
@@ -541,17 +545,22 @@ export function freeSlots(busy: { start: number; end: number }[], from: number, 
 }
 
 def({
-  id: "calendar.find_free_time", description: "Find open meeting slots in working hours over the next days, optionally across attendees' calendars.", risk: "read", idempotency: "safe",
-  defaultApproval: "none", requiresConnection: "google", inputSchema: obj({ days: num(), duration_minutes: num(), attendees: { type: "array", items: str() } }),
+  id: "calendar.find_free_time", description: "Find open meeting slots, optionally across attendees' calendars. from: \"next week\", \"tomorrow\", \"this week\" or YYYY-MM-DD (default: now); to: YYYY-MM-DD or days ahead; after_hour/before_hour narrow the time of day (afternoons: 12 and 17). Slots come back in the requester's time zone.", risk: "read", idempotency: "safe",
+  defaultApproval: "none", requiresConnection: "google", inputSchema: obj({ from: str(), to: str(), days: num(), duration_minutes: num(), after_hour: num(), before_hour: num(), attendees: { type: "array", items: str() } }),
   async execute(i, ctx) {
     const days = Math.min(60, Math.max(1, Math.round(i.days ?? 5))), duration_minutes = Math.min(480, Math.max(5, Math.round(i.duration_minutes ?? 30)));
     const attendees: string[] = (i.attendees ?? []).slice(0, 20);
-    const timeMin = new Date(now()).toISOString(), timeMax = new Date(now() + days * 864e5).toISOString();
+    const tz0 = tzOf(ctx.run?.requested_by), z = zoned(now(), tz0), day = (d: number, h = 0, m = 0) => fromZoned(z.y, z.mo, z.d + d, h, m, tz0);
+    const f = String(i.from ?? "").trim().toLowerCase(), ymd = (s: string) => s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const start = Math.max(now(), ymd(f) ? fromZoned(+ymd(f)![1], +ymd(f)![2], +ymd(f)![3], 0, 0, tz0) : f === "tomorrow" ? day(1) : /next week/.test(f) ? day(((8 - z.dow) % 7) || 7) : now());
+    const t = String(i.to ?? "").trim(), end = ymd(t) ? fromZoned(+ymd(t)![1], +ymd(t)![2], +ymd(t)![3], 23, 59, tz0) : /next week/.test(f) && i.days == null ? start + 5 * 864e5 : start + days * 864e5;
+    const timeMin = new Date(start).toISOString(), timeMax = new Date(end).toISOString();
     const j: any = await (await call("https://www.googleapis.com/calendar/v3/freeBusy", { method: "POST", headers: await googleToken(ctx),
       body: S({ timeMin, timeMax, items: [{ id: "primary" }, ...attendees.map((id: string) => ({ id }))] }) })).json();
     const busy = Object.values(j.calendars ?? {}).flatMap((c: any) => (c.busy ?? []).map((x: any) => ({ start: Date.parse(x.start), end: Date.parse(x.end) })));
     const tz = tzOf(ctx.run?.requested_by);
-    return { status: "SUCCEEDED", output: { time_zone: tz, slots: freeSlots(busy, now(), now() + days * 864e5, duration_minutes, 9, 18, 5, tz), duration_minutes } };
+    const after = Math.min(23, Math.max(0, Math.round(i.after_hour ?? 9))), before = Math.min(24, Math.max(after + 1, Math.round(i.before_hour ?? 18)));
+    return { status: "SUCCEEDED", output: { time_zone: tz, from: fmtLocal(start, tz), to: fmtLocal(end, tz), hours: `${after}:00–${before}:00`, slots: freeSlots(busy, start, end, duration_minutes, after, before, 5, tz), duration_minutes } };
   },
 });
 
@@ -660,7 +669,8 @@ def({
     const r = findReminder(ctx, i.reminder), tz = tzOf(ctx.run.requested_by), old = J(r.spec, {});
     const timeChanged = ["in_minutes", "at", "recurring", "days", "time", "hour", "every_minutes"].some((k) => i[k] != null);
     const next = timeChanged ? whenSpec(i, tz) : { kind: r.kind, spec: old };
-    const spec = { ...next.spec, deliver: old.deliver ?? "message", endpoint_id: old.endpoint_id ?? null };
+    const spec = { ...next.spec, deliver: old.deliver ?? "message", endpoint_id: old.endpoint_id ?? null,
+      ...(old.unless_reply_from ? { unless_reply_from: old.unless_reply_from, since: old.since } : {}) }; // a follow-up stays a follow-up
     const next_at = next.kind === "time" ? spec.at : rt.nextRecurring(spec, now());
     exec("update schedules set objective=?, kind=?, spec=?, next_at=? where id=?", i.text ?? r.objective, next.kind, S(spec), next_at, r.id);
     return { status: "SUCCEEDED", output: { id: r.id.slice(-6), text: i.text ?? r.objective, next: fmtLocal(next_at, tz), repeats: next.kind === "recurring" ? describeRepeat(spec) : "once" } };

@@ -181,3 +181,24 @@ test("AC-AVA4 the Dana journey: finds Dana, reads free time, shows the exact ema
   expect(fired.some((t) => /Sam hasn't replied/.test(t))).toBe(false);
   expect(events("REMINDER_SKIPPED").map((e) => e.data.reason)).toEqual(["sam@example.com replied"]);
 });
+
+test("AC-AVA5 free time can be asked for a range and hours ('next week, afternoons'); changing a follow-up reminder's time keeps its 'only if no reply' condition", async () => {
+  googleConnection(ws, ellie, [ava.id]);
+  let asked = "";
+  net.on(/calendar\/v3\/freeBusy/, (_r, b) => { asked = `${b.timeMin}..${b.timeMax}`; return Response.json({ calendars: { primary: { busy: [] } } }); });
+  const seen = scriptModel(call("calendar.find_free_time", { from: "next week", after_hour: 12, before_hour: 17, duration_minutes: 60 }), (r) => ({ text: r.messages.at(-1)!.content.slice(0, 400) }));
+  await text("when am I free next week in the afternoons?");
+  const out = JSON.parse(seen.at(-1)!.messages.at(-1)!.content.match(/\{[\s\S]*\}/)![0]);
+  const nowZ = zoned(now(), "America/New_York"), monday = ((8 - nowZ.dow) % 7) || 7;
+  expect(zoned(Date.parse(asked.split("..")[0]), "America/New_York")).toMatchObject({ d: zoned(now() + monday * 864e5, "America/New_York").d, h: 0 }); // starts next Monday, her midnight
+  expect(out.slots.length).toBeGreaterThan(0);
+  expect(out.slots.every((s: any) => { const z = zoned(Date.parse(s.start), "America/New_York"); return z.h >= 12 && z.h < 17 && z.dow >= 1 && z.dow <= 5; })).toBe(true);
+
+  scriptModel(call("reminder.schedule", { text: "Dana hasn't replied", days: ["fri"], time: "09:00", unless_reply_from: "dana@example.com" }), { text: "Set." });
+  await text("remind me friday 9am if dana@example.com hasn't replied");
+  scriptModel(call("reminder.update", { reminder: "Dana", time: "14:00" }), { text: "Moved to 2pm." });
+  await text("make that 2pm instead");
+  const s = one<any>("select spec, next_at from schedules where objective=? and status='active'", "Dana hasn't replied");
+  expect(J(s.spec)).toMatchObject({ unless_reply_from: "dana@example.com" });
+  expect(zoned(s.next_at, "America/New_York")).toMatchObject({ h: 14, mi: 0 });
+});

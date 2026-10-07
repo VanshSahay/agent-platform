@@ -101,7 +101,7 @@ test("AC-GT5 asking the person to approve in words with no approval pending is c
   expect(events("UNBACKED_CLAIM")).toHaveLength(1);
   expect(seen.some((q) => q.messages.some((m) => /a draft alone is never sent/.test(m.content)))).toBe(true);
   expect(one<any>("select tool_id, status from approvals where room_id=?", room.id)).toMatchObject({ tool_id: "email.send", status: "pending" }); // a real approval now exists
-  expect(lastFrom(room.id, ava.id)).toMatch(/Ava wants to: Send email to dana@example\.com/);
+  expect(lastFrom(room.id, ava.id)).toMatch(/OK to go ahead\? Send email to dana@example\.com/);
 });
 
 test("AC-GT6 a model that repeats the exact same read call gets the cached result with a warning, then a refusal, so it answers instead of looping; the tool itself ran once", async () => {

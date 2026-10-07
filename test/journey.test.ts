@@ -124,7 +124,7 @@ test("AC-J3 reservations: watch a hot spot, pre-approve limits once, it books th
 
   // A normal booking: options, then a one-tap approval.
   await text("+15557770001", "chat-r", "Book a table at Osteria Nove on Friday for 4 around 8");
-  expect(lastPhoton("chat-r")).toMatch(/Reese wants to: Book Osteria Nove, \w{3}, \w{3} \d+ at \d+:\d\d[ap]m for 4/);
+  expect(lastPhoton("chat-r")).toMatch(/OK to go ahead\? Book Osteria Nove, \w{3}, \w{3} \d+ at \d+:\d\d[ap]m for 4/);
   await text("+15557770001", "chat-r", "approve");
   expect(lastPhoton("chat-r")).toMatch(/🎉 Booked: Osteria Nove/);
 

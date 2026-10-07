@@ -498,7 +498,7 @@ export function requestApproval(run: any, agent: any, d: any, input: any, fp: st
   const who = approvers.map(nameOf).join(" or ");
   postMessage(run.room_id, { sender: agent.id, runId: run.id, approvalId: aid, targets: replyTargets(run.room_id, run.origin_endpoint_id),
     buttons: [{ label: strong ? "Confirm" : "Approve", data: `apr:${aid}:approve` }, { label: "Reject", data: `apr:${aid}:reject` }],
-    text: `${agent.name} wants to: ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${d.preview ? `\n${d.preview(input)}\n\n` : ""}${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}` });
+    text: `OK to go ahead? ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${d.preview ? `\n${d.preview(input)}\n\n` : ""}${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}` });
   return wid;
 }
 

@@ -61,7 +61,7 @@ export function ungroundedFigures(run: any, text: string): string[] {
 const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;
 // Asking the person to sign off in words ("once approved I'll send", "let me know and I'll send it") when no approval exists: the
 // live failure that stranded a Dana email — the model drafted with email.draft, narrated an approval, and "approve" did nothing.
-const APPROVAL_ASK = /\b(once (you('ve| have)? )?approved?|if you('d| would) like( me)? to send|let me know (if|when|and) .{0,40}\bsend|say the word and|just (confirm|approve|say yes)|reply ["“']?(approve|yes|send)|awaiting your (approval|go-ahead|sign-off)|once you (confirm|give the go-ahead))\b/i;
+const APPROVAL_ASK = /\b(you can approve|approve (it|this|the draft|to send)|ready to send (when|once|whenever) you|once (you('ve| have)? )?approved?|if you('d| would) like( me)? to send|let me know (if|when|and) .{0,40}\bsend|say the word and|just (confirm|approve|say yes)|reply ["“']?(approve|yes|send)|awaiting your (approval|go-ahead|sign-off)|once you (confirm|give the go-ahead))\b/i;
 async function claimsUnbackedAction(runId: string, text: string) {
   if (one("select 1 from approvals where run_id=? and status='pending'", runId)) return false;
   if (APPROVAL_ASK.test(text)) return true; // whatever else succeeded, the send/booking they're being asked to approve doesn't exist
