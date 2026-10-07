@@ -32,7 +32,7 @@ test("AC-B2 missing essentials trigger one batched question; nothing runs until 
   await say(room.id, ellie, "Email Sam about moving our dinner to Friday");
   const run = runsIn(room.id)[0];
   expect(run.brief_status).toBe("clarifying");
-  expect(lastFrom(room.id, ava.id)).toMatch(/Before I start[\s\S]*What's Sam's email address\?/);
+  expect(lastFrom(room.id, ava.id)).toMatch(/Quick question before I start[\s\S]*What's Sam's email address\?/);
   expect(all("select * from events where type='TOOL_CALL_REQUESTED'")).toHaveLength(0);
   await say(room.id, ellie, "sam@example.com");
   expect(runsIn(room.id)).toHaveLength(1); // the answer continues the same task

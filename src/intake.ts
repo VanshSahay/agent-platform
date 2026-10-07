@@ -183,7 +183,7 @@ export function decide(b: Brief, o: { mode: string; revised: boolean }): Decisio
 export function renderBrief(b: Brief, d: Decision, diff?: string[]) {
   const L = (label: string, xs: string[]) => (xs.length ? `\n${label}: ${xs.join("; ")}` : "");
   if (d === "clarify")
-    return `Before I start — ${b.goal}\n${b.questions.map((q, i) => `${i + 1}. ${q.q}${q.default ? ` (default: ${q.default})` : ""}`).join("\n")}\n` +
+    return `Quick question before I start:\n${b.questions.map((q, i) => `${i + 1}. ${q.q}${q.default ? ` (default: ${q.default})` : ""}`).join("\n")}\n` +
       (b.questions.every((q) => q.default) ? `Reply with answers, or "go" to use the defaults.` : "Reply with the answers.");
   // Reads like a text from a person: what I'll do, what I'm assuming, what I'll check with you first. The full brief
   // (deliverable, constraints, done-when) still drives the run and shows in the app's run view.
@@ -211,6 +211,12 @@ export async function intake(run: any, agent: any, room: any, live: () => boolea
   const prev: Brief | null = J(run.brief);
   const b = await buildBrief(run, agent, room, prev ?? undefined);
   if (!live()) return "wait"; // superseded while drafting
+  // Questions the planner could answer itself (every one has a default) don't put read-only work on hold: start, and say what
+  // was assumed. (A live run stalled a simple hotel search on "how many rooms?" with the default right there.)
+  if (b.questions.length && b.questions.every((q) => q.default) && !b.side_effects.length && !b.plan.some((p) => p.tool && WRITE_RISKS.includes(getTool(p.tool)?.risk ?? ""))) {
+    b.assumptions = [...b.assumptions, ...b.questions.map((q) => `${q.q.replace(/\?\s*$/, "")}: ${q.default}`)];
+    b.questions = [];
+  }
   // Answering a clarifying question isn't a change; changing a plan that was proposed or already running is.
   const d = decide(b, { mode: agent.confirm_mode ?? "smart", revised: ["proposed", "auto", "confirmed"].includes((prev as any)?._revisedFrom) });
   const diff = (prev as any)?._revisedFrom === "clarifying" ? [] : diffBriefs(prev, b);
