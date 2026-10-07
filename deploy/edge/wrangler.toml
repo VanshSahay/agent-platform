@@ -1,0 +1,6 @@
+# Permanent public link for the app: https://agent-platform.<account subdomain>.workers.dev (see worker.js).
+name = "agent-platform"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+account_id = "679b628706e07f0bdb22274db0ad6df9" # Soulcypher
+workers_dev = true

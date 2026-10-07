@@ -4,6 +4,7 @@ WORKDIR /app
 # ffmpeg: iMessage voice memos (.caf) are transcoded to MP3 before transcription
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock* ./
+COPY patches ./patches
 RUN bun install --frozen-lockfile --production
 COPY . .
 ENV NODE_ENV=production ENGINE=temporal PORT=3000
