@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useLayoutEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
+import { Component, useEffect, useLayoutEffect, useState, useCallback, useRef, createContext, useContext, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
 import { Rich } from "./rich";
 import { ClerkProvider, SignIn, useAuth } from "@clerk/react";
@@ -25,6 +25,11 @@ function useHash() {
   return h;
 }
 const go = (p: string) => { location.hash = p; };
+class Boundary extends Component<{ children: ReactNode }, { err: string | null }> {
+  state = { err: null as string | null };
+  static getDerivedStateFromError(e: any) { return { err: String(e?.message ?? e) }; }
+  render() { return this.state.err ? <div className="card" style={{ margin: 24 }}><h3>This page hit an error</h3><p className="small muted mono">{this.state.err}</p><button className="btn" onClick={() => location.reload()}>Reload</button></div> : this.props.children; }
+}
 function useApi<T = any>(path: string | null, poll = 0): [T | null, () => void, string | null] {
   const [d, setD] = useState<T | null>(null), [e, setE] = useState<string | null>(null), [n, setN] = useState(0);
   useEffect(() => {
@@ -1239,14 +1244,14 @@ function App() {
         <div className="sep" />
         <a href="#/settings" className={on("/settings") ? "on" : ""}><span className="ic">⚙</span>Settings</a>
       </nav>
-      <main className="main"><div key={path} className={`page ${wide ? "wide" : ""}`}>
+      <main className="main"><div key={path} className={`page ${wide ? "wide" : ""}`}><Boundary key={path}>
         {path === "/" ? <Home /> : path === "/agents" ? <Agents /> : path === "/agents/new" ? <CreateAgent />
           : path.startsWith("/agents/") && seg[3] === "launch" ? <Launch id={seg[2]} aud={(new URLSearchParams(qs).get("aud") as Aud) ?? "me"} />
           : path.startsWith("/agents/") ? <AgentPage id={seg[2]} tab={seg[3]} />
           : path === "/rooms" ? <Rooms /> : path.startsWith("/rooms/") ? <Room id={seg[2]} /> : path.startsWith("/discover") ? <Discover route={path} />
           : path.startsWith("/connections") ? <Connections /> : path === "/activity" ? <Activity /> : path === "/tasks" ? <Tasks /> : path.startsWith("/settings") ? <Settings />
           : path.startsWith("/invite/") ? <AcceptInvite token={seg[2]} /> : <div className="empty">Not found</div>}
-      </div></main>
+      </Boundary></div></main>
     </div>
     {msg && <div className="toast" role="status">{msg}</div>}
   </Ctx.Provider>;
@@ -1480,6 +1485,7 @@ function ChatPicker({ a, kind: k0 = "dm", prefer }: { a: any; kind?: "dm" | "gro
   const [d, reloadD] = useApi<any>(`/v1/agents/${a.id}/deploy`, 2500);
   const [kind, setKind] = useState<"dm" | "group">(k0), [p, setP] = useState<string | null>(null);
   const [code, setCode] = useState<any>(null), [base, setBase] = useState<number | null>(null), [err, setErr] = useState(""), [chans, setChans] = useState<any[] | null>(null), [adv, setAdv] = useState(false);
+  const [mobile, setMobile] = useState(""), [inviting, setInviting] = useState(false); // hooks before any early return
   const phone = /iPhone|Android|iPad/i.test(navigator.userAgent);
   const T = (x: string) => d?.targets.find((t: any) => t.platform === x) ?? { platform: x, available: false, connected: [] };
   const live = (x: string) => T(x).connected.filter((c: any) => !!c.is_group === (kind === "group")).length;
@@ -1496,7 +1502,6 @@ function ChatPicker({ a, kind: k0 = "dm", prefer }: { a: any; kind?: "dm" | "gro
   const copy = (s: string) => { navigator.clipboard?.writeText(s); toast("Copied"); };
   const Code = () => code && <span className="code-pill">{code.message}<button className="btn sm ghost" onClick={() => copy(code.message)}>Copy</button></span>;
   // Photon shared pool: no number to text — the agent texts you first.
-  const [mobile, setMobile] = useState(""), [inviting, setInviting] = useState(false);
   const invite = async () => { setInviting(true); setErr(""); try { const r = await api(`/v1/agents/${a.id}/deploy/imessage`, { kind, phone: mobile }); setCode(r); setBase(live("imessage")); } catch (e: any) { setErr(e.message); } finally { setInviting(false); } };
   const waiting = code && !done && <div className="waiting mt16"><span className="dot live" />Waiting for your message<span className="dots"><span /><span /><span /></span></div>;
   const steps: Record<string, ReactNode> = {
