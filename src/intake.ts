@@ -227,10 +227,13 @@ export async function intake(run: any, agent: any, room: any, live: () => boolea
   const prev: Brief | null = J(run.brief);
   const b = await buildBrief(run, agent, room, prev ?? undefined);
   if (!live()) return "wait"; // superseded while drafting
-  // Questions the planner could answer itself (every one has a default) don't put read-only work on hold: start, and say what
-  // was assumed. (A live run stalled a simple hotel search on "how many rooms?" with the default right there.)
-  if (b.questions.length && b.questions.every((q) => q.default) && !b.side_effects.length && !b.plan.some((p) => p.tool && WRITE_RISKS.includes(getTool(p.tool)?.risk ?? ""))) {
-    b.assumptions = [...b.assumptions, ...b.questions.map((q) => `${q.q.replace(/\?\s*$/, "")}: ${q.default}`)];
+  // Read-only work (research, look-ups) never waits on a question: start with stated assumptions; the person refines after.
+  // Live runs stalled a hotel search on "how many rooms?" and then on "what hotel type?" — both answerable by just looking.
+  // Work that changes something outside still asks when an answer is genuinely missing.
+  const planned = b.plan.filter((p) => p.tool);
+  const readOnly = planned.length > 0 && !b.side_effects.length && !planned.some((p) => WRITE_RISKS.includes(getTool(p.tool!)?.risk ?? "")); // an empty plan isn't "read-only", it's unknown
+  if (b.questions.length && (readOnly || b.questions.every((q) => q.default))) {
+    b.assumptions = [...b.assumptions, ...b.questions.map((q) => `${q.q.replace(/\?\s*$/, "")}: ${q.default ?? "not specified, so I'll use my judgment"}`)];
     b.questions = [];
   }
   // Answering a clarifying question isn't a change; changing a plan that was proposed or already running is.

@@ -552,8 +552,8 @@ def({
     const attendees: string[] = (i.attendees ?? []).slice(0, 20);
     const tz0 = tzOf(ctx.run?.requested_by), z = zoned(now(), tz0), day = (d: number, h = 0, m = 0) => fromZoned(z.y, z.mo, z.d + d, h, m, tz0);
     const f = String(i.from ?? "").trim().toLowerCase(), ymd = (s: string) => s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const start = Math.max(now(), ymd(f) ? fromZoned(+ymd(f)![1], +ymd(f)![2], +ymd(f)![3], 0, 0, tz0) : f === "tomorrow" ? day(1) : /next week/.test(f) ? day(((8 - z.dow) % 7) || 7) : now());
-    const t = String(i.to ?? "").trim(), end = ymd(t) ? fromZoned(+ymd(t)![1], +ymd(t)![2], +ymd(t)![3], 23, 59, tz0) : /next week/.test(f) && i.days == null ? start + 5 * 864e5 : start + days * 864e5;
+    const start = Math.max(now(), ymd(f) ? fromZoned(+ymd(f)![1], +ymd(f)![2] - 1, +ymd(f)![3], 0, 0, tz0) : f === "tomorrow" ? day(1) : /next week/.test(f) ? day(((8 - z.dow) % 7) || 7) : now()); // months are 0-based in fromZoned
+    const t = String(i.to ?? "").trim(), end = ymd(t) ? fromZoned(+ymd(t)![1], +ymd(t)![2] - 1, +ymd(t)![3], 23, 59, tz0) : /next week/.test(f) && i.days == null ? start + 5 * 864e5 : start + days * 864e5;
     const timeMin = new Date(start).toISOString(), timeMax = new Date(end).toISOString();
     const j: any = await (await call("https://www.googleapis.com/calendar/v3/freeBusy", { method: "POST", headers: await googleToken(ctx),
       body: S({ timeMin, timeMax, items: [{ id: "primary" }, ...attendees.map((id: string) => ({ id }))] }) })).json();
