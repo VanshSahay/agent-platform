@@ -12,6 +12,7 @@ primary_region = "ewr"
   PRODUCTION = "1"
   PORT = "3000"
   WORKER_CONCURRENCY = "4"
+  PG_QUERY_TIMEOUT_MS = "10000"   # a stalled database must not freeze the server for half a minute
 
 [http_service]
   internal_port = 3000
