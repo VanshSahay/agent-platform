@@ -72,6 +72,7 @@ create table if not exists custom_skills (id text primary key, agent_id text, wo
   signature text, created_by text, created_at int);
 create table if not exists files (id text primary key, workspace_id text, room_id text, name text, mime text, size int, data blob, text text,
   uploaded_by text, created_at int);
+create table if not exists stories (id text primary key, workspace_id text, room_id text, told_by text, title text, text text, people text, when_text text, where_text text, file_id text, created_at int);
 create table if not exists deploy_codes (code text primary key, agent_id text, user_id text, platform text, kind text, expires_at int, used_at int);
 create table if not exists opt_outs (platform text, address text, ts int, primary key (platform, address));
 create table if not exists standing_approvals (id text primary key, agent_id text, tool_id text, constraints text, max_uses int default 1, uses int default 0,

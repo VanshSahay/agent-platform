@@ -193,6 +193,11 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
     const price = t.match(/under \$?(\d+)/)?.[1], qty = t.match(/\b(\d+)\s+(?:tickets?|seats?|rooms?|spots?)\b/)?.[1] ?? t.match(/\b(\d+)\s+under\b/)?.[1];
     out.push({ name: "watch.site", input: { what, url: `https://www.${site}/`, ...(price ? { max_price: Number(price) } : {}), ...(qty ? { quantity: Number(qty) } : {}), action: /\b(book|buy|grab|get) (it|them)\b/.test(t) ? "act" : "notify" } });
   }
+  const scam = text.match(/\b(?:is this (?:real|legit|a scam)|scam\??|real or (?:a )?scam)\b[\s:?-]*(.*)$/is);
+  if (scam && has("scam.check")) out.push({ name: "scam.check", input: { text: (scam[1] || text).replace(/^["\u201c]|["\u201d]$/g, "").trim() || text } });
+  const story = text.match(/^(?:keep|save|remember) (?:this|the) (?:story|recipe|memory)[:\s-]+(.+)/is);
+  if (story && has("story.add")) out.push({ name: "story.add", input: { title: story[1].split(/[.\n]/)[0].slice(0, 60), text: story[1].trim() } });
+  else if (/\b(?:stor(?:y|ies)|recipe|memor(?:y|ies)) (?:about|of|from)\b/i.test(text) && has("story.search")) out.push({ name: "story.search", input: { query: text.replace(/.*\b(?:about|of|from)\s+/i, "").replace(/[?.!]+$/, "") } });
   const rem = t.match(/remind (?:me|us)(?: to)? (.+?)(?: in (\d+) (minute|hour|day)s?| tomorrow|$)/);
   const daily = t.match(/every (?:day|morning|weekday)(?: at (\d{1,2}))?/);
   if ((rem || daily) && has("reminder.schedule")) {

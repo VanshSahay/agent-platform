@@ -20,7 +20,7 @@ platform already does. Written 2026-10-07 against commit `baf58f3`.
 
 ## What's missing, in build order
 
-### 1. The sharing panel (small, defines the product)
+### 1. The sharing panel (built, AC-F2)
 A per-person page, phone-sized, in plain words:
 
 - Share my appointments with the family ✓
@@ -32,7 +32,7 @@ A per-person page, phone-sized, in plain words:
 Each line maps to a memory scope and an event rule the platform already enforces. The agent reads the panel before saying
 anything in a group. Default: nothing shared until the person says so.
 
-### 2. The private → shared bridge
+### 2. The private → shared bridge (built, AC-F1)
 In Mom's private chat, when a task needs the family ("she'll need a ride"), the agent asks first:
 "Want me to ask Sarah and Ellie who can drive you?" Only on yes does it post to the group, and only the agreed facts (day,
 time, place), never the reason or the conversation. One new step in the planner: a `bridge` side effect that needs the owner's
@@ -50,12 +50,12 @@ Proactive suggestions to the older adult only, driven by their calendar, memory 
 easy to say "less of this". The routines engine exists; the judgment layer (when a nudge is welcome) is new and should be
 tested with real people before it goes wide.
 
-### 5. Family story store
+### 5. Family story store (built: story.add / story.search, AC-F4)
 Photos, voice notes and the stories around them, with who/when/where and provenance, searchable by whoever the owner allows.
 Prompts like "Grandma, Ellie asked about Hangzhou — want to tell us?" come from the same routine engine. Media handling and
 room-scoped files exist; the store, its permissions and the search over it are new.
 
-### 6. Scam check
+### 6. Scam check (built: scam.check, AC-F3)
 "Is this real?" for a text, a number or a link: look it up, apply simple rules (urgency, payment by gift card, caller ID
 spoofing), give a plain verdict with reasons, and offer to alert a chosen family member. Untrusted-content handling exists; the
 check flow and the alert rule are new.

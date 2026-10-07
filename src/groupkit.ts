@@ -67,6 +67,19 @@ export function pollResults(p: any) {
     options, voters: votes.length, leading: top ? options.filter((o) => o.votes === top).map((o) => o.text) : [] };
 }
 
+/** People who already answered in the chat (last 24h, before the poll existed) are counted, not asked again. Only their own words count. */
+function prefillVotes(p: any, creator: string) {
+  const names: string[] = [];
+  for (const u of rt.roomHumanIds(p.room_id)) {
+    if (u === creator) continue;
+    const m = one<any>("select data from events where room_id=? and type='message' and actor=? and ts>=? and ts<? order by seq desc limit 1", p.room_id, u, p.created_at - 864e5, p.created_at);
+    const text = String(J(m?.data, {}).text ?? ""); if (!text || text.length > 60) continue;
+    const ids = matchOptions(p, text, true); if (!ids.length || (!p.multi && ids.length > 1)) continue;
+    exec("insert into poll_votes (poll_id, user_id, option_ids, updated_at) values (?,?,?,?) on conflict (poll_id, user_id) do nothing", p.id, u, S(ids), now());
+    names.push(rt.nameOf(u));
+  }
+  return names;
+}
 function closePoll(p: any, by: string) {
   exec("update polls set status='closed' where id=?", p.id);
   emit("POLL_CLOSED", { workspace_id: p.workspace_id, room_id: p.room_id, actor: by, data: { poll_id: p.id } });
@@ -142,7 +155,8 @@ export function registerGroupTools(def: (d: tools.ToolDef) => void) {
       exec(`insert into polls (id, workspace_id, room_id, agent_id, created_by, question, options, multi, status, closes_at, created_at) values (?,?,?,?,?,?,?,?, 'open', ?, ?)`,
         pid, ctx.run.workspace_id, ctx.room.id, ctx.agent.id, ctx.run.requested_by, String(i.question).trim().replace(/^\w/, (x) => x.toUpperCase()).slice(0, 200), S(options), i.multi ? 1 : 0, closes, now());
       emit("POLL_OPENED", { workspace_id: ctx.run.workspace_id, room_id: ctx.room.id, run_id: ctx.run.id, actor: ctx.agent.id, data: { poll_id: pid } });
-      return { status: "SUCCEEDED", output: pollResults(one<any>("select * from polls where id=?", pid)) };
+      const p = one<any>("select * from polls where id=?", pid), already = prefillVotes(p, ctx.run.requested_by);
+      return { status: "SUCCEEDED", output: { ...pollResults(p), ...(already.length ? { already_answered: already, note: "These people answered in the chat before the poll existed; their answers are counted — don't ask them again." } : {}) } };
     } });
   def({ ...base, id: "poll.vote", description: "Record the speaker's own vote in the open poll: an option number (1-based) or its text; several for multi-choice polls. Re-voting replaces their vote.",
     inputSchema: obj({ option: str() }, ["option"]),

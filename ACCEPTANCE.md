@@ -65,6 +65,9 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-W2 | action='act' hands the agent a pre-planned browser step that needs approval; a rejection pauses the watch; it resumes by words; the window passing expires it with a message. | §7, §37 |
 | AC-F1 | A person's private chat never reaches the family group except through family.share, which posts only the given text and only after the person's own yes in their own chat (not the model's claim, not someone else's yes); the private reason never leaves the chat; the sharing panel is shown to the agent in private chats. | §15, §21 |
 | AC-F2 | Categories a person shares by default go straight to the family; other categories still ask; only the person can change their own sharing, from their own chat. | §15 |
+| AC-F3 | "Is this real?": a deterministic verdict (likely a scam / suspicious / nothing obviously wrong) with the exact reasons from the message, never a number or link from the message to act on; benign messages pass. | §15 |
+| AC-F4 | Stories are kept in the teller's words with who/when/where and provenance; a private story is invisible from the family group; the family group's stories are searchable from a member's private chat. | §15 |
+| AC-G5 | A new poll counts answers people already gave in the chat (their own words, last 24h) and says who; they aren't asked again. | §15 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |
