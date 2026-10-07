@@ -12,9 +12,9 @@ That's all that needs you. Everything below is scripted.
 
 ## Deploy (run from the repo root)
 ```bash
-fly launch --no-deploy --copy-config --name agent-platform --region ewr   # creates the app from fly.toml
-fly postgres create --name agent-platform-db --region ewr --vm-size shared-cpu-1x --initial-cluster-size 1 --volume-size 3
-fly postgres attach agent-platform-db --app agent-platform                # sets DATABASE_URL
+fly launch --no-deploy --copy-config --name agent-platform-ellie --region ewr   # creates the app from fly.toml
+fly postgres create --name agent-platform-ellie-db --region ewr --vm-size shared-cpu-1x --initial-cluster-size 1 --volume-size 3
+fly postgres attach agent-platform-ellie-db --app agent-platform                # sets DATABASE_URL
 fly secrets set --app agent-platform MASTER_KEY=$(openssl rand -base64 32) OPENROUTER_API_KEY=… BROWSERBASE_API_KEY=… RESEND_API_KEY=… CLERK_SECRET_KEY=… \
   CLERK_PUBLISHABLE_KEY=… ALERT_EMAIL=… PUBLIC_URL=https://agent-platform.abhinav-679.workers.dev   # values from .env.local / .env.clerk
 fly deploy --remote-only
@@ -22,7 +22,7 @@ fly status
 ```
 Then point the permanent link at it:
 ```bash
-cd deploy/edge && npx wrangler deploy --var ORIGIN:https://agent-platform.fly.dev
+cd deploy/edge && npx wrangler deploy --var ORIGIN:https://agent-platform-ellie.fly.dev
 ```
 
 ## iMessage once the app is in the cloud

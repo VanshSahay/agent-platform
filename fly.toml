@@ -1,7 +1,7 @@
 # Fly.io: the whole app in the cloud (API, web app, channels, reminders) on Postgres, no Temporal needed (the built-in engine runs
 # the agents in-process). One always-on machine: agents keep schedules, watches and follow-ups, so it must never auto-stop.
 # Deploy: see deploy/CLOUD.md. Builds happen on Fly's builders (no Docker needed locally).
-app = "agent-platform"
+app = "agent-platform-ellie"
 primary_region = "ewr"
 
 [build]
