@@ -446,7 +446,8 @@ def({
   inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str() }, ["to", "subject", "body"]),
   async execute(input, ctx) {
     emit("DRAFT_CREATED", { workspace_id: ctx.run.workspace_id, room_id: ctx.run.room_id, run_id: ctx.run.id, actor: ctx.agent.id, data: input });
-    return { status: "SUCCEEDED", output: { drafted: true, ...input } };
+    return { status: "SUCCEEDED", output: { drafted: true, sent: false, ...input,
+      note: "Saved as a draft only; nothing was sent and nobody will be asked to approve it. If the person wants this sent after their sign-off, call email.send with the same content now — that shows them the exact email and asks for approval." } };
   },
 });
 

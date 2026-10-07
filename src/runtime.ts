@@ -393,7 +393,7 @@ function progressNote(run: any, agent: any, room: any) {
   const n = (t: string) => tools.filter((x) => x === t).length;
   const did = [n("web.search") && `${n("web.search")} searches`, n("web.fetch") && `${n("web.fetch")} pages read`, n("browser.task") && "a site checked"].filter(Boolean).join(", ");
   const next = (J(run.brief, null)?.plan ?? []).find((p: any) => p.status !== "done")?.text;
-  postMessage(room.id, { sender: agent.id, runId: run.id, text: `Still on it${did ? ` — ${did} so far` : ""}${next ? `; now: ${String(next).charAt(0).toLowerCase() + String(next).slice(1)}` : ""}.`, targets: replyTargets(room.id, run.origin_endpoint_id) });
+  postMessage(room.id, { sender: agent.id, runId: run.id, text: `Still on it${did ? ` — ${did} so far` : ""}${next ? `; now: ${String(next).charAt(0).toLowerCase() + String(next).slice(1)}` : did ? "" : " — a minute more"}.`, targets: replyTargets(room.id, run.origin_endpoint_id) });
 }
 
 /** The plan's tool budget for this run (intake.planWork), else a default. */
