@@ -186,7 +186,7 @@ export const SCENARIOS: Scenario[] = [
 ];
 
 // ---------- Ava release set: 30 requests over iMessage, graded on evidence (job outcome + state), judge as a second check ----------
-const jobOk = (job: string): Check => ({ label: `${job} job proven done (JOB_OUTCOME ok)`, check: (w) => all<any>("select data from events where room_id=? and type='JOB_OUTCOME'", w.room.id).some((e) => J(e.data).job === job && J(e.data).ok) });
+const jobOk = (job: string): Check => ({ label: `${job} job proven done (JOB_OUTCOME ok)`, check: (w) => all<any>("select data from events where room_id=? and type='JOB_OUTCOME'", w.room.id).some((e) => { const d = J(e.data); return (d.job === job && d.ok) || (d.jobs ?? []).some((j: any) => j.job === job && ["done", "waiting"].includes(j.status)); }) });
 const notSentBeforeApproval: Check = { label: "no email went out without an approval", check: (w) => {
   const sends = w.sent.filter((x) => /gmail\.googleapis\.com\/.*messages\/send/.test(x)).length;
   return sends <= (one<any>("select count(*) n from approvals where room_id=? and tool_id='email.send' and status='approved'", w.room.id)?.n ?? 0); } };

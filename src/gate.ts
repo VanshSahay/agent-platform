@@ -47,8 +47,12 @@ export function ungroundedFigures(run: any, text: string): string[] {
 
 // ---------- unbacked action ----------
 const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;
+// Asking the person to sign off in words ("once approved I'll send", "let me know and I'll send it") when no approval exists: the
+// live failure that stranded a Dana email — the model drafted with email.draft, narrated an approval, and "approve" did nothing.
+const APPROVAL_ASK = /\b(once (you('ve| have)? )?approved?|if you('d| would) like( me)? to send|let me know (if|when|and) .{0,40}\bsend|say the word and|just (confirm|approve|say yes)|reply ["“']?(approve|yes|send)|awaiting your (approval|go-ahead|sign-off)|once you (confirm|give the go-ahead))\b/i;
 async function claimsUnbackedAction(runId: string, text: string) {
   if (one("select 1 from approvals where run_id=? and status='pending'", runId)) return false;
+  if (APPROVAL_ASK.test(text)) return true; // whatever else succeeded, the send/booking they're being asked to approve doesn't exist
   if (all<any>("select data from run_steps where run_id=? and type='tool_result'", runId).some((s) => {
     const d = J(s.data, {}); return getTool(d.tool)?.risk !== "read" && !/^(FAILED|DENIED|REJECTED|SUPERSEDED)/.test(String(d.content ?? ""));
   })) return false;
@@ -119,7 +123,7 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
   if (!g.unbacked && canRetry && await claimsUnbackedAction(run.id, text)) {
     if (!live()) return null;
     mark(run, "unbacked"); emit("UNBACKED_CLAIM", { ...base, data: { text: text.slice(0, 300), model: res.model } });
-    return { kind: "retry", signal: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed. Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` };
+    return { kind: "retry", signal: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed (email.send shows them the exact draft and asks; a draft alone is never sent). Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` };
   }
   if (run.parent_run_id) return { kind: "deliver", text }; // a specialist's findings are checked by its parent
 

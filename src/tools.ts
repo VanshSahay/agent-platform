@@ -438,7 +438,7 @@ def({
 });
 
 def({
-  id: "email.draft", description: "Draft an email for review. Does not send.", risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+  id: "email.draft", description: "Save a draft that will NOT be sent. Only when the person explicitly wants a draft and no send (\"just draft it\", \"don't send\"). If they want it sent after their sign-off, call email.send instead: it shows them the exact draft and asks for approval before anything goes out.", risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str() }, ["to", "subject", "body"]),
   async execute(input, ctx) {
     emit("DRAFT_CREATED", { workspace_id: ctx.run.workspace_id, room_id: ctx.run.room_id, run_id: ctx.run.id, actor: ctx.agent.id, data: input });
@@ -611,7 +611,7 @@ function describeRepeat(sp: any) {
 }
 
 def({
-  id: "reminder.schedule", description: "Set a reminder or a recurring job for this chat, in the requester's time zone. deliver=\"message\" (default) sends the text word for word at that time — use it for plain reminders (\"call mom\", \"pay rent\"). deliver=\"task\" wakes you to do work then (a briefing, a price check). unless_reply_from=email makes it a follow-up: at that time the platform checks Gmail and only reminds if that person hasn't written since now (\"remind me if Dana hasn't replied by Friday\"). One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes. Confirm the returned next time back to the person.",
+  id: "reminder.schedule", description: "Set a reminder or a recurring job for this chat, in the requester's time zone. deliver=\"message\" (default) sends the text word for word at that time — use it for plain reminders (\"call mom\", \"pay rent\"). deliver=\"task\" wakes you to do work then (a briefing, a price check). unless_reply_from=email makes it a follow-up: at that time the platform checks Gmail and only reminds if that person hasn't written since now (\"remind me if Dana hasn't replied by Friday\"). A day name (\"by Friday\") means the next such day from today unless they say otherwise. One-off: in_minutes or at. Recurring: recurring (daily|weekdays|weekends|weekly) or days (e.g. [\"mon\",\"wed\",\"fri\"]) plus time \"HH:MM\"; or every_minutes. Confirm the returned next time back to the person.",
   risk: "write_internal", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ text: str("what to send / do"), deliver: { type: "string", enum: ["message", "task"] }, unless_reply_from: str("email address: skip the reminder if they write first"), ...WHEN }, ["text"]),
   async execute(i, ctx) {

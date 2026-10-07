@@ -88,3 +88,18 @@ test("AC-GT4 the context window is by size with a running summary of what scroll
   expect(results.slice(0, 2).every((t) => /characters trimmed/.test(t) && t.length < 2600)).toBe(true);
   expect(results.slice(-3).every((t) => t.length > 6000)).toBe(true);
 });
+
+test("AC-GT5 asking the person to approve in words with no approval pending is caught even after a draft tool succeeded (the live Dana failure): sent back to call the real tool", async () => {
+  const ava = installAgent("ava-executive-assistant", ws, ellie);
+  const { googleConnection } = await import("./helpers");
+  googleConnection(ws, ellie, [ava.id]);
+  const room = rt.privateRoomFor(ellie, ava);
+  const seen = scriptModel(call("email.draft", { to: ["dana@example.com"], subject: "Next week", body: "Tuesday 2pm?" }),
+    { text: "Draft ready. Once approved, I'll send the email." },
+    call("email.send", { to: ["dana@example.com"], subject: "Next week", body: "Tuesday 2pm?" }), { text: "Sent." });
+  await say(room.id, ellie, "email dana@example.com to find a time next week");
+  expect(events("UNBACKED_CLAIM")).toHaveLength(1);
+  expect(seen.some((q) => q.messages.some((m) => /a draft alone is never sent/.test(m.content)))).toBe(true);
+  expect(one<any>("select tool_id, status from approvals where room_id=?", room.id)).toMatchObject({ tool_id: "email.send", status: "pending" }); // a real approval now exists
+  expect(lastFrom(room.id, ava.id)).toMatch(/Ava wants to: Send email to dana@example\.com/);
+});
