@@ -15,7 +15,7 @@ That's all that needs you. Everything below is scripted.
 fly launch --no-deploy --copy-config --name agent-platform --region ewr   # creates the app from fly.toml
 fly postgres create --name agent-platform-db --region ewr --vm-size shared-cpu-1x --initial-cluster-size 1 --volume-size 3
 fly postgres attach agent-platform-db --app agent-platform                # sets DATABASE_URL
-fly secrets set --app agent-platform MASTER_KEY=… OPENROUTER_API_KEY=… BROWSERBASE_API_KEY=… RESEND_API_KEY=… CLERK_SECRET_KEY=… \
+fly secrets set --app agent-platform MASTER_KEY=$(openssl rand -base64 32) OPENROUTER_API_KEY=… BROWSERBASE_API_KEY=… RESEND_API_KEY=… CLERK_SECRET_KEY=… \
   CLERK_PUBLISHABLE_KEY=… ALERT_EMAIL=… PUBLIC_URL=https://agent-platform.abhinav-679.workers.dev   # values from .env.local / .env.clerk
 fly deploy --remote-only
 fly status
@@ -32,6 +32,9 @@ The cloud can't use this Mac's Messages app. Pick one:
 - **Keep this Mac as a relay only**: run just the iMessage bridge here against the cloud database
   (`IMESSAGE_MODE=local DATABASE_URL=<the Fly Postgres URL> bun run src/index.ts` on a different port). When the Mac sleeps,
   only iMessage pauses; everything else keeps running in the cloud.
+
+MASTER_KEY is 32 random bytes in base64 (the command above makes one). Keep it somewhere safe: it encrypts every stored
+credential, and losing it means reconnecting every account.
 
 ## Moving existing data
 `pg_dump` the local database and `pg_restore` into the Fly database (`fly postgres connect` gives a psql shell; `fly proxy 5432`
