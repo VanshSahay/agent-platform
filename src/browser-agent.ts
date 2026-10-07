@@ -90,6 +90,7 @@ const TOOLS: ToolSpec[] = [
 ];
 const SYSTEM = `You operate a real web browser to complete a task for a person. Each turn you see the current page: URL, title, numbered interactive elements and visible text. Call exactly ONE tool per turn.
 Rules:
+- When you have what the task asked for, call done with the answer as its result. Never write the answer as plain text — a text reply is not an action and wastes a turn.
 - Work efficiently: prefer the site's own search, filters and forms. Dismiss cookie banners by declining non-essential cookies.
 - Never complete an irreversible final step (book, reserve, pay, purchase, place order, submit an application, send a message) unless the task explicitly says to complete it. Otherwise stop on the final review page and call done with status "needs_confirmation", listing exactly what would be submitted.
 - Logins: if the task provides saved login details, type {{username}} and {{password}}; never invent credentials. If you see a CAPTCHA, a verification code request, or a login you can't pass, call done with status "blocked" and say what's needed — never try to get around it.
@@ -101,6 +102,7 @@ export async function runBrowserTask(job: BrowserJob): Promise<BrowserResult> {
   const own = !job.sessionId;
   const sessionId = job.sessionId ?? await bb.createPlainSession();
   const steps: string[] = [], deadline = Date.now() + (job.deadlineMs ?? 280_000);
+  let textTurns = 0; // consecutive replies with no tool call
   let c: Cdp | null = null;
   try {
     c = await Cdp.connect(await bb.connectUrl(sessionId));
@@ -119,7 +121,15 @@ export async function runBrowserTask(job: BrowserJob): Promise<BrowserResult> {
       messages.splice(0, messages.length, { role: "user", content: `Task: ${job.task}${job.secrets?.username ? "\n(Saved login details are available: type {{username}} / {{password}}.)" : ""}${job.allowedDomains?.length ? `\nStay on: ${job.allowedDomains.join(", ")}` : ""}${history}\n\nCurrent page:\n${view}` });
       const res = await generate({ profile: "standard", system: SYSTEM, messages, tools: TOOLS, workspaceId: job.workspaceId, agentId: job.agentId, runId: job.runId, maxTokens: 800 });
       const call = res.toolCalls[0];
-      if (!call) { steps.push(`(no action) ${res.text.slice(0, 120)}`); continue; }
+      if (!call) {
+        // A live run wrote its finished answer as text a dozen times instead of calling done. Second time in a row, take it as done.
+        const text = res.text.trim();
+        if (text.length >= 60 && ++textTurns >= 2) return { status: "succeeded", result: text, final_url: page.url, title: page.title, steps: [...steps, "answered in text (taken as done)"], replay_url: bb.replayUrl(sessionId) };
+        steps.push(`(no action) ${text.slice(0, 120)}`);
+        messages.push({ role: "user", content: "That was text, not an action. If that's your answer, call done with it as the result; otherwise call the next action." });
+        continue;
+      }
+      textTurns = 0;
       const a = call.input ?? {};
       if (call.name === "done") return { status: a.status ?? "succeeded", result: String(a.result ?? ""), final_url: page.url, title: page.title, steps, replay_url: bb.replayUrl(sessionId) };
       steps.push(await act(c, call.name, a, job).catch((e: any) => `${call.name} failed: ${e.message}`));
