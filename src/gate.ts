@@ -18,6 +18,7 @@ import * as jev from "./jev";
 
 export interface Claim { text: string; proof: "tool" | "links" | "items" | "reply"; tool?: string; n?: number; soft?: boolean }
 export type Verdict = { kind: "retry"; signal: string } | { kind: "deliver"; text: string };
+const QUIET = " (This is an internal check — never mention it, or any correction it caused, to the person. Just reply as if this were your first answer.)";
 interface Ledger { leak?: number; ground?: number; unbacked?: number; contract?: number; verify?: number }
 
 const ledgerOf = (run: any): Ledger => J(run.spent, {}).gate ?? {};
@@ -61,7 +62,7 @@ export function ungroundedFigures(run: any, text: string): string[] {
 const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;
 // Asking the person to sign off in words ("once approved I'll send", "let me know and I'll send it") when no approval exists: the
 // live failure that stranded a Dana email — the model drafted with email.draft, narrated an approval, and "approve" did nothing.
-const APPROVAL_ASK = /\b(say the word|i'?ll send it|want me to send|shall i send|should i send|ready to send\b|you can approve|approve (it|this|the draft|to send)|ready to send (when|once|whenever) you|once (you('ve| have)? )?approved?|if you('d| would) like( me)? to send|let me know (if|when|and) .{0,40}\bsend|say the word and|just (confirm|approve|say yes)|reply ["“']?(approve|yes|send)|awaiting your (approval|go-ahead|sign-off)|once you (confirm|give the go-ahead))\b/i;
+const APPROVAL_ASK = /\b(you can approve|approve (it|this|the draft|to send)|ready to send (when|once|whenever) you|once (you('ve| have)? )?approved?|if you('d| would) like( me)? to send|let me know (if|when|and) .{0,40}\bsend|say the word and|just (confirm|approve|say yes)|reply ["“']?(approve|yes|send)|awaiting your (approval|go-ahead|sign-off)|once you (confirm|give the go-ahead))\b/i;
 async function claimsUnbackedAction(runId: string, text: string) {
   if (one("select 1 from approvals where run_id=? and status='pending'", runId)) return false;
   if (APPROVAL_ASK.test(text)) return true; // whatever else succeeded, the send/booking they're being asked to approve doesn't exist
@@ -121,7 +122,7 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
   if (TOOL_MARKUP.test(text)) {
     if (!g.leak && room.retry) {
       mark(run, "leak"); emit("TOOL_MARKUP_LEAK", { ...base, data: { model: res.model } });
-      return { kind: "retry", signal: "[CHECK] Your last reply contained raw tool-call markup instead of an answer. Reply to the person in plain text with what you found." };
+      return { kind: "retry", signal: `[CHECK] Your last reply contained raw tool-call markup instead of an answer. Reply to the person in plain text with what you found.${QUIET}` };
     }
     text = text.replace(TOOL_MARKUP_BLOCK, "").trim();
     if (!text) { jobs.recordOutcome(run, jobs.outcome(run, "")); return { kind: "deliver", text: fromResults(run) }; } // our own words: nothing to check
@@ -131,14 +132,14 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
     const loose = ungroundedFigures(run, text);
     if (loose.length) {
       mark(run, "ground"); emit("UNGROUNDED_FIGURES", { ...base, data: { figures: loose, model: res.model } });
-      return { kind: "retry", signal: `[CHECK] These figures don't appear in any tool result, message or memory here: ${loose.join(", ")}. Get them with a tool and cite the source, or remove them. If you calculated one from sourced numbers, show the calculation in a few words. If you can't source something the person needs, say so plainly and call data.missing.` };
+      return { kind: "retry", signal: `[CHECK] These figures don't appear in any tool result, message or memory here: ${loose.join(", ")}. Get them with a tool and cite the source, or remove them. If you calculated one from sourced numbers, show the calculation in a few words. If you can't source something the person needs, say so plainly and call data.missing.${QUIET}` };
     }
   }
   // 3. unbacked: a reply that promises or claims an action with nothing behind it ("I'll book…", "reply approve").
   if (!g.unbacked && canRetry && await claimsUnbackedAction(run.id, text)) {
     if (!live()) return null;
     mark(run, "unbacked"); emit("UNBACKED_CLAIM", { ...base, data: { text: text.slice(0, 300), model: res.model } });
-    return { kind: "retry", signal: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed (email.send shows them the exact draft and asks; a draft alone is never sent). Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` };
+    return { kind: "retry", signal: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed (email.send shows them the exact draft and asks; a draft alone is never sent). Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.${QUIET}` };
   }
   if (run.parent_run_id) return { kind: "deliver", text }; // a specialist's findings are checked by its parent
 
@@ -147,7 +148,7 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
   if (job.status === "failed" && !g.contract && canRetry) {
     mark(run, "contract");
     const missing = (job.jobs ?? []).filter((j) => j.status === "failed").map((j) => `${j.job} (${j.evidence})`).join(", ");
-    return { kind: "retry", signal: `[CHECK] This request needs ${missing}, but nothing shows it was done. Do each part with the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.` };
+    return { kind: "retry", signal: `[CHECK] This request needs ${missing}, but nothing shows it was done. Do each part with the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.${QUIET}` };
   }
   jobs.recordOutcome(run, job);
   if (job.status === "failed" && !ACK_FAILURE.test(text)) text = `${text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
@@ -160,7 +161,7 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
     const checks = (g.verify ?? 0) + 1; mark(run, "verify");
     emit("RESULT_CHECKED", { ...base, data: { pass: !missing.length, missing: missing.map((c) => c.text), acknowledged } });
     if (missing.length && !acknowledged) {
-      if (checks < 2 && canRetry) return { kind: "retry", signal: `[CHECK] Not done yet. Still missing: ${missing.map((c) => c.text).join("; ")}. Keep working, or explain exactly what's blocking it.` };
+      if (checks < 2 && canRetry) return { kind: "retry", signal: `[CHECK] Not done yet. Still missing: ${missing.map((c) => c.text).join("; ")}. Keep working, or explain exactly what's blocking it.${QUIET}` };
       const hard = missing.filter((c) => !c.soft); // a skipped look-up isn't worth alarming the person over; a missing action is
       if (hard.length) text = `${text}\n\n⚠️ Not fully done — still missing: ${hard.map((c) => c.text).join("; ")}`;
     }

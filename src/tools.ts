@@ -532,13 +532,16 @@ def({
 });
 
 /** Free slots between busy intervals, inside working hours, for a meeting of `minutes`. Pure, so it's unit-tested. */
-export function freeSlots(busy: { start: number; end: number }[], from: number, to: number, minutes: number, workStart = 9, workEnd = 18, max = 5, tz = serverTz()) {
+export function freeSlots(busy: { start: number; end: number }[], from: number, to: number, minutes: number, workStart = 9, workEnd = 18, max = 12, tz = serverTz(), perDay = 3) {
   const out: { start: string; end: string; local?: string }[] = [], step = 30 * 6e4, len = minutes * 6e4;
-  const b = [...busy].sort((x, y) => x.start - y.start);
+  const b = [...busy].sort((x, y) => x.start - y.start), byDay = new Map<string, number>();
   for (let t = Math.ceil(from / step) * step; t + len <= to && out.length < max; t += step) {
     const a = zoned(t, tz), e = zoned(t + len, tz), h = a.h + a.mi / 60, he = e.h + e.mi / 60; // working hours in the person's zone
     if (a.dow === 0 || a.dow === 6 || h < workStart || he > workEnd || e.d !== a.d) continue;
+    const day = `${a.y}-${a.mo}-${a.d}`; // a few per day, so a week's search shows every day rather than one morning (a live run only saw Monday)
+    if ((byDay.get(day) ?? 0) >= perDay) continue;
     if (b.some((x) => x.start < t + len && x.end > t)) continue;
+    byDay.set(day, (byDay.get(day) ?? 0) + 1);
     out.push({ start: new Date(t).toISOString(), end: new Date(t + len).toISOString(), local: `${fmtLocal(t, tz)} – ${fmtLocal(t + len, tz).split(", ").at(-1)}` });
     t += len - step; // don't offer overlapping slots
   }
@@ -561,7 +564,7 @@ def({
     const busy = Object.values(j.calendars ?? {}).flatMap((c: any) => (c.busy ?? []).map((x: any) => ({ start: Date.parse(x.start), end: Date.parse(x.end) })));
     const tz = tzOf(ctx.run?.requested_by);
     const after = Math.min(23, Math.max(0, Math.round(i.after_hour ?? 9))), before = Math.min(24, Math.max(after + 1, Math.round(i.before_hour ?? 18)));
-    return { status: "SUCCEEDED", output: { time_zone: tz, from: fmtLocal(start, tz), to: fmtLocal(end, tz), hours: `${after}:00–${before}:00`, slots: freeSlots(busy, start, end, duration_minutes, after, before, 5, tz), duration_minutes } };
+    return { status: "SUCCEEDED", output: { time_zone: tz, from: fmtLocal(start, tz), to: fmtLocal(end, tz), hours: `${after}:00–${before}:00`, slots: freeSlots(busy, start, end, duration_minutes, after, before, 12, tz), duration_minutes } };
   },
 });
 
