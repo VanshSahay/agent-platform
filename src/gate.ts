@@ -153,6 +153,13 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
   jobs.recordOutcome(run, job);
   if (job.status === "failed" && !ACK_FAILURE.test(text)) text = `${text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
 
+  // 4a′. an email about to go to an address that came from nowhere we can see (not the request, not a contact lookup, not the chat)
+  for (const a of all<any>("select input from approvals where run_id=? and status='pending' and tool_id='email.send'", run.id)) {
+    const seen = [String(run.objective ?? ""), ...all<any>("select data from run_steps where run_id in (select id from runs where id=? or parent_run_id=?) and type='tool_result'", run.id, run.id).map((s) => J(s.data, {}).content ?? ""),
+      ...all<any>("select data from events where room_id=? and type='message' order by seq desc limit 40", run.room_id).map((e) => J(e.data, {}).text ?? "")].join(" ").toLowerCase();
+    const strange = (J(a.input, {}).to ?? []).map(String).filter((x: string) => !seen.includes(x.toLowerCase()));
+    if (strange.length && !text.includes(strange[0])) text = `${text}\n\n(Heads up: ${strange.join(", ")} didn't come from your message, your contacts or this chat — double-check it before approving.)`;
+  }
   // 4b. the plan's own claims: what "done" meant for this request, each with its proof.
   if (claims.length && ["confirmed", "auto"].includes(run.brief_status)) {
     const { missing } = await checkClaims(run, claims, text);

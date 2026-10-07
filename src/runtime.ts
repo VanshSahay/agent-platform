@@ -19,6 +19,7 @@ import * as jobs from "./jobs";
 import * as jev from "./jev";
 import * as gate from "./gate";
 import { foldHistory } from "./context";
+import * as experience from "./experience";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
 const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", clarify: "waiting_for_human", confirm: "waiting_for_human", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
@@ -454,7 +455,11 @@ function complete(run: any, agent: any, room: any, text: string) {
     return;
   }
   if (text.trim()) postMessage(room.id, { sender: agent.id, text, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id) });
-  if (room.mode !== "test") void foldHistory(room.id).catch(() => {}); // keep the running summary of older conversation current
+  if (room.mode !== "test") { // what this run taught: how the task went, which sites to skip, what the person answered
+    const done = one<any>("select * from runs where id=?", run.id);
+    try { experience.recordPlaybook(done); experience.recordSiteFailures(done); experience.recordAnswers(done, room); } catch (e: any) { console.error("[experience]", e.message); }
+    void foldHistory(room.id).catch(() => {}); // keep the running summary of older conversation current
+  }
   if (maybeSuggestSkill(one<any>("select * from runs where id=?", run.id)))
     postMessage(room.id, { sender: agent.id, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id),
       text: `I've done this kind of task ${3} times now. Save it as a skill so I do it the same way every time?`,

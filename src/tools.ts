@@ -1,9 +1,10 @@
 // Tool contract + Tool Gateway (plan §10). Every call: schema validation -> policy -> approval -> credential resolution -> idempotent execute -> audit.
-import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage, tzOf, setTz, zoned, fromZoned, fmtLocal, serverTz } from "./db";
+import { all, one, exec, emit, id, now, S, J, sha, seal, unseal, recordUsage, tzOf, setTz, zoned, fromZoned, fmtLocal, serverTz, patchJson } from "./db";
 import { evaluatePolicy, type Risk } from "./policy";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import * as rt from "./runtime";
+import { hostBlocked } from "./experience";
 import { bb, withLoginLock, loginProbe } from "./browser";
 
 export type ErrKind = "TRANSIENT" | "AUTH" | "RATE_LIMIT" | "BUSINESS_RULE" | "PERMISSION" | "UNKNOWN_SIDE_EFFECT";
@@ -393,7 +394,9 @@ def({
 def({
   id: "web.fetch", description: "Fetch a public web page and return its readable text.", risk: "read", idempotency: "safe", defaultApproval: "none",
   inputSchema: obj({ url: str() }, ["url"]),
-  async execute({ url }) {
+  async execute({ url }, ctx) {
+    const known = ctx?.run?.workspace_id ? hostBlocked(ctx.run.workspace_id, url) : null; // a site that failed 3× this week: say so instead of a 4th try
+    if (known) throw new ToolError("BUSINESS_RULE", known);
     let u = await assertPublicUrl(url), r: Response | undefined;
     for (let hop = 0; hop < 5; hop++) { // follow redirects ourselves so every hop is re-checked
       r = await call(u.toString(), { headers: { "user-agent": "Mozilla/5.0 agent-platform" }, redirect: "manual" });
@@ -772,6 +775,43 @@ def({
     const started = r.children.filter((c: any) => c.child_run_id);
     if (!started.length) throw new ToolError("BUSINESS_RULE", r.children.map((c: any) => c.error).join("; ") || "no tasks given");
     return { status: "SUCCEEDED", output: { started: r.children }, wait: { kind: "agent", reason: `waiting for ${started.length} specialist${started.length > 1 ? "s" : ""}`, wake_key: `children:${ctx.run.id}` } };
+  },
+});
+
+def({
+  id: "calc", description: "Exact arithmetic: splits, totals, percentages, unit math. Use it for any number you'd otherwise work out in your head. Operators + - * / % ^ and parentheses; several expressions separated by ';'.",
+  risk: "read", idempotency: "safe", defaultApproval: "none", inputSchema: obj({ expression: str("e.g. (240 + 18) / 3") }, ["expression"]),
+  async execute({ expression }) {
+    const results = String(expression).split(";").map((e) => e.trim()).filter(Boolean).map((e) => {
+      if (!/^[\d\s+\-*/().%^,]+$/.test(e) || e.length > 200) throw new ToolError("BUSINESS_RULE", `not a plain arithmetic expression: ${e.slice(0, 40)}`);
+      const v = Function(`"use strict"; return (${e.replace(/,/g, "").replace(/(\d+(?:\.\d+)?)\s*%/g, "($1/100)").replace(/\^/g, "**")});`)(); // 15% → 0.15
+      if (typeof v !== "number" || !Number.isFinite(v)) throw new ToolError("BUSINESS_RULE", `can't evaluate: ${e.slice(0, 40)}`);
+      return { expression: e, value: Math.round(v * 1e6) / 1e6 };
+    });
+    return { status: "SUCCEEDED", output: { results } };
+  },
+});
+
+def({
+  id: "money.convert", description: "Convert an amount between currencies at the latest published rate (European Central Bank reference rates; shows the rate's date).",
+  risk: "read", idempotency: "safe", defaultApproval: "none", inputSchema: obj({ amount: num(), from: str("ISO code, e.g. GBP"), to: str("ISO code, e.g. USD") }, ["amount", "from", "to"]),
+  async execute({ amount, from, to }) {
+    const f = String(from).toUpperCase(), t = String(to).toUpperCase();
+    if (f === t) return { status: "SUCCEEDED", output: { amount, from: f, to: t, converted: amount, rate: 1 } };
+    const r = await call(`https://api.frankfurter.app/latest?amount=${encodeURIComponent(amount)}&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`, { timeoutMs: 10000 });
+    const j: any = await r.json();
+    const converted = j.rates?.[t];
+    if (typeof converted !== "number") throw new ToolError("BUSINESS_RULE", `no rate for ${f}→${t}`);
+    return { status: "SUCCEEDED", output: { amount, from: f, to: t, converted: Math.round(converted * 100) / 100, rate: Math.round((converted / amount) * 1e6) / 1e6, as_of: j.date, source: "ECB via frankfurter.app" } };
+  },
+});
+
+def({
+  id: "notes.add", description: "Keep a note for this task (a finding, a number, a link, a decision) so you don't lose it in a long run. Your notes are shown back to you on every step.",
+  risk: "write_internal", idempotency: "safe", defaultApproval: "none", inputSchema: obj({ text: str() }, ["text"]),
+  async execute({ text }, ctx) {
+    patchJson("runs", "result", ctx.run.id, (r: any) => ({ ...(r ?? {}), notes: [...((r ?? {}).notes ?? []), String(text).slice(0, 600)].slice(-30) }));
+    return { status: "SUCCEEDED", output: { noted: true, count: (J(one<any>("select result from runs where id=?", ctx.run.id)?.result, {})?.notes ?? []).length } };
   },
 });
 

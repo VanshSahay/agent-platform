@@ -156,6 +156,7 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     questions: arr(b.questions).map((q: any) => (typeof q === "string" ? { q } : { q: String(q.q), default: q.default ?? undefined })).filter((q: any) => q.q),
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
     effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined, split: b.split,
+    ...((prev as any)?._askedQuestions ? { _askedQuestions: (prev as any)._askedQuestions } : {}),
   };
   (draft as any).claims = claimsOf({ done_when: draft.done_when, plan: draft.plan as PlanStep[], claims: b.claims });
   return { ...draft, ...planWork(draft as Brief, String(run.objective ?? ""), depthOf(agent)) } as Brief;
@@ -247,6 +248,7 @@ export async function intake(run: any, agent: any, room: any, live: () => boolea
     if (d === "auto" && b.effort !== "quick") rt.postMessage(room.id, { sender: agent.id, runId: run.id, text: b.ack || defaultAck(b), targets: rt.replyTargets(room.id, run.origin_endpoint_id) });
     return "continue";
   }
+  if (d === "clarify") (b as any)._askedQuestions = b.questions.map((q) => q.q);
   saveBrief(run.id, b, d === "clarify" ? "clarifying" : "proposed");
   const buttons = d === "confirm" ? [{ label: "Go", data: `brf:${run.id}:go` }, { label: "Cancel", data: `brf:${run.id}:cancel` }]
     : b.questions.every((q) => q.default) ? [{ label: "Use defaults", data: `brf:${run.id}:go` }] : [];

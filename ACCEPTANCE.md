@@ -55,6 +55,11 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-GT2 | Claims carry their proof: a planned tool must succeed (or be waiting for approval), "N options" needs N items, "sources" needs a link; a model-given proof must name a planned tool; only answer-quality claims go to the judge model; bookkeeping tools are never claims. | §7.4 |
 | AC-GT3 | Planning and checking run on the judge tier (the strongest open model), never the cheap one; the judge profile is added to databases seeded before it existed. | §8.3 |
 | AC-GT4 | The context window is by size (not a fixed 30 messages) with a running summary of what scrolled out, refreshed after each completed task; older tool results are trimmed while the newest stay whole, so long runs never outgrow the model. | §9, §7.5 |
+| AC-X1 | A completed task leaves a playbook per agent and task shape (which tools, what worked, what failed, how long); a similar request sees it before its first model call; repeats update the count instead of duplicating. | §9, §11.3 |
+| AC-X2 | A site that failed three fetches this week with no success since is refused up front with the reason, so no fourth call is made. | §9 |
+| AC-X3 | What a person answers when the agent asks is kept as their preference and is never asked again. | §9 |
+| AC-X4 | In a group the agent is told what was decided and who hasn't answered its last question; a member's private memory is used silently for their own request only, never shown for someone else's. | §9.5, §15 |
+| AC-X5 | Every agent has exact arithmetic (percentages included), currency conversion with the rate's date, and per-task notes that persist across steps. | §7 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |

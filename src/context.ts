@@ -1,6 +1,7 @@
 // Context assembly (plan §9.5, §15.3, §21.2). Permission filtering happens here, before anything reaches the model.
 import { all, one, exec, J, clockLine, tzOf } from "./db";
 import { structured } from "./model";
+import { groupState, privateForRequester, playbooksFor } from "./experience";
 import { retrieve } from "./memory";
 import { agentTools, SKILLS, customSkills } from "./templates";
 import { toolSpecs } from "./tools";
@@ -79,6 +80,12 @@ export function buildContext(run: any, agent: any, room: any) {
       (waits.length ? `\nOther work waiting:\n${waits.map((w) => `- ${w.reason}`).join("\n")}` : ""),
     briefContext(run),
     memories.length ? `[MEMORY_VERIFIED]\n${memories.map((m) => `- (${m.scope_type}) ${m.text}`).join("\n")}` : "",
+    ...(isChild ? [] : [
+      (() => { const p = playbooksFor(agent.id, run.objective); return p.length ? `[EXPERIENCE — how similar tasks went before; start from what worked, skip what failed]\n${p.map((x) => `- ${x}`).join("\n")}` : ""; })(),
+      groupState(room, agent.id),
+      (() => { const p = privateForRequester(room, run.requested_by, run.objective); return p.length ? `[PRIVATE — known about ${nameOf(run.requested_by)} from their own chats. Use it to help them; never repeat it to the group]\n${p.map((x) => `- ${x}`).join("\n")}` : ""; })(),
+      (() => { const n: string[] = J(run.result, {})?.notes ?? []; return n.length ? `[NOTES — your own notes for this task]\n${n.map((x, i) => `${i + 1}. ${x}`).join("\n")}` : ""; })(),
+    ]),
   ].filter(Boolean).join("\n\n");
 
   const messages: Msg[] = [];
