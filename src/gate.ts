@@ -29,6 +29,18 @@ export const needsEscalation = (spent: any) => { const g = spent?.gate ?? {}; re
 export const TOOL_MARKUP = /<｜?DSML｜|<\/?tool_calls?>|<\|tool_calls?(_begin)?\|>|<function[=\s]|"tool_calls"\s*:/i;
 const TOOL_MARKUP_BLOCK = /<｜?DSML｜tool_calls>[\s\S]*?(<\/｜?DSML｜tool_calls>|$)|<tool_calls?>[\s\S]*?(<\/tool_calls?>|$)|<\|tool_calls?_begin\|>[\s\S]*?(<\|tool_calls?_end\|>|$)|<function[=\s][\s\S]*?(<\/function>|$)/gi;
 
+/** When the model can't write its answer, hand over what it found instead of "ask me again": titles and links from its results. */
+function fromResults(run: any) {
+  const found: { title?: string; url?: string; snippet?: string }[] = [];
+  for (const s of all<any>("select data from run_steps where run_id in (select id from runs where id=? or parent_run_id=?) and type='tool_result' order by id desc", run.id, run.id)) {
+    const d = J(s.data, {}); if (!/^web\.(search|fetch)$/.test(d.tool)) continue;
+    try { const o = JSON.parse(String(d.content).replace(/^<untrusted[^>]*>\n?|\n?<\/untrusted>$/g, "")); for (const r of o.results ?? []) if (r.url && !found.some((f) => f.url === r.url)) found.push(r); } catch {}
+    if (found.length >= 5) break;
+  }
+  return found.length ? `I ran out of room to write this up properly. What I found so far:\n${found.slice(0, 5).map((r) => `• ${r.title ?? r.url}${r.snippet ? ` — ${String(r.snippet).slice(0, 90)}` : ""}\n  ${r.url}`).join("\n")}\nWant me to go deeper on any of these?`
+    : "I couldn't finish writing that up — ask me again and I'll send it.";
+}
+
 // ---------- grounding ----------
 const FIGURE = /(?:[$€£¥]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmMbB](?:n|illion)?)?)|(?:\d[\d,]*(?:\.\d+)?\s?%)|(?:\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b)|(?:\b\d+\.\d{2,}\b)/g;
 const num = (x: string) => { const n = parseFloat(x.replace(/[^\d.]/g, "")); const mult = /b(n|illion)?\b/i.test(x) ? 1e9 : /m(illion)?\b/i.test(x) && !/%/.test(x) ? 1e6 : /k\b/i.test(x) ? 1e3 : 1; return n * mult; };
@@ -109,7 +121,7 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
       mark(run, "leak"); emit("TOOL_MARKUP_LEAK", { ...base, data: { model: res.model } });
       return { kind: "retry", signal: "[CHECK] Your last reply contained raw tool-call markup instead of an answer. Reply to the person in plain text with what you found." };
     }
-    text = text.replace(TOOL_MARKUP_BLOCK, "").trim() || "I found results but couldn't finish writing them up — ask me again and I'll send them.";
+    text = text.replace(TOOL_MARKUP_BLOCK, "").trim() || fromResults(run);
   }
   // 2. grounding: figures that appear nowhere in this conversation's tool results, messages or memory — cite or drop.
   if (!g.ground && canRetry) {

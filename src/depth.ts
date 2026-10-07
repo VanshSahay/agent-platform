@@ -29,9 +29,9 @@ export interface Depth {
 }
 
 export const LEVELS: Record<Level, { max_tool_calls: number; max_model_calls: number; cross_check: boolean; label: string; blurb: string }> = {
-  light: { max_tool_calls: 4, max_model_calls: 6, cross_check: false, label: "Light", blurb: "Quick answers and simple actions. Never goes on long research runs." },
-  standard: { max_tool_calls: 12, max_model_calls: 14, cross_check: false, label: "Standard", blurb: "Looks things up and takes a few actions per request." },
-  deep: { max_tool_calls: 30, max_model_calls: 32, cross_check: true, label: "Deep", blurb: "Can research, compare and plan: reads several sources and cross-checks before answering." },
+  light: { max_tool_calls: 4, max_model_calls: 8, cross_check: false, label: "Light", blurb: "Quick answers and simple actions. Never goes on long research runs." },
+  standard: { max_tool_calls: 12, max_model_calls: 18, cross_check: false, label: "Standard", blurb: "Looks things up and takes a few actions per request." },
+  deep: { max_tool_calls: 30, max_model_calls: 40, cross_check: true, label: "Deep", blurb: "Can research, compare and plan: reads several sources and cross-checks before answering." },
 };
 const RANK: Record<Effort, number> = { quick: 0, standard: 1, deep: 2 };
 const LEVEL_OF: Record<Effort, Level> = { quick: "light", standard: "standard", deep: "deep" };

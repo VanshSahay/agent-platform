@@ -343,7 +343,8 @@ async function stepRunInner(runId: string) {
       channels.typing(run.origin_endpoint_id); // "…is typing" in the chat this came from while the model works
       // Past twice the plan's tool budget (+2) the model gets no tools and is told plainly to answer with what it has.
       // At the tool cap the tools refuse anyway — that's the moment to say "answer now", not after a dozen refusals.
-      const overBudget = (spent.toolCalls ?? 0) >= Math.min(toolBudget(run.id) * 2 + 2, budget.maxToolCalls);
+      // ...and keep 3 model calls in reserve for the answer and one check retry (a live run spent them all on tools).
+      const overBudget = (spent.toolCalls ?? 0) >= Math.min(toolBudget(run.id) * 2 + 2, budget.maxToolCalls) || (spent.modelCalls ?? 0) >= budget.maxModelCalls - 3;
       if (overBudget && !spent.finalCallNoted) {
         patchJson("runs", "spent", run.id, (x) => ({ ...x, finalCallNoted: 1 }));
         appendStep(run.id, "signal", { text: "[CHECK] Research time is up and tools are off. Write your final answer to the person now, in plain text, from what you already found. Do not write tool calls." });

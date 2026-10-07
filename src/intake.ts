@@ -111,7 +111,7 @@ export function heuristicBrief(objective: string, c: { tools: string[]; agents: 
 const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief before any work starts. Return JSON:
 {"goal": one sentence, "deliverable": what the person gets, "constraints": [hard requirements incl. budgets, dates, people, "don't ..." rules],
  "assumptions": [gaps you will fill with stated defaults or remembered preferences], "questions": [{"q": question, "default": suggested answer or null}] — ONLY questions whose answer would change the outcome and that can't be safely assumed; usually none,
- "side_effects": [each action that reaches outside the platform: sending, booking, creating events, paying],
+ "side_effects": [each action that reaches outside the platform: sending, booking, creating events, paying] — only actions the person asked for; never add extras (asked to propose times by email → no calendar event until they confirm),
  "effort": "quick" (answer from what you know or one lookup) | "standard" (a few tool calls) | "deep" (research, comparisons, multi-step plans),
  "tool_budget": how many tool calls a careful person would need (quick 1-2, standard 3-6, deep 8-14),
  "split": [] — or, ONLY when the request contains 2–4 independent look-ups that could run at the same time (e.g. researching venues AND checking calendars, or comparing three cities), one entry per part: {"specialist": "research" | "calendar" | "browser", "objective": "what that part must find, self-contained"}. Never split a single look-up, a quick answer, anything that sends/books/changes something, or steps where one needs the other's result,
@@ -162,8 +162,22 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
 
 /** Planned tools decide what counts as a side effect: none of them writes outside the platform → nothing to sign off. */
 export function sideEffects(planTools: string[], claimed: any[]) {
-  return planTools.length && !planTools.some((t) => WRITE_RISKS.includes(getTool(t)?.risk ?? "")) ? [] : claimed;
+  const writes = planTools.filter((t) => WRITE_RISKS.includes(getTool(t)?.risk ?? ""));
+  if (planTools.length && !writes.length) return [];
+  const words = (t: string) => EFFECT_TEXT[t] ?? t.split(".").pop()!.replace(/_/g, " ");
+  const plain = (c: string) => c.replace(/\b[a-z]+\.[a-z_]+\b/g, (m) => (getTool(m) ? words(m) : m)); // never a tool id in what the person reads
+  if (!planTools.length) return claimed.map(String).map(plain);
+  // One line per planned write, worded by the model when it described that write ("Send email to dana@…: trip dates"), else plainly.
+  const used = new Set<number>();
+  return writes.map((t) => {
+    const i = claimed.findIndex((c, k) => !used.has(k) && (EFFECT_STEM[t.split(".")[0]] ?? new RegExp(t.split(".")[0], "i")).test(String(c)));
+    if (i >= 0) { used.add(i); return plain(String(claimed[i])); }
+    return words(t);
+  });
 }
+const EFFECT_STEM: Record<string, RegExp> = { email: /e-?mail|send/i, calendar: /calendar|event|invite/i, reservations: /book|reserv|table/i, browser: /website|browser|site|form/i, order: /order/i, expense: /pay|settle|expense/i };
+const EFFECT_TEXT: Record<string, string> = { "email.send": "sending the email", "calendar.create_event": "adding it to the calendar", "calendar.cancel_event": "cancelling the event",
+  "reservations.book": "booking the table", "browser.task": "acting on the website", "order.create": "opening the order", "expense.settle": "recording the payment" };
 
 /** Deterministic confirmation policy. */
 export function decide(b: Brief, o: { mode: string; revised: boolean }): Decision {
@@ -176,7 +190,9 @@ export function decide(b: Brief, o: { mode: string; revised: boolean }): Decisio
   // Multi-step work that reaches outside (external writes, other agents, waiting on people) shows the plan first;
   // internal-only work (to-dos, reminders, lists, notes) just happens.
   const involvesOthers = b.plan.some((p) => p.tool === "agent.delegate" || p.tool === "wait.for_reply");
-  if (b.side_effects.length >= 2 || (b.kind === "task" && (b.side_effects.length || involvesOthers))) return "confirm";
+  // One external write in a multi-step task is still gated by its own approval card (the exact email, the exact booking):
+  // asking "go?" first and "approve?" after is asking twice. Two or more writes, or other people involved, get the plan.
+  if (b.side_effects.length >= 2 || (b.kind === "task" && involvesOthers)) return "confirm";
   return "auto";
 }
 
@@ -284,7 +300,7 @@ export function cancelBrief(runId: string, userId: string) {
   return { ok: true };
 }
 
-const GO = /^(go|go ahead|yes|yep|yeah|ok|okay|sure|looks good|lgtm|sounds good|do it|confirm(ed)?|perfect|great|👍)[.!]*$/i;
+const GO = /^(go|go ahead|go for it|let'?s go|yes|yep|yeah|ok|okay|sure|looks good|lgtm|sounds good|do it|send it|ship it|approve[d]?|confirm(ed)?|perfect|great|👍)[.!]*$/i;
 const STOP = /^(cancel|stop|never ?mind|no|nope|forget it)[.!]*$/i;
 const CHANGE = /^(actually|wait|instead|scratch that|change|make it|update|correction|oh,? (and|also)|also,?|and also|one more thing)\b|\binstead\b/i;
 
