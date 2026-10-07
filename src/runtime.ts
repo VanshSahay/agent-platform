@@ -352,7 +352,8 @@ async function stepRunInner(runId: string) {
       }
       progressNote(run, agent, room);
       res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: overBudget ? [] : c.tools,
-        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || gate.needsEscalation(spent) || i >= budget.maxModelCalls - 2 });
+        // The final write-up (tools off) goes to the stronger tier: the cheap model leaks tool markup exactly when its tools are withheld.
+        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || gate.needsEscalation(spent) || overBudget || i >= budget.maxModelCalls - 2 });
     } catch (e: any) {
       const errs = (spent.modelErrors ?? 0) + 1;
       patchJson("runs", "spent", run.id, (s) => ({ ...s, modelErrors: errs }));
@@ -370,9 +371,9 @@ async function stepRunInner(runId: string) {
     if (!res.toolCalls.length) {
       // A "try again" only helps if there's room to try: tools still on and a model call left. Otherwise deliver, flagged.
       const fresh = J(one<any>("select spent from runs where id=?", run.id).spent, {});
-      const canRetry = !fresh.finalCallNoted && budget.maxModelCalls - (fresh.modelCalls ?? 0) >= 1;
+      const room_ = { retry: budget.maxModelCalls - (fresh.modelCalls ?? 0) >= 1, work: !fresh.finalCallNoted && budget.maxModelCalls - (fresh.modelCalls ?? 0) >= 1 };
       const claims = J(run.brief, null)?.claims ?? [];
-      const v = await gate.check(one<any>("select * from runs where id=?", runId), agent, res, claims, canRetry, live);
+      const v = await gate.check(one<any>("select * from runs where id=?", runId), agent, res, claims, room_, live);
       if (!v || !live()) return;
       if (v.kind === "retry") { appendStep(run.id, "signal", { text: v.signal }); continue; }
       return complete(run, agent, room, v.text);

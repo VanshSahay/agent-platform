@@ -109,22 +109,25 @@ export async function checkClaims(run: any, claims: Claim[], text: string): Prom
 }
 
 // ---------- the gate ----------
-/** Run every check on a final reply. `canRetry` is false once the model has no call left or its tools were taken away. */
-export async function check(run: any, agent: any, res: { text: string; model?: string }, claims: Claim[], canRetry: boolean, live: () => boolean): Promise<Verdict | null> {
+/** Run every check on a final reply. `room.retry`: a model call is left (a rewrite is possible); `room.work`: tools are still on too
+ *  (the model can still do something about a missing action). */
+export async function check(run: any, agent: any, res: { text: string; model?: string }, claims: Claim[], room: { retry: boolean; work: boolean }, live: () => boolean): Promise<Verdict | null> {
   const base = { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id };
   const g = ledgerOf(run);
+  const canRetry = room.work;
   let text = res.text;
 
   // 1. leak: the model wrote its tool calls as text (seen live from DeepSeek once tools were withheld). Never send that to a person.
   if (TOOL_MARKUP.test(text)) {
-    if (!g.leak && canRetry) {
+    if (!g.leak && room.retry) {
       mark(run, "leak"); emit("TOOL_MARKUP_LEAK", { ...base, data: { model: res.model } });
       return { kind: "retry", signal: "[CHECK] Your last reply contained raw tool-call markup instead of an answer. Reply to the person in plain text with what you found." };
     }
-    text = text.replace(TOOL_MARKUP_BLOCK, "").trim() || fromResults(run);
+    text = text.replace(TOOL_MARKUP_BLOCK, "").trim();
+    if (!text) { jobs.recordOutcome(run, jobs.outcome(run, "")); return { kind: "deliver", text: fromResults(run) }; } // our own words: nothing to check
   }
   // 2. grounding: figures that appear nowhere in this conversation's tool results, messages or memory — cite or drop.
-  if (!g.ground && canRetry) {
+  if (!g.ground && room.retry) {
     const loose = ungroundedFigures(run, text);
     if (loose.length) {
       mark(run, "ground"); emit("UNGROUNDED_FIGURES", { ...base, data: { figures: loose, model: res.model } });
