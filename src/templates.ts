@@ -277,9 +277,12 @@ export function seedFirstParty(dir = join(import.meta.dirname ?? (import.meta as
     if (t?.latest_version === m.version) continue;
     const r = publishVersion(m, pub, { platform: true });
     if ("error" in r) throw new Error(`${f}: ${r.error}`);
-    exec("update templates set featured=1 where slug=?", m.slug);
   }
+  // Four agents on the front page — the rest stay installable as specialists. One capable agent beats forty narrow ones.
+  exec("update templates set featured=0 where publisher_id=?", pub.id);
+  for (const slug of FEATURED) exec("update templates set featured=1 where slug=?", slug);
 }
+export const FEATURED = ["ava-executive-assistant", "booker-bookings", "buyer-group-buying", "milo-family"];
 
 export const getManifest = (templateId: string, version?: string): Manifest | null => {
   const t = one<any>("select * from templates where id=? or slug=?", templateId, templateId);

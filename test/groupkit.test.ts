@@ -103,7 +103,7 @@ const manifests = readdirSync("agents").map((f) => JSON.parse(readFileSync(`agen
 const ORIGINAL = ["ava-executive-assistant", "reese-reservations", "scout-travel", "atlas-research", "pool-group-buying", "relay-ops", "recruiter-healthcare"];
 
 test("AC-G4 the catalog: every manifest is valid, categorized and has an emoji avatar", () => {
-  expect(manifests.length).toBe(21);
+  expect(manifests.length).toBe(24);
   for (const m of manifests) {
     expect({ slug: m.slug, errors: validateManifest(m) }).toEqual({ slug: m.slug, errors: [] });
     expect(["personal", "group", "team"]).toContain(m.category!);
