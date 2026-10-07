@@ -103,3 +103,19 @@ test("AC-GT5 asking the person to approve in words with no approval pending is c
   expect(one<any>("select tool_id, status from approvals where room_id=?", room.id)).toMatchObject({ tool_id: "email.send", status: "pending" }); // a real approval now exists
   expect(lastFrom(room.id, ava.id)).toMatch(/Ava wants to: Send email to dana@example\.com/);
 });
+
+test("AC-GT6 a model that repeats the exact same read call gets the cached result with a warning, then a refusal, so it answers instead of looping; the tool itself ran once", async () => {
+  const a = customAgent(ws, ellie, ["web-research"], {}, "Loop");
+  const room = rt.privateRoomFor(ellie, a);
+  const seen = scriptModel((r) => r.messages.filter((m) => m.role === "tool").length < 5 ? call("web.search", { query: "same thing" }) : { text: "Here's what I found: Hotel One (https://hotel.example/one)." });
+  await say(room.id, ellie, "look up the same thing");
+  const results = seen.at(-1)!.messages.filter((m) => m.role === "tool").map((m) => m.content);
+  expect(results).toHaveLength(5);
+  expect(results[0]).not.toMatch(/REPEATED/);
+  expect(results[1]).toMatch(/^\[REPEATED CALL #2/);
+  expect(results[2]).toMatch(/^\[REPEATED CALL #3/);
+  expect(results[3]).toMatch(/^REPEATED: you have already called web\.search/);
+  expect(all("select 1 from tool_executions where run_id=? and tool_id='web.search'", runsIn(room.id)[0].id)).toHaveLength(1);
+  expect(events("TOOL_CALL_REPEATED")).toHaveLength(2);
+  expect(lastFrom(room.id, a.id)).toMatch(/^Here's what I found/);
+});

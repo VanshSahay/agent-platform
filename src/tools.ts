@@ -871,7 +871,14 @@ export async function executeToolCall(run: any, agent: any, room: any, call: { i
 
   // Idempotency: persist the fingerprint before the side effect (plan §35.1). The worst failure is executing a write twice.
   const prev = one<any>("select * from tool_executions where fingerprint=?", fp);
-  if (prev?.status === "succeeded") return { kind: "result", status: "SUCCEEDED", content: wrap(d, prev.result, !!J(prev.result)?.__untrusted) };
+  if (prev?.status === "succeeded") {
+    // The same call again gets the same result — and a weak model can loop on it (a live run asked for free time 15 times).
+    // Second time: hand it back with a warning. Fourth time and on: refuse, so the loop breaks and the model has to answer.
+    const cached = wrap(d, prev.result, !!J(prev.result)?.__untrusted);
+    const repeats = all<any>("select data from run_steps where run_id=? and type='tool_result'", run.id).filter((s) => { const x = J(s.data, {}); return x.tool === d.id && x.content?.replace(/^\[REPEATED CALL[^\]]*\]\n/, "") === cached; }).length;
+    if (repeats >= 3) { emit("TOOL_CALL_REPEATED", { ...base, data: { tool: d.id, times: repeats + 1 } }); return { kind: "result", status: "FAILED", content: `REPEATED: you have already called ${d.id} with exactly this input ${repeats} times and the result is unchanged. Do not call it again — answer the person from the results you already have.` }; }
+    return { kind: "result", status: "SUCCEEDED", content: repeats ? `[REPEATED CALL #${repeats + 1} — you already have this exact result; don't call it again, use it.]\n${cached}` : cached };
+  }
   if (prev?.status === "started" || prev?.status === "unknown") {
     exec("update tool_executions set status='unknown' where id=?", prev.id);
     const w = rt.createWait(run, { kind: "verify", reason: `${d.id} may have run already; a human must verify before retrying`, owner: run.requested_by });
