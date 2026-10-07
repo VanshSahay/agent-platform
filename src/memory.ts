@@ -89,8 +89,13 @@ export async function extractAfterTurn(room: any, message: { id: string; text: s
     `[${message.senderName}]: ${message.text}`, heuristic, room.workspace_id);
   // Scope classifier: private chat -> user's private memory; shared room -> room memory. Never workspace implicitly (plan §15.4).
   const scope: Scope = room.kind === "private" ? "user_private" : "room";
-  return memories.slice(0, 5).map((m) => remember({ room, text: m.text, kind: m.kind, scope, scopeId: scope === "user_private" ? message.sender : undefined,
+  const out = memories.slice(0, 5).map((m) => remember({ room, text: m.text, kind: m.kind, scope, scopeId: scope === "user_private" ? message.sender : undefined,
     createdBy: "memory-extractor", sourceEventIds: [message.id], confidence: 0.6 }));
+  // Something a person says about themselves in a group ("I prefer window seats") is theirs too: it follows them to their other
+  // chats and agents, where it's used for their own requests only. Other people's facts stay with the room.
+  if (scope === "room") for (const m of memories.slice(0, 5)) if (m.text.toLowerCase().startsWith(message.senderName.toLowerCase()))
+    remember({ room, text: m.text, kind: m.kind, scope: "user_private", scopeId: message.sender, createdBy: "memory-extractor", sourceEventIds: [message.id], confidence: 0.6 });
+  return out;
 }
 
 export function listFor(workspaceId: string, filter: { scope_type?: string; scope_id?: string } = {}) {

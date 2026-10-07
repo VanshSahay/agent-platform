@@ -60,6 +60,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-X3 | What a person answers when the agent asks is kept as their preference and is never asked again. | §9 |
 | AC-X4 | In a group the agent is told what was decided and who hasn't answered its last question; a member's private memory is used silently for their own request only, never shown for someone else's. | §9.5, §15 |
 | AC-X5 | Every agent has exact arithmetic (percentages included), currency conversion with the rate's date, and per-task notes that persist across steps. | §7 |
+| AC-X6 | What someone says about themselves in a group is kept as their own memory too: used for their requests in their other chats and agents, never for someone else's. | §9.5 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |
 | AC-O1 | Onboarding: empty workspaces offer one-click agents; agents come with starter prompts and a setup checklist (connect, reach from phone, first task). | §3.3, §38 |

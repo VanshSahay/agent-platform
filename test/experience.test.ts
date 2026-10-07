@@ -94,3 +94,17 @@ test("AC-X5 exact arithmetic, currency conversion with the rate's date, and task
   await say(room.id, ellie, "look into hotels");
   expect(seen.at(-1)!.system).toMatch(/\[NOTES — your own notes for this task\]\n1\. Hotel One: \$129\/night, Oct 9 only/);
 });
+
+test("AC-X6 what someone says about themselves in a group follows them: it's used for their own requests in their other chats, and never for someone else's", async () => {
+  const pip = customAgent(ws, ellie, ["polls"], {}, "Pip"), ava = customAgent(ws, ellie, [], {}, "Ava");
+  const group = rt.createRoom({ workspace_id: ws, name: "Trip", members: [{ id: ellie, kind: "human" }, { id: sam, kind: "human" }, { id: pip.id, kind: "agent" }] });
+  scriptModel({ text: "Noted." });
+  await say(group.id, ellie, "I prefer vegetarian places, fyi");
+  expect(all<any>("select scope_type from memories where text like 'Ellie prefer%' order by scope_type").map((m) => m.scope_type)).toEqual(["room", "user_private"]);
+  // Her own DM with a different agent knows it
+  const dm = rt.privateRoomFor(ellie, ava);
+  expect(buildContext(rt.createRun({ room: dm, agent: ava, objective: "where should I eat tonight?", requestedBy: ellie }), ava, dm).system).toMatch(/\[MEMORY_VERIFIED\][^]*Ellie prefers? vegetarian places/);
+  // Sam's DM never does
+  const samDm = rt.privateRoomFor(sam, ava);
+  expect(buildContext(rt.createRun({ room: samDm, agent: ava, objective: "where should I eat tonight?", requestedBy: sam }), ava, samDm).system).not.toMatch(/vegetarian/);
+});
