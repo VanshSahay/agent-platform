@@ -11,7 +11,7 @@ import { resolver } from "../src/tools";
 // Fake DNS: *.internal.test resolves to a private address, everything else to a public one.
 resolver.lookup = async (h: string) => [{ address: /internal\.test$/.test(h) ? "10.0.0.5" : "93.184.216.34" }];
 
-if (!process.env.KEEP_MODEL_KEYS) { delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY; delete process.env.OPENROUTER_API_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.JEV_API_KEY; delete process.env.CLERK_SECRET_KEY; }
+if (!process.env.KEEP_MODEL_KEYS) { for (const k of Object.keys(process.env)) if (k.startsWith("OPENROUTER_MODEL_")) delete process.env[k]; delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.EXA_API_KEY; delete process.env.OPENROUTER_API_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.JEV_API_KEY; delete process.env.CLERK_SECRET_KEY; }
 
 // ---------- fake network ----------
 type Handler = (req: Request, body: any) => Response | Promise<Response>;
