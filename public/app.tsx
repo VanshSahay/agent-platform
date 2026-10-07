@@ -238,6 +238,39 @@ function JobEditor({ a, patch }: any) {
     <label className="field">Boundaries & preferences<textarea className="input" rows={6} value={f.instructions} onChange={(e) => setF({ ...f, instructions: e.target.value })} /></label>
     <div><button className="btn primary" onClick={() => patch(f)}>Save</button></div></div>;
 }
+/** The overview's "what it does / rules / abilities" card, edited in place: lines change like text, ✕ removes, ＋ adds; a Save
+ *  button appears once something changed (abilities save as you click). */
+function OverviewEditor({ a, patch }: any) {
+  const { toast } = useCtx();
+  const [sp, reloadSp] = useApi<any>(`/v1/agents/${a.id}/spec`);
+  const [cat] = useApi<any>("/v1/catalog");
+  const [draft, setDraft] = useState<any>(null);
+  const d = draft ?? sp;
+  const [busy, setBusy] = useState(false);
+  if (!d) return <div className="card"><div className="small muted">What it does</div><div className="mt8 muted">Loading…</div></div>;
+  const set = (k: string, v: any) => setDraft({ ...d, [k]: v });
+  const save = async () => {
+    setBusy(true);
+    try {
+      const clean = (xs: string[]) => (xs ?? []).map((x) => x.trim()).filter(Boolean);
+      const r = await api(`/v1/agents/${a.id}/spec`, { spec: { ...d, jobs: clean(d.jobs), boundaries: clean(d.boundaries) }, summary: ["edited on the overview"] }, "PUT");
+      setDraft(null); reloadSp(); toast(`${a.name} updated — it behaves this way from its next message`); void r;
+    } catch (e: any) { toast(e.message); } finally { setBusy(false); }
+  };
+  const unused = (cat?.skills ?? []).filter((x: any) => !a.skills.includes(x.id));
+  return <div className="card">
+    <div className="small muted">What it does</div>
+    <div className="mt8"><EditableList items={d.jobs ?? []} icon="✓" label="job" add="Add something it should do" onChange={(v) => set("jobs", v)} /></div>
+    <div className="small muted mt16">Rules it follows</div>
+    <div className="mt8"><EditableList items={d.boundaries ?? []} icon="✋" label="rule" add="Add a rule" onChange={(v) => set("boundaries", v)} /></div>
+    {draft && <div className="row mt8" style={{ gap: 8 }}><button className="btn primary sm" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save changes"}</button><button className="btn ghost sm" onClick={() => setDraft(null)}>Discard</button></div>}
+    <div className="small muted mt16">Abilities</div>
+    <div className="mt8">{a.skills.map((s: string) => { const [e, t] = abilityOf(s); return <div key={s} className="ability"><span className="e">{e}</span><span className="grow">{t}</span>
+      <button className="btn sm ghost" aria-label={`Remove ${t}`} onClick={() => patch({ skills: a.skills.filter((x: string) => x !== s) })}>✕</button></div>; })}
+      {unused.length > 0 && <select className="input mt8" value="" aria-label="Add an ability" onChange={(e) => e.target.value && patch({ skills: [...a.skills, e.target.value] })}>
+        <option value="">＋ Add an ability…</option>{unused.map((x: any) => <option key={x.id} value={x.id}>{abilityOf(x)[0]} {abilityOf(x)[1]}</option>)}</select>}</div>
+  </div>;
+}
 function SkillsEditor({ a, patch }: any) {
   const [cat] = useApi<any>("/v1/catalog");
   if (!cat) return null;
@@ -1542,7 +1575,7 @@ function AgentPage({ id, tab = "overview" }: { id: string; tab?: string }) {
         <p className="small muted" style={{ margin: "4px 0 10px" }}>People asked {a.name} for these and it had no reliable source, so it said so instead of guessing. Connect a source (Connections → MCP) to cover them.</p>
         {a.data_gaps.map((g: any) => <div key={g.need} className="ability"><span className="e">⚠️</span><span className="grow">{g.need}<div className="small muted">{g.category} · asked {g.n}×</div></span></div>)}</div>}
       <div className="split">
-        <div className="card"><div className="small muted">What it can do</div><div className="mt8">{a.skills.map((s: string) => { const [e, t] = abilityOf(s); return <div key={s} className="ability"><span className="e">{e}</span><span>{t}</span></div>; })}</div></div>
+        <OverviewEditor a={a} patch={patch} />
         <div className="col" style={{ gap: 12 }}>
           <div className="card"><div className="small muted">Doing now</div>{a.active_runs.length ? a.active_runs.map((r: any) => <a key={r.id} href={`#/rooms/${r.room_id}`} className="row mt8"><Status s={r.status} /><span className="grow">{r.objective.slice(0, 90)}</span></a>) : <div className="mt8 muted">Idle — {a.completed_runs} task{a.completed_runs === 1 ? "" : "s"} done so far.</div>}</div>
           <div className="card"><div className="small muted">Chats it's in</div><div className="mt8 col">{a.rooms.length ? a.rooms.map((r: any) => <a key={r.id} href={`#/rooms/${r.id}`}>{r.kind === "private" ? "🙋" : "💬"} {r.name}</a>) : <span className="muted">None yet</span>}</div></div>
