@@ -564,7 +564,8 @@ def({
     const busy = Object.values(j.calendars ?? {}).flatMap((c: any) => (c.busy ?? []).map((x: any) => ({ start: Date.parse(x.start), end: Date.parse(x.end) })));
     const tz = tzOf(ctx.run?.requested_by);
     const after = Math.min(23, Math.max(0, Math.round(i.after_hour ?? 9))), before = Math.min(24, Math.max(after + 1, Math.round(i.before_hour ?? 18)));
-    return { status: "SUCCEEDED", output: { time_zone: tz, from: fmtLocal(start, tz), to: fmtLocal(end, tz), hours: `${after}:00–${before}:00`, slots: freeSlots(busy, start, end, duration_minutes, after, before, 12, tz), duration_minutes } };
+    return { status: "SUCCEEDED", output: { time_zone: tz, from: fmtLocal(start, tz), to: fmtLocal(end, tz), hours: `${after}:00–${before}:00`, slots: freeSlots(busy, start, end, duration_minutes, after, before, 12, tz), duration_minutes,
+      note: "A sample: up to 3 slots per day, earliest first. Other times in the window may be free too — narrow with after_hour/before_hour or ask again for a specific day." } };
   },
 });
 

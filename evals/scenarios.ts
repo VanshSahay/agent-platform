@@ -339,14 +339,16 @@ ${rubric.map((r, i) => `${i + 1}. ${r}`).join("\n")}
 Return JSON: {"results":[{"n":1,"pass":true,"why":"<one short sentence>"}, ...]}`;
   try {
     const r = await realFetch("https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: process.env.EVAL_JUDGE_MODEL ?? "anthropic/claude-sonnet-5.5", temperature: 0, max_tokens: 1500, response_format: { type: "json_object" }, messages: [{ role: "user", content: prompt }] }) });
+      body: JSON.stringify({ model: process.env.EVAL_JUDGE_MODEL ?? "anthropic/claude-sonnet-5.5", temperature: 0, max_tokens: 4000, response_format: { type: "json_object" }, messages: [{ role: "user", content: prompt }] }) });
     const j: any = await r.json();
     if (!j.choices) throw new Error(`${r.status} ${j.error?.message ?? ""}`.slice(0, 160));
-    const out = JSON.parse(j.choices[0].message.content.replace(/^```json|```$/g, "")).results as any[];
+    const raw = String(j.choices[0].message.content ?? ""), body = raw.match(/\{[\s\S]*\}/)?.[0] ?? raw;
+    let out: any[];
+    try { out = JSON.parse(body).results; } catch (e: any) { throw new Error(`judge wrote malformed JSON (${j.choices[0].finish_reason ?? "?"}): ${e.message}`); }
     return rubric.map((label, i) => { const x = out.find((o) => o.n === i + 1); return { kind: "judge", label, pass: !!x?.pass, why: x?.why ?? "no verdict" }; });
   } catch (e: any) {
-    // Out of model credit / bad key is an infrastructure problem, not an agent failure: report it, don't score it.
-    if (/^40[12]\b/.test(e.message)) return [{ kind: "not_evaluated", label: "judge unavailable", pass: false, why: e.message }];
+    // Out of model credit / bad key / a judge that can't produce JSON is an infrastructure problem, not an agent failure: report it, don't score it.
+    if (/^40[12]\b|malformed JSON/.test(e.message)) return [{ kind: "not_evaluated", label: "judge unavailable", pass: false, why: e.message }];
     return rubric.map((label) => ({ kind: "judge", label, pass: false, why: `judge error: ${e.message}` }));
   }
 }
