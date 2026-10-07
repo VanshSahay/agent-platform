@@ -29,6 +29,7 @@ const DATA_CATALOG: { re: RegExp; how: DataHow; detail: string; skill?: string }
   { re: /scores?|game|match|fixture|schedule of|nfl|nba|mlb|nhl|soccer|football|basketball|baseball|hockey|f1/i, how: "built-in", detail: "Live scores, results and schedules (ESPN feed, unofficial)", skill: "sports" },
   { re: /restaurant|table|reservation/i, how: "built-in", detail: "Restaurant search and booking (OpenTable/Resy through your login)", skill: "reservations" },
   { re: /email|inbox|calendar|meeting|contact/i, how: "connect", detail: "Connect Google (Gmail + Calendar)" },
+  { re: /小红书|xiaohongshu|rednote|itinerar|攻略|things to do|what (people|locals) (recommend|say|do)|travel tips|social (media|posts)/i, how: "built-in", detail: "小红书 posts: itineraries, tips and reviews, distilled with sources (through a logged-in account)", skill: "social-xiaohongshu" },
   { re: /news|headline|article|review|price of|product|hotel|flight|event|ticket/i, how: "web", detail: "Web search + reading the source pages (cited, may be unverified)", skill: "web-research" },
 ];
 const DATA_HOWS: DataHow[] = ["built-in", "connect", "website", "web", "ask", "none"];

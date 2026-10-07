@@ -11,3 +11,4 @@ photon.sqlite*
 .env.clerk
 agent/
 .env.photon
+.tools/

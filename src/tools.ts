@@ -1026,6 +1026,8 @@ export function resolveSiteLogin(site: string, agentId: string, run: any, roomHu
 import { registerReservationTools } from "./reservations";
 import { registerOrderTools } from "./orders";
 import { registerGroupTools } from "./groupkit";
+import { registerSocialTools } from "./social";
 registerReservationTools(def);
 registerOrderTools(def);
 registerGroupTools(def);
+registerSocialTools(def);
