@@ -135,7 +135,8 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   const quick = heuristicBrief(run.objective, ctx);
   const smallTalk = !prev && quick.kind === "answer" && !quick.questions.length && run.objective.trim().split(/\s+/).length <= 4 && !run.objective.includes("?");
   // The plan decides everything downstream (what runs, what counts as done): it gets the judge tier, never the cheap one.
-  const b = smallTalk ? quick : await structured<any>("judge", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
+  const deepAsk = DEEP.test(String(run.objective ?? "")) || String(run.objective ?? "").length > 220 || quick.plan.filter((p) => p.tool).length >= 3;
+  const b = smallTalk ? quick : await structured<any>(deepAsk ? "judge" : "fast", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
   const arr = (x: any) => (Array.isArray(x) ? x : []);
   // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is
   // decided by the tools in the plan: only external writes (send, book, create events, pay) count.

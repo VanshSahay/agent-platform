@@ -580,3 +580,7 @@ table.t td, table.t th { border-top: 1.5px solid var(--line); }
 .inline-edit:focus { background: var(--panel); border-color: var(--line-strong); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
 .add-row { display: block; width: 100%; text-align: left; margin-top: 6px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 10px; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
 .add-row:hover { color: var(--text); border-color: var(--accent); }
+/* Live steps under "…is working" in the chat, one line per tool call */
+.steps { margin: 6px 0 2px 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); }
+.step .mark { display: inline-block; width: 16px; color: var(--faint); }
+.step.ok .mark { color: var(--accent); } .step.bad .mark { color: #dc2626; } .step.run { color: var(--text); }

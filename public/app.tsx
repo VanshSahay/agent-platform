@@ -395,7 +395,8 @@ function Room({ id, compact }: { id: string; compact?: boolean }) {
       {data.starters?.length > 0 && events.filter((e) => e.type === "message").length < 4 && <div className="row wrap" style={{ padding: "8px 16px 0", gap: 6 }}>
         <span className="small faint">Try:</span>{data.starters.map((s: string) => <button key={s} className="pill" style={{ cursor: "pointer", border: 0 }} onClick={() => edit(s.replace(/…/g, "").replace(/\s+/g, " ").trim() + (s.includes("…") ? " " : ""))}>{s}</button>)}</div>}
       {data.runs.some((r: any) => ["queued", "running", "retrying"].includes(r.status)) && <div className="small muted working-line" style={{ padding: "4px 20px" }}>
-        {data.runs.filter((r: any) => ["running", "retrying"].includes(r.status)).map((r: any) => <div key={r.id}><span className="dots" /> {r.agent_name} is {r.activity ?? "working"}…{r.steps > 2 ? ` · ${r.steps} steps` : ""}</div>)}
+        {data.runs.filter((r: any) => ["running", "retrying"].includes(r.status)).map((r: any) => <div key={r.id}><span className="dots" /> {r.agent_name} is {r.activity ?? "working"}…{r.steps > 2 ? ` · ${r.steps} steps` : ""}
+          {r.step_list?.length > 0 && <div className="steps">{r.step_list.map((s: any, i: number) => <div key={i} className={`step ${s.status === "SUCCEEDED" ? "ok" : s.status === "running" ? "run" : "bad"}`}><span className="mark">{s.status === "SUCCEEDED" ? "✓" : s.status === "running" ? "…" : "✕"}</span>{s.text}</div>)}</div>}</div>)}
         {data.runs.filter((r: any) => r.status === "queued").map((r: any) => <div key={r.id} className="faint">Up next for {r.agent_name}: “{String(r.objective).slice(0, 70)}{String(r.objective).length > 70 ? "…" : ""}”</div>)}</div>}
       <div className="composer"><label className="btn ghost" title="Attach a file" style={{ alignSelf: "center" }}>📎<input type="file" hidden onChange={async (e) => {
           const f = e.target.files?.[0]; if (!f) return;

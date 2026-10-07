@@ -315,14 +315,20 @@ async function stepRunInner(runId: string) {
   }
 
   const runCalls = async (calls: any[], allowed: Set<string>) => {
-    for (const c of calls) {
+    // Reads the model asked for together (3 page fetches, 2 searches) run together; anything that writes runs one at a time, in order.
+    const groups: any[][] = [];
+    for (const c of calls) { const read = getTool(c.name)?.risk === "read" && !getTool(c.name)?.riskOf; if (read && groups.at(-1)?.every((x) => getTool(x.name)?.risk === "read")) groups.at(-1)!.push(c); else groups.push([c]); }
+    for (const g of groups) {
       run = one<any>("select * from runs where id=?", runId);
       if (!live()) return "wait";
-      const r = await executeToolCall(run, agent, room, c, allowed);
-      if (r.kind === "result" && !live()) return "wait"; // keep the audit trail, but don't continue a stale plan
-      if (r.kind === "result") { appendToolResult(run.id, c, r.content); if (r.status === "SUCCEEDED") intake.markStep(run.id, c.name); }
-      else if (r.kind === "wait") return "wait";
-      else { createWait(run, { kind: "retry", reason: `retrying ${c.name}: ${r.reason}`, wake_at: now() + r.delayMs }); return "wait"; }
+      const results = await Promise.all(g.map((c) => executeToolCall(run, agent, room, c, allowed)));
+      if (!live()) return "wait"; // keep the audit trail, but don't continue a stale plan
+      for (let k = 0; k < g.length; k++) {
+        const c = g[k], r = results[k];
+        if (r.kind === "result") { appendToolResult(run.id, c, r.content); if (r.status === "SUCCEEDED") intake.markStep(run.id, c.name); }
+        else if (r.kind === "wait") return "wait";
+        else { createWait(run, { kind: "retry", reason: `retrying ${c.name}: ${r.reason}`, wake_at: now() + r.delayMs }); return "wait"; }
+      }
     }
     return "ok";
   };
@@ -351,7 +357,9 @@ async function stepRunInner(runId: string) {
         continue;
       }
       progressNote(run, agent, room);
+      const effort = J(run.brief, null)?.effort;
       res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: overBudget ? [] : c.tools,
+        reasoning: effort === "deep" ? "low" : "off", // measured: hidden thinking doubled the final write-up on a routine request
         // The final write-up (tools off) goes to the stronger tier: the cheap model leaks tool markup exactly when its tools are withheld.
         workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || gate.needsEscalation(spent) || overBudget || i >= budget.maxModelCalls - 2 });
     } catch (e: any) {
@@ -387,8 +395,10 @@ async function stepRunInner(runId: string) {
 /** Long work gets one "still on it" with what's been done so far, so a chat never just goes quiet. */
 function progressNote(run: any, agent: any, room: any) {
   const spent = J(run.spent, {});
-  if (spent.progressNoted || run.parent_run_id || now() - run.created_at < Number(process.env.PROGRESS_NOTE_MS ?? 75_000)) return;
-  patchJson("runs", "spent", run.id, (x) => ({ ...x, progressNoted: 1 }));
+  // iMessage can't stream: a short note at ~30s, then every ~45s, three at most, each saying what's done and what's next.
+  const n0 = spent.progressNoted ?? 0, first = Number(process.env.PROGRESS_NOTE_MS ?? 30_000);
+  if (n0 >= 3 || run.parent_run_id || now() - run.created_at < first + n0 * 45_000) return;
+  patchJson("runs", "spent", run.id, (x) => ({ ...x, progressNoted: n0 + 1 }));
   const tools = all<any>("select json_extract(data, '$.tool') t from events where run_id=? and type='TOOL_CALL_REQUESTED'", run.id).map((r) => r.t);
   const n = (t: string) => tools.filter((x) => x === t).length;
   const did = [n("web.search") && `${n("web.search")} searches`, n("web.fetch") && `${n("web.fetch")} pages read`, n("browser.task") && "a site checked"].filter(Boolean).join(", ");
