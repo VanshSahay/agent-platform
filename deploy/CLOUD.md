@@ -27,7 +27,9 @@ cd deploy/edge && npx wrangler deploy --var ORIGIN:https://agent-platform.fly.de
 
 ## iMessage once the app is in the cloud
 The cloud can't use this Mac's Messages app. Pick one:
-- **Photon shared pool** (free/pro): DMs only, the agent texts first. Set `SHARED_IMESSAGE_*` secrets on Fly.
+- **Photon shared pool** (free/pro, the current choice): DMs only, the agent texts first and the person replies YES. Set on Fly:
+  `PROJECT_ID` and `PROJECT_SECRET` (from `agent/.env`, the Photon project), `SHARED_IMESSAGE_LINE=pool`, and leave `IMESSAGE_MODE` unset.
+  One machine keeps a stream open to Photon, so no webhook needs registering.
 - **Photon Business**: a dedicated number, groups work. Same secrets.
 - **Keep this Mac as a relay only**: run just the iMessage bridge here against the cloud database
   (`IMESSAGE_MODE=local DATABASE_URL=<the Fly Postgres URL> bun run src/index.ts` on a different port). When the Mac sleeps,
