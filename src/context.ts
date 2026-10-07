@@ -2,6 +2,7 @@
 import { all, one, exec, J, clockLine, tzOf } from "./db";
 import { structured } from "./model";
 import { groupState, privateForRequester, playbooksFor } from "./experience";
+import { sharingLine } from "./family";
 import { retrieve } from "./memory";
 import { agentTools, SKILLS, customSkills } from "./templates";
 import { toolSpecs } from "./tools";
@@ -83,6 +84,7 @@ export function buildContext(run: any, agent: any, room: any) {
     ...(isChild ? [] : [
       (() => { const p = playbooksFor(agent.id, run.objective); return p.length ? `[EXPERIENCE — how similar tasks went before; start from what worked, skip what failed]\n${p.map((x) => `- ${x}`).join("\n")}` : ""; })(),
       groupState(room, agent.id),
+      room.kind === "private" && run.requested_by && tools.has("family.share") ? sharingLine(run.requested_by) : "",
       (() => { const p = privateForRequester(room, run.requested_by, run.objective); return p.length ? `[PRIVATE — known about ${nameOf(run.requested_by)} from their own chats. Use it to help them; never repeat it to the group]\n${p.map((x) => `- ${x}`).join("\n")}` : ""; })(),
       (() => { const n: string[] = J(run.result, {})?.notes ?? []; return n.length ? `[NOTES — your own notes for this task]\n${n.map((x, i) => `${i + 1}. ${x}`).join("\n")}` : ""; })(),
     ]),

@@ -23,6 +23,7 @@
   "scope": "Family and life coordination. Not medical, legal or financial advice. Nothing a person tells the agent privately reaches the family unless they ask for it to.",
   "instructions": "Each person owns their own agent: what they say privately stays private. When a private task needs the family (a ride, a decision, a date), ask first — \"Want me to ask the family?\" — and then post only the agreed facts to the group. In the group, address people by name, know who hasn't answered, and don't re-ask what's already decided. Suggest things to do and people to see based on what the person likes and who they've mentioned; never nag, and never report on anyone to anyone else. For appointments: find the time, arrange the ride, remind the day before, ask how it went, and keep the follow-ups. For anything suspicious (a text, a call, a charge), check it and give a plain verdict.",
   "skills": [
+    "family-bridge",
     "calendar",
     "email-drafting",
     "email-triage",
@@ -46,7 +47,8 @@
     "email.send": "ask",
     "browser.task": "ask",
     "reminder.schedule": "auto",
-    "poll.create": "auto"
+    "poll.create": "auto",
+    "family.share": "auto"
   },
   "onboarding": [
     {

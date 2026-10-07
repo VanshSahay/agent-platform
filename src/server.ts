@@ -14,6 +14,7 @@ import * as spec from "./spec";
 import { browserRoutes, bb } from "./browser";
 import { PROVIDERS, platformKey } from "./model";
 import { TOOLS, getTool, assertPublicUrl } from "./tools";
+import * as family from "./family";
 import app from "../public/index.html";
 
 type Req = Request & { params: Record<string, string> };
@@ -264,6 +265,8 @@ export const routes: Record<string, any> = {
   }) },
 
   "/v1/webhooks/photon": { POST: async (req: Request) => (await import("./photon")).photonWebhook(req) },
+  "/v1/me/sharing": { GET: h((req) => { const u = userOf(req); return json({ sharing: family.sharingOf(u.id), categories: family.CATEGORIES.map((c) => ({ id: c, label: family.LABELS[c] })) }); }),
+    PUT: h(async (req) => { const u = userOf(req), b = await body(req); return json({ sharing: family.setSharing(u.id, b ?? {}) }); }) },
   "/v1/me/tz": { POST: h(async (req) => { const u = userOf(req), b = await body(req); if (!setTz(u.id, String(b.tz ?? ""))) fail(400, "unknown time zone"); return json({ tz: b.tz }); }) },
   "/v1/auth/config": { GET: h(() => json({ clerk: clerkOn() ? clerkPublishableKey() : null })) },
   "/v1/auth/clerk": { POST: h(async (req) => {

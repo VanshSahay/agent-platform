@@ -26,9 +26,9 @@ function useHash() {
 }
 const go = (p: string) => { location.hash = p; };
 class Boundary extends Component<{ children: ReactNode }, { err: string | null }> {
-  state = { err: null as string | null };
+  override state = { err: null as string | null };
   static getDerivedStateFromError(e: any) { return { err: String(e?.message ?? e) }; }
-  render() { return this.state.err ? <div className="card" style={{ margin: 24 }}><h3>This page hit an error</h3><p className="small muted mono">{this.state.err}</p><button className="btn" onClick={() => location.reload()}>Reload</button></div> : this.props.children; }
+  override render() { return this.state.err ? <div className="card" style={{ margin: 24 }}><h3>This page hit an error</h3><p className="small muted mono">{this.state.err}</p><button className="btn" onClick={() => location.reload()}>Reload</button></div> : this.props.children; }
 }
 function useApi<T = any>(path: string | null, poll = 0): [T | null, () => void, string | null] {
   const [d, setD] = useState<T | null>(null), [e, setE] = useState<string | null>(null), [n, setN] = useState(0);
@@ -680,6 +680,20 @@ function describe(e: any) {
 }
 
 // ---------------- Settings ----------------
+/** What this person lets the family see by default. Theirs to set; the agent reads it in their private chat and asks before anything else reaches the group. */
+function SharingCard() {
+  const { toast } = useCtx();
+  const [d, reload] = useApi<any>("/v1/me/sharing");
+  if (!d) return null;
+  const flip = async (id: string, v: boolean) => { try { await api("/v1/me/sharing", { [id]: v }, "PUT"); reload(); } catch (e: any) { toast(e.message); } };
+  return <div className="card col" style={{ marginBottom: 16 }}>
+    <h3 style={{ margin: 0 }}>What your family agent may share about you</h3>
+    <p className="small muted" style={{ margin: 0 }}>Off means the agent asks you first, every time, before anything in that category goes to a family group. Nothing from your private chats is ever shared as such.</p>
+    {d.categories.map((c: any) => <label key={c.id} className="row" style={{ gap: 10, cursor: "pointer" }}>
+      <input type="checkbox" checked={!!d.sharing[c.id]} onChange={(e) => flip(c.id, e.target.checked)} /><span className="grow">Share {c.label}</span>
+      <span className="small faint">{d.sharing[c.id] ? "shared by default" : "asks first"}</span></label>)}
+  </div>;
+}
 function Settings() {
   const { ws, me, toast, reloadMe, setWs } = useCtx();
   const [s, reload] = useApi<any>(`/v1/workspaces/${ws}/settings`);
@@ -688,7 +702,7 @@ function Settings() {
   const [invite, setInvite] = useState(""), [link, setLink] = useState(""), [newWs, setNewWs] = useState("");
   const role = me.workspaces.find((w: any) => w.id === ws)?.role;
   if (!s) return null;
-  return <>
+  return <><SharingCard />
     <h1>Settings</h1><p className="muted">{s.workspace.name} · {s.workspace.plan} plan · you are {role}</p>
     <h2>Members</h2>
     <div className="list">{members?.map((m) => <div key={m.id} className="item"><div className="avatar human">{m.name[0]}</div><div className="grow">{m.name}<div className="small faint">{m.email}</div></div>
