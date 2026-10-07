@@ -402,8 +402,11 @@ function progressNote(run: any, agent: any, room: any) {
   const tools = all<any>("select json_extract(data, '$.tool') t from events where run_id=? and type='TOOL_CALL_REQUESTED'", run.id).map((r) => r.t);
   const n = (t: string) => tools.filter((x) => x === t).length;
   const did = [n("web.search") && `${n("web.search")} searches`, n("web.fetch") && `${n("web.fetch")} pages read`, n("browser.task") && "a site checked"].filter(Boolean).join(", ");
-  const next = (J(run.brief, null)?.plan ?? []).find((p: any) => p.status !== "done")?.text;
-  postMessage(room.id, { sender: agent.id, runId: run.id, text: `Still on it${did ? ` — ${did} so far` : ""}${next ? `; now: ${String(next).charAt(0).toLowerCase() + String(next).slice(1)}` : did ? "" : " — a minute more"}.`, targets: replyTargets(room.id, run.origin_endpoint_id) });
+  // "now …" is what it's literally doing (reading wpdh.com), never a plan step ("compile a list of…") — that reads like a brief.
+  const last = J(one<any>("select data from events where run_id=? and type='TOOL_CALL_REQUESTED' order by seq desc limit 1", run.id)?.data, null);
+  const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return "a page"; } };
+  const nowDoing = last?.tool === "web.search" ? `searching “${String(last.input?.query ?? "").slice(0, 50)}”` : last?.tool === "web.fetch" ? `reading ${host(last.input?.url)}` : last?.tool === "browser.task" ? "checking a website" : "";
+  postMessage(room.id, { sender: agent.id, runId: run.id, text: `Still on it${did ? ` — ${did} so far` : ""}${nowDoing ? `, ${nowDoing} now` : did ? "" : " — a minute more"}.`, targets: replyTargets(room.id, run.origin_endpoint_id) });
 }
 
 /** The plan's tool budget for this run (intake.planWork), else a default. */

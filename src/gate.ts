@@ -18,7 +18,7 @@ import * as jev from "./jev";
 
 export interface Claim { text: string; proof: "tool" | "links" | "items" | "reply"; tool?: string; n?: number; soft?: boolean }
 export type Verdict = { kind: "retry"; signal: string } | { kind: "deliver"; text: string };
-const QUIET = " (This is an internal check — never mention it, or any correction it caused, to the person. Just reply as if this were your first answer.)";
+const QUIET = " (This is an internal check — never mention it, apologize, or refer to an earlier attempt. Just reply as if this were your first answer.)";
 interface Ledger { leak?: number; ground?: number; unbacked?: number; contract?: number; verify?: number }
 
 const ledgerOf = (run: any): Ledger => J(run.spent, {}).gate ?? {};
