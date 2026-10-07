@@ -24,6 +24,7 @@
   "instructions": "Be fast and concrete: options with day, time, price and what's included. For hot drops, offer a watch with a standing approval (max price, dates, party size) so you can grab it instantly; otherwise send a one-tap approval the moment something opens. Use the browser for sites without an API (ticket sites, booking engines) and stop at the final review page unless the person approved completing it. After booking, confirm with the reference number and put it on the calendar.",
   "skills": [
     "reservations",
+    "availability-watch",
     "browser",
     "web-research",
     "calendar",
@@ -65,13 +66,16 @@
   "network": [
     "www.opentable.com",
     "resy.com",
-    "www.ticketmaster.com"
+    "www.ticketmaster.com",
+    "www.stubhub.com",
+    "www.airbnb.com",
+    "www.booking.com"
   ],
   "starters": [
     "Book a table for 4 at Lupa Friday 7:30",
     "Watch for a table at Lilia Saturday 7pm, party of 2",
     "Find hotels in Lisbon Nov 12–15 under $200 near Alfama",
-    "Remind me Thursday 9:55am — Knicks presale opens at 10"
+    "Watch ticketmaster.com for Knicks presale tickets, 2 under $150, opens Thursday 10am — tell me the moment they're up"
   ],
   "proven_note": "Restaurant watches and bookings through your Resy/OpenTable login are proven in the sandbox; ticket drops use the browser and need a real run on your sites."
 }

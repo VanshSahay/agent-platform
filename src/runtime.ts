@@ -13,6 +13,7 @@ import { structured } from "./model";
 import * as channels from "./channels";
 import * as intake from "./intake";
 import * as reservations from "./reservations";
+import * as watches from "./watches";
 import * as orders from "./orders";
 import * as groupkit from "./groupkit";
 import * as jobs from "./jobs";
@@ -726,6 +727,7 @@ export async function tick() {
   n += processDueWaits();
   for (const s of all<any>("select * from schedules where status='active' and next_at is not null and next_at<=?", t)) { await fireSchedule(s); n++; }
   n += await reservations.checkWatches();
+  n += await watches.checkSiteWatches();
   n += await orders.checkOrders();
   n += await groupkit.checkPolls();
   if (engine.temporal()) return n + (await channels.flushOutbox()); // Temporal workers step the runs

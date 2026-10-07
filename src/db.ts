@@ -80,6 +80,8 @@ create table if not exists reservations (id text primary key, workspace_id text,
   party_size int, confirmation text, deposit real default 0, status text, sandbox int default 0, created_at int);
 create table if not exists reservation_watches (id text primary key, workspace_id text, agent_id text, room_id text, user_id text, criteria text, release_at int, auto_book int default 0,
   status text default 'active', checks int default 0, last_checked_at int, next_check_at int, interval_ms int, pending_run_id text, booked_reservation_id text, created_at int);
+create table if not exists site_watches (id text primary key, workspace_id text, agent_id text, room_id text, user_id text, what text, url text, site text, opens_at int, until int,
+  every_min int, max_price real, quantity int default 1, action text default 'notify', status text default 'active', checks int default 0, last_result text, pending_run_id text, next_check_at int, created_at int);
 create table if not exists group_orders (id text primary key, workspace_id text, room_id text, agent_id text, organizer_id text, title text, vendor text, items text, min_total_qty int,
   deadline_at int, payment_handle text, shipping_fee real default 0, status text default 'open', reminded int default 0, closed_at int, created_at int);
 create table if not exists order_lines (id text primary key, order_id text, user_id text, item_id text, qty int, note text, paid int default 0, updated_at int);

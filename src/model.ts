@@ -186,6 +186,13 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   if (fu && has("task.create")) out.push({ name: "task.create", input: { title: fu[1].trim(), owner: "agent" } });
   if (delegateTo && has("agent.delegate")) out.push({ name: "agent.delegate", input: { agent: delegateTo, objective: ask![2].trim() } });
 
+  const watch = t.match(/\bwatch\s+(?:for\s+)?([a-z0-9.-]+\.(?:com|net|org|co|io|app)|ticketmaster|stubhub|booking|airbnb|resy|opentable)\b\s*(?:for\s+)?(.+)/);
+  if (watch && has("watch.site") && !/\b(table|restaurant)\b/.test(watch[2])) {
+    const site = watch[1].includes(".") ? watch[1] : `${watch[1]}.com`;
+    const what = watch[2].split(/[,—–-]|\bopens\b|\btell me\b/)[0].trim();
+    const price = t.match(/under \$?(\d+)/)?.[1], qty = t.match(/\b(\d+)\s+(?:tickets?|seats?|rooms?|spots?)\b/)?.[1] ?? t.match(/\b(\d+)\s+under\b/)?.[1];
+    out.push({ name: "watch.site", input: { what, url: `https://www.${site}/`, ...(price ? { max_price: Number(price) } : {}), ...(qty ? { quantity: Number(qty) } : {}), action: /\b(book|buy|grab|get) (it|them)\b/.test(t) ? "act" : "notify" } });
+  }
   const rem = t.match(/remind (?:me|us)(?: to)? (.+?)(?: in (\d+) (minute|hour|day)s?| tomorrow|$)/);
   const daily = t.match(/every (?:day|morning|weekday)(?: at (\d{1,2}))?/);
   if ((rem || daily) && has("reminder.schedule")) {
