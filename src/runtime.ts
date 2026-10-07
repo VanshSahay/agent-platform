@@ -17,6 +17,8 @@ import * as orders from "./orders";
 import * as groupkit from "./groupkit";
 import * as jobs from "./jobs";
 import * as jev from "./jev";
+import * as gate from "./gate";
+import { foldHistory } from "./context";
 
 export const DEFAULT_BUDGET = { maxModelCostUsd: 0.8, maxToolCalls: 25, maxBrowserMinutes: 10, maxWallClockSeconds: 7 * 86400, maxAutonomousExternalWrites: 3, maxModelCalls: 12 };
 const WAIT_STATUS: Record<string, string> = { debounce: "scheduled", clarify: "waiting_for_human", confirm: "waiting_for_human", approval: "waiting_for_human", verify: "waiting_for_human", reconnect: "waiting_for_human",
@@ -349,7 +351,7 @@ async function stepRunInner(runId: string) {
       }
       progressNote(run, agent, room);
       res = await generate({ profile: routeProfile(agent, run), system: c.system, messages: c.messages, tools: overBudget ? [] : c.tools,
-        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || !!spent.unbackedRetries || !!spent.leakRetry || i >= budget.maxModelCalls - 2 });
+        workspaceId: run.workspace_id, agentId: agent.id, runId: run.id, ctx: c.ctx, escalate: (spent.modelErrors ?? 0) > 0 || gate.needsEscalation(spent) || i >= budget.maxModelCalls - 2 });
     } catch (e: any) {
       const errs = (spent.modelErrors ?? 0) + 1;
       patchJson("runs", "spent", run.id, (s) => ({ ...s, modelErrors: errs }));
@@ -364,65 +366,15 @@ async function stepRunInner(runId: string) {
     if (!live()) return; // cancelled or revised while the model was thinking: drop this answer
     appendStep(run.id, "assistant", { text: res.text, toolCalls: res.toolCalls, model: res.model, raw: res.raw });
     emit("MODEL_CALL", { ...base, data: { model: res.model, tool_calls: res.toolCalls.map((t) => t.name), usage: res.usage, cost_usd: res.costUsd } });
-    if (!res.toolCalls.length && TOOL_MARKUP.test(res.text)) {
-      // The model wrote its tool calls as text (seen live from DeepSeek once tools were withheld): never send that to a person.
-      if (!spent.leakRetry) {
-        patchJson("runs", "spent", run.id, (x) => ({ ...x, leakRetry: 1 }));
-        emit("TOOL_MARKUP_LEAK", { ...base, data: { model: res.model } });
-        appendStep(run.id, "signal", { text: "[CHECK] Your last reply contained raw tool-call markup instead of an answer. Reply to the person in plain text with what you found." });
-        continue;
-      }
-      res.text = res.text.replace(TOOL_MARKUP_BLOCK, "").trim() || "I found results but couldn't finish writing them up — ask me again and I'll send them.";
-    }
-    if (!res.toolCalls.length && !spent.groundRetry) {
-      // Figures (prices, %, amounts) that appear nowhere in this conversation's tool results, messages or memory: cite or drop.
-      const loose = ungroundedFigures(run, res.text);
-      if (loose.length) {
-        patchJson("runs", "spent", run.id, (x) => ({ ...x, groundRetry: 1 }));
-        emit("UNGROUNDED_FIGURES", { ...base, data: { figures: loose, model: res.model } });
-        appendStep(run.id, "signal", { text: `[CHECK] These figures don't appear in any tool result, message or memory here: ${loose.join(", ")}. Get them with a tool and cite the source, or remove them. If you calculated one from sourced numbers, show the calculation in a few words. If you can't source something the person needs, say so plainly and call data.missing.` });
-        continue;
-      }
-    }
     if (!res.toolCalls.length) {
-      // A reply that promises or claims an action with nothing behind it ("I'll book…", "reply approve") gets one corrective
-      // retry on a stronger model — live models do this, and it leaves the user waiting on an approval that doesn't exist.
-      if (!spent.unbackedRetries && await claimsUnbackedAction(run.id, res.text)) {
-        patchJson("runs", "spent", run.id, (s) => ({ ...s, unbackedRetries: 1 }));
-        emit("UNBACKED_CLAIM", { ...base, data: { text: res.text.slice(0, 300), model: res.model } });
-        appendStep(run.id, "signal", { text: `[CHECK] You described an action but didn't call a tool, so nothing happened. If the user asked for it, call the tool now — the platform requests approval automatically when needed. Never ask the user to reply "approve" yourself. If you can't do it, say so plainly.` });
-        continue;
-      }
       // A "try again" only helps if there's room to try: tools still on and a model call left. Otherwise deliver, flagged.
-      // ponytail: covers the contract and result checks; the other one-shot checks belong in one completion gate (architecture review #1).
-      const canRetry = !J(one<any>("select spent from runs where id=?", run.id).spent, {}).finalCallNoted
-        && budget.maxModelCalls - (J(one<any>("select spent from runs where id=?", run.id).spent, {}).modelCalls ?? 0) >= 1;
-      // Contracted jobs (calendar, reminder, email) need evidence in our records, not just a confident reply.
-      const job = jobs.outcome(run, res.text);
-      if (job.status === "failed" && !spent.contractRetry && !run.parent_run_id && canRetry) {
-        patchJson("runs", "spent", run.id, (x) => ({ ...x, contractRetry: 1 }));
-        const missing = (job.jobs ?? []).filter((j) => j.status === "failed").map((j) => `${j.job} (${j.evidence})`).join(", ");
-        appendStep(run.id, "signal", { text: `[CHECK] This request needs ${missing}, but nothing shows it was done. Do each part with the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.` });
-        continue;
-      }
-      jobs.recordOutcome(run, job);
-      if (job.status === "failed" && !run.parent_run_id && !/couldn'?t|can'?t|unable|wasn'?t able|not able/i.test(res.text))
-        res.text = `${res.text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
-      // Don't claim "done" until the result is checked against the brief's success criteria.
-      const b = J(run.brief);
-      if (b?.done_when?.length && ["confirmed", "auto"].includes(run.brief_status) && !run.parent_run_id) {
-        const v = await intake.verify(run, res.text);
-        if (!live()) return;
-        const checks = (spent.verifications ?? 0) + 1;
-        patchJson("runs", "spent", run.id, (s) => ({ ...s, verifications: checks }));
-        emit("RESULT_CHECKED", { ...base, data: { pass: v.pass, missing: v.missing, acknowledged: v.acknowledged } });
-        if (!v.pass && !v.acknowledged && checks < 2 && canRetry) {
-          appendStep(run.id, "signal", { text: `[CHECK] Not done yet. Still missing: ${v.missing.join("; ")}. Keep working, or explain exactly what's blocking it.` });
-          continue;
-        }
-        if (!v.pass && !v.acknowledged) return complete(run, agent, room, `${res.text}\n\n⚠️ Not fully done — still missing: ${v.missing.join("; ")}`);
-      }
-      return complete(run, agent, room, res.text);
+      const fresh = J(one<any>("select spent from runs where id=?", run.id).spent, {});
+      const canRetry = !fresh.finalCallNoted && budget.maxModelCalls - (fresh.modelCalls ?? 0) >= 1;
+      const claims = J(run.brief, null)?.claims ?? [];
+      const v = await gate.check(one<any>("select * from runs where id=?", runId), agent, res, claims, canRetry, live);
+      if (!v || !live()) return;
+      if (v.kind === "retry") { appendStep(run.id, "signal", { text: v.signal }); continue; }
+      return complete(run, agent, room, v.text);
     }
     if ((await runCalls(res.toolCalls, c.allowed)) === "wait") return;
     wrapUpNudge(run.id);
@@ -460,35 +412,10 @@ function wrapUpNudge(runId: string) {
 }
 
 /** Money, percentages and precise decimals in a reply that can't be found (±1%) among numbers the run actually saw. */
-const FIGURE = /(?:[$€£¥]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmMbB](?:n|illion)?)?)|(?:\d[\d,]*(?:\.\d+)?\s?%)|(?:\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b)|(?:\b\d+\.\d{2,}\b)/g;
-const num = (x: string) => { const n = parseFloat(x.replace(/[^\d.]/g, "")); const mult = /b(n|illion)?\b/i.test(x) ? 1e9 : /m(illion)?\b/i.test(x) && !/%/.test(x) ? 1e6 : /k\b/i.test(x) ? 1e3 : 1; return n * mult; };
-export function ungroundedFigures(run: any, text: string): string[] {
-  const figs = [...new Set(String(text).match(FIGURE) ?? [])].filter((f) => num(f) > 0);
-  if (!figs.length) return [];
-  const seen = [
-    ...all<any>("select data from run_steps where run_id in (select id from runs where id=? or parent_run_id=?) and type in ('tool_result','signal')", run.id, run.id).map((r) => J(r.data, {}).content ?? J(r.data, {}).text ?? ""),
-    ...all<any>("select data from events where room_id=? and type='message' order by seq desc limit 40", run.room_id).map((r) => J(r.data, {}).text ?? ""),
-    String(run.objective ?? ""), ...retrieve(one<any>("select * from rooms where id=?", run.room_id), run.agent_id, run.objective, run.requested_by, 20).map((m: any) => m.text),
-  ].join(" ");
-  const known = (seen.match(/\d[\d,]*(?:\.\d+)?/g) ?? []).map((x) => parseFloat(x.replace(/,/g, ""))).filter((n) => n > 0);
-  return figs.filter((f) => { const v = num(f); return !known.some((k) => Math.abs(k - v) <= Math.max(0.011 * Math.abs(k), 0.006)); }).slice(0, 8);
-}
+export { ungroundedFigures } from "./gate";
 
 // Tool-call syntax leaking into a text reply (DeepSeek DSML, Qwen/Hermes <tool_call>, Llama <function=…>, raw JSON tool_calls).
-const TOOL_MARKUP = /<｜?DSML｜|<\/?tool_calls?>|<\|tool_calls?(_begin)?\|>|<function[=\s]|"tool_calls"\s*:/i;
-const TOOL_MARKUP_BLOCK = /<｜?DSML｜tool_calls>[\s\S]*?(<\/｜?DSML｜tool_calls>|$)|<tool_calls?>[\s\S]*?(<\/tool_calls?>|$)|<\|tool_calls?_begin\|>[\s\S]*?(<\|tool_calls?_end\|>|$)|<function[=\s][\s\S]*?(<\/function>|$)/gi;
-const ACTION_CLAIM = /\b(I['’]ll|I will|I['’]m going to|I['’]ve|I have|going to)\s+(go ahead and\s+)?(book|send|schedule|reserve|create|add|cancel|email|text|order|buy|pay|post|invite)\b|\b(reply|respond|say)\s+["“']?approve\b/i;
 /** The reply promises/claims a side effect, yet this run has no successful write and no pending approval to show for it. */
-async function claimsUnbackedAction(runId: string, text: string) {
-  if (one("select 1 from approvals where run_id=? and status='pending'", runId)) return false;
-  if (all<any>("select data from run_steps where run_id=? and type='tool_result'", runId).some((s) => {
-    const d = J(s.data, {}); return getTool(d.tool)?.risk !== "read" && !/^(FAILED|DENIED|REJECTED|SUPERSEDED)/.test(String(d.content ?? ""));
-  })) return false;
-  // Nothing backs a claim, so judge the wording: JEV catches phrasings the regex misses ("Done! Invite's out"); regex if JEV is off.
-  const p = await jev.noul({ reply: text.slice(0, 2000) }, "Does this reply claim or promise an action (booking, sending, scheduling, ordering, cancelling) as done or about to happen, or ask the user to reply 'approve'?",
-    "Claims or promises an action", "Only information, options or questions");
-  return p != null ? p >= 0.5 : ACTION_CLAIM.test(text);
-}
 
 /** Structured run classification (plan §7.4), derived from what the run actually did. */
 function classify(runId: string, current: string) {
@@ -511,6 +438,7 @@ function complete(run: any, agent: any, room: any, text: string) {
     return;
   }
   if (text.trim()) postMessage(room.id, { sender: agent.id, text, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id) });
+  if (room.mode !== "test") void foldHistory(room.id).catch(() => {}); // keep the running summary of older conversation current
   if (maybeSuggestSkill(one<any>("select * from runs where id=?", run.id)))
     postMessage(room.id, { sender: agent.id, runId: run.id, targets: replyTargets(room.id, run.origin_endpoint_id),
       text: `I've done this kind of task ${3} times now. Save it as a skill so I do it the same way every time?`,

@@ -106,6 +106,7 @@ const OPEN_TIER: Record<string, string> = {
   standard: "openrouter:deepseek/deepseek-v4-pro",     // $0.21/$0.42 — the agent's tool-calling loop
   "research-standard": "openrouter:deepseek/deepseek-v4-pro",
   escalation: "openrouter:anthropic/claude-sonnet-5.5", // $2/$10 — only when a task is stuck or failing
+  judge: "openrouter:deepseek/deepseek-v4-pro",        // plans each request and checks results: the strongest open model, never the cheap one
 };
 export const openDefault = (profile: string) => process.env[`OPENROUTER_MODEL_${profile.toUpperCase().replace(/-/g, "_")}`]
   ?? (profile === "fast" ? process.env.OPENROUTER_FAST_MODEL : process.env.OPENROUTER_MODEL) ?? OPEN_TIER[profile] ?? OPEN_TIER.standard;

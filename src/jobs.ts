@@ -18,7 +18,7 @@ export const CONTRACTS: Record<JobKind, Contract> = {
     done: ["reminder.schedule", "reminder.update", "reminder.cancel"], read: ["reminder.list"] },
   email: { match: /\b(e-?mails?|inbox|reply to .+@|draft (a|an|the)?\s*(note|message|reply)|send .+@)\b/i, tools: ["email.send", "email.draft", "email.search"], needs: "google", label: "handle that email",
     done: ["email.send", "email.draft"], read: ["email.search"], pendingApproval: ["email.send"] },
-  calendar: { match: /\b(calendar|my (agenda|schedule)|my (day|week|morning|afternoon) (look|looking)|am i (free|busy)|free (time|slots?)|when am i free|(my|any) meetings? (today|tomorrow|this week)|what'?s on my (calendar|schedule|plate) (today|tomorrow|this week)|(schedule|book|set up) (a|an) (meeting|call)|find (a )?time|a time that works)\b/i,
+  calendar: { match: /\b(calendar|my (agenda|schedule)|my (day|week|morning|afternoon) (look|looking)|am i (free|busy)|free (time|slots?)|when (am i|i'?m|i am) free|(my|any) meetings? (today|tomorrow|this week)|what'?s on my (calendar|schedule|plate) (today|tomorrow|this week)|(schedule|book|set up) (a|an) (meeting|call)|find (a )?time|a time that works)\b/i,
     tools: ["calendar.list_events", "calendar.find_free_time"], needs: "google", label: "check your calendar",
     done: ["calendar.create_event", "calendar.cancel_event"], read: ["calendar.list_events", "calendar.find_free_time"], pendingApproval: ["calendar.create_event", "calendar.cancel_event"] },
   // Group jobs: the outcome is the shared record itself (the ledger, the list, the poll).

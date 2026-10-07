@@ -2,6 +2,7 @@
 // The model drafts the brief; whether to stop and ask is decided deterministically here, never by the model.
 import { one, all, exec, emit, now, S, J, patchJson, clockLine, tzOf } from "./db";
 import { clampEffort, assessDepth, SPECIALISTS, type Depth } from "./depth";
+import type { Claim } from "./gate";
 import { structured, plan as heuristicPlan } from "./model";
 import { TOOLS, getTool } from "./tools";
 import { agentTools, SKILLS } from "./templates";
@@ -16,6 +17,7 @@ export interface Brief {
   // Planning layer: how much work this is, which model tier runs it, how many tool calls it deserves, and what to say right away.
   effort?: Effort; tool_budget?: number; profile?: string; ack?: string;
   split?: { specialist: string; objective: string; context?: string }[]; // independent parts run in parallel by specialists
+  claims?: Claim[];                     // each "done when" line with its proof (see claimsOf)
 }
 export type Effort = "quick" | "standard" | "deep";
 const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [5, 10], deep: [8, 16] }; // [min, max] tool calls
@@ -114,7 +116,7 @@ const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief b
  "tool_budget": how many tool calls a careful person would need (quick 1-2, standard 3-6, deep 8-14),
  "split": [] — or, ONLY when the request contains 2–4 independent look-ups that could run at the same time (e.g. researching venues AND checking calendars, or comparing three cities), one entry per part: {"specialist": "research" | "calendar" | "browser", "objective": "what that part must find, self-contained"}. Never split a single look-up, a quick answer, anything that sends/books/changes something, or steps where one needs the other's result,
  "ack": for standard/deep work, ONE short chat line sent immediately, in the agent's voice, saying what you're doing and any key assumption (e.g. "On it — looking at Lisbon hotels for Oct 10–12, I'll send 3 options in a minute."); "" for quick answers,
- "done_when": [2-4 checkable success criteria], "plan": [{"text": step in plain words the person would use — never tool names or ids, "tool": tool id or null}] (1-7 steps, using only the listed tools),
+ "done_when": [2-4 checkable success criteria, as plain sentences], "claims": [{"text": a done_when line verbatim, "proof": "tool", "tool": the planned tool id whose success proves it}] — only for lines a planned tool proves; omit the rest, "plan": [{"text": step in plain words the person would use — never tool names or ids, "tool": tool id or null}] (1-7 steps, using only the listed tools),
  "kind": "answer" (just reply) | "act" (a few tool actions) | "task" (multi-step, waits on people or days) | "schedule" (reminders/recurring)}`;
 
 export async function buildBrief(run: any, agent: any, room: any, prev?: Brief): Promise<Brief> {
@@ -132,7 +134,8 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   // Short small talk with nothing actionable ("thanks!", "ok cool") doesn't need a model-drafted brief.
   const quick = heuristicBrief(run.objective, ctx);
   const smallTalk = !prev && quick.kind === "answer" && !quick.questions.length && run.objective.trim().split(/\s+/).length <= 4 && !run.objective.includes("?");
-  const b = smallTalk ? quick : await structured<any>(String(run.objective ?? "").length < 160 ? "fast" : "standard", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id); // short asks don't need the bigger model to brief
+  // The plan decides everything downstream (what runs, what counts as done): it gets the judge tier, never the cheap one.
+  const b = smallTalk ? quick : await structured<any>("judge", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
   const arr = (x: any) => (Array.isArray(x) ? x : []);
   // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is
   // decided by the tools in the plan: only external writes (send, book, create events, pay) count.
@@ -153,6 +156,7 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
     effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined, split: b.split,
   };
+  (draft as any).claims = claimsOf({ done_when: draft.done_when, plan: draft.plan as PlanStep[], claims: b.claims });
   return { ...draft, ...planWork(draft as Brief, String(run.objective ?? ""), depthOf(agent)) } as Brief;
 }
 
@@ -297,7 +301,7 @@ export async function routeFollowup(room: any, senderId: string, text: string, e
   const active = one<any>(`select * from runs where room_id=? and requested_by=? and parent_run_id is null and brief_status in ('auto','confirmed')
     and status not in ('completed','failed_terminal','cancelled') order by created_at desc limit 1`, room.id, senderId);
   if (!active || !fits(active)) return false;
-  const r = await structured<{ is_change: boolean }>("fast", `An agent is working on: "${J(active.brief)?.goal}". Does this new message change or add to that same task's requirements (not a new, separate request)? {"is_change": boolean}`,
+  const r = await structured<{ is_change: boolean }>("judge", `An agent is working on: "${J(active.brief)?.goal}". Does this new message change or add to that same task's requirements (not a new, separate request)? {"is_change": boolean}`,
     t, () => ({ is_change: CHANGE.test(t) }), room.workspace_id);
   return r.is_change && !("error" in reviseBrief(active.id, senderId, t, endpointId));
 }
@@ -336,30 +340,32 @@ export function updatePlan(runId: string, u: { step?: number; status?: "done" | 
 const ACK_FAILURE = /\b(couldn'?t|could not|didn'?t run|wasn'?t approved|not approved|was not approved|denied|unable to|failed)\b/i;
 
 /** Check the final answer against "done when" before telling anyone it's done. */
-export async function verify(run: any, text: string): Promise<{ pass: boolean; missing: string[]; acknowledged: boolean }> {
-  const b: Brief = J(run.brief);
-  const ok = new Set(all<any>("select tool_id from tool_executions where run_id=? and status='succeeded'", run.id).map((x) => x.tool_id));
-  const items = (text.match(/^\s*(?:\d+[.)]|[•\-*])\s+\S/gm) ?? []).length;
-  const heuristic = () => ({
-    missing: b.done_when.filter((c) => {
-      const lc = c.toLowerCase();
-      const n = lc.match(/^(\d+)\s/);
-      if (n) return items < Number(n[1]);
-      if (/^email to .* sent/.test(lc)) return !ok.has("email.send");
-      if (/draft ready/.test(lc)) return !ok.has("email.draft");
-      if (/reminder scheduled/.test(lc)) return !ok.has("reminder.schedule");
-      if (/is on the calendar/.test(lc)) return !ok.has("calendar.create_event");
-      if (/tracked with an owner/.test(lc)) return !ok.has("task.create");
-      if (/linked sources|links/.test(lc)) return !/https?:\/\//.test(text);
-      return false;
-    }),
-  });
-  const r = await structured<{ missing: string[] }>("fast",
-    `You check an AI agent's final reply against its success criteria. Tools that succeeded: ${[...ok].join(", ") || "none"}. Return {"missing": [criteria NOT met by the reply/tool results]} — empty if all are met.`,
-    `Criteria:\n${b.done_when.map((c) => `- ${c}`).join("\n")}\n\nReply:\n${text}`, heuristic, run.workspace_id);
-  const missing = (Array.isArray(r.missing) ? r.missing : []).map(String);
-  return { pass: !missing.length, missing, acknowledged: ACK_FAILURE.test(text) };
+/** The plan's "done when" lines with their proof. Model-given proofs are kept only if they name a planned tool; the rest are
+ *  derived: a planned tool → that tool must succeed (a look-up is "soft": nudged once, never flagged); "N options" → N items;
+ *  "links/sources" → a link; anything else is judged on substance by the judge model. */
+export function claimsOf(b: Pick<Brief, "done_when" | "plan"> & { claims?: any[] }): Claim[] {
+  const planned = new Set((b.plan ?? []).map((p) => p.tool).filter(Boolean) as string[]);
+  const out: Claim[] = [];
+  const given = new Map((Array.isArray(b.claims) ? b.claims : []).filter((c: any) => c && typeof c.text === "string").map((c: any) => [c.text, c]));
+  for (const text of b.done_when ?? []) {
+    const g = given.get(text), lc = text.toLowerCase();
+    const n = lc.match(/^(\d+)\s/) ?? lc.match(/\b(\d+)\s+(options?|choices|ideas|candidates|hotels|flights|restaurants|results|places|items)\b/);
+    if (g?.proof === "tool" && planned.has(g.tool)) out.push({ text, proof: "tool", tool: g.tool, soft: getTool(g.tool)?.risk === "read" });
+    else if (n) out.push({ text, proof: "items", n: Number(n[1]) });
+    else if (/^email to .* sent/.test(lc)) out.push({ text, proof: "tool", tool: "email.send" });
+    else if (/draft ready/.test(lc)) out.push({ text, proof: "tool", tool: "email.draft" });
+    else if (/reminder scheduled/.test(lc)) out.push({ text, proof: "tool", tool: "reminder.schedule" });
+    else if (/is on the calendar/.test(lc)) out.push({ text, proof: "tool", tool: "calendar.create_event" });
+    else if (/tracked with an owner/.test(lc)) out.push({ text, proof: "tool", tool: "task.create" });
+    else if (/linked sources|with links|\bsources?\b|\blinks?\b/.test(lc)) out.push({ text, proof: "links", n: 1 });
+    else out.push({ text, proof: "reply" });
+  }
+  // Every planned step is a claim of its own: the work the plan promised must have happened (or be waiting for approval).
+  for (const t of planned) if (!out.some((c) => c.proof === "tool" && c.tool === t) && getTool(t) && !NO_CLAIM.has(t))
+    out.push({ text: `${STEP_TEXT[t]?.((b.plan ?? []).find((p) => p.tool === t) ?? {}) ?? t} (${t})`, proof: "tool", tool: t, soft: getTool(t)!.risk === "read" });
+  return out;
 }
+const NO_CLAIM = new Set(["memory.remember", "plan.update", "task.update", "settings.timezone", "data.missing", "specialists.run", "agent.delegate", "wait.for_reply"]);
 
 /** One progress line when long work starts waiting on the outside world (instead of chat spam). */
 export function progressNote(run: any, reason: string) {

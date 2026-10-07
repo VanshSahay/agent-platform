@@ -675,7 +675,7 @@ function Settings() {
 }
 const PROVIDER_LABEL: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", custom: "Self-hosted / other (OpenAI-compatible)" };
 const PROFILES: [string, string, string][] = [["standard", "Everyday work", "What most agents use"], ["fast", "Quick steps", "Understanding requests, short replies, summaries"],
-  ["research-standard", "Research", "Long multi-step research"], ["escalation", "Hard problems", "Used when a task gets stuck"]];
+  ["research-standard", "Research", "Long multi-step research"], ["judge", "Planning & checking", "Plans each request and checks the result"], ["escalation", "Hard problems", "Used when a task gets stuck"]];
 const usd = (x: number | null | undefined) => x == null ? "∞" : `$${x < 10 ? x.toFixed(2) : Math.round(x)}`;
 function AiSettings({ canEdit }: { canEdit: boolean }) {
   const { ws, toast } = useCtx();

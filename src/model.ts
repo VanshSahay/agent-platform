@@ -120,7 +120,7 @@ export async function generate(req: ModelRequest): Promise<ModelResult> {
   const p = one<any>("select * from model_profiles where name=?", req.profile) ?? one<any>("select * from model_profiles where name='standard'");
   // The workspace's own pick for this profile goes first; open models on OpenRouter are the last resort.
   const picked = req.workspaceId ? billing.aiSettings(req.workspaceId).models[p.name] : undefined;
-  const chain = [...new Set([picked, req.escalate && p.escalation_model, req.escalate && billing.openDefault("escalation"), p.primary_model, p.fallback_model, billing.openDefault(p.name)].filter(Boolean) as string[])];
+  const chain = [...new Set([picked, req.escalate && p.escalation_model, req.escalate && billing.openDefault("escalation"), p.primary_model, p.fallback_model, billing.openDefault(req.profile), billing.openDefault(p.name)].filter(Boolean) as string[])];
   const errors: string[] = [];
   for (const spec of chain) {
     const i = spec.indexOf(":"), provider = spec.slice(0, i), model = spec.slice(i + 1); // model ids may contain ':' (llama3.1:8b)

@@ -196,7 +196,7 @@ export async function rehearse(agent: any, userId: string, room: any) {
       const evidence = approval ? "asked for your approval first, as it should" : job?.ok ? `did it: ${job.evidence}` : "";
       // The grader: a real model judging against the expectation. Unavailable → null, which is never a pass by itself.
       const j = hasAnyModel(agent.workspace_id)
-        ? await structured<{ pass: boolean | null; why: string }>("fast", `Grade an AI agent's reply in a rehearsal. Expected: ${sc.expect}. Fail it if it claims to have done something the tool list doesn't show, invents facts, or ignores the request. Return {"pass": boolean, "why": one short sentence}.`,
+        ? await structured<{ pass: boolean | null; why: string }>("judge", `Grade an AI agent's reply in a rehearsal. Expected: ${sc.expect}. Fail it if it claims to have done something the tool list doesn't show, invents facts, or ignores the request. Return {"pass": boolean, "why": one short sentence}.`,
             `User: ${sc.say}\nTools that succeeded: ${done.join(", ") || "none"}\nApproval requested: ${approval}\nAgent: ${reply}`, () => ({ pass: null, why: "" }), agent.workspace_id)
         : { pass: null, why: "" };
       if (j.pass === false) { verdict = "fail"; note = j.why || "didn't do what was expected"; }

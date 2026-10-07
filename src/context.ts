@@ -1,5 +1,6 @@
 // Context assembly (plan §9.5, §15.3, §21.2). Permission filtering happens here, before anything reaches the model.
-import { all, one, J, clockLine, tzOf } from "./db";
+import { all, one, exec, J, clockLine, tzOf } from "./db";
+import { structured } from "./model";
 import { retrieve } from "./memory";
 import { agentTools, SKILLS, customSkills } from "./templates";
 import { toolSpecs } from "./tools";
@@ -23,6 +24,30 @@ const SYSTEM_POLICY = `[SYSTEM_POLICY]
   [memmo.pt](https://…)
 - No dividers, no "Assumptions I made" paragraphs (one short line if an assumption really matters), no comparison tables unless they ask to compare. Prices you couldn't confirm get a "~".
 - Facts need sources. Prices, percentages, availability, scores, dates of events and "X just happened" must come from a tool result in this conversation (say where and as of when). If you don't have a tool that can get it, say you can't check that yet and what would let you (e.g. connecting a data source). Never invent or estimate numbers, and don't treat numbers in a message as verified unless a tool confirms them.`;
+
+const TRANSCRIPT_CHARS = Number(process.env.TRANSCRIPT_CHARS ?? 9000);
+/** Long research piles up pages of tool output; older results keep their head and tail so the run never outgrows the model. */
+function trimResult(c: string) {
+  if (c.length <= 2500) return c;
+  return `${c.slice(0, 1800)}\n…[${c.length - 2200} characters trimmed from this earlier result]\n${c.slice(-400)}`;
+}
+
+/** Fold messages that have scrolled out of the window into the room's running summary (decisions, facts, names, open threads).
+ *  Runs after a completed task; nothing to do until at least 12 messages are beyond the newest 40. */
+export async function foldHistory(roomId: string) {
+  const room = one<any>("select * from rooms where id=?", roomId);
+  if (!room) return;
+  const newest = one<any>("select seq from events where room_id=? and type='message' order by seq desc limit 1 offset 40", roomId)?.seq;
+  if (newest == null) return;
+  const rows = all<any>("select * from events where room_id=? and type='message' and seq > ? and seq <= ? order by seq", roomId, room.summary_seq ?? 0, newest);
+  if (rows.length < 12) return;
+  const lines = rows.map((e) => `[${nameOf(e.actor)}] ${String(J(e.data, {}).text ?? "").slice(0, 400)}`);
+  const heuristic = () => ({ summary: [room.summary, ...lines.slice(-10).map((l) => l.slice(0, 120))].filter(Boolean).join("\n").slice(-1500) });
+  const { summary } = await structured<{ summary: string }>("fast",
+    "Fold these chat messages into the running summary of the conversation. Keep decisions, facts, names, preferences, dates and open threads; drop chatter. At most 1200 characters of plain text. Return {\"summary\": \"...\"}",
+    `Current summary:\n${room.summary ?? "(none)"}\n\nNew messages, oldest first:\n${lines.join("\n").slice(0, 20000)}`, heuristic, room.workspace_id);
+  exec("update rooms set summary=?, summary_seq=? where id=?", String(summary ?? "").slice(0, 1500), rows.at(-1).seq, roomId);
+}
 
 export function buildContext(run: any, agent: any, room: any) {
   const only: string[] | undefined = J(run.result, {})?.allowed_tools; // a specialist: its kind's tools, nothing else
@@ -66,8 +91,14 @@ export function buildContext(run: any, agent: any, room: any) {
       : `[DELEGATED_TASK from ${nameOf(parent?.agent_id)}]\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}` });
   } else {
     const trigger = run.trigger_event_id ? one<any>("select seq from events where id=?", run.trigger_event_id) : null;
-    const recent = all<any>(`select * from events where room_id=? and type='message' ${trigger ? "and seq < ?" : ""} order by seq desc limit 30`,
-      room.id, ...(trigger ? [trigger.seq] : [])).reverse();
+    // The window is by size, not count: a busy group's last 30 messages may be ten minutes; a quiet chat's may be weeks.
+    // What falls outside it is carried by the room's running summary (foldHistory), so nothing is simply forgotten.
+    const rows = all<any>(`select * from events where room_id=? and type='message' ${trigger ? "and seq < ?" : ""} order by seq desc limit 80`, room.id, ...(trigger ? [trigger.seq] : []));
+    const recent: any[] = []; let used = 0;
+    for (const e of rows) { const len = String(J(e.data, {}).text ?? "").length + 40; if (recent.length >= 8 && used + len > TRANSCRIPT_CHARS) break; recent.push(e); used += len; if (recent.length >= 60) break; }
+    recent.reverse();
+    const summary = one<any>("select summary from rooms where id=?", room.id)?.summary; // fresh: foldHistory may have run since this room row was read
+    const earlier = summary ? `[EARLIER — the conversation before the messages below, summarized]\n${summary}\n\n` : "";
     const transcript = recent.map((e) => {
       const d = J(e.data, {});
       const label = `[${nameOf(e.actor)}${tag(e.actor) ? ` | ${tag(e.actor)}` : ""}${d.platform && d.platform !== "web" ? ` | via ${d.platform}` : ""}]`;
@@ -75,13 +106,15 @@ export function buildContext(run: any, agent: any, room: any) {
     }).join("\n");
     const head = run.kind === "schedule" ? `[SCHEDULED_WAKE] ${run.objective}\nDecide whether anything needs to be said; reply with an empty message if nothing is worth notifying.`
       : `[CURRENT_REQUEST from ${speaker ?? "someone"}${tag(run.requested_by) ? ` | ${tag(run.requested_by)}` : ""}]\n${run.objective}`;
-    messages.push({ role: "user", content: (transcript ? `[ROOM_TRANSCRIPT — earlier messages, oldest first]\n${transcript}\n\n` : "") + head });
+    messages.push({ role: "user", content: earlier + (transcript ? `[ROOM_TRANSCRIPT — earlier messages, oldest first]\n${transcript}\n\n` : "") + head });
   }
 
-  for (const s of all<any>("select * from run_steps where run_id=? order by id", run.id)) {
+  const steps = all<any>("select * from run_steps where run_id=? order by id", run.id);
+  const latest = new Set(steps.filter((s) => s.type === "tool_result").slice(-3).map((s) => s.id)); // the newest results stay whole
+  for (const s of steps) {
     const d = J(s.data, {});
     if (s.type === "assistant") messages.push({ role: "assistant", content: d.text ?? "", toolCalls: d.toolCalls ?? [], raw: d.raw, model: d.model });
-    else if (s.type === "tool_result") messages.push({ role: "tool", content: d.content, toolCallId: d.callId, toolName: d.tool });
+    else if (s.type === "tool_result") messages.push({ role: "tool", content: latest.has(s.id) ? d.content : trimResult(String(d.content ?? "")), toolCallId: d.callId, toolName: d.tool });
     else if (s.type === "signal") messages.push({ role: "user", content: `[EVENT] ${d.text}` });
   }
 

@@ -107,7 +107,7 @@ create table if not exists credit_ledger (id text primary key, workspace_id text
 `;
 
 const COLUMN_MIGRATIONS = [["room_endpoints", "config", "text default '{}'"], ["templates", "published_version", "text"], ["template_versions", "status", "text"],
-    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"], ["agents", "spec", "text"],
+    ["runs", "brief", "text"], ["runs", "signature", "text"], ["runs", "rev", "integer default 0"], ["room_endpoints", "agent_id", "text"], ["rooms", "mode", "text default 'live'"], ["rooms", "summary", "text"], ["rooms", "summary_seq", "int default 0"], ["agents", "email_alias", "text"], ["connections", "config", "text default '{}'"], ["reservation_watches", "tried", "text default '[]'"], ["runs", "brief_status", "text"], ["agents", "confirm_mode", "text default 'smart'"], ["agents", "spec", "text"],
     ["outbox", "claimed_at", "int"], ["room_endpoints", "reply_token", "text"], ["room_endpoints", "undeliverable", "int default 0"],
     ["workspaces", "ai_mode", "text default 'credits'"], ["workspaces", "ai_models", "text default '{}'"], ["workspaces", "credit_usd", "real default 0"], ["workspaces", "allowance_month", "text"], ["workspaces", "allowance_used", "real default 0"], ["users", "clerk_id", "text"], ["users", "tz", "text"], ["deploy_codes", "target", "text"], ["deploy_codes", "conv", "text"]];
 
@@ -176,11 +176,15 @@ export function openDb(path = process.env.DB_PATH ?? "data.sqlite") {
   seedProfiles();
   return db;
 }
-function seedProfiles() {
-  if (one<any>("select count(*) n from model_profiles")!.n) return;
+export function seedProfiles() {
+  if (one<any>("select count(*) n from model_profiles")!.n) { // already seeded: only add profiles introduced since
+    if (!one("select 1 from model_profiles where name='judge'")) exec("insert into model_profiles values (?,?,?,?,?)", "judge", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 0.5);
+    return;
+  }
   // Routing lives in the DB, not in agent definitions (plan §8.3). Edit rows to re-route.
   for (const r of [["fast", "anthropic:claude-haiku-4-5", "openai:gpt-5-mini", null, 0.05], ["standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 0.8],
-    ["research-standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 1.5], ["escalation", "anthropic:claude-opus-5-5", "anthropic:claude-sonnet-5-5", null, 3]])
+    ["research-standard", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 1.5], ["escalation", "anthropic:claude-opus-5-5", "anthropic:claude-sonnet-5-5", null, 3],
+    ["judge", "anthropic:claude-sonnet-5-5", "openai:gpt-5", "anthropic:claude-opus-5-5", 0.5]])
     exec("insert into model_profiles values (?,?,?,?,?)", ...r);
 }
 
