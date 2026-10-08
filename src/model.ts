@@ -149,12 +149,18 @@ export async function generate(req: ModelRequest): Promise<ModelResult> {
 
 /** Ask a model for JSON; fall back to a deterministic heuristic offline or on parse failure. */
 export async function structured<T>(profile: string, instruction: string, input: string, fallback: () => T, workspaceId?: string): Promise<T> {
-  if (hooks.model || !hasAnyModel(workspaceId)) return fallback();
+  return (await structuredWith(profile, instruction, input, fallback, workspaceId)).value;
+}
+/** Same, but says whether the model answered ("model"), nothing is configured ("offline"), or the model failed and the
+ *  keyword fallback stood in ("fallback") — callers that decide things (plans, verdicts) must not treat the last as the first. */
+export async function structuredWith<T>(profile: string, instruction: string, input: string, fallback: () => T, workspaceId?: string): Promise<{ value: T; source: "model" | "offline" | "fallback"; error?: string }> {
+  if (hooks.model || !hasAnyModel(workspaceId)) return { value: fallback(), source: "offline" };
   try {
     const r = await generate({ profile, workspaceId, system: `${instruction}\nRespond with a single JSON object and nothing else.`, messages: [{ role: "user", content: input }], maxTokens: 2000, reasoning: "off" });
     const m = r.text.match(/\{[\s\S]*\}/);
-    return m ? { ...fallback(), ...JSON.parse(m[0]) } : fallback();
-  } catch { return fallback(); }
+    if (!m) return { value: fallback(), source: "fallback", error: "no JSON in the model's reply" };
+    return { value: { ...fallback(), ...JSON.parse(m[0]) }, source: "model" };
+  } catch (e: any) { console.warn(`[model] structured call failed (${profile}): ${String(e.message).slice(0, 160)}`); return { value: fallback(), source: "fallback", error: String(e.message).slice(0, 200) }; }
 }
 
 // ---------------- offline heuristic model ----------------

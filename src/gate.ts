@@ -10,7 +10,7 @@
 // Claims make "done" checkable for every request, not only the six contracted job kinds: each `done when` line in the brief
 // carries its proof — a tool that must have succeeded, N links, N items, or (only for answer quality) the judge model.
 import { all, one, J, emit, patchJson } from "./db";
-import { structured } from "./model";
+import { structuredWith } from "./model";
 import { retrieve } from "./memory";
 import { getTool } from "./tools";
 import * as jobs from "./jobs";
@@ -88,7 +88,7 @@ function evidence(run: any) {
 }
 
 /** Each claim against the evidence. Deterministic for tools, links and items; the judge model only for answer-quality claims. */
-export async function checkClaims(run: any, claims: Claim[], text: string): Promise<{ missing: Claim[]; judged: boolean }> {
+export async function checkClaims(run: any, claims: Claim[], text: string): Promise<{ missing: Claim[]; judged: boolean; unverified: Claim[] }> {
   const ev = evidence(run);
   const missing: Claim[] = [];
   const forJudge: Claim[] = [];
@@ -99,14 +99,19 @@ export async function checkClaims(run: any, claims: Claim[], text: string): Prom
     else forJudge.push(c);
   }
   let judged = false;
+  const unverified: Claim[] = [];
   if (forJudge.length) {
-    const r = await structured<{ missing: string[] }>("judge",
+    const j = await structuredWith<{ missing: string[] }>("judge",
       `You check an AI agent's final reply against its success criteria. Tools that succeeded: ${[...ev.succeeded].join(", ") || "none"}. Return {"missing": [criteria NOT met by the reply]} — empty if all are met. Be strict about substance, not wording.`,
       `Criteria:\n${forJudge.map((c) => `- ${c.text}`).join("\n")}\n\nReply:\n${text}`, () => ({ missing: [] }), run.workspace_id);
-    judged = true;
-    for (const m of Array.isArray(r.missing) ? r.missing.map(String) : []) { const c = forJudge.find((x) => x.text === m) ?? { text: m, proof: "reply" as const }; missing.push(c); }
+    // A judge that didn't answer proves nothing: those criteria stay unverified (never "met"), and the run is recorded as unverified.
+    if (j.source === "fallback") { unverified.push(...forJudge); emit("JUDGE_UNAVAILABLE", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id, data: { error: j.error, criteria: forJudge.map((c) => c.text) } }); }
+    else {
+      judged = j.source === "model";
+      for (const m of Array.isArray(j.value.missing) ? j.value.missing.map(String) : []) { const c = forJudge.find((x) => x.text === m) ?? { text: m, proof: "reply" as const }; missing.push(c); }
+    }
   }
-  return { missing, judged };
+  return { missing, judged, unverified };
 }
 
 // ---------- the gate ----------
@@ -150,8 +155,15 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
     const missing = (job.jobs ?? []).filter((j) => j.status === "failed").map((j) => `${j.job} (${j.evidence})`).join(", ");
     return { kind: "retry", signal: `[CHECK] This request needs ${missing}, but nothing shows it was done. Do each part with the right tool now, or if you can't, say plainly what stopped you — don't reply as if it's done.${QUIET}` };
   }
-  jobs.recordOutcome(run, job);
+  // 4a″. the request's own facts (who, when, how much) against what the tools were actually asked: one chance to fix, then say so.
+  const factProblems = jobs.verifyFacts(run, J(run.brief, null)?.facts);
+  if (factProblems.length && !g.facts && canRetry) {
+    mark(run, "facts"); emit("FACT_MISMATCH", { ...base, data: { problems: factProblems } });
+    return { kind: "retry", signal: `[CHECK] This doesn't match the request: ${factProblems.join("; ")}. Fix it with the right tool call, or tell the person plainly which part you couldn't do.${QUIET}` };
+  }
+  jobs.recordOutcome(run, { ...job, fact_problems: factProblems });
   if (job.status === "failed" && !ACK_FAILURE.test(text)) text = `${text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
+  if (factProblems.length && !ACK_FAILURE.test(text)) text = `${text}\n\n(Heads up: ${factProblems.join("; ")}.)`;
 
   // 4a′. an email about to go to an address that came from nowhere we can see (not the request, not a contact lookup, not the chat)
   for (const a of all<any>("select input from approvals where run_id=? and status='pending' and tool_id='email.send'", run.id)) {
@@ -162,11 +174,12 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
   }
   // 4b. the plan's own claims: what "done" meant for this request, each with its proof.
   if (claims.length && ["confirmed", "auto"].includes(run.brief_status)) {
-    const { missing } = await checkClaims(run, claims, text);
+    const { missing, unverified } = await checkClaims(run, claims, text);
     if (!live()) return null;
     const acknowledged = ACK_FAILURE.test(text);
     const checks = (g.verify ?? 0) + 1; mark(run, "verify");
-    emit("RESULT_CHECKED", { ...base, data: { pass: !missing.length, missing: missing.map((c) => c.text), acknowledged } });
+    if (unverified.length) patchJson("runs", "result", run.id, (r) => ({ ...(r ?? {}), unverified: unverified.map((c) => c.text) }));
+    emit("RESULT_CHECKED", { ...base, data: { pass: !missing.length && !unverified.length, missing: missing.map((c) => c.text), unverified: unverified.map((c) => c.text), acknowledged } });
     if (missing.length && !acknowledged) {
       if (checks < 2 && canRetry) return { kind: "retry", signal: `[CHECK] Not done yet. Still missing: ${missing.map((c) => c.text).join("; ")}. Keep working, or explain exactly what's blocking it.${QUIET}` };
       const hard = missing.filter((c) => !c.soft); // a skipped look-up isn't worth alarming the person over; a missing action is

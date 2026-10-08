@@ -518,9 +518,12 @@ export function requestApproval(run: any, agent: any, d: any, input: any, fp: st
   emit("APPROVAL_REQUESTED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { approval_id: aid, tool: d.id, summary, reason, approvers, connection: conn?.account } });
   const wid = createWait(run, { kind: "approval", reason: `approval: ${summary}`, owner: approvers[0], wake_key: `approval:${aid}`, timeout_at: now() + 72 * 36e5, on_timeout: "expire" });
   const who = approvers.map(nameOf).join(" or ");
+  // Before the person approves: does this action match the request's own facts (recipient, dates, price cap)? Say so on the card.
+  const problems = jobs.verifyFacts(run, J(run.brief, null)?.facts);
+  if (problems.length) emit("FACT_MISMATCH", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { problems, approval_id: aid } });
   postMessage(run.room_id, { sender: agent.id, runId: run.id, approvalId: aid, targets: replyTargets(run.room_id, run.origin_endpoint_id),
     buttons: [{ label: strong ? "Confirm" : "Approve", data: `apr:${aid}:approve` }, { label: "Reject", data: `apr:${aid}:reject` }],
-    text: `OK to go ahead? ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${d.preview ? `\n${d.preview(input)}\n\n` : ""}${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}` });
+    text: `OK to go ahead? ${summary}${conn ? ` (from ${conn.account})` : ""}.\n${d.preview ? `\n${d.preview(input)}\n\n` : ""}${strong ? `This needs strong confirmation — reply "confirm ${aid.slice(-4)}".` : `${who}: reply "approve" or "reject".`}${problems.length ? `\n\n⚠️ Heads up: ${problems.join("; ")}.` : ""}` });
   return wid;
 }
 
@@ -562,7 +565,7 @@ export function updateTask(taskId: string, roomId: string, u: { status?: string;
 // ---------------- specialists: bounded parallel work (Ava stays the owner) ----------------
 export { SPECIALISTS } from "./depth";
 import { SPECIALISTS } from "./depth";
-export const SPECIALIST_OUTPUT = `When done, reply with only this JSON: {"finding": "what you found, plainly", "sources": ["url or tool + what it showed"], "proposed_actions": ["anything the owner should do or approve — you can't send, book or change anything"], "unresolved_questions": ["what you couldn't find out"]}`;
+export const SPECIALIST_OUTPUT = `When done, reply with only this JSON: {"finding": "what you found, plainly", "sources": ["url or tool + what it showed"], "confidence": "high" | "medium" | "low" (high only when a source you opened says it outright), "unknowns": ["what you could not find or verify"], "proposed_actions": ["anything the owner should do or approve — you can't send, book or change anything"], "unresolved_questions": ["what you couldn't find out"]}`;
 const TERMINAL_RUN = ["completed", "failed_terminal", "cancelled"];
 
 /** Start up to 4 specialist child runs of the same agent. Each gets only its objective (+ the context given), its kind's tools,
@@ -599,7 +602,7 @@ function settleSpecialists(parentId: string) {
   const results = kids.map((k) => ({ specialist: J(k.result).specialist, objective: k.objective, status: k.status === "completed" ? "done" : k.status === "cancelled" ? "cancelled" : `failed: ${k.error ?? ""}`,
     ...(J(k.result).output ?? {}) }));
   emit("SPECIALISTS_FINISHED", { room_id: kids[0].room_id, run_id: parentId, data: { results: results.map((r) => ({ specialist: r.specialist, status: r.status })) } });
-  signalEvent(`children:${parentId}`, `[SPECIALIST_RESULTS] Check these against each other before you rely on them; you own the answer and any action.\n${S(results)}`);
+  signalEvent(`children:${parentId}`, `[SPECIALIST_RESULTS] Each has a finding, sources, confidence and unknowns. Where two conflict, trust the one whose source you can name and say the other was uncertain; where confidence is low or unknowns matter, say so to the person or look again rather than presenting it as settled. You own the answer and any action.\n${S(results)}`);
 }
 function cancelChildren(parentId: string, by: string) {
   for (const c of all<any>("select id from runs where parent_run_id=? and status not in ('completed','failed_terminal','cancelled')", parentId)) cancelRun(c.id, by);

@@ -3,7 +3,8 @@
 import { one, all, exec, emit, now, S, J, patchJson, clockLine, tzOf } from "./db";
 import { clampEffort, assessDepth, SPECIALISTS, type Depth } from "./depth";
 import type { Claim } from "./gate";
-import { structured, plan as heuristicPlan } from "./model";
+import { structured, structuredWith, plan as heuristicPlan } from "./model";
+import { parseDates } from "./reservations";
 import { TOOLS, getTool } from "./tools";
 import { agentTools, SKILLS } from "./templates";
 import { retrieve } from "./memory";
@@ -18,6 +19,18 @@ export interface Brief {
   effort?: Effort; tool_budget?: number; profile?: string; ack?: string;
   split?: { specialist: string; objective: string; context?: string }[]; // independent parts run in parallel by specialists
   claims?: Claim[];                     // each "done when" line with its proof (see claimsOf)
+  facts?: Facts;                        // the request's own people, addresses, dates and money, kept in its words (see factsOf)
+  planner?: "model" | "offline" | "fallback"; // who wrote the plan; "fallback" means the model failed and a keyword plan stood in
+}
+/** The concrete things a request names. Deterministic, from the person's own words; the gate checks tool calls against them. */
+export interface Facts { emails: string[]; people: string[]; dates: string[]; amounts: number[]; max_price: number | null }
+const NOT_PEOPLE = new Set(["I", "The", "A", "An", "My", "Me", "You", "We", "He", "She", "It", "They", "This", "That", "What", "When", "Where", "Why", "How", "Who", "Can", "Could", "Please", "Thanks", "Ok", "Okay", "Yes", "No", "And", "But", "Or", "So", "If", "Then", "Also", "Just", "Hi", "Hey", "Hello", "Dr", "Mr", "Mrs", "Ms", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Email", "Remind", "Book", "Find", "Send", "Schedule", "Check", "Tell", "Ask", "Call", "Get", "Watch"]);
+export function factsOf(text: string, base?: number): Facts {
+  const emails = [...new Set((text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? []).map((e) => e.toLowerCase()))];
+  const people = [...new Set([...text.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, " ").matchAll(/(?:^|[\s,.!?("'])([A-Z][a-z]{1,15})(?=$|[\s,.!?)"':;-])/g)].map((m) => m[1]).filter((n) => !NOT_PEOPLE.has(n)))];
+  const amounts = [...new Set((text.match(/\$\s?\d[\d,]*(?:\.\d{1,2})?/g) ?? []).map((a) => Number(a.replace(/[^\d.]/g, ""))).filter((n) => Number.isFinite(n)))];
+  const cap = text.match(/\b(?:under|below|max(?:imum)?|up to|no more than|less than|at most|nothing over|not over|no higher than)\s*\$?\s?(\d[\d,]*(?:\.\d{1,2})?)/i);
+  return { emails, people, dates: [...new Set(parseDates(text, base))].slice(0, 14), amounts, max_price: cap ? Number(cap[1].replace(/,/g, "")) : null };
 }
 export type Effort = "quick" | "standard" | "deep";
 const BUDGET: Record<Effort, [number, number]> = { quick: [1, 3], standard: [5, 10], deep: [8, 16] }; // [min, max] tool calls
@@ -137,7 +150,11 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   // The plan decides everything downstream, so long or many-step asks get the judge tier. A one-line "analysis of X" doesn't:
   // the judge tier is the slowest model, and the plan it writes for that is the same two-step plan the fast tier writes.
   const deepAsk = String(run.objective ?? "").length > 220 || quick.plan.filter((p) => p.tool).length >= 3 || (DEEP.test(String(run.objective ?? "")) && String(run.objective ?? "").split(/\s+/).length > 14);
-  const b = smallTalk ? quick : await structured<any>(deepAsk ? "judge" : "fast", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
+  const drafted = smallTalk ? { value: quick, source: "offline" as const } : await structuredWith<any>(deepAsk ? "judge" : "fast", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
+  const b = drafted.value;
+  b.planner = drafted.source;
+  b.facts = factsOf(String(run.objective ?? ""));
+  if (drafted.source === "fallback") emit("PLANNER_FALLBACK", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { error: drafted.error, plan: quick.plan.map((p: any) => p.tool).filter(Boolean) } });
   const arr = (x: any) => (Array.isArray(x) ? x : []);
   // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is
   // decided by the tools in the plan: only external writes (send, book, create events, pay) count.
@@ -158,6 +175,7 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     plan: arr(b.plan).map((p: any) => (typeof p === "string" ? { text: p, status: "todo" } : { text: String(p.text), tool: p.tool ?? undefined, status: "todo" })),
     effort: b.effort, tool_budget: b.tool_budget, ack: typeof b.ack === "string" ? b.ack.trim().slice(0, 240) : undefined, split: b.split,
     ...((prev as any)?._askedQuestions ? { _askedQuestions: (prev as any)._askedQuestions } : {}),
+    facts: b.facts, planner: b.planner,
   };
   (draft as any).claims = claimsOf({ done_when: draft.done_when, plan: draft.plan as PlanStep[], claims: b.claims });
   return { ...draft, ...planWork(draft as Brief, String(run.objective ?? ""), depthOf(agent)) } as Brief;
@@ -186,6 +204,8 @@ const EFFECT_TEXT: Record<string, string> = { "email.send": "sending the email",
 export function decide(b: Brief, o: { mode: string; revised: boolean }): Decision {
   if (b.questions.length && o.mode !== "never") return "clarify";
   if (b.kind === "answer" && !b.side_effects.length) return "skip";
+  // The model failed and a keyword plan stood in: anything that acts is shown to the person first, never silently run on a guess.
+  if (b.planner === "fallback" && o.mode !== "never" && (b.side_effects.length || b.kind === "task")) return "confirm"; // internal-only work (a note, a reminder) is reversible and runs
   if (o.mode === "always") return "confirm";
   if (o.mode === "never") return "auto";
   if (o.revised && b.side_effects.length) return "confirm"; // requirement changed mid-flight: re-confirm before acting

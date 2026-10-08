@@ -1,6 +1,7 @@
 // Job contracts: what a deployable job needs, and what proves it was done. The model interprets and writes; these decide
 // whether the job can start (connection present) and whether the run may claim it finished (evidence in our own records).
 import { all, one, J, emit } from "./db";
+import type { Facts } from "./intake";
 import { agentTools } from "./templates";
 
 export type JobKind = "calendar" | "reminder" | "email" | "expense" | "list" | "poll";
@@ -69,7 +70,7 @@ export function missingConnection(agent: any, text: string, room?: any): { job: 
 }
 
 export type Status = "done" | "waiting" | "asked" | "failed";
-export interface Outcome { job: JobKind | null; jobs?: { job: JobKind; status: Status; evidence: string; read?: boolean }[]; ok: boolean; status?: Status; evidence: string }
+export interface Outcome { job: JobKind | null; jobs?: { job: JobKind; status: Status; evidence: string; read?: boolean }[]; ok: boolean; status?: Status; evidence: string; fact_problems?: string[] }
 
 /** After the model says it's done: is there evidence for EACH requested job in our own records?
  *  done = the right tool succeeded · waiting = an approval for it is pending, or the run is waiting · asked = the reply is a
@@ -92,8 +93,11 @@ export function outcome(run: any, reply: string): Outcome {
   const calls = all<any>("select data from events where run_id in (select id from runs where id=? or parent_run_id=?) and type in ('TOOL_CALL_COMPLETED','TOOL_CALL_FAILED')", run.id, run.id).map((e) => J(e.data, {}));
   const waiting = !!one("select 1 from waits where run_id=? and status='open'", run.id);
   const asked = /\?\s*$/.test(reply.trim());
+  const sendAsked = /\b(send|reply|forward)\b/i.test(text) && !/\bdraft\b/i.test(text);
   const per = asks.map(({ job, read }) => {
-    const c = CONTRACTS[job], ok = read ? [...c.done, ...c.read] : c.done;
+    const c = CONTRACTS[job];
+    // "Send Dana…" is done only by email.send (or its pending approval); a draft is a draft. "Draft a note" is done by the draft.
+    const ok = read ? [...c.done, ...c.read] : job === "email" && sendAsked ? ["email.send"] : c.done;
     const hit = calls.find((d) => d.status === "SUCCEEDED" && ok.includes(d.tool));
     if (hit) return { job, status: "done" as Status, evidence: `${hit.tool} succeeded`, read };
     if (c.pendingApproval?.length && one(`select 1 from approvals where run_id=? and status='pending' and tool_id in (${c.pendingApproval.map(() => "?").join(",")})`, run.id, ...c.pendingApproval))
@@ -110,4 +114,31 @@ export function outcome(run: any, reply: string): Outcome {
 }
 export const recordOutcome = (run: any, o: Outcome) =>
   o.job && emit("JOB_OUTCOME", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: run.agent_id,
-    data: { job: o.job, ok: o.ok, status: o.status ?? (o.ok ? "done" : "failed"), evidence: o.evidence, jobs: o.jobs, requested_by: run.requested_by } });
+    data: { job: o.job, ok: o.ok && !(o.fact_problems?.length), status: o.status ?? (o.ok ? "done" : "failed"), evidence: o.evidence, jobs: o.jobs, fact_problems: o.fact_problems ?? [], requested_by: run.requested_by } });
+
+/** Job-specific checks of what the tools were actually asked to do, against the request's own facts. Deterministic; each
+ *  problem is a plain sentence for the person. ponytail: three checks that cover the live failures seen so far (wrong recipient,
+ *  wrong week, over budget); add one per new job type as real transcripts show the need. */
+export function verifyFacts(run: any, facts: Facts | undefined): string[] {
+  if (!facts) return [];
+  const problems: string[] = [];
+  const calls = all<any>("select tool_id, input, result from tool_executions where run_id in (select id from runs where id=? or parent_run_id=?) and status='succeeded'", run.id, run.id)
+    .concat(all<any>("select tool_id, input, null result from approvals where run_id=? and status='pending'", run.id))
+    .map((c) => ({ tool: c.tool_id as string, input: J(c.input, {}), result: J(c.result, null) }));
+  for (const c of calls) {
+    if (c.tool === "email.send" && facts.emails.length) {
+      const to = (c.input.to ?? []).map((x: any) => String(x).toLowerCase());
+      const wrong = to.filter((x: string) => !facts.emails.includes(x));
+      if (wrong.length && !to.some((x: string) => facts.emails.includes(x))) problems.push(`the email is addressed to ${wrong.join(", ")}, but the request named ${facts.emails.join(", ")}`);
+    }
+    if (c.tool === "calendar.find_free_time" && facts.dates.length) {
+      const from = c.input.from && /^\d{4}-\d{2}-\d{2}$/.test(String(c.input.from)) ? String(c.input.from) : null, to = c.input.to && /^\d{4}-\d{2}-\d{2}$/.test(String(c.input.to)) ? String(c.input.to) : null;
+      if (from && to && !facts.dates.some((d) => d >= from && d <= to)) problems.push(`the calendar was checked for ${from} to ${to}, but the request was about ${facts.dates[0]}${facts.dates.length > 1 ? ` to ${facts.dates.at(-1)}` : ""}`);
+    }
+    if (facts.max_price != null && /^(reservations\.book|browser\.task|order\.|watch\.site)/.test(c.tool)) {
+      const price = Number(c.result?.price ?? c.result?.total ?? c.result?.output?.price ?? c.input?.max_price ?? NaN);
+      if (Number.isFinite(price) && price > facts.max_price) problems.push(`${c.tool} came to $${price}, over the $${facts.max_price} limit in the request`);
+    }
+  }
+  return [...new Set(problems)];
+}

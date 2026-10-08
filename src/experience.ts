@@ -22,8 +22,19 @@ function timeline(runId: string) {
 }
 
 /** After a run completes: a compact, factual record of how it went, kept per agent and task shape (latest wins, success count kept). */
+/** Did this run end with every check passing? Flagged claims, a failed job contract, a fact mismatch or an unavailable judge all
+ *  mean "we don't know it worked", and a playbook learned from that would teach the wrong thing. */
+export function verifiedOutcome(run: any) {
+  const checked = one<any>("select data from events where run_id=? and type='RESULT_CHECKED' order by seq desc limit 1", run.id);
+  if (checked && J(checked.data, {}).pass === false) return false;
+  const job = one<any>("select data from events where run_id=? and type='JOB_OUTCOME' order by seq desc limit 1", run.id);
+  if (job && J(job.data, {}).ok === false) return false;
+  if (one("select 1 from events where run_id=? and type in ('FACT_MISMATCH','JUDGE_UNAVAILABLE','UNBACKED_CLAIM')", run.id)) return false;
+  return !J(run.result, {})?.unverified?.length;
+}
 export function recordPlaybook(run: any) {
   if (run.parent_run_id || run.kind === "schedule") return;
+  if (!verifiedOutcome(run)) return; // learn only from runs that provably did the job
   const reqs = timeline(run.id).filter((r) => !/^(plan\.update|memory\.remember|notes\.add|specialists\.run)$/.test(r.tool));
   if (reqs.length < 2) return; // nothing worth remembering about a one-call answer
   const step = (r: any) => {
