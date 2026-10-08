@@ -90,3 +90,17 @@ test("AC-F5 objectives with steps: owners and due dates, one-line progress, a si
   expect(lastFrom(family.id, milo.id)).toBe("Mom's cataract surgery: 1/3 done · now: Insurance pre-auth (Tom) · next: Ride home after surgery");
   expect(checkObjectives()).toBe(0);
 });
+
+test("a new first-party template version reaches existing installs: new skills added, owner's own permission choices kept", async () => {
+  const { seedFirstParty, getManifest } = await import("../src/templates");
+  const { exec, S, J } = await import("../src/db");
+  // Pretend Milo was installed from an older version with fewer skills and one permission the owner changed
+  exec("update agents set skills=?, permissions=?, template_version='0.9.0' where id=?", S(["family-bridge", "calendar"]), S({ "email.send": "always" }), milo.id);
+  exec("update templates set latest_version='0.9.0' where slug='milo-family'");
+  exec("delete from template_versions where version=? and template_id=(select id from templates where slug='milo-family')", getManifest("milo-family")!.version);
+  seedFirstParty();
+  const a = one<any>("select * from agents where id=?", milo.id), m = getManifest("milo-family")!;
+  expect(a.template_version).toBe(m.version);
+  expect(J(a.skills, [])).toEqual(expect.arrayContaining(["family-bridge", "calendar", "scam-check", "family-stories", "objectives"]));
+  expect(J(a.permissions, {})["email.send"]).toBe("always");
+});

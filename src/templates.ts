@@ -282,10 +282,21 @@ export function seedFirstParty(dir = join(import.meta.dirname ?? (import.meta as
     if (t?.latest_version === m.version) continue;
     const r = publishVersion(m, pub, { platform: true });
     if ("error" in r) throw new Error(`${f}: ${r.error}`);
+    if (t && r.status === "published") upgradeInstalls(t.id, m); // people who installed Milo last week get what Milo learned this week
   }
   // Four agents on the front page — the rest stay installable as specialists. One capable agent beats forty narrow ones.
   exec("update templates set featured=0 where publisher_id=?", pub.id);
   for (const slug of FEATURED) exec("update templates set featured=1 where slug=?", slug);
+}
+/** A new published version of a first-party template reaches its installs: skills are added (never removed — the owner may have
+ *  trimmed them), permissions the owner never set take the manifest's new defaults, and the install records the version. */
+function upgradeInstalls(templateId: string, m: Manifest) {
+  for (const a of all<any>("select * from agents where template_id=?", templateId)) {
+    const skills = [...new Set([...(J(a.skills, []) as string[]), ...m.skills])];
+    const perms = { ...(m.permissions ?? {}), ...J(a.permissions, {}) };
+    exec("update agents set skills=?, permissions=?, template_version=? where id=?", S(skills), S(perms), m.version, a.id);
+    exec("update installs set version=? where agent_id=?", m.version, a.id);
+  }
 }
 export const FEATURED = ["ava-executive-assistant", "booker-bookings", "buyer-group-buying", "milo-family"];
 
