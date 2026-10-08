@@ -158,11 +158,16 @@ test("AC-AVA4 the Dana journey: finds Dana, reads free time, shows the exact ema
   const second = one<any>("select * from approvals where status='pending'");
   expect(J(second.input).body).toContain("Wednesday at 2pm");
 
-  // Restart: the waiting run and its approval survive
+  // Restart: the waiting run and its approval survive; the task graph says what it is waiting for
   rt.recover();
   expect(one<any>("select status from approvals where id=?", second.id).status).toBe("pending");
+  const tg = await import("../src/taskgraph");
+  expect(tg.stateLine(second.run_id)).toMatch(/^waiting for your OK/);
   await text("approve");
+  await text("approve"); // a duplicate approve (double tap, replayed webhook) must never send twice
   expect(gmail).toHaveLength(1);
+  expect(tg.view(second.run_id)).toMatchObject({ status: "verified", state: "done — verified" });
+  expect(tg.view(second.run_id).actions.find((a: any) => a.target === "email.send")).toMatchObject({ status: "verified", evidence: [{ provider_ref: "gm1", facts: { to: ["dana@example.com"] } }] });
   expect(Buffer.from(gmail[0].raw, "base64url").toString()).toMatch(/To: dana@example\.com[\s\S]*Wednesday at 2pm/);
   expect(Buffer.from(gmail[0].raw, "base64url").toString()).not.toContain("Tuesday");
   expect(sent().at(-1)).not.toMatch(/Not fully done/);                                                 // the plan matched the ask; nothing spurious flagged

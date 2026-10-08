@@ -15,6 +15,7 @@ import { browserRoutes, bb } from "./browser";
 import { PROVIDERS, platformKey } from "./model";
 import { TOOLS, getTool, assertPublicUrl } from "./tools";
 import * as family from "./family";
+import * as taskgraph from "./taskgraph";
 import app from "../public/index.html";
 
 type Req = Request & { params: Record<string, string> };
@@ -120,6 +121,10 @@ export async function healthReport() {
       models: (() => { const f = all<any>("select data from events where type='MODEL_CALL_FAILED' and ts>?", now() - 36e5).map((e) => String(J(e.data, {}).error ?? ""));
         return { failures_1h: f.length, out_of_credit: f.some((x) => /\b402\b/.test(x)) }; })(),
       jobs_24h: all<any>("select json_extract(data, '$.job') job, sum(case when cast(json_extract(data, '$.ok') as text) in ('1','true') then 1 else 0 end) ok, count(*) n from events where type='JOB_OUTCOME' and ts>? group by 1", now() - 864e5),
+      // Why tasks don't finish, from the task graph's own records (plan §4 PR 0): counts, not scores.
+      tasks_24h: { by_state: Object.fromEntries(all<any>("select json_extract(data, '$.status') s, count(*) n from events where type='TASK_TERMINAL' and ts>? group by 1", now() - 864e5).map((r) => [r.s, r.n])),
+        planner_fallbacks: count("select count(*) n from events where type='PLANNER_FALLBACK' and ts>?", now() - 864e5), fact_mismatches: count("select count(*) n from events where type='FACT_MISMATCH' and ts>?", now() - 864e5),
+        judge_unavailable: count("select count(*) n from events where type='JUDGE_UNAVAILABLE' and ts>?", now() - 864e5), unbacked_claims: count("select count(*) n from events where type='UNBACKED_CLAIM' and ts>?", now() - 864e5) },
       problems,
     };
     const alerts = [
@@ -220,7 +225,7 @@ function roomView(r: any, after = 0) {
     tasks: all<any>("select * from tasks where room_id=? order by status='done', created_at", r.id).map((t) => ({ ...t, owner_name: rt.nameOf(t.owner) })),
     approvals: all<any>("select * from approvals where room_id=? and status='pending' order by created_at", r.id).map((a) => ({ ...a, input: J(a.input), approvers: J(a.approvers, []).map((x: string) => ({ id: x, name: rt.nameOf(x) })), agent_name: rt.nameOf(a.agent_id) })),
     runs: all<any>("select * from runs where room_id=? and status not in ('completed','failed_terminal','cancelled') order by created_at", r.id).map((x) => ({ ...x, brief: J(x.brief), agent_name: rt.nameOf(x.agent_id),
-      activity: x.status === "running" ? activityOf(x.id) : null, steps: J(x.spent, {}).toolCalls ?? 0, step_list: stepsOf(x.id),
+      activity: x.status === "running" ? activityOf(x.id) : null, steps: J(x.spent, {}).toolCalls ?? 0, step_list: stepsOf(x.id), task_state: taskgraph.stateLine(x.id),
       waits: all<any>("select kind, reason, owner from waits where run_id=? and status='open'", x.id).map((w) => ({ ...w, owner_name: rt.nameOf(w.owner) })) })),
     events: all<any>("select seq, id, type, actor, run_id, data, ts from events where room_id=? and seq>? order by seq limit 500", r.id, after).map((e) => ({ ...e, data: J(e.data), actor_name: rt.nameOf(e.actor) })),
   };

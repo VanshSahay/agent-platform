@@ -180,3 +180,16 @@ The code and synthetic eval work can start without new secrets. Live gates need 
 ## 7. Definition of “intelligent enough”
 
 Do not use a subjective demo as the gate. For the first Ava release, the system is intelligent enough when it reliably extracts the whole request, asks only for consequential missing facts, chooses a feasible plan, changes course when evidence contradicts the plan, completes each permitted action exactly once, explains blockers and uncertainty, and never says a task is done without matching provider or database evidence. It should pass those checks on new wording from real people, not only the phrasing used to build it.
+
+
+## Status (2026-10-07, after `db90f55` and following)
+
+Built as a lazy vertical slice on the existing runtime, not a rewrite:
+
+- **PR 0 instrumentation:** `PLANNER_FALLBACK`, `TASK_GRAPH`, `ACTION_VERDICT`, `FACT_MISMATCH`, `JUDGE_UNAVAILABLE`, `TASK_TERMINAL` events; counts in the ops report (`tasks_24h`).
+- **PR 1 data layer:** `agent_tasks`, `task_actions`, `action_evidence`, `task_revisions` in `src/taskgraph.ts`, shadow-written from every brief; revisions keep verified actions and cancel open ones.
+- **PR 2 intent (partial):** typed `facts` (people, addresses, dates, money, price cap) on the brief; a fallback plan is marked and shown for confirmation before any external write; strict per-capability schemas and a stronger-planner route are still to do.
+- **PR 3 outcomes:** executions bound to actions; deterministic verifiers per tool (send = provider id, draft = observed, reminder = schedule row, calendar read = covers the dates, booking = confirmation); draft ≠ send in the job contract; fact checks on the approval card and the reply; judge failure = unverified; uncertain writes are never reported done.
+- **PR 4 task loop:** the Dana journey (AC-AVA4) proves changed instruction, restart, duplicate approve → one send, verified end state; task state in the trace and the room view.
+- **PR 6 learning:** playbooks only from verified runs.
+- **Still open:** a capability registry with schemas (`src/capabilities/`), a stronger planner for ambiguous/multi-app asks, specialist output schema validation and an atomic task budget (PR 5), builder readiness gating by evidence (PR 7), model-in-the-loop and real-phone evals (PR 8, needs model budget and test accounts).

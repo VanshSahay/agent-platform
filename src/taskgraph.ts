@@ -63,15 +63,18 @@ const openAction = (runId: string, tool: string) =>
   one<any>("select a.* from task_actions a join agent_tasks t on t.id=a.task_id where t.run_id=? and a.target=? and a.status in ('not_started','running','waiting_human','waiting_external') order by a.n limit 1", runId, tool);
 
 /** A tool ran for this task: bind the execution to its action and let the verifier say what it proves. */
+/** The open action for this tool — or, when the model did something the plan didn't list, a new one: it still happened,
+ *  so it is still an action with evidence (an approval card, a tool result). */
+function ensureAction(run: any, tool: string, input: any) {
+  const a = openAction(run.id, tool); if (a) return a;
+  const t = one<any>("select * from agent_tasks where run_id=?", run.id); if (!t || /^(plan\.update|memory\.remember|notes\.add|specialists\.run)$/.test(tool)) return null;
+  const d = getTool(tool), n = (one<any>("select max(n) m from task_actions where task_id=? and revision=?", t.id, t.revision)?.m ?? 0) + 1;
+  exec("insert into task_actions (id, task_id, revision, n, kind, mode, target, text, inputs, constraints, depends_on, status, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    id("act"), t.id, t.revision, n, tool, d && WRITE.includes(d.risk) ? "write" : "read", tool, d?.summarize?.(input) ?? tool, S({ unplanned: true }), "[]", "[]", "running", now());
+  return openAction(run.id, tool);
+}
 export function bind(run: any, tool: string, exec_: { id: string; input: any; result: any; status: string }) {
-  let a = openAction(run.id, tool);
-  if (!a) { // the model did something the plan didn't list: it still happened, so it is still an action with evidence
-    const t = one<any>("select * from agent_tasks where run_id=?", run.id); if (!t || /^(plan\.update|memory\.remember|notes\.add|specialists\.run)$/.test(tool)) return null;
-    const d = getTool(tool), n = (one<any>("select max(n) m from task_actions where task_id=? and revision=?", t.id, t.revision)?.m ?? 0) + 1;
-    exec("insert into task_actions (id, task_id, revision, n, kind, mode, target, text, inputs, constraints, depends_on, status, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      id("act"), t.id, t.revision, n, tool, d && WRITE.includes(d.risk) ? "write" : "read", tool, d?.summarize?.(exec_.input) ?? tool, S({ unplanned: true }), "[]", "[]", "running", now());
-    a = openAction(run.id, tool)!;
-  }
+  const a = ensureAction(run, tool, exec_.input); if (!a) return null;
   const v = (VERIFIERS[tool] ?? ((_i: any, r: any) => (r?.__status === "UNKNOWN" ? { verdict: "uncertain" as const, note: "provider answer unknown" } : { verdict: "observed" as const })))(exec_.input, exec_.result, J(run.brief, null)?.facts);
   const verdict: ActionStatus = exec_.status === "FAILED" ? "blocked" : v.verdict;
   exec("update task_actions set status=?, tool_execution_id=?, updated_at=? where id=?", verdict, exec_.id, now(), a.id);
@@ -81,8 +84,8 @@ export function bind(run: any, tool: string, exec_: { id: string; input: any; re
   return verdict;
 }
 /** An approval card is up for this action. */
-export function waitingHuman(run: any, tool: string, approvalId: string) {
-  const a = openAction(run.id, tool); if (!a) return;
+export function waitingHuman(run: any, tool: string, approvalId: string, input?: any) {
+  const a = ensureAction(run, tool, input); if (!a) return;
   exec("update task_actions set status='waiting_human', approval_id=?, updated_at=? where id=?", approvalId, now(), a.id);
   settle(run);
 }

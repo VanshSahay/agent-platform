@@ -525,7 +525,7 @@ export function requestApproval(run: any, agent: any, d: any, input: any, fp: st
   const wid = createWait(run, { kind: "approval", reason: `approval: ${summary}`, owner: approvers[0], wake_key: `approval:${aid}`, timeout_at: now() + 72 * 36e5, on_timeout: "expire" });
   const who = approvers.map(nameOf).join(" or ");
   // Before the person approves: does this action match the request's own facts (recipient, dates, price cap)? Say so on the card.
-  taskgraph.waitingHuman(run, d.id, aid);
+  taskgraph.waitingHuman(run, d.id, aid, input);
   const problems = jobs.verifyFacts(run, J(run.brief, null)?.facts);
   if (problems.length) emit("FACT_MISMATCH", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { problems, approval_id: aid } });
   postMessage(run.room_id, { sender: agent.id, runId: run.id, approvalId: aid, targets: replyTargets(run.room_id, run.origin_endpoint_id),
