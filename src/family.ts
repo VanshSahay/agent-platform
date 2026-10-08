@@ -3,7 +3,7 @@
 // category is one they chose to share. Consent is checked against what the person actually typed, not what the model claims.
 import { all, one, exec, emit, now, J, S } from "./db";
 import * as rt from "./runtime";
-import type { ToolDef } from "./tools";
+import { obj, type ToolDef } from "./tools";
 
 export const CATEGORIES = ["appointments", "plans", "health", "money", "conversations"] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -39,7 +39,6 @@ export function consentedSince(roomId: string, userId: string, sinceTs: number) 
 }
 
 export function registerFamilyTools(def: (d: ToolDef) => void) {
-  const obj = (p: any, required: string[] = []) => ({ type: "object", properties: p, required, additionalProperties: false });
   def({
     id: "family.share", description: "From a person's private chat, put something in front of the family group: a ride needed, a date to pick, a plan to confirm. Posts ONLY the text you give (the agreed facts, never the private conversation). If the category isn't one the person shares by default, the tool doesn't post: it tells you to ask them first (\"Want me to ask the family?\"); call again after they say yes. Categories: appointments, plans, health, money, conversations.",
     risk: "write_internal", idempotency: "safe", defaultApproval: "none",

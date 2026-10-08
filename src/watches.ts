@@ -3,9 +3,9 @@
 // runner to *look* (a read-only task) on a schedule that speeds up around the moment things open, and when something is
 // there it hands the agent a pre-planned browser step to act, which goes through the normal approval card (or a standing
 // approval the person gave when they set the watch).
-import { all, one, exec, emit, id, now, S, J, tzOf, fmtLocal, patchJson } from "./db";
+import { all, one, exec, emit, id, now, S, tzOf, fmtLocal } from "./db";
 import * as rt from "./runtime";
-import type { ToolDef } from "./tools";
+import { obj, type ToolDef } from "./tools";
 
 export interface SiteWatch { id: string; workspace_id: string; agent_id: string; room_id: string; user_id: string; what: string; url: string; site: string; opens_at: number | null; until: number;
   every_min: number; max_price: number | null; quantity: number; action: "notify" | "act"; status: string; checks: number; last_result: string | null; pending_run_id: string | null; next_check_at: number; created_at: number }
@@ -73,7 +73,6 @@ async function defaultLook(w: SiteWatch) {
 }
 
 export function registerWatchTools(def: (d: ToolDef) => void) {
-  const obj = (p: any, required: string[] = []) => ({ type: "object", properties: p, required, additionalProperties: false });
   def({
     id: "watch.site", description: "Watch a website for something to become available — tickets going on sale, a hotel room, a class spot, an item back in stock — and act the moment it does. Give the page URL, what to look for, when it opens (opens_at, ISO with offset) if known, a max price and quantity, and how long to keep watching. action='notify' (default) tells the person with the link; action='act' tries to get it and asks for approval unless they pre-approved.",
     risk: "write_internal", idempotency: "safe", defaultApproval: "none",
@@ -112,5 +111,4 @@ export function registerWatchTools(def: (d: ToolDef) => void) {
       return { status: "SUCCEEDED", output: { id: w.id.slice(-6), what: w.what, status: resume ? "active" : "cancelled" } };
     },
   });
-  void patchJson; void J;
 }

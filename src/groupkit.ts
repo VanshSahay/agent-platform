@@ -5,11 +5,11 @@ import { extraPlanners, extraSummaries, type Step } from "./model";
 import { parseDeadline } from "./orders";
 import * as rt from "./runtime";
 import * as tools from "./tools";
+const obj: typeof tools.obj = (...a) => tools.obj(...a); // read at call time: tools.ts imports this module first
 
 const money = (c: number) => `$${(c / 100).toFixed(2).replace(/\.00$/, "")}`; // cents in, "$12.50" out
 const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
 const splitList = (s: string) => s.split(/\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*|\s*\+\s*/i).map((x) => x.trim()).filter(Boolean);
-const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 const str = (d?: string) => ({ type: "string", description: d }), num = (d?: string) => ({ type: "number", description: d });
 const strs = (d?: string) => ({ type: "array", items: { type: "string" }, description: d });
 const rule = (msg: string): never => { throw new tools.ToolError("BUSINESS_RULE", msg); };
@@ -76,7 +76,7 @@ function prefillVotes(p: any, creator: string) {
     const text = String(J(m?.data, {}).text ?? ""); if (!text || text.length > 60) continue;
     const ids = matchOptions(p, text, true); if (!ids.length || (!p.multi && ids.length > 1)) continue;
     exec("insert into poll_votes (poll_id, user_id, option_ids, updated_at) values (?,?,?,?) on conflict (poll_id, user_id) do nothing", p.id, u, S(ids), now());
-    names.push(rt.nameOf(u));
+    names.push(rt.nameOf(u) ?? u);
   }
   return names;
 }

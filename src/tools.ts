@@ -30,9 +30,10 @@ export interface ToolDef {
   execute: (input: any, ctx: ToolCtx) => Promise<ToolOutcome>;
 }
 
-const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
-const str = (description?: string) => ({ type: "string", description });
-const num = (description?: string) => ({ type: "number", description });
+// JSON-schema shorthand shared by every tool module (import { obj, str, num } from "./tools").
+export const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
+export const str = (description?: string) => ({ type: "string", description });
+export const num = (description?: string) => ({ type: "number", description });
 
 const pubUrl = () => (process.env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/$/, "");
 // ---------- outbound HTTP with retry taxonomy ----------

@@ -1,10 +1,9 @@
 // The friendship signal: who a person mentions in their own private chat, and who has gone quiet. Counted from their own
 // messages only, never from the family's; surfaced only to them, as a suggestion they can decline.
-import { all, one, now, J } from "./db";
-import * as rt from "./runtime";
+import { all, now, J } from "./db";
+import { NOT_PEOPLE } from "./intake";
 import type { ToolDef } from "./tools";
 
-const NOT_NAMES = new Set(["I", "The", "A", "An", "My", "Me", "You", "We", "He", "She", "It", "They", "This", "That", "What", "When", "Where", "Why", "How", "Who", "Can", "Could", "Please", "Thanks", "Thank", "Ok", "Okay", "Yes", "No", "Not", "And", "But", "Or", "So", "If", "Then", "Also", "Just", "Hi", "Hey", "Hello", "Dr", "Mr", "Mrs", "Ms", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Uber", "Lyft", "Amazon", "Google", "Apple", "Netflix", "Costco", "Walmart", "Target"]);
 
 /** People named in the person's own messages here: how often and when last. ponytail: capitalised-word heuristic, the agent's names come first. */
 export function mentions(roomId: string, userId: string, agentName: string) {
@@ -13,7 +12,7 @@ export function mentions(roomId: string, userId: string, agentName: string) {
     const text = String(J(e.data, {}).text ?? "");
     for (const m of text.matchAll(/(?:^|[\s,.!?("'])([A-Z][a-z]{1,15})(?=$|[\s,.!?)"':;-])/g)) {
       const name = m[1];
-      if (NOT_NAMES.has(name) || name === agentName) continue;
+      if (NOT_PEOPLE.has(name) || name === agentName) continue;
       const cur = seen.get(name) ?? { n: 0, last: 0, first: e.ts };
       cur.n++; cur.last = Math.max(cur.last, e.ts); seen.set(name, cur);
     }
@@ -36,5 +35,4 @@ export function registerPeopleTools(def: (d: ToolDef) => void) {
         note: "Names come from what the person said here. Suggest, don't nag: at most one 'haven't heard you mention X lately — want to reach out?' per week, and drop it if they say no." } };
     },
   });
-  void one; void rt;
 }

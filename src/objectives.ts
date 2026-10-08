@@ -4,7 +4,7 @@
 import { all, one, exec, emit, id, now, tzOf, fmtLocal } from "./db";
 import * as rt from "./runtime";
 import { parseDeadline } from "./orders";
-import type { ToolDef } from "./tools";
+import { obj, type ToolDef } from "./tools";
 
 export const STATES = ["todo", "doing", "waiting", "done", "blocked"] as const;
 export interface Objective { id: string; workspace_id: string; room_id: string; agent_id: string; created_by: string; title: string; status: string; created_at: number }
@@ -58,7 +58,6 @@ export function checkObjectives() {
 }
 
 export function registerObjectiveTools(def: (d: ToolDef) => void) {
-  const obj = (p: any, required: string[] = []) => ({ type: "object", properties: p, required, additionalProperties: false });
   const stepSchema = obj({ title: { type: "string" }, owner: { type: "string", description: "a person in this chat, 'me', or 'agent'" }, due: { type: "string", description: "ISO or natural ('next Friday', 'Oct 20')" } }, ["title"]);
   def({
     id: "objective.create", description: "Start a multi-step objective (a surgery, a move, a trip, an insurance claim) as an ordered list of steps, each with an owner and a due date where known. Use it for things that take days or weeks and involve several people; a single to-do is task.create. The chat sees progress in one line.",

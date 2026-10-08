@@ -7,6 +7,7 @@ import { all, one, exec, emit, id, now, S, J, tx, patchJson } from "./db";
 import { extraPlanners, extraChains, extraSummaries, type Msg } from "./model";
 import * as rt from "./runtime";
 import * as tools from "./tools";
+const obj: typeof tools.obj = (...a) => tools.obj(...a); // read at call time: tools.ts imports this module first
 
 // ---------------- natural-language parsing (offline planner + tool input tolerance) ----------------
 const WD = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -208,7 +209,6 @@ export async function checkWatches() {
 
 // ---------------- tools ----------------
 const isoOrParse = (v: any) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? [String(v)] : parseDates(String(v ?? "")));
-const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 const str = (description?: string) => ({ type: "string", description }), num = (description?: string) => ({ type: "number", description });
 
 export function registerReservationTools(def: (d: tools.ToolDef) => void) {

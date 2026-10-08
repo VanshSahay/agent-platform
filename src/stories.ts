@@ -4,7 +4,7 @@
 import { all, one, exec, emit, id, now, S, J } from "./db";
 import * as rt from "./runtime";
 import { familyRooms } from "./family";
-import type { ToolDef } from "./tools";
+import { obj, type ToolDef } from "./tools";
 
 export interface Story { id: string; workspace_id: string; room_id: string; told_by: string; title: string; text: string; people: string; when_text: string | null; where_text: string | null; file_id: string | null; created_at: number }
 
@@ -33,7 +33,6 @@ export const QUESTIONS = [
 ];
 
 export function registerStoryTools(def: (d: ToolDef) => void) {
-  const obj = (p: any, required: string[] = []) => ({ type: "object", properties: p, required, additionalProperties: false });
   def({
     id: "story.add", description: "Keep a family story, memory or recipe as the person told it: title, the story in their own words (don't rewrite it), the people in it, roughly when and where. If they just sent a photo, attach it with the file name. Stays in this chat (private stays private; the family group's are the family's).",
     risk: "write_internal", idempotency: "safe", defaultApproval: "none",

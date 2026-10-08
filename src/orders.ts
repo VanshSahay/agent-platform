@@ -6,6 +6,7 @@ import { extraPlanners, extraSummaries } from "./model";
 import { parseDates } from "./reservations";
 import * as rt from "./runtime";
 import * as tools from "./tools";
+const obj: typeof tools.obj = (...a) => tools.obj(...a); // read at call time: tools.ts imports this module first
 
 const NUMW: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, dozen: 12 };
 const n = (s: string) => Number(NUMW[s.toLowerCase()] ?? s);
@@ -79,7 +80,6 @@ export function orderAgentFor(roomId: string, text: string) {
   return o ? (o.agent_id as string) : null;
 }
 
-const obj = (props: Record<string, any>, required: string[] = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 const str = (d?: string) => ({ type: "string", description: d }), num = (d?: string) => ({ type: "number", description: d });
 const isOrganizer = (o: any, run: any) => o.organizer_id === run.requested_by || !!one("select 1 from memberships where workspace_id=? and user_id=? and role in ('owner','admin')", o.workspace_id, run.requested_by);
 const needOrder = (roomId: string) => currentOrder(roomId) ?? (() => { throw new tools.ToolError("BUSINESS_RULE", "there's no open group order in this chat — start one first"); })();
