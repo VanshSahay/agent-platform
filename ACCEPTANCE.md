@@ -67,6 +67,7 @@ Every row is checked automatically by `bun run criteria`: it runs the test suite
 | AC-F2 | Categories a person shares by default go straight to the family; other categories still ask; only the person can change their own sharing, from their own chat. | §15 |
 | AC-F3 | "Is this real?": a deterministic verdict (likely a scam / suspicious / nothing obviously wrong) with the exact reasons from the message, never a number or link from the message to act on; benign messages pass. | §15 |
 | AC-F4 | Stories are kept in the teller's words with who/when/where and provenance; a private story is invisible from the family group; the family group's stories are searchable from a member's private chat. | §15 |
+| AC-F5 | An objective is an ordered list of steps with owner and due date; progress is one line; an overdue step gets one nudge to its owner and, two days later, one escalation to whoever set it up; a done step is never nudged. | §15 |
 | AC-G5 | A new poll counts answers people already gave in the chat (their own words, last 24h) and says who; they aren't asked again. | §15 |
 | AC-K1 | After the same kind of task succeeds 3 times, the agent offers once to save it as a skill; saved skills guide future runs; buttons are room-scoped. | §11.3 |
 | AC-F1 | Files (text and PDF) uploaded into a room are readable by the agent; files are scoped to their room and workspace. | §17.2 |

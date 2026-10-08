@@ -63,3 +63,30 @@ test("AC-G5 a poll counts what people already answered in the chat; they aren't 
   expect(one<any>("select 1 from poll_votes where poll_id=? and user_id=?", p.id, sarah)).toBeFalsy();
   void exec; void messages;
 });
+
+test("AC-F5 objectives with steps: owners and due dates, one-line progress, a single overdue nudge, escalation to the person who set it up two days later", async () => {
+  const { advance } = await import("../src/db");
+  const { checkObjectives } = await import("../src/objectives");
+  const due = new Date(Date.now() + 2 * 864e5).toISOString().slice(0, 10);
+  scriptModel(call("objective.create", { title: "Mom's cataract surgery", steps: [{ title: "Pre-op appointment", owner: "Sarah", due }, { title: "Insurance pre-auth", owner: "Tom" }, { title: "Ride home after surgery", owner: "me" }] }),
+    (r) => ({ text: JSON.parse(r.messages.at(-1)!.content.match(/\{[\s\S]*\}/)![0]).progress }));
+  await say(family.id, mom, "@Milo plan: Mom's cataract surgery — pre-op appointment; insurance pre-auth; ride home after surgery");
+  expect(lastFrom(family.id, milo.id)).toMatch(/^Mom's cataract surgery: 0\/3 done · now: Pre-op appointment \(Sarah, due \w{3}, \w{3} \d+\) · next: Insurance pre-auth$/);
+  const o = one<any>("select * from objectives where room_id=?", family.id);
+  expect(one<any>("select owner from objective_steps where objective_id=? and n=3", o.id).owner).toBe(mom);
+  // Nothing before the due date
+  expect(checkObjectives()).toBe(0);
+  // Overdue: one nudge to the owner, not two
+  advance(2 * 864e5 + 3600e3);
+  expect(checkObjectives()).toBe(1); expect(checkObjectives()).toBe(0);
+  expect(lastFrom(family.id, milo.id)).toMatch(/"Pre-op appointment" was due .*Sarah, how's it going\?/);
+  // Two days later with no update: escalate to Mom, once
+  advance(2 * 864e5);
+  expect(checkObjectives()).toBe(1); expect(checkObjectives()).toBe(0);
+  expect(lastFrom(family.id, milo.id)).toMatch(/^Mom, "Pre-op appointment" \(Mom's cataract surgery\) is two days past due/);
+  // Sarah reports it done → progress moves on; a done step is never nudged
+  scriptModel(call("objective.update", { step: "pre-op", status: "done" }), (r) => ({ text: JSON.parse(r.messages.at(-1)!.content.match(/\{[\s\S]*\}/)![0]).progress }));
+  await say(family.id, sarah, "@Milo pre-op is done");
+  expect(lastFrom(family.id, milo.id)).toBe("Mom's cataract surgery: 1/3 done · now: Insurance pre-auth (Tom) · next: Ride home after surgery");
+  expect(checkObjectives()).toBe(0);
+});

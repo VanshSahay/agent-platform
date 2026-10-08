@@ -38,7 +38,7 @@ In Mom's private chat, when a task needs the family ("she'll need a ride"), the 
 time, place), never the reason or the conversation. One new step in the planner: a `bridge` side effect that needs the owner's
 OK and carries an explicit allow-list of facts.
 
-### 3. Objectives with steps
+### 3. Objectives with steps (built: objective.create / update / status, AC-F5)
 Today a run is one request. "Mom needs cataract surgery" is weeks of steps: appointment → insurance → transport → pre-op →
 surgery → pickup → follow-up. Build an objective record with ordered steps, each with owner, state, next action, wait and
 escalation. The group sees progress; each step uses the tools that exist (calendar, email, reminders, polls, browser).

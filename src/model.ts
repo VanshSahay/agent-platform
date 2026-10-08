@@ -193,6 +193,9 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
     const price = t.match(/under \$?(\d+)/)?.[1], qty = t.match(/\b(\d+)\s+(?:tickets?|seats?|rooms?|spots?)\b/)?.[1] ?? t.match(/\b(\d+)\s+under\b/)?.[1];
     out.push({ name: "watch.site", input: { what, url: `https://www.${site}/`, ...(price ? { max_price: Number(price) } : {}), ...(qty ? { quantity: Number(qty) } : {}), action: /\b(book|buy|grab|get) (it|them)\b/.test(t) ? "act" : "notify" } });
   }
+  const planM = text.match(/^(?:plan|objective)(?: for)?[:\s]+([^:\n]+?)\s*[:\u2014-]\s*(.+)$/is);
+  if (planM && has("objective.create")) out.push({ name: "objective.create", input: { title: planM[1].trim(), steps: planM[2].split(/\s*(?:;|\bthen\b|\d+\.)\s*/).map((x) => x.trim()).filter(Boolean).map((x) => ({ title: x.replace(/[.,]+$/, "") })) } });
+  else if (/\bwhere are we\b|\bstatus of the plan\b/i.test(text) && has("objective.status")) out.push({ name: "objective.status", input: {} });
   const scam = text.match(/\b(?:is this (?:real|legit|a scam)|scam\??|real or (?:a )?scam)\b[\s:?-]*(.*)$/is);
   if (scam && has("scam.check")) out.push({ name: "scam.check", input: { text: (scam[1] || text).replace(/^["\u201c]|["\u201d]$/g, "").trim() || text } });
   const story = text.match(/^(?:keep|save|remember) (?:this|the) (?:story|recipe|memory)[:\s-]+(.+)/is);

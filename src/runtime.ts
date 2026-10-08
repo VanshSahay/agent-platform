@@ -14,6 +14,7 @@ import * as channels from "./channels";
 import * as intake from "./intake";
 import * as reservations from "./reservations";
 import * as watches from "./watches";
+import * as objectives from "./objectives";
 import * as orders from "./orders";
 import * as groupkit from "./groupkit";
 import * as jobs from "./jobs";
@@ -730,6 +731,7 @@ export async function tick() {
   n += await watches.checkSiteWatches();
   n += await orders.checkOrders();
   n += await groupkit.checkPolls();
+  n += objectives.checkObjectives();
   if (engine.temporal()) return n + (await channels.flushOutbox()); // Temporal workers step the runs
   // Runs step concurrently (a slow model call shouldn't block everyone); stepRun's atomic claim makes this safe.
   // Lease: a run 'running' for 15+ minutes belongs to a dead worker — requeue it (tool fingerprints prevent double writes).
