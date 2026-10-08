@@ -45,3 +45,6 @@ exposes it locally). Credentials stored by the app are encrypted with MASTER_KEY
 ## Backups
 Fly Postgres takes daily snapshots of the volume (restore with `fly volumes snapshots`). `deploy/restore-check.sh` is the
 compose-flavoured restore drill; the equivalent on Fly is restoring a snapshot into a scratch database.
+
+## Photos and voice notes
+`MEDIA_UNDERSTANDING=on` with `MEDIA_MODEL=nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` (free on OpenRouter, ~8s per photo; tested 2026-10-07). Bills, letters and medication lists sent as photos become text the paperwork skill can read. Set `MEDIA_UNDERSTANDING=off` to stop sending media to a model.
