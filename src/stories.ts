@@ -1,7 +1,7 @@
 // The family story store: stories, recipes and the photos they go with, kept with provenance (who told it, where, when).
 // A story told in a private chat stays there; one told in the family group belongs to the group. Search follows the same
 // boundary: from a private chat you see your own and the family's, from the group only the group's.
-import { all, one, exec, id, now, S, J } from "./db";
+import { all, one, exec, emit, id, now, S, J } from "./db";
 import * as rt from "./runtime";
 import { familyRooms } from "./family";
 import type { ToolDef } from "./tools";
@@ -17,6 +17,21 @@ export function visibleRooms(ctx: any): string[] {
 const view = (s: Story) => ({ id: s.id.slice(-6), title: s.title, story: s.text, people: J(s.people, []), when: s.when_text, where: s.where_text, told_by: rt.nameOf(s.told_by), told_on: new Date(s.created_at).toISOString().slice(0, 10),
   photo: s.file_id ? (one<any>("select name from files where id=?", s.file_id)?.name ?? null) : null });
 
+/** The story interviewer's questions, in an order that starts easy. Asked one at a time; the answer is kept with story.add. */
+export const QUESTIONS = [
+  "Where did you grow up, and what did your street look like?", "What's the first meal you remember loving, and who made it?", "How did your parents meet?",
+  "What was your first job, and what did it pay?", "Who was your best friend when you were ten?", "What's a song that takes you straight back to being young?",
+  "How did you meet the person you married (or nearly married)?", "What was the first trip you took on your own?", "What did your grandmother's kitchen smell like?",
+  "What's a family recipe we should never lose — and how do you actually make it?", "What was the hardest year of your life, and what got you through it?",
+  "What's something your parents said that you still repeat?", "Which holiday tradition did you love most as a child?", "What did you want to be at sixteen?",
+  "What's the best advice anyone ever gave you?", "What's a photo you wish you had taken?", "Who in the family do you think I most take after, and why?",
+  "What was the house you were happiest in?", "What did you do on summer evenings before television?", "What's a story about me (or my parent) as a baby that I've never heard?",
+  "What's a mistake you're glad you made?", "Which teacher changed your life?", "What was the first car you drove, and where did you go?",
+  "What do you remember about the day your first child was born?", "What's a dish from your childhood that nobody makes anymore?", "What did your father do with his hands?",
+  "What was a typical Sunday like when you were twelve?", "What's the proudest moment of your working life?", "Who do you wish the grandchildren could have met?",
+  "If you could go back to one ordinary afternoon, which would it be?",
+];
+
 export function registerStoryTools(def: (d: ToolDef) => void) {
   const obj = (p: any, required: string[] = []) => ({ type: "object", properties: p, required, additionalProperties: false });
   def({
@@ -30,6 +45,19 @@ export function registerStoryTools(def: (d: ToolDef) => void) {
         when_text: i.when ? String(i.when).slice(0, 80) : null, where_text: i.where ? String(i.where).slice(0, 120) : null, file_id: file?.id ?? null, created_at: now() };
       exec("insert into stories (id, workspace_id, room_id, told_by, title, text, people, when_text, where_text, file_id, created_at) values (?,?,?,?,?,?,?,?,?,?,?)", s.id, s.workspace_id, s.room_id, s.told_by, s.title, s.text, s.people, s.when_text, s.where_text, s.file_id, s.created_at);
       return { status: "SUCCEEDED", output: { kept: view(s), where_it_lives: ctx.room.kind === "private" ? "your private chat (use family.share to give it to the family)" : `the ${ctx.room.name} group` } };
+    },
+  });
+  def({
+    id: "story.prompt", description: "The story interviewer: the next question to ask this person about their life (never one they've been asked). Ask it in your own warm words, one at a time, then keep their answer with story.add titled from the question. Use it for a standing weekly 'ask me about my life' job or when they ask for a prompt.",
+    risk: "write_internal", idempotency: "safe", defaultApproval: "none",
+    inputSchema: obj({}),
+    async execute(_i, ctx) {
+      const askedRows = all<any>("select data from events where type='STORY_PROMPTED' and room_id=?", ctx.room.id);
+      const asked = new Set(askedRows.map((e) => Number(J(e.data, {}).q)));
+      const k = QUESTIONS.findIndex((_, i) => !asked.has(i));
+      if (k < 0) return { status: "SUCCEEDED", output: { question: null, note: "Every question in the bank has been asked here. Ask them what they'd like to tell next." } };
+      emit("STORY_PROMPTED", { workspace_id: ctx.run.workspace_id, room_id: ctx.room.id, run_id: ctx.run.id, actor: ctx.agent.id, data: { q: k, user: ctx.run.requested_by } });
+      return { status: "SUCCEEDED", output: { question: QUESTIONS[k], number: k + 1, of: QUESTIONS.length, then: "When they answer, call story.add with their words (title from the question)." } };
     },
   });
   def({

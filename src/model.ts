@@ -198,6 +198,9 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   else if (/\bwhere are we\b|\bstatus of the plan\b/i.test(text) && has("objective.status")) out.push({ name: "objective.status", input: {} });
   const scam = text.match(/\b(?:is this (?:real|legit|a scam)|scam\??|real or (?:a )?scam)\b[\s:?-]*(.*)$/is);
   if (scam && has("scam.check")) out.push({ name: "scam.check", input: { text: (scam[1] || text).replace(/^["\u201c]|["\u201d]$/g, "").trim() || text } });
+  if (/\b(ask me (?:one|a) question about my life|interview me|story prompt|next (?:story )?question)\b/i.test(text) && has("story.prompt")) out.push({ name: "story.prompt", input: {} });
+  if (/\b(haven'?t heard from|gone quiet|lost touch|who should i (?:call|reach out to)|friends i'?ve (?:lost|not))\b/i.test(text) && has("people.quiet")) out.push({ name: "people.quiet", input: {} });
+  if (/\b(bills?|letters?|statements?|invoices?|paperwork|medication list)\b/i.test(text) && /\b(find|where|show|what did|look up|last)\b/i.test(text) && has("docs.find")) out.push({ name: "docs.find", input: { query: text.replace(/^.*?\b(find|show|where'?s|look up)\b\s*/i, "").replace(/[?.!]+$/, "").slice(0, 80) } });
   const story = text.match(/^(?:keep|save|remember) (?:this|the) (?:story|recipe|memory)[:\s-]+(.+)/is);
   if (story && has("story.add")) out.push({ name: "story.add", input: { title: story[1].split(/[.\n]/)[0].slice(0, 60), text: story[1].trim() } });
   else if (/\b(?:stor(?:y|ies)|recipe|memor(?:y|ies)) (?:about|of|from)\b/i.test(text) && has("story.search")) out.push({ name: "story.search", input: { query: text.replace(/.*\b(?:about|of|from)\s+/i, "").replace(/[?.!]+$/, "") } });
@@ -221,7 +224,7 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   if (file && has("files.read")) out.push({ name: "files.read", input: { file_id: file } });
   const url = text.match(/https?:\/\/\S+/)?.[0];
   if (url && has("web.fetch")) out.push({ name: "web.fetch", input: { url } });
-  else if (/\b(search|find|research|look up|compare|options?|hotels?|flights?|prices?|latest|news)\b/.test(t) && !/\bfind (a )?time\b/.test(t) && !rem && has("web.search"))
+  else if (/\b(search|find|research|look up|compare|options?|hotels?|flights?|prices?|latest|news)\b/.test(t) && !/\bfind (a )?time\b/.test(t) && !(has("docs.find") && /\b(bills?|letters?|statements?|invoices?|paperwork|medication list)\b/.test(t)) && !(has("story.search") && /\b(stor(?:y|ies)|recipes?) (about|of|from)\b/.test(t)) && !rem && has("web.search"))
     out.push({ name: "web.search", input: { query: text.replace(/^@?\w+[,:]\s*/, "").slice(0, 200) } });
 
   // Live data tools (sports, markets, weather): the offline planner picks the obvious call.

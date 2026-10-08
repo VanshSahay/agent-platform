@@ -17,6 +17,7 @@ platform already does. Written 2026-10-07 against commit `baf58f3`.
 | Photos and voice notes from a phone | Described / transcribed on arrival, stored, readable later | Built (model needed) |
 | Web and websites | Search with citations, page reading, a real browser for sites without APIs | Built, live-tested |
 | Voice | Inbound phone turns only (Twilio) | Partial |
+| Paperwork, doctor visits, daily check-in, weekly digest, story interviewer, friendship signal | Skills on Milo 1.5.0: docs.find, story.prompt, people.quiet plus procedures over existing tools | Built 2026-10-07 |
 
 ## What's missing, in build order
 
