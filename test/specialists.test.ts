@@ -53,6 +53,9 @@ test("AC-SPC1 specialists run in parallel on their own tools only, can't write, 
   const ledger = J(one<any>("select spent from runs where id=?", parent.id).spent);
   expect(ledger.children.toolCalls).toBe(2);
   expect(rt.taskSpent(one<any>("select * from runs where id=?", parent.id)).toolCalls).toBe(ledger.toolCalls + 2);
+  // Each specialist is held to its own discipline, not the parent's skill list
+  expect(String(seen.find((r) => isTask(r, "research"))!.messages[0].content)).toMatch(/open the sources, don't answer from a snippet/);
+  expect(String(seen.find((r) => isTask(r, "calendar"))!.messages[0].content)).toMatch(/read only\. State exactly which dates and time zone/);
   const final = seen.find((r) => !isTask(r, "research") && !isTask(r, "calendar") && has(r, "[SPECIALIST_RESULTS]"))!;
   expect(final).toBeTruthy();
   expect(lastFrom(room.id, ava.id)).toMatch(/^Thursday 7pm works/);

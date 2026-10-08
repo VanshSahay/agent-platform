@@ -52,6 +52,12 @@ export async function foldHistory(roomId: string) {
   exec("update rooms set summary=?, summary_seq=? where id=?", String(summary ?? "").slice(0, 1500), rows.at(-1).seq, roomId);
 }
 
+/** What each kind of specialist is held to — its own discipline, not the parent's whole skill list (plan §3.4). */
+export const SPECIALIST_RULES: Record<string, string> = {
+  research: "How to work: open the sources, don't answer from a snippet; give the URL for every fact; a price or availability is only 'current' if the page you opened says so today — otherwise say it's unverified. List what you could not find under unknowns.\n",
+  calendar: "How to work: read only. State exactly which dates and time zone you checked and whose calendar; if a person or date is ambiguous, say so under unknowns rather than guessing.\n",
+  browser: "How to work: look only — never log in, submit, reserve, buy or accept anything. Report what the page literally showed, with the page address; if it asked for a login or a CAPTCHA, stop and say so.\n",
+};
 export function buildContext(run: any, agent: any, room: any) {
   const only: string[] | undefined = J(run.result, {})?.allowed_tools; // a specialist: its kind's tools, nothing else
   const tools = only ? new Set([...agentTools(agent)].filter((t) => only.includes(t))) : agentTools(agent);
@@ -97,7 +103,7 @@ export function buildContext(run: any, agent: any, room: any) {
     const ctx = J(run.result, {})?.delegation_context;
     const spec = J(run.result, {})?.specialist;
     messages.push({ role: "user", content: spec
-      ? `[SPECIALIST_TASK — ${spec}] You're working one part of a bigger request for ${nameOf(parent?.agent_id)}, who answers the person. Do only this, with your tools:\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}\n${SPECIALIST_OUTPUT}`
+      ? `[SPECIALIST_TASK — ${spec}] You're working one part of a bigger request for ${nameOf(parent?.agent_id)}, who answers the person. Do only this, with your tools:\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}\n${SPECIALIST_RULES[spec] ?? ""}${SPECIALIST_OUTPUT}`
       : `[DELEGATED_TASK from ${nameOf(parent?.agent_id)}]\n${run.objective}${ctx ? `\nContext: ${ctx}` : ""}` });
   } else {
     const trigger = run.trigger_event_id ? one<any>("select seq from events where id=?", run.trigger_event_id) : null;
