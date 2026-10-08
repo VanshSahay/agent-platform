@@ -168,6 +168,7 @@ const KEYWORD_SKILLS: [RegExp, string[]][] = [
   [/\b(remind|follow.?up|haven'?t replied|nudge)/i, ["follow-up-tracking", "reminders"]],
   [/\b(research|search|look up|web)/i, ["web-research"]],
   [/\b(browser|website|form|book)/i, ["browser"]],
+  [/\b(uber|lyft|ride-?hail|taxi|cab|a ride|rides?\b.*\b(book|call|order|get)|(book|call|order|get)\b.*\brides?)\b/i, ["browser", "reminders"]],
   [/\b(docs?|documents?|drive|files?|notes)\b/i, ["documents"]],
   [/\b(reservations?|resy|opentable|restaurants?|tables?|dinner spots?)\b/i, ["reservations"]],
   [/\b(group (buy|order)|bulk (buy|order)|community buying|co-?op|pool(ed)? order)/i, ["group-buying"]],
@@ -177,18 +178,21 @@ const KEYWORD_SKILLS: [RegExp, string[]][] = [
   [/\b(grocer(y|ies)|shopping list|to-?buy|packing list|checklist|shared list|bring list)\b/i, ["shared-lists"]],
 ];
 
+/** The keyword draft: role, name and skills from the description alone. The model refines it; this is what stands in when it can't. */
+export function draftFallback(description: string) {
+  const role = ROLE_RULES.find(([re]) => re.test(description)) ?? [null, "Kit", "Assistant", []];
+  const skills = new Set<string>(role[3]);
+  for (const [re, s] of KEYWORD_SKILLS) if (re.test(description)) s.forEach((x) => skills.add(x));
+  if (!skills.size) skills.add("web-research");
+  const job = description.replace(/^i (want|need) (an?|someone|something) /i, "").replace(/^(agent )?(that|who|to) /i, "").trim();
+  return { name: role[1] as string, title: role[2] as string, job: job.charAt(0).toUpperCase() + job.slice(1), skills: [...skills] };
+}
 export async function draftAgent(description: string, workspaceId?: string) {
-  const fallback = () => {
-    const role = ROLE_RULES.find(([re]) => re.test(description)) ?? [null, "Kit", "Assistant", []];
-    const skills = new Set<string>(role[3]);
-    for (const [re, s] of KEYWORD_SKILLS) if (re.test(description)) s.forEach((x) => skills.add(x));
-    if (!skills.size) skills.add("web-research");
-    const job = description.replace(/^i (want|need) (an?|someone|something) /i, "").replace(/^(agent )?(that|who|to) /i, "").trim();
-    return { name: role[1], title: role[2], job: job.charAt(0).toUpperCase() + job.slice(1), skills: [...skills] };
-  };
   const d = await structured<{ name: string; title: string; job: string; skills: string[] }>("fast",
     `You design AI agents. Given a description, return {"name": short friendly name, "title": role title, "job": one-sentence job, "skills": subset of [${Object.keys(SKILLS).join(", ")}]}.`,
-    description, fallback, workspaceId);
+    description, () => draftFallback(description), workspaceId);
+  // Sites with no API (ride-hailing, most shops) are only reachable through the browser with the person's own login.
+  for (const [re, s] of KEYWORD_SKILLS) if (re.test(description) && s.includes("browser")) d.skills = [...new Set([...d.skills, ...s])];
   d.skills = d.skills.filter((s) => SKILLS[s]);
   return {
     ...d,

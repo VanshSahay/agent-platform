@@ -27,6 +27,7 @@ const DATA_CATALOG: { re: RegExp; how: DataHow; detail: string; skill?: string }
   { re: /stock|share|ticker|portfolio|crypto|bitcoin|etf|index|market|currenc|exchange rate|fx/i, how: "built-in", detail: "Live market quotes and price history (Yahoo Finance; Finnhub if connected)", skill: "market-data" },
   { re: /weather|forecast|rain|temperature/i, how: "built-in", detail: "Weather forecasts (Open-Meteo)", skill: "weather" },
   { re: /scores?|game|match|fixture|schedule of|nfl|nba|mlb|nhl|soccer|football|basketball|baseball|hockey|f1/i, how: "built-in", detail: "Live scores, results and schedules (ESPN feed, unofficial)", skill: "sports" },
+  { re: /uber|lyft|ride|taxi|cab/i, how: "website", detail: "Uber/Lyft through your own login in the browser (they have no booking API): you log in once on the Connections page; each ride is shown for your OK unless you pre-approve", skill: "browser" },
   { re: /restaurant|table|reservation/i, how: "built-in", detail: "Restaurant search and booking (OpenTable/Resy through your login)", skill: "reservations" },
   { re: /email|inbox|calendar|meeting|contact/i, how: "connect", detail: "Connect Google (Gmail + Calendar)" },
   { re: /小红书|xiaohongshu|rednote|itinerar|攻略|things to do|what (people|locals) (recommend|say|do)|travel tips|social (media|posts)/i, how: "built-in", detail: "小红书 posts: itineraries, tips and reviews, distilled with sources (through a logged-in account)", skill: "social-xiaohongshu" },
@@ -125,24 +126,29 @@ const SAMPLE: Record<string, string> = {
 
 /** Interpret a plain-words request into an Agent Spec (model when available, deterministic fallback otherwise). */
 export async function interpret(description: string, audience: Audience, workspaceId?: string): Promise<AgentSpec> {
-  const draft = await tpl.draftAgent(description, workspaceId);
-  const base = heuristic(description, audience, draft);
-  const s = await structured<AgentSpec>("fast", // reasoning off: ~8s instead of ~16s on standard, same JSON quality
+  // Two model calls, in parallel (serial they were the whole wait); the keyword draft stands in as the fallback base.
+  const quickBase = () => heuristic(description, audience, tpl.draftFallback(description));
+  const [draft, s0] = await Promise.all([tpl.draftAgent(description, workspaceId), structured<AgentSpec>("fast", // reasoning off: ~8s instead of ~16s on standard, same JSON quality
     `You turn a person's one-line request into a precise spec for a chat agent that will live ${audience === "group" ? "in a group chat" : audience === "team" ? "in a team's channels" : "in their 1:1 texts"}.
 Return JSON with: name (friendly first name), title, avatar (one emoji), understanding (1-2 sentences restating what they want in plain words, including anything implied),
 jobs (3-6 concrete things it will do), routines (things it should do on its own: [{every: "daily"|"weekdays"|"weekly", day?: 0-6 Sunday=0, hour: 0-23, objective}], only if implied),
 questions (max 4 gaps that genuinely change behaviour, each {id, q, why, default?}; don't ask what the request already says), boundaries (what it must never do or must ask first),
 success (2-3 observable signs it's working), skills (subset of [${Object.keys(tpl.SKILLS).join(", ")}]),
 data_needs (the facts its jobs depend on, each {need, how, detail}: how = "built-in" (live market quotes, weather, sports scores/schedules, restaurant booking, web search are built in) | "connect" (needs an account connected: Gmail/Calendar, Slack, or an API via MCP) | "website" (read or operate a specific site in a browser) | "web" (general web search, cited, may be unverified) | "ask" (only the people know it, e.g. what's in their portfolio — ask once, then remember) | "none" (no reliable source: say so)),
-rehearsal (2-3 realistic first messages a PERSON would send it {say, expect}; "say" must not contain invented prices, news or facts), tone.`,
-    description, () => base, workspaceId);
+rehearsal (2-3 realistic first messages a PERSON would send it {say, expect}; "say" must not contain invented prices, news or facts), tone.
+Be terse: every string under 15 words, no filler. Skills: at most 5 that the jobs actually need.`,
+    description, quickBase, workspaceId)]);
+  const base = heuristic(description, audience, draft), s = s0;
+  // A terse model sometimes echoes the field names back ("name": "name"); the draft's answers are the floor.
+  for (const k of ["name", "title", "avatar", "tone"] as const) if (!String((s as any)[k] ?? "").trim() || String((s as any)[k]).toLowerCase() === k) (s as any)[k] = (base as any)[k];
+  if (!Array.isArray(s.rehearsal) || s.rehearsal.filter((r: any) => r?.say).length < 2) s.rehearsal = [...(Array.isArray(s.rehearsal) ? s.rehearsal.filter((r: any) => r?.say) : []), ...base.rehearsal].slice(0, 3);
   // Trust nothing structural from the model: keep only known skills, sane routines, bounded lists.
-  const data = resolveDataNeeds((s as any).data_needs ?? [], (s.skills ?? []).filter((x) => tpl.SKILLS[x]));
+  const data = resolveDataNeeds((s as any).data_needs ?? [], [...new Set([...(s.skills ?? []), ...draft.skills])].filter((x) => tpl.SKILLS[x]));
   const skills = data.skills;
   const jobs = ((s.jobs ?? base.jobs) as string[]).slice(0, 6);
   return {
     ...base, ...s, data_needs: data.needs, depth: assessDepth(jobs, s.routines ?? []),
-    audience, skills: skills.length ? skills : base.skills, connections: tpl.connectionsNeeded(skills.length ? skills : base.skills),
+    audience, skills: (skills.length ? skills : base.skills).slice(0, 7), connections: tpl.connectionsNeeded((skills.length ? skills : base.skills).slice(0, 7)),
     routines: (s.routines ?? []).filter((r) => ["daily", "weekdays", "weekly"].includes(r.every) && r.hour >= 0 && r.hour < 24 && r.objective && (r.every !== "weekly" || (r.day! >= 0 && r.day! < 7))).slice(0, 3),
     questions: (s.questions ?? []).filter((q) => q?.id && q?.q).slice(0, 4), jobs: (s.jobs ?? base.jobs).slice(0, 6), rehearsal: (s.rehearsal ?? base.rehearsal).filter((r) => r?.say).slice(0, 3),
   };

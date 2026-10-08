@@ -434,9 +434,11 @@ function Room({ id, compact }: { id: string; compact?: boolean }) {
 /** What's happening while an agent is drafted (~5-10s), instead of a bare "Building…". */
 function BuildingSteps() {
   const steps = ["Reading your request", "Figuring out its jobs", "Finding data sources", "Writing test scenarios"];
-  const [i, setI] = useState(0);
-  useEffect(() => { const t = setInterval(() => setI((x) => Math.min(x + 1, steps.length - 1)), 2200); return () => clearInterval(t); }, []);
-  return <span>{steps[i]}…</span>;
+  const [sec, setSec] = useState(0);
+  useEffect(() => { const t = setInterval(() => setSec((x) => x + 1), 1000); return () => clearInterval(t); }, []);
+  const i = Math.min(Math.floor(sec / 3), steps.length - 1);
+  // Honest about the wait: the free models take 15-30s for this, and a frozen label reads as a hang.
+  return <span>{sec >= 12 ? `Still working — the model is slow today (${sec}s)` : steps[i]}…</span>;
 }
 
 function fileLinks(text: string) {
