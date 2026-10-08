@@ -4,7 +4,7 @@
 import { test, expect, beforeEach } from "bun:test";
 import { one, exec, J, S } from "../src/db";
 import * as rt from "../src/runtime";
-import { decide, factsOf } from "../src/intake";
+import { decide, factsOf, plannerTier, planGaps } from "../src/intake";
 import { verifyFacts } from "../src/jobs";
 import { verifiedOutcome, recordPlaybook } from "../src/experience";
 import { setup, user, workspace, installAgent, say, scriptModel, call, lastFrom, events, fakeGoogle, googleConnection, pendingApprovals } from "./helpers";
@@ -70,4 +70,23 @@ test("AC-R6 an unavailable judge proves nothing, and playbooks are learned only 
   recordPlaybook(bad); expect(playbooks()).toBe(0);
   recordPlaybook(good); expect(playbooks()).toBe(1);
   void J;
+});
+
+test("AC-R7 the planner tier follows the ask's shape, not a keyword: several actions, a correction, a person named without an address go to the judge tier; one lookup stays fast", () => {
+  const q = (n: number) => ({ plan: Array.from({ length: n }, (_, i) => ({ text: `s${i}`, tool: "web.search", status: "todo" as const })) });
+  expect(plannerTier("give your analysis of the stock market today", q(1))).toBe("fast");
+  expect(plannerTier("find a time with Dana next week, email her the options, and remind me Friday if she hasn't replied", q(2))).toBe("judge"); // two writes
+  expect(plannerTier("actually make it Wednesday instead", q(1))).toBe("judge");                                                                // refers back
+  expect(plannerTier("email Dana about the offsite", q(1))).toBe("judge");                                                                      // named, no address
+  expect(plannerTier("email dana@example.com about the offsite", q(1))).toBe("fast");
+  expect(plannerTier("what's the weather tomorrow", q(1), true)).toBe("judge");                                                                 // a revision of a running plan
+});
+
+test("AC-R8 plan review: a job the request asks for that the plan leaves out is added, never silently dropped", () => {
+  const tools = ["email.send", "email.draft", "email.search", "reminder.schedule", "calendar.find_free_time", "web.search"];
+  const gaps = planGaps("email dana@example.com the times and remind me friday if she hasn't replied", [{ text: "Send the email", tool: "email.send", status: "todo" }], tools);
+  expect(gaps).toEqual([{ job: "reminder", tool: "reminder.schedule", label: "set that reminder" }]);
+  expect(planGaps("email dana@example.com the times", [{ text: "Send", tool: "email.send", status: "todo" }], tools)).toEqual([]);
+  expect(planGaps("what's on my calendar tomorrow", [{ text: "Look", tool: "web.search", status: "todo" }], tools)).toEqual([{ job: "calendar", tool: "calendar.find_free_time", label: "check your calendar" }]);
+  expect(planGaps("remind me at 5", [], ["web.search"])).toEqual([]); // an agent without the tool can't be asked to plan it
 });

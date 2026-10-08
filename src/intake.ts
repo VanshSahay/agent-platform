@@ -8,6 +8,7 @@ import { parseDates } from "./reservations";
 import { TOOLS, getTool } from "./tools";
 import { agentTools, SKILLS } from "./templates";
 import { retrieve } from "./memory";
+import { detectJobs, wantsRead, CONTRACTS } from "./jobs";
 import * as rt from "./runtime";
 import * as taskgraph from "./taskgraph";
 
@@ -25,7 +26,7 @@ export interface Brief {
 }
 /** The concrete things a request names. Deterministic, from the person's own words; the gate checks tool calls against them. */
 export interface Facts { emails: string[]; people: string[]; dates: string[]; amounts: number[]; max_price: number | null }
-const NOT_PEOPLE = new Set(["I", "The", "A", "An", "My", "Me", "You", "We", "He", "She", "It", "They", "This", "That", "What", "When", "Where", "Why", "How", "Who", "Can", "Could", "Please", "Thanks", "Ok", "Okay", "Yes", "No", "And", "But", "Or", "So", "If", "Then", "Also", "Just", "Hi", "Hey", "Hello", "Dr", "Mr", "Mrs", "Ms", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Mon", "Tue", "Tues", "Wed", "Thu", "Thur", "Thurs", "Fri", "Sat", "Sun", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Email", "Remind", "Book", "Find", "Send", "Schedule", "Check", "Tell", "Ask", "Call", "Get", "Watch"]);
+const NOT_PEOPLE = new Set(["I", "The", "A", "An", "My", "Me", "You", "We", "He", "She", "It", "They", "This", "That", "What", "When", "Where", "Why", "How", "Who", "Can", "Could", "Please", "Thanks", "Ok", "Okay", "Yes", "No", "And", "But", "Or", "So", "If", "Then", "Also", "Just", "Hi", "Hey", "Hello", "Dr", "Mr", "Mrs", "Ms", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Mon", "Tue", "Tues", "Wed", "Thu", "Thur", "Thurs", "Fri", "Sat", "Sun", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Email", "Remind", "Book", "Find", "Send", "Schedule", "Check", "Tell", "Ask", "Call", "Get", "Watch", "Change", "Answer", "Request", "Previous", "Agent", "Tools", "Known", "Recent"]);
 export function factsOf(text: string, base?: number): Facts {
   const emails = [...new Set((text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? []).map((e) => e.toLowerCase()))];
   const people = [...new Set([...text.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, " ").matchAll(/(?:^|[\s,.!?("'])([A-Z][a-z]{1,15})(?=$|[\s,.!?)"':;-])/g)].map((m) => m[1]).filter((n) => !NOT_PEOPLE.has(n)))];
@@ -133,6 +134,32 @@ const BRIEF_INSTRUCTION = `You turn a request to an AI agent into a task brief b
  "done_when": [2-4 checkable success criteria, as plain sentences], "claims": [{"text": a done_when line verbatim, "proof": "tool", "tool": the planned tool id whose success proves it}] — only for lines a planned tool proves; omit the rest, "plan": [{"text": step in plain words the person would use — never tool names or ids, "tool": tool id or null}] (1-7 steps, using only the listed tools),
  "kind": "answer" (just reply) | "act" (a few tool actions) | "task" (multi-step, waits on people or days) | "schedule" (reminders/recurring)}`;
 
+/** Which model plans this ask. The judge tier for what the cheap one gets wrong in practice — several actions in one message,
+ *  a correction that refers back ("instead", "that one"), a person named without an address, long or multi-step asks — and the
+ *  fast tier for the rest. Not by length or a keyword alone: "analysis of the market today" is one lookup. */
+export function plannerTier(objective: string, quick: { plan: PlanStep[] }, revised = false): "judge" | "fast" {
+  const words = objective.split(/\s+/).length, steps = quick.plan.filter((p) => p.tool).length;
+  const jobs = detectJobs(objective), writes = jobs.filter((j) => !wantsRead(j, objective));
+  const refersBack = revised || /\b(instead|actually|rather|the same|that one|those|like before|as before|again)\b/i.test(objective);
+  const facts = factsOf(objective), namedWithoutAddress = facts.people.length > 0 && !facts.emails.length && /\b(e-?mail|send|write|message)\b/i.test(objective);
+  if (objective.length > 220 || steps >= 3 || writes.length >= 2 || refersBack || namedWithoutAddress) return "judge";
+  if (DEEP.test(objective) && words > 14) return "judge";
+  return "fast";
+}
+/** Plan review (plan §3.2): what the request asks for that the plan leaves out, by the job contracts. Deterministic. Each gap
+ *  is filled with the job's first tool and said in the assumptions, so a missing action never just silently isn't done. */
+export function planGaps(objective: string, plan: PlanStep[], tools: string[]) {
+  const planned = new Set(plan.map((p) => p.tool).filter(Boolean) as string[]);
+  return detectJobs(objective).flatMap((job) => {
+    const c = CONTRACTS[job], read = wantsRead(job, objective), proves = read ? [...c.done, ...c.read] : c.done;
+    if (!proves.some((t) => tools.includes(t)) || proves.some((t) => planned.has(t))) return [];
+    // The tool the words point at ("draft a note" → email.draft, not email.send); otherwise the contract's first.
+    const named = (t: string) => new RegExp(`\\b${t.split(".").pop()!.replace(/_/g, "[ _]")}`, "i").test(objective);
+    const cands = (read ? [...c.read, ...c.done] : [...c.done]).filter((t) => tools.includes(t));
+    const tool = cands.find(named) ?? cands[0];
+    return [{ job, tool, label: c.label }];
+  });
+}
 export async function buildBrief(run: any, agent: any, room: any, prev?: Brief): Promise<Brief> {
   // Tools whose connection isn't available can't be planned on (e.g. no contacts lookup without Google).
   const connected = new Set(all<any>("select c.provider from connections c join connection_grants g on g.connection_id=c.id where g.agent_id=? and c.status='active'", agent.id).map((r) => r.provider));
@@ -150,8 +177,8 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   const smallTalk = !prev && quick.kind === "answer" && !quick.questions.length && run.objective.trim().split(/\s+/).length <= 4 && !run.objective.includes("?");
   // The plan decides everything downstream, so long or many-step asks get the judge tier. A one-line "analysis of X" doesn't:
   // the judge tier is the slowest model, and the plan it writes for that is the same two-step plan the fast tier writes.
-  const deepAsk = String(run.objective ?? "").length > 220 || quick.plan.filter((p) => p.tool).length >= 3 || (DEEP.test(String(run.objective ?? "")) && String(run.objective ?? "").split(/\s+/).length > 14);
-  const drafted = smallTalk ? { value: quick, source: "offline" as const } : await structuredWith<any>(deepAsk ? "judge" : "fast", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
+  const tier = plannerTier(String(run.objective ?? ""), quick, !!prev);
+  const drafted = smallTalk ? { value: quick, source: "offline" as const } : await structuredWith<any>(tier, BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
   const b = drafted.value;
   b.planner = drafted.source;
   b.facts = factsOf(String(run.objective ?? ""));
@@ -178,6 +205,13 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
     ...((prev as any)?._askedQuestions ? { _askedQuestions: (prev as any)._askedQuestions } : {}),
     facts: b.facts, planner: b.planner,
   };
+  // A revision carries the earlier plan's remaining steps; what was already done there isn't a gap here.
+  for (const g of prev ? [] : planGaps(String(run.objective ?? ""), draft.plan as PlanStep[], tools)) {
+    draft.plan.push({ text: `${g.label.charAt(0).toUpperCase()}${g.label.slice(1)}`, tool: g.tool, status: "todo" });
+    draft.assumptions.push(`the request also asks to ${g.label}; added that step`);
+    emit("PLAN_REVIEW", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { omitted: g.job, added: g.tool } });
+  }
+  draft.side_effects = sideEffects(draft.plan.map((p: any) => p.tool).filter(Boolean), draft.side_effects);
   (draft as any).claims = claimsOf({ done_when: draft.done_when, plan: draft.plan as PlanStep[], claims: b.claims });
   return { ...draft, ...planWork(draft as Brief, String(run.objective ?? ""), depthOf(agent)) } as Brief;
 }
