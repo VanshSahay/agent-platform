@@ -9,6 +9,7 @@ import { TOOLS, getTool } from "./tools";
 import { agentTools, SKILLS } from "./templates";
 import { retrieve } from "./memory";
 import * as rt from "./runtime";
+import * as taskgraph from "./taskgraph";
 
 export interface PlanStep { text: string; tool?: string; status: "todo" | "done" | "skipped" }
 export interface Brief {
@@ -24,7 +25,7 @@ export interface Brief {
 }
 /** The concrete things a request names. Deterministic, from the person's own words; the gate checks tool calls against them. */
 export interface Facts { emails: string[]; people: string[]; dates: string[]; amounts: number[]; max_price: number | null }
-const NOT_PEOPLE = new Set(["I", "The", "A", "An", "My", "Me", "You", "We", "He", "She", "It", "They", "This", "That", "What", "When", "Where", "Why", "How", "Who", "Can", "Could", "Please", "Thanks", "Ok", "Okay", "Yes", "No", "And", "But", "Or", "So", "If", "Then", "Also", "Just", "Hi", "Hey", "Hello", "Dr", "Mr", "Mrs", "Ms", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Email", "Remind", "Book", "Find", "Send", "Schedule", "Check", "Tell", "Ask", "Call", "Get", "Watch"]);
+const NOT_PEOPLE = new Set(["I", "The", "A", "An", "My", "Me", "You", "We", "He", "She", "It", "They", "This", "That", "What", "When", "Where", "Why", "How", "Who", "Can", "Could", "Please", "Thanks", "Ok", "Okay", "Yes", "No", "And", "But", "Or", "So", "If", "Then", "Also", "Just", "Hi", "Hey", "Hello", "Dr", "Mr", "Mrs", "Ms", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Mon", "Tue", "Tues", "Wed", "Thu", "Thur", "Thurs", "Fri", "Sat", "Sun", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Email", "Remind", "Book", "Find", "Send", "Schedule", "Check", "Tell", "Ask", "Call", "Get", "Watch"]);
 export function factsOf(text: string, base?: number): Facts {
   const emails = [...new Set((text.match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? []).map((e) => e.toLowerCase()))];
   const people = [...new Set([...text.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, " ").matchAll(/(?:^|[\s,.!?("'])([A-Z][a-z]{1,15})(?=$|[\s,.!?)"':;-])/g)].map((m) => m[1]).filter((n) => !NOT_PEOPLE.has(n)))];
@@ -243,7 +244,11 @@ function diffBriefs(a: Brief | null, b: Brief) {
   return out;
 }
 
-const saveBrief = (runId: string, b: Brief, status: string) => exec("update runs set brief=?, brief_status=? where id=?", S(b), status, runId);
+const saveBrief = (runId: string, b: Brief, status: string) => {
+  exec("update runs set brief=?, brief_status=? where id=?", S(b), status, runId);
+  const run = one<any>("select * from runs where id=?", runId);
+  try { taskgraph.fromBrief(run, b, b.version > 1 ? b : null); } catch (e: any) { console.error("[taskgraph]", e.message); }
+};
 
 /** Runs at the start of stepRun while brief_status='pending'. Returns 'wait' if the run must stop for the human. */
 export async function intake(run: any, agent: any, room: any, live: () => boolean = () => true): Promise<"continue" | "wait"> {

@@ -15,6 +15,7 @@ import { retrieve } from "./memory";
 import { getTool } from "./tools";
 import * as jobs from "./jobs";
 import * as jev from "./jev";
+import * as taskgraph from "./taskgraph";
 
 export interface Claim { text: string; proof: "tool" | "links" | "items" | "reply"; tool?: string; n?: number; soft?: boolean }
 export type Verdict = { kind: "retry"; signal: string } | { kind: "deliver"; text: string };
@@ -164,6 +165,9 @@ export async function check(run: any, agent: any, res: { text: string; model?: s
   jobs.recordOutcome(run, { ...job, fact_problems: factProblems });
   if (job.status === "failed" && !ACK_FAILURE.test(text)) text = `${text}\n\n(Heads up: I couldn't confirm this actually happened — ${job.evidence}.)`;
   if (factProblems.length && !ACK_FAILURE.test(text)) text = `${text}\n\n(Heads up: ${factProblems.join("; ")}.)`;
+  // 4a‴. a write whose provider answer we never got (unknown send, no confirmation number): say so, never "done".
+  const unsure = taskgraph.uncertainWrites(run.id);
+  if (unsure.length && !ACK_FAILURE.test(text) && !/can'?t confirm/i.test(text)) text = `${text}\n\n(I can't confirm ${unsure.map((a) => a.text.toLowerCase()).join(" or ")} actually went through — I'll treat it as not done until I can.)`;
 
   // 4a′. an email about to go to an address that came from nowhere we can see (not the request, not a contact lookup, not the chat)
   for (const a of all<any>("select input from approvals where run_id=? and status='pending' and tool_id='email.send'", run.id)) {

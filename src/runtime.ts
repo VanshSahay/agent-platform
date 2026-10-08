@@ -15,6 +15,7 @@ import * as intake from "./intake";
 import * as reservations from "./reservations";
 import * as watches from "./watches";
 import * as objectives from "./objectives";
+import * as taskgraph from "./taskgraph";
 import * as orders from "./orders";
 import * as groupkit from "./groupkit";
 import * as jobs from "./jobs";
@@ -328,7 +329,11 @@ async function stepRunInner(runId: string) {
       if (!live()) return "wait"; // keep the audit trail, but don't continue a stale plan
       for (let k = 0; k < g.length; k++) {
         const c = g[k], r = results[k];
-        if (r.kind === "result") { appendToolResult(run.id, c, r.content); if (r.status === "SUCCEEDED") intake.markStep(run.id, c.name); }
+        if (r.kind === "result") {
+          appendToolResult(run.id, c, r.content); if (r.status === "SUCCEEDED") intake.markStep(run.id, c.name);
+          const ex = one<any>("select id, input, result, status from tool_executions where run_id=? and tool_id=? order by created_at desc limit 1", run.id, c.name);
+          if (ex) taskgraph.bind(run, c.name, { id: ex.id, input: J(ex.input, {}), result: J(ex.result, null), status: r.status });
+        }
         else if (r.kind === "wait") return "wait";
         else { createWait(run, { kind: "retry", reason: `retrying ${c.name}: ${r.reason}`, wake_at: now() + r.delayMs }); return "wait"; }
       }
@@ -450,6 +455,7 @@ function complete(run: any, agent: any, room: any, text: string) {
   const used = all<any>("select tool_id from tool_executions where run_id=? and status='succeeded' order by created_at", run.id).map((x) => x.tool_id);
   exec("update runs set signature=? where id=?", runSignature(used) || null, run.id);
   emit("RUN_COMPLETED", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { text: text.slice(0, 500) } });
+  try { taskgraph.settle(run, true); } catch (e: any) { console.error("[taskgraph]", e.message); }
   if (run.parent_run_id) {
     // Typed handoff back to the parent (plan §16.2); the child's text is not posted to the room.
     if (J(run.result, {})?.specialist) { patchJson("runs", "result", run.id, (r) => ({ ...r, output: specialistOutput(text) })); settleSpecialists(run.parent_run_id); }
@@ -519,6 +525,7 @@ export function requestApproval(run: any, agent: any, d: any, input: any, fp: st
   const wid = createWait(run, { kind: "approval", reason: `approval: ${summary}`, owner: approvers[0], wake_key: `approval:${aid}`, timeout_at: now() + 72 * 36e5, on_timeout: "expire" });
   const who = approvers.map(nameOf).join(" or ");
   // Before the person approves: does this action match the request's own facts (recipient, dates, price cap)? Say so on the card.
+  taskgraph.waitingHuman(run, d.id, aid);
   const problems = jobs.verifyFacts(run, J(run.brief, null)?.facts);
   if (problems.length) emit("FACT_MISMATCH", { workspace_id: run.workspace_id, room_id: run.room_id, run_id: run.id, actor: agent.id, data: { problems, approval_id: aid } });
   postMessage(run.room_id, { sender: agent.id, runId: run.id, approvalId: aid, targets: replyTargets(run.room_id, run.origin_endpoint_id),
@@ -774,6 +781,7 @@ export function trace(eventOrRunId: string) {
     steps: events,
     approvals: all<any>("select * from approvals where run_id=?", runId).map((a) => ({ ...a, input: J(a.input), decided_by_name: nameOf(a.decided_by) })),
     tool_executions: all<any>("select * from tool_executions where run_id=?", runId).map((x) => ({ ...x, input: J(x.input), result: J(x.result) })),
+    task: taskgraph.view(runId),
     children: all<any>("select id, agent_id, objective, status from runs where parent_run_id=?", runId).map((c) => ({ ...c, agent: nameOf(c.agent_id) })),
   };
 }

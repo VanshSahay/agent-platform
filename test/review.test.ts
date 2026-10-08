@@ -14,7 +14,7 @@ beforeEach(() => { setup(); fakeGoogle(); ellie = user("Ellie"); ws = workspace(
 
 test("AC-R1 the request's own facts are typed: people, addresses, dates, money, a price cap", () => {
   const f = factsOf("Email Dana at dana@example.com and Sam about Oct 20 — budget $450, nothing over $300 a night", Date.parse("2026-10-07T12:00:00Z"));
-  expect(f).toMatchObject({ emails: ["dana@example.com"], people: ["Dana", "Sam", "Oct"], amounts: [450, 300], max_price: 300 });
+  expect(f).toMatchObject({ emails: ["dana@example.com"], people: ["Dana", "Sam"], amounts: [450, 300], max_price: 300 });
   expect(f.dates).toEqual(["2026-10-20"]);
 });
 

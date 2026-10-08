@@ -72,6 +72,11 @@ create table if not exists custom_skills (id text primary key, agent_id text, wo
   signature text, created_by text, created_at int);
 create table if not exists files (id text primary key, workspace_id text, room_id text, name text, mime text, size int, data blob, text text,
   uploaded_by text, created_at int);
+create table if not exists agent_tasks (id text primary key, workspace_id text, room_id text, run_id text, requester_id text, revision int default 1, original_request text, goal text, status text, created_at int, updated_at int);
+create index if not exists agent_tasks_run on agent_tasks (run_id);
+create table if not exists task_actions (id text primary key, task_id text, revision int, n int, kind text, mode text, target text, text text, inputs text, constraints text, depends_on text, status text, approval_id text, tool_execution_id text, updated_at int);
+create table if not exists action_evidence (id text primary key, action_id text, run_id text, tool_execution_id text, type text, provider_ref text, facts text, verdict text, note text, verifier_version int, observed_at int);
+create table if not exists task_revisions (task_id text, revision int, message_event_id text, change text, created_at int, primary key (task_id, revision));
 create table if not exists objectives (id text primary key, workspace_id text, room_id text, agent_id text, created_by text, title text, status text default 'open', created_at int);
 create table if not exists objective_steps (id text primary key, objective_id text, n int, title text, owner text, status text default 'todo', due_at int, note text, nudged_at int, escalated_at int, updated_at int);
 create table if not exists stories (id text primary key, workspace_id text, room_id text, told_by text, title text, text text, people text, when_text text, where_text text, file_id text, created_at int);
