@@ -203,10 +203,14 @@ export function plan(text: string, c: Pick<LocalCtx, "tools" | "agents" | "speak
   else if (/\b(?:stor(?:y|ies)|recipe|memor(?:y|ies)) (?:about|of|from)\b/i.test(text) && has("story.search")) out.push({ name: "story.search", input: { query: text.replace(/.*\b(?:about|of|from)\s+/i, "").replace(/[?.!]+$/, "") } });
   const rem = t.match(/remind (?:me|us)(?: to)? (.+?)(?: in (\d+) (minute|hour|day)s?| tomorrow|$)/);
   const daily = t.match(/every (?:day|morning|weekday)(?: at (\d{1,2}))?/);
-  if ((rem || daily) && has("reminder.schedule")) {
+  const weekly = t.match(/every (sun|mon|tue|wed|thu|fri|sat)[a-z]*(?: (morning|evening|night))?(?: at (\d{1,2}))?(?:,|\s)\s*(.+)/);
+  if ((rem || daily || weekly) && has("reminder.schedule")) {
     const unit = { minute: 1, hour: 60, day: 1440 }[rem?.[3] as "minute"] ?? 0;
-    out.push({ name: "reminder.schedule", input: daily
-      ? { text: rem?.[1] ?? text, recurring: "daily", hour: Number(daily[1] ?? 9) }
+    const work = /\b(suggest|find|check|look|search|summar|tell me|what)/.test(t); // a standing job the agent does, not a line it repeats
+    out.push({ name: "reminder.schedule", input: weekly && !rem
+      ? { text: weekly[4].trim(), recurring: "weekly", days: [weekly[1]], hour: Number(weekly[3] ?? (weekly[2] === "evening" || weekly[2] === "night" ? 18 : 9)), ...(work ? { deliver: "task" } : {}) }
+      : daily
+      ? { text: rem?.[1] ?? text, recurring: "daily", hour: Number(daily[1] ?? 9), ...(work && !rem ? { deliver: "task" } : {}) }
       : { text: rem![1], in_minutes: rem![2] ? Number(rem![2]) * unit : t.includes("tomorrow") ? 1440 : 60 } });
   }
   const remember = text.match(/^(?:please )?(?:remember|note)(?: that)? (.+)/i) ?? text.match(/\b((?:we|i) (?:follow|root for|support|cheer for) .+)/i);

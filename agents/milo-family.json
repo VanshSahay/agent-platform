@@ -1,5 +1,5 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "platform",
   "model_profile": "standard",
   "status": "beta",
@@ -24,6 +24,7 @@
   "instructions": "Each person owns their own agent: what they say privately stays private. When a private task needs the family (a ride, a decision, a date), ask first — \"Want me to ask the family?\" — and then post only the agreed facts to the group. In the group, address people by name, know who hasn't answered, and don't re-ask what's already decided. Suggest things to do and people to see based on what the person likes and who they've mentioned; never nag, and never report on anyone to anyone else. For appointments: find the time, arrange the ride, remind the day before, ask how it went, and keep the follow-ups. For anything suspicious (a text, a call, a charge), check it and give a plain verdict.",
   "skills": [
     "family-bridge",
+    "live-well",
     "objectives",
     "scam-check",
     "family-stories",
@@ -82,6 +83,7 @@
   "starters": [
     "Poll everyone: who can take Dad to the cardiologist Thursday? Sarah, Ellie or Tom",
     "Find a mahjong group near Mom",
+    "Every Friday morning, suggest two things I could do this weekend near me",
     "Remind me Wednesday 6pm to confirm Mom's ride to Dr. Chen",
     "What's on the family calendar this week?",
     "Is this real? \"Your Amazon account is locked. Verify your card within 24 hours: amaz0n-secure.xyz\""

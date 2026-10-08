@@ -44,7 +44,7 @@ surgery → pickup → follow-up. Build an objective record with ordered steps, 
 escalation. The group sees progress; each step uses the tools that exist (calendar, email, reminders, polls, browser).
 This is the Loopback-style coordination runtime, scoped to one family objective.
 
-### 4. Social catalyst, carefully
+### 4. Social catalyst, carefully (built as the live-well skill: private chat only, a weekly standing job the person asks for, friends via the bridge)
 Proactive suggestions to the older adult only, driven by their calendar, memory and the people they've mentioned:
 "Linda and Mary are both free Saturday — lunch?" Rules: at most a few a week, never to the family without the person's say,
 easy to say "less of this". The routines engine exists; the judgment layer (when a nudge is welcome) is new and should be
