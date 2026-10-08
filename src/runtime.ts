@@ -211,11 +211,15 @@ export function createRun(r: { room: any; agent: any; objective: string; request
 }
 
 export function addSpent(runId: string, d: { cost?: number; toolCalls?: number; externalWrites?: number; modelCalls?: number; tainted?: boolean }) {
-  const r = one<any>("select spent, tainted from runs where id=?", runId);
+  const r = one<any>("select spent, tainted, parent_run_id from runs where id=?", runId);
   const s = J(r.spent, {});
   for (const k of ["cost", "toolCalls", "externalWrites", "modelCalls"] as const) s[k] = (s[k] ?? 0) + (d[k] ?? 0);
   exec("update runs set spent=?, tainted=?, updated_at=? where id=?", S(s), r.tainted || d.tainted ? 1 : 0, now(), runId);
+  // One task, one ledger: a specialist's spend is also the parent's (spent.children), so the task's cap holds across all of them.
+  if (r.parent_run_id) patchJson("runs", "spent", r.parent_run_id, (p) => ({ ...p, children: { cost: (p?.children?.cost ?? 0) + (d.cost ?? 0), toolCalls: (p?.children?.toolCalls ?? 0) + (d.toolCalls ?? 0), modelCalls: (p?.children?.modelCalls ?? 0) + (d.modelCalls ?? 0) } }));
 }
+/** What a task has cost in all, parent and specialists together. */
+export const taskSpent = (run: any) => { const s = J(run.spent, {}); return { cost: (s.cost ?? 0) + (s.children?.cost ?? 0), toolCalls: (s.toolCalls ?? 0) + (s.children?.toolCalls ?? 0), modelCalls: (s.modelCalls ?? 0) + (s.children?.modelCalls ?? 0) }; };
 const setStatus = (runId: string, status: string, extra: { error?: string; result?: any } = {}) => {
   // A finished run stays finished: late writers (an in-flight model call after a cancel) can't resurrect it.
   const changed = exec(`update runs set status=?, error=coalesce(?, error), result=coalesce(?, result), updated_at=?, completed_at=? where id=? and status not in ('completed','failed_terminal','cancelled')`,
@@ -348,7 +352,7 @@ async function stepRunInner(runId: string) {
     run = one<any>("select * from runs where id=?", runId);
     const spent = J(run.spent, {});
     if (spent.modelCalls >= budget.maxModelCalls) break;
-    if (spent.cost >= budget.maxModelCostUsd) return fail(run, `model cost budget ($${budget.maxModelCostUsd}) exhausted`);
+    if (taskSpent(run).cost >= budget.maxModelCostUsd) return fail(run, `model cost budget ($${budget.maxModelCostUsd}) exhausted${spent.children?.cost ? ` (specialists spent $${spent.children.cost.toFixed(3)} of it)` : ""}`);
     const c = buildContext(run, agent, room);
     if (!billing.canSpend(run.workspace_id))
       return fail(run, "this workspace is out of AI credits — add credits or your own model key in Settings → AI");
@@ -599,8 +603,12 @@ export function specialistOutput(text: string) {
   let o: any = null;
   try { o = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? "null"); } catch {}
   const arr = (x: any) => (Array.isArray(x) ? x.map(String).slice(0, 10) : []);
-  return { finding: String(o?.finding ?? text).slice(0, 3000), sources: o ? arr(o.sources) : (text.match(/https?:\/\/\S+/g) ?? []).slice(0, 10),
-    proposed_actions: arr(o?.proposed_actions), unresolved_questions: arr(o?.unresolved_questions) };
+  // Schema-checked: a finding with its sources and a stated confidence. Plain text is kept but marked unverified — the parent
+  // may read it, never cite it as fact.
+  const shaped = !!o && typeof o.finding === "string";
+  const confidence = ["high", "medium", "low"].includes(o?.confidence) ? o.confidence : shaped && arr(o.sources).length ? "medium" : "low";
+  return { finding: String(o?.finding ?? text).slice(0, 3000), sources: shaped ? arr(o.sources) : (text.match(/https?:\/\/\S+/g) ?? []).slice(0, 10),
+    confidence, unknowns: arr(o?.unknowns), proposed_actions: arr(o?.proposed_actions), unresolved_questions: arr(o?.unresolved_questions), ...(shaped ? {} : { unverified: true, note: "plain text, not the typed result; treat as unverified" }) };
 }
 /** When every specialist of a run has finished (or failed, or was cancelled), hand the parent all results at once. */
 function settleSpecialists(parentId: string) {

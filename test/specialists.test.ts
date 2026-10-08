@@ -47,6 +47,12 @@ test("AC-SPC1 specialists run in parallel on their own tools only, can't write, 
   // Typed results reach Ava together; the children's text isn't posted to the chat; Ava answers once
   expect(J(kids[0].result).output).toMatchObject({ finding: "Hotel One has a quiet room for 6", sources: ["https://hotel.example/one"], proposed_actions: ["Book Hotel One for Thursday 7pm"] });
   expect(J(kids[1].result).output.unresolved_questions).toEqual(["Is Dana free too?"]);
+  // Typed output carries a stated confidence; the children's spend is on the parent's ledger too (one task, one budget)
+  expect(J(kids[0].result).output).toMatchObject({ confidence: "medium", unknowns: [] });
+  expect(J(kids[0].result).output.unverified).toBeUndefined();
+  const ledger = J(one<any>("select spent from runs where id=?", parent.id).spent);
+  expect(ledger.children.toolCalls).toBe(2);
+  expect(rt.taskSpent(one<any>("select * from runs where id=?", parent.id)).toolCalls).toBe(ledger.toolCalls + 2);
   const final = seen.find((r) => !isTask(r, "research") && !isTask(r, "calendar") && has(r, "[SPECIALIST_RESULTS]"))!;
   expect(final).toBeTruthy();
   expect(lastFrom(room.id, ava.id)).toMatch(/^Thursday 7pm works/);
@@ -117,4 +123,10 @@ expect(J(parent.brief).split.map((p: any) => p.specialist)).toEqual(["research",
   const last = runsIn(room2.id).filter((r: any) => !r.parent_run_id).at(-1);
   expect(J(last.brief).split ?? []).toHaveLength(0);
   expect(all("select 1 from runs where parent_run_id=?", last.id)).toHaveLength(0);
+});
+
+test("AC-SPC4 a specialist that answers in plain text is kept but marked unverified; a typed answer keeps its confidence and unknowns", () => {
+  expect(rt.specialistOutput("Hotel One looks good, see https://hotel.example/one")).toMatchObject({ finding: "Hotel One looks good, see https://hotel.example/one", sources: ["https://hotel.example/one"], confidence: "low", unverified: true });
+  expect(rt.specialistOutput(JSON.stringify({ finding: "Room free Thu", sources: ["calendar.find_free_time"], confidence: "high", unknowns: ["Dana's calendar"] }))).toMatchObject({ confidence: "high", unknowns: ["Dana's calendar"] });
+  expect(rt.specialistOutput(JSON.stringify({ finding: "Probably fine" }))).toMatchObject({ confidence: "low", sources: [] });
 });
