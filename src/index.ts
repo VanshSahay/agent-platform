@@ -15,8 +15,15 @@ if (process.env.NODE_ENV === "production" || process.env.PRODUCTION === "1") {
   ].filter(Boolean);
   if (missing.length) { console.error(`[boot] not starting — production needs:\n  - ${missing.join("\n  - ")}`); process.exit(1); }
 }
-openDb();
-seedFirstParty();
+// Postgres may still be waking when we are (both machines restart on their own); wait for it instead of crash-looping.
+for (let attempt = 1; ; attempt++) {
+  try { openDb(); seedFirstParty(); break; }
+  catch (e: any) {
+    if (attempt >= 12 || !/CONNECTION_CLOSED|ECONNREFUSED|ECONNRESET|timed out|starting up|not connected/i.test(e.message)) throw e;
+    console.warn(`[boot] database not ready (${e.message.split(" — ")[0]}); retrying in 5s (${attempt}/12)`);
+    Bun.sleepSync(5000);
+  }
+}
 ensureSharedIdentities();
 if (engine.temporal()) {
   // Production shape: runs are Temporal workflows stepped by `bun run worker` processes; this process serves the API,

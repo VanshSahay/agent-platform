@@ -134,8 +134,9 @@ Known about these people: ${memories.join(" | ") || "nothing"}\nRecent conversat
   // Short small talk with nothing actionable ("thanks!", "ok cool") doesn't need a model-drafted brief.
   const quick = heuristicBrief(run.objective, ctx);
   const smallTalk = !prev && quick.kind === "answer" && !quick.questions.length && run.objective.trim().split(/\s+/).length <= 4 && !run.objective.includes("?");
-  // The plan decides everything downstream (what runs, what counts as done): it gets the judge tier, never the cheap one.
-  const deepAsk = DEEP.test(String(run.objective ?? "")) || String(run.objective ?? "").length > 220 || quick.plan.filter((p) => p.tool).length >= 3;
+  // The plan decides everything downstream, so long or many-step asks get the judge tier. A one-line "analysis of X" doesn't:
+  // the judge tier is the slowest model, and the plan it writes for that is the same two-step plan the fast tier writes.
+  const deepAsk = String(run.objective ?? "").length > 220 || quick.plan.filter((p) => p.tool).length >= 3 || (DEEP.test(String(run.objective ?? "")) && String(run.objective ?? "").split(/\s+/).length > 14);
   const b = smallTalk ? quick : await structured<any>(deepAsk ? "judge" : "fast", BRIEF_INSTRUCTION, input, () => quick, run.workspace_id);
   const arr = (x: any) => (Array.isArray(x) ? x : []);
   // The model's own "side effects" list over-counts (it calls a to-do or a reminder a side effect). What needs a sign-off is

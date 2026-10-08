@@ -47,6 +47,8 @@ export function translate(sql: string): string {
   if (/^\s*insert or ignore into/i.test(s)) s = s.replace(/insert or ignore into/i, "insert into") + " on conflict do nothing";
   // json_extract(x, '$.a.b') → text value at that path
   s = s.replace(/json_extract\(\s*([\w.]+)\s*,\s*'\$\.([\w.]+)'\s*\)/gi, (_m, col, path) => `(${col}::jsonb #>> '{${path.split(".").join(",")}}')`);
+  // json_extract(x, '$[0]') → first array element as text
+  s = s.replace(/json_extract\(\s*([\w.]+)\s*,\s*'\$\[(\d+)\]'\s*\)/gi, (_m, col, i) => `(${col}::jsonb #>> '{${i}}')`);
   s = s.replace(/json_array_length\(/gi, "jsonb_array_length(").replace(/jsonb_array_length\((\([^()]*\))\)/gi, "jsonb_array_length(($1)::jsonb)");
   s = rewriteCalls(s, "round", (args) => args.length === 2 ? `round((${args[0]})::numeric, ${args[1]})` : null); // Postgres rounds only exact decimals
   s = rewriteCalls(s, "max", (args) => args.length > 1 ? `greatest(${args.join(", ")})` : null); // SQLite's 2-arg max/min are scalar
