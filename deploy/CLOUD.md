@@ -16,7 +16,7 @@ fly launch --no-deploy --copy-config --name agent-platform-ellie --region ewr   
 fly postgres create --name agent-platform-ellie-db --region ewr --vm-size shared-cpu-1x --initial-cluster-size 1 --volume-size 3
 fly postgres attach agent-platform-ellie-db --app agent-platform                # sets DATABASE_URL
 fly secrets set --app agent-platform MASTER_KEY=$(openssl rand -base64 32) OPENROUTER_API_KEY=… BROWSERBASE_API_KEY=… RESEND_API_KEY=… CLERK_SECRET_KEY=… \
-  CLERK_PUBLISHABLE_KEY=… ALERT_EMAIL=… PUBLIC_URL=https://agent-platform.abhinav-679.workers.dev   # values from .env.local / .env.clerk
+  CLERK_PUBLISHABLE_KEY=… ALERT_EMAIL=… PUBLIC_URL=https://<your-worker>.workers.dev   # values from .env.local / .env.clerk
 fly deploy --remote-only
 fly status
 ```

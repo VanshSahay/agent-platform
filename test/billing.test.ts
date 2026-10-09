@@ -79,7 +79,7 @@ test("AC-CR3 BYOK: the workspace's own key is used, nothing is billed, the key i
   expect(view.data).toMatchObject({ mode: "byok", byok: ["openrouter"], platform: ["openrouter"] });
   expect(JSON.stringify(view.data) + JSON.stringify(all("select * from events"))).not.toContain("SECRET");
   // BYOK never silently spends platform credits: no key for the provider → clear error, not the platform key.
-  exec("update workspaces set ai_models=? where id=?", S({ standard: "anthropic:claude-sonnet-5-5" }), e.ws);
+  exec("update workspaces set ai_models=? where id=?", S({ standard: "anthropic:claude-sonnet-5" }), e.ws);
   await api(`/v1/workspaces/${e.ws}/provider-keys/openrouter`, e.token, undefined, "DELETE");
   expect((await api(`/v1/workspaces/${e.ws}/ai`, e.token)).data.mode).toBe("credits");
   expect((await api(`/v1/workspaces/${e.ws}/ai`, e.token, { mode: "byok" }, "PUT")).status).toBe(400); // needs a key first
@@ -138,7 +138,7 @@ test("AC-CR6 model catalog: tool-capable OpenRouter models with open-weight flag
   const llama = list.find((m: any) => m.id === "openrouter:meta-llama/llama-3.3-70b-instruct");
   expect(llama).toMatchObject({ open: true, available: true, in_per_m: 0.1, price_in_per_m: 0.125 });
   expect(list.some((m: any) => m.id.includes("no-tools"))).toBe(false);
-  expect(list.find((m: any) => m.id === "anthropic:claude-sonnet-5-5").available).toBe(false); // no platform Anthropic key here
+  expect(list.find((m: any) => m.id === "anthropic:claude-sonnet-5").available).toBe(false); // no platform Anthropic key here
 });
 
 test("AC-CR7 non-model usage is metered in credits too: searches, browser tasks, chat-line messages, phone turns", async () => {

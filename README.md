@@ -13,7 +13,7 @@ Four agents are on the front page, each a bundle of skills rather than a separat
 
 Twenty more specialists (`agents/*.json`) stay installable but unfeatured.
 
-> **Status, honestly.** Everything below is proven by 202 deterministic tests on a fake network and a scripted model, and by job contracts that check every reported action against the platform's own records. What is *not* proven: a clean model-in-the-loop run on the current commit, and real phones over iMessage (the shared Photon pool is wired and was live; the Fly trial has since ended, so the deployment is down until a card is added). Free OpenRouter models are used for all testing; they are slow (10–30 s a call) and capped at 50 requests a day.
+> **Status, honestly.** Everything below is proven by 204 deterministic tests on a fake network and a scripted model, and by job contracts that check every reported action against the platform's own records. What is *not* proven: a clean model-in-the-loop run on the current commit, and real phones over iMessage (the shared Photon pool is wired and was live; the Fly trial has since ended, so the deployment is down until a card is added). Free OpenRouter models are used for all testing; they are slow (10–30 s a call) and capped at 50 requests a day.
 
 ## How a request is handled
 
@@ -134,7 +134,7 @@ Add keys for real judgment and real work (all optional; see `deploy/CLOUD.md` fo
 ## Test it
 
 ```bash
-bun test                 # 202 tests on an in-memory DB, controllable clock, fake network, scripted model
+bun test                 # 204 tests on an in-memory DB, controllable clock, fake network, scripted model
 bun run typecheck
 bun run criteria         # every criterion in ACCEPTANCE.md: tests + typecheck + UI bundle
 bun run eval             # golden tasks against the configured model (spends model credit; ask first)

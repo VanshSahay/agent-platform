@@ -65,7 +65,7 @@ export function addCredits(ws: string, usd: number, reason: string, ref: string)
 export interface CatalogModel { id: string; name: string; provider: string; in_per_m: number; out_per_m: number; open: boolean; context?: number }
 const DIRECT: CatalogModel[] = [
   { id: "anthropic:claude-haiku-4-5", name: "Claude Haiku 4.5", provider: "anthropic", in_per_m: 1, out_per_m: 5, open: false },
-  { id: "anthropic:claude-sonnet-5-5", name: "Claude Sonnet 5.5", provider: "anthropic", in_per_m: 2, out_per_m: 10, open: false },
+  { id: "anthropic:claude-sonnet-5", name: "Claude Sonnet 5", provider: "anthropic", in_per_m: 2, out_per_m: 10, open: false },
   { id: "anthropic:claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic", in_per_m: 4, out_per_m: 20, open: false },
   { id: "openai:gpt-5-mini", name: "GPT-5 mini", provider: "openai", in_per_m: 0.25, out_per_m: 2, open: false },
   { id: "openai:gpt-5", name: "GPT-5", provider: "openai", in_per_m: 1.25, out_per_m: 10, open: false },

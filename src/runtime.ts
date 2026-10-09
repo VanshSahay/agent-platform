@@ -121,7 +121,10 @@ export async function ingestMessage(i: { roomId: string; senderId: string; text:
     const pending = all<any>("select * from approvals where room_id=? and status='pending' order by created_at desc", room.id).filter((a) => canApprove(a, i.senderId));
     if (pending.length) {
       const approve = !/^(reject|no|deny|don'?t)/i.test(approvalReply[1]);
-      const target = approvalReply[2] ? pending.find((a) => a.id.endsWith(approvalReply[2].toLowerCase())) : pending[0];
+      // "yes" / "ok" are too common in a chat to mean "send it": they count only when the approval card is the agent's latest message here.
+      const soft = /^(yes|yep|ok|go ahead)$/i.test(approvalReply[1]);
+      const lastCard = J(one<any>("select data from events where room_id=? and type='message' and actor like 'agt_%' order by seq desc limit 1", room.id)?.data, {})?.approval_id;
+      const target = approvalReply[2] ? pending.find((a) => a.id.endsWith(approvalReply[2].toLowerCase())) : soft ? pending.find((a) => a.id === lastCard) : pending[0];
       if (target) {
         const r = decideApproval(target.id, i.senderId, approve ? "approve" : "reject", { confirm: !!approvalReply[2] }, i.endpointId ?? null);
         if ("error" in r) postMessage(room.id, { sender: target.agent_id, text: r.error!, targets: replyTargets(room.id, i.endpointId ?? "web") });

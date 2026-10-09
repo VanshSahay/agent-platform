@@ -6,7 +6,7 @@ import * as ch from "../src/channels";
 import { resolver } from "../src/tools";
 import { releaseAt, SANDBOX_VENUES, ymd } from "../src/reservations";
 import { serve, worker, attempts } from "../src/server";
-import { setup, user, workspace, installAgent, customAgent, realFetch, net, signed, imsg, inboundEmail, SECRETS, scriptModel, call, say, link } from "./helpers";
+import { setup, user, workspace, installAgent, customAgent, googleConnection, realFetch, net, signed, imsg, inboundEmail, SECRETS, scriptModel, call, say, link } from "./helpers";
 
 let server: ReturnType<typeof serve>;
 beforeAll(() => { server = serve(0); });
@@ -189,4 +189,20 @@ test("AC-S30 OAuth state is single-use, short-lived and bound to the person who 
   expect(net.to(/googleapis\.com\/revoke/)[0].url).toContain("token=1%2F%2FR");
   expect(one<any>("select status, cred_enc from connections where id=?", conn.id)).toEqual({ status: "revoked", cred_enc: null });
   delete process.env.GOOGLE_CLIENT_ID; delete process.env.GOOGLE_CLIENT_SECRET;
+});
+
+test("a bare 'yes' approves only when the approval card is the agent's latest message", async () => {
+  const ellie = user("Ellie"), ws = workspace("W", ellie);
+  const a = customAgent(ws, ellie, ["email-drafting"], {}, "Ava");
+  googleConnection(ws, ellie, [a.id]);
+  const room = rt.privateRoomFor(ellie, a);
+  scriptModel(call("email.send", { to: ["dana@example.com"], subject: "Hi", body: "x" }), { text: "sent" });
+  await say(room.id, ellie, "send dana@example.com the notes");
+  const apr = all<any>("select * from approvals where room_id=? and status='pending'", room.id);
+  expect(apr).toHaveLength(1);
+  rt.postMessage(room.id, { sender: a.id, text: "Also — which day works for you?" }); // the agent spoke again: "yes" now answers that
+  await say(room.id, ellie, "yes");
+  expect(one<any>("select status from approvals where id=?", apr[0].id).status).toBe("pending");
+  await say(room.id, ellie, "approve"); // the explicit word still works
+  expect(one<any>("select status from approvals where id=?", apr[0].id).status).toBe("approved");
 });

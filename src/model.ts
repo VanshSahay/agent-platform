@@ -19,7 +19,7 @@ export const isProduction = () => process.env.NODE_ENV === "production" || proce
 export const hooks: { model: null | ((req: ModelRequest) => Partial<ModelResult>) } = { model: null };
 
 const PRICE: Record<string, [number, number]> = { // $ per 1M tokens in/out
-  "claude-haiku-4-5": [1, 5], "claude-sonnet-5-5": [2, 10], "claude-opus-5-5": [4, 20], "claude-fable-5-1": [10, 50],
+  "claude-haiku-4-5": [1, 5], "claude-sonnet-5": [2, 10], "claude-opus-5-5": [4, 20], "claude-fable-5-1": [10, 50],
 };
 const wire = (n: string) => n.replace(/\./g, "__");
 const unwire = (n: string) => n.replace(/__/g, ".");

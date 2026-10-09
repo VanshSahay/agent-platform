@@ -339,3 +339,15 @@ test("AC-ED1 edit how an agent behaves: plain-language change previewed (not sav
   const other = await signup("Oscar");
   expect((await api(`/v1/agents/${id}/spec`, { token: other.token })).status).toBeGreaterThanOrEqual(400);
 });
+
+test("an admin can't take or give ownership of a workspace", async () => {
+  const e = await signup("Ellie"), m = await signup("Mia");
+  const team = await api("/v1/workspaces", { token: e.token, body: { name: "T" } });
+  expect((await api(`/v1/workspaces/${team.data.id}/invitations`, { token: e.token, body: { role: "superuser" } })).status).toBe(400);
+  const inv = await api(`/v1/workspaces/${team.data.id}/invitations`, { token: e.token, body: { role: "admin" } });
+  await api(`/v1/invitations/${inv.data.token}/accept`, { token: m.token, body: {} });
+  expect((await api(`/v1/workspaces/${team.data.id}/members`, { method: "PATCH", token: m.token, body: { user_id: m.id, role: "owner" } })).status).toBe(403);
+  expect((await api(`/v1/workspaces/${team.data.id}/members`, { method: "PATCH", token: m.token, body: { user_id: e.id, role: "member" } })).status).toBe(403);
+  expect((await api(`/v1/workspaces/${team.data.id}/invitations`, { token: m.token, body: { role: "owner" } })).status).toBe(400);
+  expect((await api(`/v1/workspaces/${team.data.id}/members`, { method: "PATCH", token: e.token, body: { user_id: m.id, role: "member" } })).status).toBe(200);
+});

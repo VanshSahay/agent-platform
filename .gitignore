@@ -12,3 +12,4 @@ photon.sqlite*
 agent/
 .env.photon
 .tools/
+.env.imessage-local

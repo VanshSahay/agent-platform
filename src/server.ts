@@ -26,6 +26,8 @@ const fail = (status: number, msg: string): never => { throw new HttpError(statu
 const body = async (r: Request): Promise<any> => { try { return await r.json(); } catch { return {}; } };
 const pub = () => process.env.PUBLIC_URL ?? "http://localhost:3000";
 const admins = () => (process.env.PLATFORM_ADMINS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+const isAdmin = (u: any) => admins().includes(String(u?.email ?? "").toLowerCase());
+const ROLES = ["owner", "admin", "member"];
 
 // ---------------- auth ----------------
 // Sign-in: Clerk when CLERK_SECRET_KEY is set (the browser trades its Clerk session token for our session cookie at
@@ -42,13 +44,16 @@ export const attempts = new Map<string, number[]>();
 function limit(key: string, max: number, windowMs = 60_000) {
   const t = Date.now(), hits = (attempts.get(key) ?? []).filter((x) => t - x < windowMs);
   hits.push(t); attempts.set(key, hits);
+  if (attempts.size > 5000) for (const [k, v] of attempts) if (t - (v.at(-1) ?? 0) > windowMs) attempts.delete(k); // bounded memory
   if (hits.length > max) fail(429, "too many attempts; try again in a minute");
 }
 const userOf = (req: Request) => sessionUser(req) ?? fail(401, "sign in required");
 function startSession(userId: string, res: any) {
   const token = id("sid") + id("x");
+  exec("delete from sessions where expires_at<?", now()); // expired rows never pile up
   exec("insert into sessions values (?,?,?)", token, userId, now() + 30 * 864e5);
-  return new Response(S({ ...res, token }), { headers: { "content-type": "application/json", "set-cookie": `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000` } });
+  const secure = pub().startsWith("https") ? "; Secure" : "";
+  return new Response(S({ ...res, token }), { headers: { "content-type": "application/json", "set-cookie": `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}` } });
 }
 function member(wsId: string | null | undefined, userId: string, roles?: string[]) {
   const m = wsId ? one<any>("select * from memberships where workspace_id=? and user_id=?", wsId, userId) : null;
@@ -73,6 +78,9 @@ const agentFor = (agentId: string, userId: string, wsId?: string) => {
 /** Rooms the user may see: shared rooms of the workspace + private rooms they're in. */
 const visibleRooms = (ws: string, userId: string) => new Set(all<any>("select r.id from rooms r where r.workspace_id=? and (r.kind!='private' or exists (select 1 from room_members m where m.room_id=r.id and m.principal_id=?))", ws, userId).map((r) => r.id as string));
 
+function checkPermissions(p: any) {
+  for (const [t, m] of Object.entries(p ?? {})) if (!getTool(t) || !["auto", "first_time", "ask", "always_ask", "never"].includes(m as string)) fail(400, `bad permission ${t}=${m}`);
+}
 function createWorkspace(name: string, kind: string, ownerId: string) {
   const wid = id("ws");
   exec("insert into workspaces (id, name, kind, plan, created_at) values (?,?,?,?,?)", wid, name, kind, kind === "team" ? "team" : "personal", now());
@@ -265,7 +273,7 @@ export const routes: Record<string, any> = {
   "/v1/health": { GET: () => json({ ok: true }) },
   // Operator view: what's stuck or failed right now. Platform admins only (it shows cross-workspace counts).
   "/v1/admin/health": { GET: h(async (req) => {
-    const u = userOf(req); if (!admins().includes(String(u.email).toLowerCase())) fail(403, "platform admins only");
+    const u = userOf(req); if (!isAdmin(u)) fail(403, "platform admins only");
     return json(await healthReport());
   }) },
 
@@ -326,7 +334,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/me": { GET: h((req) => {
     const u = userOf(req);
-    return json({ user: { id: u.id, name: u.name, email: u.email, tz: u.tz ?? null, platform_admin: admins().includes(u.email) },
+    return json({ user: { id: u.id, name: u.name, email: u.email, tz: u.tz ?? null, platform_admin: isAdmin(u) },
       workspaces: all<any>("select w.*, m.role, m.title from workspaces w join memberships m on m.workspace_id=w.id where m.user_id=? and w.kind!='trial' order by w.created_at", u.id),
       identities: all<any>("select platform, external_user_id, verified, display_name from external_identities where user_id=?", u.id) });
   }) },
@@ -339,12 +347,16 @@ export const routes: Record<string, any> = {
   "/v1/workspaces/:id/members": {
     GET: h((req) => { const u = userOf(req); member(req.params.id, u.id);
       return json(all<any>("select u.id, u.name, u.email, m.role, m.title from memberships m join users u on u.id=m.user_id where m.workspace_id=?", req.params.id)); }),
-    PATCH: h(async (req) => { const u = userOf(req), b = await body(req); member(req.params.id, u.id, ["owner", "admin"]);
+    PATCH: h(async (req) => { const u = userOf(req), b = await body(req), me = member(req.params.id, u.id, ["owner", "admin"]);
+      if (b.role !== undefined && !ROLES.includes(b.role)) fail(400, `role must be one of ${ROLES.join(", ")}`);
+      const target = one<any>("select role from memberships where workspace_id=? and user_id=?", req.params.id, b.user_id) ?? fail(404, "not a member");
+      if (me.role !== "owner" && (b.role === "owner" || target.role === "owner")) fail(403, "only the owner can change who owns the workspace");
       exec("update memberships set role=coalesce(?, role), title=coalesce(?, title) where workspace_id=? and user_id=?", b.role ?? null, b.title ?? null, req.params.id, b.user_id);
       return json({ ok: true }); }),
   },
   "/v1/workspaces/:id/invitations": { POST: h(async (req) => {
-    const u = userOf(req), b = await body(req); member(req.params.id, u.id, ["owner", "admin"]);
+    const u = userOf(req), b = await body(req), me = member(req.params.id, u.id, ["owner", "admin"]);
+    if (!ROLES.includes(b.role ?? "member") || (b.role === "owner" && me.role !== "owner")) fail(400, "role must be member or admin (owner can invite an owner)");
     const token = id("inv");
     exec("insert into invitations values (?,?,?,?,?,?,?)", token, req.params.id, b.email ?? null, b.role ?? "member", u.id, null, now());
     return json({ token, url: `${pub()}/#/invite/${token}` });
@@ -410,7 +422,7 @@ export const routes: Record<string, any> = {
   "/v1/webhooks/stripe": { POST: async (req: Request) => { const r = billing.stripeWebhook(await req.text(), req.headers.get("stripe-signature")); return new Response(r.status === 200 ? "ok" : "bad signature", { status: r.status }); } },
   "/v1/admin/credits": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req);
-    if (!admins().includes(u.email)) fail(403, "platform admins only");
+    if (!isAdmin(u)) fail(403, "platform admins only");
     if (!one("select 1 from workspaces where id=?", b.workspace_id) || !(Number(b.usd) > 0)) fail(400, "workspace_id and positive usd required");
     billing.addCredits(b.workspace_id, Number(b.usd), b.reason ?? "grant", id("grant"));
     return json(billing.balance(b.workspace_id));
@@ -451,15 +463,18 @@ export const routes: Record<string, any> = {
       return json(all<any>("select * from agents where workspace_id=? and status!='deleted' order by created_at", ws).map(agentView)); }),
     POST: h(async (req) => {
       const u = userOf(req), b = await body(req); member(b.workspace_id, u.id, ["owner", "admin", "member"]);
-      const plan = one<any>("select plan from workspaces where id=?", b.workspace_id).plan;
-      if (one<any>("select count(*) n from agents where workspace_id=? and status!='deleted'", b.workspace_id).n >= PLANS[plan].agents) fail(402, `the ${plan} plan allows ${PLANS[plan].agents} agents`);
+      const plan = one<any>("select plan from workspaces where id=?", b.workspace_id).plan, limits = PLANS[plan] ?? PLANS.free;
+      if (one<any>("select count(*) n from agents where workspace_id=? and status!='deleted'", b.workspace_id).n >= limits.agents) fail(402, `the ${plan} plan allows ${limits.agents} agents`);
       if (!b.name || !b.job) fail(400, "name and job required");
+      // The draft's permission table ([{tool, mode}]) comes back as posted; stored as the {tool: mode} map the policy reads.
+      const permissions = Array.isArray(b.permissions) ? Object.fromEntries(b.permissions.filter((p: any) => p?.tool).map((p: any) => [p.tool, p.mode])) : b.permissions;
+      checkPermissions(permissions);
       const skills = (b.skills ?? []).filter((s: string) => tpl.SKILLS[s]);
       // A confirmed Agent Spec compiles into standing instructions; its routines become schedules.
       const sp: spec.AgentSpec | null = b.spec && typeof b.spec === "object"
         ? { ...b.spec, skills, depth: assessDepth(b.spec.jobs ?? [], b.spec.routines ?? [], b.spec.depth?.overridden ? b.spec.depth.level : undefined) } : null;
       const answers = Object.fromEntries(Object.entries(b.answers ?? {}).filter(([, v]) => typeof v === "string").map(([k, v]) => [k, String(v).slice(0, 300)]));
-      const a = tpl.createAgent(b.workspace_id, u.id, { name: b.name, title: b.title, job: b.job, instructions: sp ? spec.compile(sp, answers) : b.instructions, skills, permissions: b.permissions, model_profile: b.model_profile,
+      const a = tpl.createAgent(b.workspace_id, u.id, { name: b.name, title: b.title, job: b.job, instructions: sp ? spec.compile(sp, answers) : b.instructions, skills, permissions, model_profile: b.model_profile,
         avatar: typeof b.avatar === "string" && [...b.avatar].length <= 4 ? b.avatar : undefined });
       const room = rt.privateRoomFor(u.id, a); // a place to talk to it right away
       if (sp) {
@@ -475,10 +490,12 @@ export const routes: Record<string, any> = {
     PATCH: h(async (req) => {
       const u = userOf(req), a = agentFor(req.params.id, u.id), b = await body(req);
       if (b.confirm_mode && !["smart", "always", "never"].includes(b.confirm_mode)) fail(400, "confirm_mode must be smart, always or never");
+      if (b.status && !["active", "paused", "deleted"].includes(b.status)) fail(400, "status must be active, paused or deleted");
+      if (b.model_profile && !one("select 1 from model_profiles where name=?", b.model_profile)) fail(400, "unknown model profile");
       for (const k of ["name", "job", "instructions", "model_profile", "status", "avatar", "confirm_mode"]) if (b[k] !== undefined) exec(`update agents set ${k}=? where id=?`, b[k], a.id);
       if (b.skills) exec("update agents set skills=? where id=?", S(b.skills.filter((s: string) => tpl.SKILLS[s])), a.id);
       if (b.permissions) {
-        for (const [t, m] of Object.entries(b.permissions)) if (!getTool(t) || !["auto", "first_time", "ask", "always_ask", "never"].includes(m as string)) fail(400, `bad permission ${t}=${m}`);
+        checkPermissions(b.permissions);
         exec("update agents set permissions=? where id=?", S({ ...J(a.permissions, {}), ...b.permissions }), a.id);
       }
       emit("AGENT_UPDATED", { workspace_id: a.workspace_id, actor: u.id, data: { agent_id: a.id, fields: Object.keys(b) } });
@@ -992,7 +1009,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/agent-templates/:id/review": { POST: h(async (req) => {
     const u = userOf(req), b = await body(req);
-    if (!admins().includes(u.email)) fail(403, "platform admins only");
+    if (!isAdmin(u)) fail(403, "platform admins only");
     if (!["approve", "reject"].includes(b.decision)) fail(400, "decision must be approve or reject");
     const r = tpl.reviewTemplate(req.params.id, b.decision, u.id);
     if ("error" in r) fail(400, r.error!);
@@ -1050,7 +1067,7 @@ export const routes: Record<string, any> = {
   }) },
   "/v1/model-profiles/:name": { PATCH: h(async (req) => {
     const u = userOf(req), b = await body(req);
-    if (!admins().includes(u.email)) fail(403, "platform admins only");
+    if (!isAdmin(u)) fail(403, "platform admins only");
     exec("update model_profiles set primary_model=coalesce(?, primary_model), fallback_model=coalesce(?, fallback_model), escalation_model=coalesce(?, escalation_model), max_cost=coalesce(?, max_cost) where name=?",
       b.primary_model ?? null, b.fallback_model ?? null, b.escalation_model ?? null, b.max_cost ?? null, req.params.name);
     return json(one("select * from model_profiles where name=?", req.params.name));
