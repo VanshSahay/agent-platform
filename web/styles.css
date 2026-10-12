@@ -584,3 +584,7 @@ table.t td, table.t th { border-top: 1.5px solid var(--line); }
 .steps { margin: 6px 0 2px 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); }
 .step .mark { display: inline-block; width: 16px; color: var(--faint); }
 .step.ok .mark { color: var(--accent); } .step.bad .mark { color: #dc2626; } .step.run { color: var(--text); }
+
+/* The landing forces a light theme; selection must not inherit the dark-mode token (dark text on dark purple). */
+.gm ::selection { background: #c6f432; color: #111; }
+.gm ::-moz-selection { background: #c6f432; color: #111; }
