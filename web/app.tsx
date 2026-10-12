@@ -108,6 +108,7 @@ function PhoneMock() {
 function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null }) {
   const [auth, setAuth] = useState(false);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && setAuth(false); addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+  useEffect(() => { if (signedIn && auth) { setAuth(false); location.hash = "/app"; } }, [signedIn]); // signed in from the modal: straight to the app
   const cta = signedIn ? <a className="gm-btn dark" href="#/app">Open your agent</a> : clerk ? <button className="gm-btn dark" onClick={() => setAuth(true)}>Train your agent</button> : null;
   return <div className="landing gm">
     <nav className="gm-nav"><div className="gm-logo">agents<Eyes size={26} /></div><div className="gm-links" />
@@ -131,7 +132,7 @@ function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null 
     <section className="gm-sec gm-end"><h2 className="gm-h2">Your group chat just got<br />a new <Circled>friend</Circled></h2>
       <div className="gm-ctas">{cta}</div>
       <p className="gm-fine">It asks before it sends, books or pays · Private chats stay private</p></section>
-    {auth && clerk && <div className="modal-bg" onClick={(e) => e.target === e.currentTarget && setAuth(false)}><div className="modal bare"><SignIn routing={"virtual" as any} withSignUp /></div></div>}
+    {auth && clerk && <div className="modal-bg" onClick={(e) => e.target === e.currentTarget && setAuth(false)}><div className="modal bare"><SignIn routing={"virtual" as any} withSignUp forceRedirectUrl="/#/app" signUpForceRedirectUrl="/#/app" /></div></div>}
   </div>;
 }
 
@@ -180,7 +181,7 @@ function Memory() {
   useEffect(() => { load(); }, []);
   const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/memories", { text, kind }); setText(""); load(); } catch (x: any) { setErr(x.message); } };
   return <div><h1>Memory</h1><p className="muted">Everything it knows about you, dated. Rules are how you want it to behave; it follows them on every run. Delete what's wrong; add what it should know.</p>
-    <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Ask me before emailing anyone at work · Uber Eats is 30% off on Tuesdays, so order then · My mom is Linda, in Boston" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
+    <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" style={{ width: "auto", flex: "0 0 auto" }} value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Ask me before emailing anyone at work · Uber Eats is 30% off on Tuesdays, so order then · My mom is Linda, in Boston" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
     {KINDS.filter((k) => list.some((m) => m.kind === k)).map((k) => <div key={k}><h2>{k}</h2><div className="list">{list.filter((m) => m.kind === k).map((m) => <div key={m.id} className="item"><div className="grow">{m.text}<div className="small faint">{fmt(m.created_at)}{m.scope_type === "room" ? ` · shared in ${m.room_name ?? "a group"}` : ""}</div></div><button className="btn ghost" onClick={async () => { await api(`/v1/memories/${m.id}`, undefined, "DELETE"); load(); }}>Forget</button></div>)}</div></div>)}
     {!list.length && <div className="empty mt16">Nothing yet. Train it, or add a line above.</div>}</div>;
 }
@@ -257,10 +258,11 @@ function App({ clerk }: { clerk: string | null }) {
   const hash = useHash(), [signedIn, setSignedIn] = useState<boolean | null>(clerk ? null : false), [me, setMe] = useState<any>(null);
   useEffect(() => { if (signedIn) api("/v1/me").then(setMe).catch(() => setMe(null)); else setMe(null); }, [signedIn]);
   const page = hash.startsWith("/app") ? hash.replace(/\/$/, "") : "/";
+  useEffect(() => { if (signedIn && !hash.startsWith("/app") && hash !== "/") location.hash = "/app"; }, [signedIn, hash]); // Clerk's steps (#/factor-one, #/sso-callback) end in the app
   const pages: Record<string, ReactNode> = me ? { "/app": <Train me={me} />, "/app/memory": <Memory />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <Settings me={me} setMe={setMe} /> } : {};
   return <>{clerk && <Bridge onReady={setSignedIn} />}
     {page === "/" ? <Landing signedIn={!!signedIn} clerk={clerk} />
-      : signedIn === false ? <div className="auth">{clerk ? <SignIn routing={"virtual" as any} withSignUp /> : <div className="card">Sign-in isn't set up on this server.</div>}</div>
+      : signedIn === false ? <div className="auth">{clerk ? <SignIn routing={"virtual" as any} withSignUp forceRedirectUrl="/#/app" signUpForceRedirectUrl="/#/app" /> : <div className="card">Sign-in isn't set up on this server.</div>}</div>
       : !me ? null
       : <Shell page={page} me={me}>{pages[page] ?? pages["/app"]}</Shell>}
   </>;
