@@ -157,7 +157,7 @@ function Thread({ roomId, send: sendTo }: { roomId: string; send?: (text: string
   const send = async (e: any) => { e.preventDefault(); if (!sendTo || (!text.trim() && !files.length)) return; setBusy(true); setErr(""); try { await sendTo(text, files.map((f) => f.file_id)); setText(""); setFiles([]); setWorking(true); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
   const upload = async (list: FileList | null) => { for (const f of Array.from(list ?? [])) { const fd = new FormData(); fd.append("file", f); const token = await getToken(); const r = await fetch("/v1/files", { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body: fd }); const d = await r.json(); if (!r.ok) { setErr(d.error); continue; } setFiles((x) => [...x, d]); } };
   return <div className="convo" style={{ border: "1px solid var(--line)", borderRadius: "var(--r)", background: "var(--panel)", height: "68vh", minHeight: 420 }}>
-    <div className="timeline">{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === "out" ? "agent" : ""}`}><div className="body"><div className="who">{m.direction === "out" ? "Agent" : m.sender_name ?? "You"} <span className="faint small">{fmt(m.created_at)}</span></div><div className="text">{m.text}</div></div></div>)}
+    <div className="timeline">{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === "out" ? "agent" : ""}`}><div className="body"><div className="who">{m.direction === "out" ? "Agent" : m.sender_name ?? "You"} <span className="faint small">{fmt(m.created_at)}</span></div><div className="text">{m.text}</div>{Array.isArray(m.steps) && m.steps.length > 0 && <Steps steps={m.steps} />}</div></div>)}
       {working && <div className="waiting"><span className="dots"><span /><span /><span /></span>working…</div>}
       {!msgs.length && !working && <div className="empty">Everything you tell it about yourself is training. Start with what you'd like to hand off, then how you want it to behave: when to ask, when to just do it, how to write. Add the people and routines that matter. Photos work too. Check Memory to see what it kept.</div>}
       <div ref={end} /></div>
@@ -169,6 +169,11 @@ function Thread({ roomId, send: sendTo }: { roomId: string; send?: (text: string
       {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
     </form>}
   </div>;
+}
+function Steps({ steps }: { steps: any[] }) {
+  const [open, setOpen] = useState(false);
+  return <div className="small mt8"><button className="btn ghost small" onClick={() => setOpen(!open)}>{open ? "▾" : "▸"} Completed {steps.length} step{steps.length === 1 ? "" : "s"}</button>
+    {open && <div className="col" style={{ gap: 2, marginTop: 4 }}>{steps.map((s, i) => <div key={i} className={`step ${s.verified ? "ok" : s.status === "unknown" ? "warn" : s.status === "failed" ? "bad" : ""}`}>{s.label}</div>)}</div>}</div>;
 }
 const Ready = ({ r }: { r: any }) => <span className={`small ${r.ready ? "" : "muted"}`}>{r.ready ? "✅ ready to deploy" : `${r.named ? "✅" : "⬜️"} named · ${r.memories}/${r.min_memories} things learned`}</span>;
 

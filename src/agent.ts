@@ -42,16 +42,26 @@ export async function handleMessage(room: any, user: any, text: string, attachme
   if (!(await rooms.storeMessage({ roomId: room.id, senderId: user.id, direction: "in", text, externalId }))) return; // seen before
   const switched = await switchByMention(room, user, text); // "@Carl …" from the owner: that agent takes this chat
 
-  // Plain-words answers to what we asked: an approval card, a consent question, a held reply.
-  const pending = await one(sql`select * from approvals where user_id=${user.id} and status='pending' and (room_id=${room.id} or (kind='consent' and ${room.kind === "private"})) order by created_at desc limit 1`);
+  // Plain-words answers to what we asked: an approval card, a consent question, a held reply. In their own chat a person's
+  // "yes" applies to their latest pending card anywhere (an owner approving a guest's request from a group).
+  const pending = await one(sql`select * from approvals where user_id=${user.id} and status='pending' and (room_id=${room.id} or ${room.kind === "private"}) order by created_at desc limit 1`);
   if (pending && (YES.test(text) || NO.test(text))) return decide(pending, YES.test(text));
   if (room.kind === "private") {
     const held = await one(sql`select * from runs where requester_id=${user.id} and status='held' order by created_at desc limit 1`);
     if (held && /^\s*(go|post|yes|send it|share it)\b/i.test(text)) return releaseHeld(held);
     if (held && /^\s*(drop|no|skip|cancel|never mind)\b/i.test(text)) { await sql`update runs set status='done', updated_at=${now()} where id=${held.id}`; return say(room, "Dropped it."); }
   }
+  if (room.kind === "group" && !room.welcomed_at) await welcome(room, user);
   if (room.kind === "group" && !switched && !(await shouldRespond(room, user, text))) return;
   await runRequest(room, user, text);
+}
+
+/** The one-time introduction in a group, in plain words for people who have never used an agent. */
+async function welcome(room: any, user: any) {
+  const agent = await agentOf(room), owner = room.owner_id ? await rooms.userById(room.owner_id) : user;
+  await sql`update rooms set welcomed_at=${now()} where id=${room.id} and welcomed_at is null`;
+  const what = agent?.purpose ? ` I help with ${agent.purpose.replace(/\.$/, "").toLowerCase()}.` : "";
+  await say(room, `Hi everyone, I'm ${agent?.name ?? "the assistant"}, ${rooms.displayName(owner)}'s assistant.${what} Just say my name and ask, like "${agent?.name ?? "Assistant"}, what's the plan for Saturday?". Anything that uses ${rooms.displayName(owner)}'s accounts or costs money, I check with ${rooms.displayName(owner)} first.`);
 }
 
 /** In a group: answer when named, or when the owner's instructions cover the topic (one cheap yes/no). */
@@ -90,7 +100,7 @@ async function step(run: any, resume?: { calls: model.ToolCall[]; approved?: boo
     for (const [i, c] of list.entries()) {
       if (i === 0 && first?.rejected) { msgs.push({ role: "tool", toolCallId: c.id, content: "REJECTED: the person said no to this action. Do not do it; tell them it was skipped." }); continue; }
       const r = await gw.execute(run, room, requester, c, tools, { approved: i === 0 && !!first?.approved });
-      if (r.kind === "approval") { await save("waiting_approval"); await askApproval(run, room, requester, c, list.slice(i), r.summary, r.preview); return "waited"; }
+      if (r.kind === "approval") { await save("waiting_approval"); await askApproval(run, room, requester, r.approver, c, list.slice(i), r.summary, r.preview); return "waited"; }
       if (r.kind === "consent") { await save("waiting_consent"); await askConsent(run, room, requester, c, list.slice(i)); return "waited"; }
       msgs.push({ role: "tool", toolCallId: c.id, content: r.content }); calls++;
     }
@@ -126,6 +136,11 @@ async function finish(run: any, room: any, requester: any, text: string, tools: 
   let reply = text.trim();
   if (CLAIMS.test(reply) && !writes.some((w: any) => w.verified)) reply += "\n\n(To be clear: nothing has actually been sent, booked or changed yet.)";
   if (lines.length) reply += `\n\n${lines.join("\n")}`;
+  // Named steps: what was actually done, one short label each (the web shows them collapsed; texts get a one-line proof).
+  const steps = execs.map((e: any) => { const d = tools.find((t) => t.id === e.tool); return { tool: e.tool, label: d ? gw.summarize(d, e.input).slice(0, 80) : e.tool, status: e.status, verified: e.verified }; });
+  const secs = Math.max(1, Math.round((now() - Number(run.created_at)) / 1000));
+  if (steps.length >= 2 && room.channel !== "web") reply += `\n(${steps.length} steps · ${secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`})`;
+  await sql`update runs set steps=${JSON.stringify(steps)}::text::jsonb where id=${run.id}`;
   const fresh = await one(sql`select last_join_at from rooms where id=${room.id}`);
   if (room.kind === "group" && fresh?.last_join_at && Number(fresh.last_join_at) > Number(run.created_at)) {
     await sql`update runs set status='held', reply=${reply}, updated_at=${now()} where id=${run.id}`;
@@ -143,12 +158,16 @@ async function releaseHeld(run: any) {
 }
 
 // ---- approvals and consent, answered in words or with a tapback ----
-async function askApproval(run: any, room: any, requester: any, call: model.ToolCall, rest: model.ToolCall[], summary: string, preview?: string) {
+async function askApproval(run: any, room: any, requester: any, approver: any, call: model.ToolCall, rest: model.ToolCall[], summary: string, preview?: string) {
   const aid = id("apr");
   const stored = { call: { ...call, fingerprint: gw.fingerprint(run.id, call.name, call.input) }, rest: rest.slice(1) };
-  const text = `${summary}${preview ? `\n\n${preview}` : ""}\n\nReply "yes" to go ahead or "no" to skip.${room.space_id ? " (A 👍 or 👎 on this message works too.)" : ""}`;
-  const extId = await say(room, text, run.id);
-  await sql`insert into approvals (id, run_id, room_id, user_id, kind, call, summary, out_message_id, created_at) values (${aid}, ${run.id}, ${room.id}, ${requester.id}, 'action', ${JSON.stringify(stored)}::text::jsonb, ${summary}, ${extId ?? null}, ${now()})`;
+  const viaOwner = approver.id !== requester.id;
+  const where = viaOwner ? await dmRoom(approver) : room; // a guest's request is approved by the owner, in the owner's own chat
+  const intro = viaOwner ? `In "${room.name ?? "your group chat"}", ${rooms.displayName(requester)} asked me to: ` : "";
+  const text = `${intro}${summary}${preview ? `\n\n${preview}` : ""}\n\nReply "yes" to go ahead or "no" to skip.${where.space_id ? " (A 👍 or 👎 on this message works too.)" : ""}`;
+  const extId = await say(where, text, run.id);
+  if (viaOwner) await say(room, `I've asked ${rooms.displayName(approver)} to OK that. I'll let you know.`, run.id);
+  await sql`insert into approvals (id, run_id, room_id, user_id, requester_id, kind, call, summary, out_message_id, created_at) values (${aid}, ${run.id}, ${room.id}, ${approver.id}, ${requester.id}, 'action', ${JSON.stringify(stored)}::text::jsonb, ${summary}, ${extId ?? null}, ${now()})`;
 }
 async function askConsent(run: any, room: any, requester: any, call: model.ToolCall, rest: model.ToolCall[]) {
   const aid = id("apr"), dm = await dmRoom(requester), name = await rooms.agentNameFor(room);
@@ -173,6 +192,7 @@ async function decide(a: any, yes: boolean) {
     const calls = [stored.call, ...(stored.rest ?? [])];
     return step(run, yes ? { calls } : { calls, rejected: true });
   }
+  if (a.requester_id && a.requester_id !== a.user_id) await say(await dmRoom(await rooms.userById(a.user_id)), yes ? "Got it, doing that now." : "Okay, I won't.");
   return step(run, { calls: [stored.call, ...(stored.rest ?? [])], approved: yes, rejected: !yes });
 }
 
@@ -197,7 +217,7 @@ async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
     `Style: text messages. Short, plain, specific. No markdown, no headers, no bullet symbols; a dash list is fine. Lead with the answer or the question. Ask at most one question at a time.`,
     `Doing things: use tools; never pretend. Prefer a connected account (Google) first, then a public API or the web, then the browser for sites that need clicking${hasPhone ? ", then the person's phone (phone_* tools) for native apps or anything already signed in on the phone" : ""}. Sends, calendar changes, purchases and completing bookings are approved by the person before they happen unless they've put that action on their trust list; the platform asks them, you just call the tool with the final content. Never say something was sent, booked or done unless the tool result confirmed it; the platform adds a short status footer, don't repeat it. If a tool says DENIED with a link, pass the link on in plain words.`,
     `Memory: everything a person tells you about themselves is training. Call remember for each of it, with the right kind, one fact per call; when they tell you several things at once, save each. How they want you to behave (when to ask, when to just do it, tone, what never to do) is kind=rule and you follow it from then on. Private things stay private. Memories are shown with the date they were saved; newer beats older, and an inventory line is only as current as its date.`,
-    room.kind === "group" ? `Group rules: anyone here can ask for reads (search, weather, a tally). A member's Google, phone or browser is used only when that member asks, for their own request. Never reveal anything from anyone's private chat. If asked about another member's accounts or private matters, decline kindly. The person who brought you in${room.owner_id === requester.id ? " (that's who you're talking to now)" : ""} can set what you do here with room.set_instructions.` : ``,
+    room.kind === "group" ? `Group rules: the people here may never have used an AI, and some never signed up for anything; serve them the same as the owner. No jargon: never say tool, prompt, model, token, connection, MCP or API; say what you'll do and who has to say yes ("I'll check with ${rooms.displayName(owner)}"). Anyone can ask for reads (search, weather, a tally, the list). Something that uses ${rooms.displayName(owner)}'s accounts or costs money: just call the tool; the platform asks ${rooms.displayName(owner)} for the OK and tells the group it did, so you don't have to explain how. A signed-up member's own accounts are used only for their own request. Never reveal anything from anyone's private chat; if asked about another person's private matters, decline kindly. The person who brought you in${room.owner_id === requester.id ? " (that's who you're talking to now)" : ""} can set what you do here with room.set_instructions.` : ``,
     room.instructions ? `What the group's owner asked you to do here: """${room.instructions}"""` : ``,
     first ? `First conversation: you're new and in training. In one short message say so${name === "Assistant" ? ", ask what to call you (call agent.rename when they say)" : ""}, and ask them to start teaching you: what they'd like to hand off, how they want you to behave, and whatever about their life matters for that. When they share their name or where they live, call profile.update. Save each thing they teach you with remember.`
       : room.kind === "private" && room.channel !== "web" && !requester.onboarded ? `First conversation here: introduce yourself in one line (you work for them here and in any group they add you to) and ask what they'd like help with first.` : ``,

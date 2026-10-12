@@ -79,7 +79,7 @@ test("in a group the agent stays quiet unless named", async () => {
   await trained("+15550000010", "Pip");
   script(null, "Here!");
   await say("+15550000010", "anyone up for dinner?", "grp1", true);
-  expect(sent.length).toBe(0);
+  expect(sent.filter((s) => !s.text.startsWith("Hi everyone")).length).toBe(0); // only the one-time introduction
   await say("+15550000011", "Pip, find a place", "grp1", true);
   expect(lastTo("grp1")).toBe("Here!");
 });
@@ -242,6 +242,53 @@ test("the trust list lets a write run without a card", async () => {
   await say("+15550000095", "remind me to water in 5");
   expect((await sql`select count(*) n from approvals`)[0].n).toBe("0");
   expect(lastTo("dm_+15550000095")).toContain("✓ Reminder");
+});
+
+test("a group gets one plain-words introduction the first time anyone speaks", async () => {
+  await trained("+15550000100", "Carl");
+  script(null, "ok");
+  await say("+15550000100", "hey all", "grp100", true);
+  const outs = (await sql`select text from messages where room_id=(select id from rooms where space_id='grp100') and direction='out'`).map((m: any) => m.text);
+  expect(outs.length).toBe(1);
+  expect(outs[0]).toContain("I'm Carl");
+  expect(outs[0]).toContain("Just say my name");
+  await say("+15550000101", "hi!", "grp100", true); // a guest; no second introduction
+  expect((await sql`select count(*) n from messages where room_id=(select id from rooms where space_id='grp100') and direction='out'`)[0].n).toBe("1");
+});
+
+test("a guest's request in a group runs on the owner's account; the owner says yes in their own chat; the group hears the result", async () => {
+  const owner = await trained("+15550000110", "Carl");
+  await sql`update users set name='Ellie' where id=${owner.id}`;
+  await sql`insert into connections (id, user_id, provider, cred_enc, created_at) values ('con_owner', ${owner.id}, 'google', ${seal({ access_token: "x" })}, 0)`;
+  def({ id: "fake.cal", kind: "read", connection: "google", description: "test", inputSchema: obj({}), async execute(_i, ctx) { return { status: "SUCCEEDED", output: { as: ctx.connection.user_id, by: ctx.requester.id } }; } });
+  script(null, "ok");
+  await say("+15550000110", "hi all", "grp110", true); // owner speaks first: owner of the room
+  // 1. a read on the owner's account: no consent card, runs as the owner
+  script({ id: "", name: "fake.cal", input: {} }, "Ellie is free Saturday.");
+  await say("+15550000111", "Carl, is Ellie free Saturday?", "grp110", true);
+  expect(lastTo("grp110")).toBe("Ellie is free Saturday.");
+  const ex = (await sql`select output from tool_executions where tool='fake.cal'`)[0].output;
+  expect(ex).toMatchObject({ as: owner.id, by: owner.id });
+  expect((await sql`select count(*) n from approvals`)[0].n).toBe("0");
+  // 2. a write asked by the guest: the card goes to the owner's DM, the group is told, the owner's yes finishes it in the group
+  script({ id: "", name: "reminder.schedule", input: { text: "bring the cake", in_minutes: 60 } }, "Reminder set.");
+  await say("+15550000111", "Carl, remind us in an hour to bring the cake", "grp110", true);
+  expect(lastTo("grp110")).toContain("I've asked Ellie");
+  expect(lastTo("dm_+15550000110")).toContain('In "Group chat", someone (…0111) asked me to');
+  await say("+15550000110", "yes");
+  expect(lastTo("grp110")).toContain("✓ Reminder");
+  expect((await sql`select status from runs order by created_at desc limit 1`)[0].status).toBe("done");
+  delete TOOLS["fake.cal"];
+});
+
+test("named steps are stored on the run and a multi-step text reply ends with a proof line", async () => {
+  await trained("+15550000120");
+  model.hooks.generate = async (req) => { let n = req.messages.filter((m) => m.role === "tool").length; return n < 2 ? { text: "", toolCalls: [{ id: `c${++n}${Date.now()}`, name: "calc", input: { expressions: `${n + 1}+1` } }], model: "fake", costUsd: 0 } : { text: "It's 3 and 4.", toolCalls: [], model: "fake", costUsd: 0 }; };
+  await say("+15550000120", "add things");
+  const run = (await sql`select steps, reply from runs order by created_at desc limit 1`)[0];
+  expect(run.steps.length).toBe(2);
+  expect(run.steps[0].tool).toBe("calc");
+  expect(run.reply).toMatch(/\(2 steps · \d+s\)$/);
 });
 
 test("fingerprints ignore key order", () => {

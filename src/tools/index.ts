@@ -2,7 +2,7 @@
 // permission rule (reads for anyone; a person's accounts only for that person, with consent in groups; writes approved
 // by that person), persists every execution with a fingerprint, and marks it verified from provider evidence.
 import { sql, id, now, sha, one } from "../db";
-import { hasConsent } from "../rooms";
+import { hasConsent, userById } from "../rooms";
 import { makeLink } from "../links";
 import { agentOf } from "../agents";
 
@@ -62,8 +62,18 @@ export const summarize = (d: ToolDef, input: any) => d.summarize?.(input ?? {}) 
 
 export type GatewayResult =
   | { kind: "result"; content: string; status: string }
-  | { kind: "approval"; summary: string; preview?: string }   // the requester must say yes first
-  | { kind: "consent" };                                       // the requester must allow their accounts in this group
+  | { kind: "approval"; summary: string; preview?: string; approver: any }   // this person must say yes first (the requester, or the owner for a guest)
+  | { kind: "consent" };                                                     // the requester must allow their accounts in this group
+
+/** Whose accounts and whose yes: a signed-up member acts as themselves; a guest in a group (someone who never signed up)
+ *  is served through the owner's accounts, and the owner is the one who says yes. */
+export async function principalFor(room: any, requester: any) {
+  if (room.kind === "group" && room.owner_id && room.owner_id !== requester.id && !requester.clerk_id) {
+    const owner = await userById(room.owner_id);
+    if (owner) return { principal: owner, viaOwner: true };
+  }
+  return { principal: requester, viaOwner: false };
+}
 
 export async function execute(run: any, room: any, requester: any, call: { id: string; name: string; input: any }, tools: ToolDef[], opts: { approved?: boolean } = {}): Promise<GatewayResult> {
   const d = tools.find((t) => t.id === call.name);
@@ -73,23 +83,27 @@ export async function execute(run: any, room: any, requester: any, call: { id: s
   if (bad) return { kind: "result", status: "FAILED", content: `FAILED: invalid input — ${bad}` };
 
   // The one permission rule. A person's accounts are theirs; in a group they say once that the group may use them.
+  // A guest (never signed up) is served through the owner's accounts, and the owner says yes.
+  const { principal, viaOwner } = await principalFor(room, requester);
   let connection: any = null;
   if (d.connection) {
     connection = d.connection === "mcp"
-      ? await one(sql`select * from connections where user_id=${requester.id} and id=${call.name.split(".")[1]} and status!='revoked'`)
-      : await one(sql`select * from connections where user_id=${requester.id} and provider='google' and status!='revoked' order by created_at desc limit 1`);
+      ? await one(sql`select * from connections where user_id=${principal.id} and id=${call.name.split(".")[1]} and status!='revoked'`)
+      : await one(sql`select * from connections where user_id=${principal.id} and provider='google' and status!='revoked' order by created_at desc limit 1`);
     if (!connection || connection.status === "needs_reauth") {
+      if (viaOwner) return { kind: "result", status: "FAILED", content: `DENIED: this needs ${principal.name ?? "the owner"}'s ${d.connection === "google" ? "Google account" : "device"}, which isn't connected. Tell ${requester.name ?? "them"} plainly that ${principal.name ?? "the owner"} would need to set that up; don't send links to guests.` };
       const link = await makeLink(requester.id, d.connection);
       return { kind: "result", status: "FAILED", content: `DENIED: ${requester.name ?? "they"} ${connection ? "need to reconnect" : "haven't connected"} ${d.connection === "google" ? "Google" : "that device"} yet. Give them this link (personal to them): ${link}` };
     }
   }
-  if (!connection && d.accountFor) connection = await d.accountFor(call.input, requester.id);
-  if (connection && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
+  if (!connection && d.accountFor) connection = await d.accountFor(call.input, principal.id);
+  if (connection && viaOwner && !room.guest_accounts) return { kind: "result", status: "FAILED", content: `DENIED: ${principal.name ?? "the owner"} hasn't allowed people in this group to use their accounts. Say so plainly.` };
+  if (connection && !viaOwner && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
   const fp = fingerprint(run.id, d.id, call.input);
   // The trust dial: actions the person said may run without asking (Settings). Off by default; the warm-up period.
   const agent = await agentOf(room), trusted = (Array.isArray(agent?.auto_tools) ? agent.auto_tools : []).includes(d.id);
   if (kindOf(d, call.input) === "write" && !opts.approved && !trusted && !(await one(sql`select 1 from approvals where run_id=${run.id} and status='approved' and call->>'fingerprint'=${fp}`)))
-    return { kind: "approval", summary: summarize(d, call.input), preview: d.preview?.(call.input ?? {}) };
+    return { kind: "approval", summary: summarize(d, call.input), preview: d.preview?.(call.input ?? {}), approver: principal };
 
   // Idempotency: the same call in the same run runs once. An interrupted write is never silently retried.
   const prev = await one(sql`select * from tool_executions where fingerprint=${fp}`);
@@ -98,7 +112,7 @@ export async function execute(run: any, room: any, requester: any, call: { id: s
   const exId = prev?.id ?? id("tex");
   await sql`insert into tool_executions (id, run_id, tool, input, status, fingerprint, created_at) values (${exId}, ${run.id}, ${d.id}, ${JSON.stringify(call.input ?? {})}::text::jsonb, 'started', ${fp}, ${now()}) on conflict (fingerprint) do update set status='started'`;
   try {
-    const out = await d.execute(call.input ?? {}, { run, room, requester, connection, idempotencyKey: fp });
+    const out = await d.execute(call.input ?? {}, { run, room, requester: viaOwner ? principal : requester, connection, idempotencyKey: fp });
     const ref = out.status === "SUCCEEDED" ? d.verify?.(out.output) ?? null : null;
     const verified = kindOf(d, call.input) === "write" ? !!ref : out.status === "SUCCEEDED";
     await sql`update tool_executions set status=${out.status === "UNKNOWN" ? "unknown" : out.status === "FAILED" ? "failed" : "succeeded"}, output=${JSON.stringify(out.output ?? null)}::text::jsonb, provider_ref=${ref}, verified=${verified} where id=${exId}`;

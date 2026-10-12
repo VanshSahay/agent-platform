@@ -135,7 +135,7 @@ export const routes: Record<string, any> = {
     from rooms r join room_members rm on rm.room_id=r.id and rm.user_id=${u.id} left join agents a on a.id=r.agent_id where r.channel!='web' order by last_at desc nulls last`) },
   "/v1/rooms/:id/messages": { GET: h(async (_r, u, p) => {
     if (!(await one(sql`select 1 from room_members where room_id=${p.id} and user_id=${u.id}`))) fail(404, "no such chat");
-    const messages = await sql`select m.id, m.direction, m.text, m.created_at, m.run_id, us.name sender_name from messages m left join users us on us.id=m.sender_id where m.room_id=${p.id} order by m.created_at desc limit 100`;
+    const messages = await sql`select m.id, m.direction, m.text, m.created_at, m.run_id, us.name sender_name, r.steps from messages m left join users us on us.id=m.sender_id left join runs r on r.id=m.run_id and m.direction='out' where m.room_id=${p.id} order by m.created_at desc limit 100`;
     return { messages: messages.reverse(), working: await agent.working(p.id) };
   }) },
   "/v1/connections": { GET: h(async (_r, u) => sql`select id, provider, label, account, status, created_at, last_used_at, case when provider='mcp' then jsonb_array_length(coalesce(config->'tools','[]'::jsonb)) else null end tools from connections where user_id=${u.id} and status not in ('revoked','pending') order by created_at`) },
