@@ -8,11 +8,11 @@ import { readSkill } from "../skills";
 import { revokeConsent } from "../rooms";
 
 def({
-  id: "remember", kind: "read", description: "Save something worth keeping: a preference, a fact about someone, a decision. scope private = only for this person (default in a DM, or when it is about the requester themselves); room = everyone in this chat (default in a group).",
-  inputSchema: obj({ text: str("one sentence, third person"), scope: { type: "string", enum: ["private", "room"] } }, ["text"]),
-  async execute({ text, scope }, ctx) {
+  id: "remember", kind: "read", description: "Save something worth keeping. kind: preference (likes, dislikes, restrictions), person (someone in their life), schedule (weekly rhythm, recurring events), store (where they shop, deals, memberships), inventory (what they have at home right now; dated), decision, fact. scope private = only for this person (default in a DM, or when it is about the requester themselves); room = everyone in this chat (default in a group). One sentence each; several calls for several facts.",
+  inputSchema: obj({ text: str("one sentence, third person, specific"), kind: { type: "string", enum: ["fact", "preference", "person", "schedule", "store", "inventory", "decision"] }, scope: { type: "string", enum: ["private", "room"] } }, ["text"]),
+  async execute({ text, scope, kind }, ctx) {
     const s = scope ?? (ctx.room.kind === "private" ? "private" : "room");
-    return { status: "SUCCEEDED", output: await remember(s, s === "private" ? ctx.requester.id : ctx.room.id, text, ctx.requester.id) };
+    return { status: "SUCCEEDED", output: await remember(s, s === "private" ? ctx.requester.id : ctx.room.id, text, ctx.requester.id, kind ?? "fact") };
   },
 });
 def({

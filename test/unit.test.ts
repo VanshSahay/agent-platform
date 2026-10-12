@@ -174,6 +174,32 @@ test("a web account links to the phone's person with a texted code, keeping the 
   expect(await sql`select 1 from users where id='usr_web'`).toHaveLength(0);
 });
 
+test("training in the web chat: no phone, replies are stored, memories carry a kind and reach iMessage later", async () => {
+  await sql`insert into users (id, email, name, clerk_id, created_at) values ('usr_w2', 'w@x.com', 'Ellie', 'clerk_2', 0)`;
+  const web = (await sql`select * from users where id='usr_w2'`)[0], room = await rooms.webRoomOf(web);
+  script({ id: "", name: "remember", input: { text: "Uber Eats members get 30% off every Tuesday; groceries are ordered on Tuesdays", kind: "store" } }, "Noted: Tuesdays it is.");
+  await agent.handleMessage(room, web, "we always shop on Tuesdays because Uber Eats gives members 30% off");
+  expect(sent.length).toBe(0); // nothing goes over the iMessage line
+  const out = (await sql`select text from messages where room_id=${room.id} and direction='out'`)[0];
+  expect(out.text).toBe("Noted: Tuesdays it is.");
+  expect((await sql`select kind, scope_type, scope_id from memories`)[0]).toMatchObject({ kind: "store", scope_type: "private", scope_id: "usr_w2" });
+  // Deploy to iMessage: the phone's row inherits the memories.
+  await linkPhoneStart(web, "+15550000091");
+  const code = lastTo("dm_+15550000091").match(/\b(\d{6})\b/)![1];
+  const merged = await linkPhoneVerify(web, code);
+  expect((await sql`select scope_id from memories`)[0].scope_id).toBe(merged.id);
+  expect(await rooms.webRoomOf(merged)).toMatchObject({ owner_id: merged.id });
+});
+
+test("the trust list lets a write run without a card", async () => {
+  const u = await rooms.userByPhone("+15550000095");
+  await sql`update users set auto_tools='["reminder.schedule"]'::jsonb where id=${u.id}`;
+  script({ id: "", name: "reminder.schedule", input: { text: "water", in_minutes: 5 } }, "Set.");
+  await say("+15550000095", "remind me to water in 5");
+  expect((await sql`select count(*) n from approvals`)[0].n).toBe("0");
+  expect(lastTo("dm_+15550000095")).toContain("✓ Reminder");
+});
+
 test("fingerprints ignore key order", () => {
   expect(fingerprint("r", "t", { a: 1, b: [1, 2] })).toBe(fingerprint("r", "t", { b: [1, 2], a: 1 }));
   expect(fingerprint("r", "t", { a: 1 })).not.toBe(fingerprint("r", "t", { a: 2 }));

@@ -5,12 +5,13 @@ import { sql, id, now } from "./db";
 
 export type Scope = "private" | "room";
 
-export async function remember(scope: Scope, scopeId: string, text: string, createdBy: string) {
+export const KINDS = ["fact", "preference", "person", "schedule", "store", "inventory", "decision"] as const;
+export async function remember(scope: Scope, scopeId: string, text: string, createdBy: string, kind = "fact") {
   const norm = text.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
   const dup = (await sql`select id from memories where scope_type=${scope} and scope_id=${scopeId} and lower(regexp_replace(text, '[^[:alnum:] ]', '', 'g'))=${norm}`)[0];
-  if (dup) { await sql`update memories set created_at=${now()} where id=${dup.id}`; return { id: dup.id, deduped: true }; }
+  if (dup) { await sql`update memories set created_at=${now()}, kind=${kind} where id=${dup.id}`; return { id: dup.id, deduped: true }; }
   const mid = id("mem");
-  await sql`insert into memories (id, scope_type, scope_id, text, created_by, created_at) values (${mid}, ${scope}, ${scopeId}, ${text}, ${createdBy}, ${now()})`;
+  await sql`insert into memories (id, scope_type, scope_id, text, kind, created_by, created_at) values (${mid}, ${scope}, ${scopeId}, ${text}, ${kind}, ${createdBy}, ${now()})`;
   return { id: mid };
 }
 
@@ -23,7 +24,7 @@ export function scopesFor(room: { id: string; kind: string }, requesterId?: stri
   return s;
 }
 
-export async function retrieve(room: { id: string; kind: string }, requesterId: string | null, query: string, limit = 10) {
+export async function retrieve(room: { id: string; kind: string }, requesterId: string | null, query: string, limit = room.kind === "private" ? 40 : 12) {
   const priv = scopesFor(room, requesterId).find(([s]) => s === "private")?.[1] ?? ""; // "" never matches a private scope
   const terms = (query.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).slice(0, 12).join(" | ");
   const where = sql`((scope_type='room' and scope_id=${room.id}) or (scope_type='private' and scope_id=${priv}))`;

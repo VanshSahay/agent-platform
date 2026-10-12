@@ -111,7 +111,7 @@ function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null 
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && setAuth(false); addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
   return <div className="landing gm">
     <nav className="gm-nav"><div className="gm-logo">agents<Eyes size={26} /></div><div className="gm-links" />
-      <div className="row" style={{ gap: 14 }}>{signedIn ? <a className="gm-btn dark" href="#/app">Open app</a> : clerk ? <><button className="gm-link" onClick={() => setAuth(true)}>Sign in</button><button className="gm-btn dark" onClick={() => setAuth(true)}>Get started</button></> : null}</div></nav>
+      <div className="row" style={{ gap: 14 }}>{signedIn ? <a className="gm-btn dark" href="#/app">Open app</a> : clerk ? <><button className="gm-link" onClick={() => setAuth(true)}>Sign in</button><button className="gm-btn dark" onClick={() => setAuth(true)}>Train your agent</button></> : null}</div></nav>
     <section className="gm-hero">
       <Sparkle size={22} style={{ left: "12%", top: 70 }} />
       <p className="gm-hand">psst… hover the letters ↓</p>
@@ -143,32 +143,84 @@ function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null 
 }
 
 // ---------------- the signed-in app ----------------
-function Shell({ page, children }: { page: string; children: ReactNode }) {
+function Shell({ page, me, children }: { page: string; me: any; children: ReactNode }) {
   const { signOut } = useClerk();
-  const links: [string, string, string][] = [["/app", "💬", "Chats"], ["/app/connections", "🔌", "Connections"], ["/app/reminders", "⏰", "Reminders"], ["/app/activity", "🧾", "Activity"]];
+  const links: [string, string, string][] = [["/app", "🎓", "Train"], ["/app/memory", "🧠", "Memory"], ["/app/chats", "💬", "Chats"], ["/app/connections", "🔌", "Connections"], ["/app/reminders", "⏰", "Reminders"], ["/app/activity", "🧾", "Activity"], ["/app/settings", "⚙️", "Settings"]];
   return <div className="app"><nav className="rail"><a className="logo" href="#/"><i />agents</a>
+    {!me.phone && <a className="new" href="#/app/settings">Deploy to iMessage →</a>}
     {links.map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
     <div className="sep" /><a href="#/" onClick={() => signOut()}><span className="ic">↩</span>Sign out</a></nav>
     <main className="main"><div className="page">{children}</div></main></div>;
 }
-function PhoneGate({ me, onLinked }: { me: any; onLinked: (u: any) => void }) {
-  const [phone, setPhone] = useState(""), [code, setCode] = useState(""), [step, setStep] = useState<"phone" | "code">("phone"), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
-  const go = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { if (step === "phone") { await api("/v1/me/phone", { phone }); setStep("code"); } else onLinked(await api("/v1/me/phone/verify", { code })); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
-  return <div className="card" style={{ maxWidth: 480 }}><h1>Link your iPhone</h1><p className="muted">Hi {me.name ?? me.email}. Your assistant lives in iMessage; this page shows what it's doing. Enter your number and we'll text you a code.</p>
-    <form onSubmit={go} className="col mt16">
-      {step === "phone" ? <input className="input" type="tel" autoComplete="tel" placeholder="+1 555 123 4567" value={phone} onChange={(e) => setPhone(e.target.value)} required /> : <input className="input" inputMode="numeric" placeholder="6-digit code from the text" value={code} onChange={(e) => setCode(e.target.value)} required />}
+
+function Thread({ roomId, composer }: { roomId: string; composer: boolean }) {
+  const [msgs, setMsgs] = useState<any[]>([]), [working, setWorking] = useState(false), [text, setText] = useState(""), [files, setFiles] = useState<{ file_id: string; name: string }[]>([]), [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const end = useRef<HTMLDivElement>(null);
+  useEffect(() => { let on = true; const load = () => api(`/v1/rooms/${roomId}/messages`).then((r) => { if (!on) return; setMsgs(r.messages); setWorking(r.working); }).catch(() => {}); load(); const t = setInterval(load, 2500); return () => { on = false; clearInterval(t); }; }, [roomId]);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs.length, working]);
+  const send = async (e: any) => { e.preventDefault(); if (!text.trim() && !files.length) return; setBusy(true); setErr(""); try { await api("/v1/chat", { text, file_ids: files.map((f) => f.file_id) }); setText(""); setFiles([]); setWorking(true); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
+  const upload = async (list: FileList | null) => { for (const f of Array.from(list ?? [])) { const fd = new FormData(); fd.append("file", f); const token = await getToken(); const r = await fetch("/v1/files", { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body: fd }); const d = await r.json(); if (!r.ok) { setErr(d.error); continue; } setFiles((x) => [...x, d]); } };
+  return <div className="convo" style={{ border: "1px solid var(--line)", borderRadius: "var(--r)", background: "var(--panel)", height: "68vh", minHeight: 420 }}>
+    <div className="timeline">{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === "out" ? "agent" : ""}`}><div className="body"><div className="who">{m.direction === "out" ? "Agent" : m.sender_name ?? "You"} <span className="faint small">{fmt(m.created_at)}</span></div><div className="text">{m.text}</div></div></div>)}
+      {working && <div className="waiting"><span className="dots"><span /><span /><span /></span>working…</div>}
+      {!msgs.length && !working && <div className="empty">Start by telling it about your week, who's in your household, what everyone eats, where you shop. Send photos of the fridge and pantry. It will save what matters, and you can check Memory to see what it kept.</div>}
+      <div ref={end} /></div>
+    {composer && <form onSubmit={send} className="composer col" style={{ gap: 6 }}>
+      {files.length > 0 && <div className="row wrap small muted">{files.map((f) => <span key={f.file_id} className="gm-chip">{f.name}</span>)}</div>}
+      <div className="row"><textarea className="input grow" placeholder="Teach it something, ask it something, or send a photo…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); } }} />
+        <label className="btn" title="Attach photos or files">📷<input type="file" accept="image/*,.pdf,.txt,.csv" multiple style={{ display: "none" }} onChange={(e) => upload(e.target.files)} /></label>
+        <button className="btn primary" disabled={busy}>Send</button></div>
       {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
-      <button className="btn primary" disabled={busy}>{step === "phone" ? "Text me a code" : "Link"}</button>
-    </form></div>;
+    </form>}
+  </div>;
+}
+function Train({ me }: { me: any }) {
+  const [room, setRoom] = useState<any>(null);
+  useEffect(() => { api("/v1/rooms").then((rs) => setRoom(rs.find((r: any) => r.channel === "web"))); }, []);
+  return <div><div className="row between"><div><h1>Train {me.agent_name ?? "your agent"}</h1><p className="muted">Teach it here first. What it learns is what it uses in iMessage and in your group chats.</p></div></div>
+    <div className="mt16">{room ? <Thread roomId={room.id} composer /> : null}</div></div>;
+}
+function Memory() {
+  const [list, setList] = useState<any[]>([]), [text, setText] = useState(""), [kind, setKind] = useState("preference"), [err, setErr] = useState("");
+  const KINDS = ["preference", "person", "schedule", "store", "inventory", "decision", "fact"];
+  const load = () => api("/v1/memories").then(setList);
+  useEffect(() => { load(); }, []);
+  const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/memories", { text, kind }); setText(""); load(); } catch (x: any) { setErr(x.message); } };
+  return <div><h1>Memory</h1><p className="muted">Everything it knows about you, dated. Delete what's wrong; add what it should know.</p>
+    <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Uber Eats members get 30% off every Tuesday, so we order groceries on Tuesdays" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
+    {KINDS.filter((k) => list.some((m) => m.kind === k)).map((k) => <div key={k}><h2>{k}</h2><div className="list">{list.filter((m) => m.kind === k).map((m) => <div key={m.id} className="item"><div className="grow">{m.text}<div className="small faint">{fmt(m.created_at)}{m.scope_type === "room" ? ` · shared in ${m.room_name ?? "a group"}` : ""}</div></div><button className="btn ghost" onClick={async () => { await api(`/v1/memories/${m.id}`, undefined, "DELETE"); load(); }}>Forget</button></div>)}</div></div>)}
+    {!list.length && <div className="empty mt16">Nothing yet. Train it, or add a line above.</div>}</div>;
 }
 function Chats() {
-  const [rooms, setRooms] = useState<any[]>([]), [open, setOpen] = useState<any>(null), [msgs, setMsgs] = useState<any[]>([]);
-  useEffect(() => { api("/v1/rooms").then(setRooms); }, []);
-  useEffect(() => { if (!open) return; let on = true; const load = () => api(`/v1/rooms/${open.id}/messages`).then((m) => on && setMsgs(m.reverse())); load(); const t = setInterval(load, 5000); return () => { on = false; clearInterval(t); }; }, [open]);
-  if (open) return <div><div className="row between"><div><h1>{open.name ?? (open.kind === "group" ? "Group chat" : "Your chat")}</h1>{open.instructions && <p className="muted">{open.instructions}</p>}</div><button className="btn" onClick={() => setOpen(null)}>← All chats</button></div>
-    <div className="timeline mt16" style={{ padding: 0 }}>{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === "out" ? "agent" : ""}`}><div className="body"><div className="who">{m.direction === "out" ? "Assistant" : m.sender_name ?? "someone"} <span className="faint small">{fmt(m.created_at)}</span></div><div className="text">{m.text}</div></div></div>)}{!msgs.length && <div className="empty">Nothing here yet.</div>}</div></div>;
-  return <div><h1>Chats</h1><p className="muted">Every conversation your assistant is in. Read here, talk in iMessage.</p>
-    <div className="list mt16">{rooms.map((r) => <a key={r.id} className="item" onClick={() => setOpen(r)}><div className="grow"><b>{r.name ?? (r.kind === "group" ? "Group chat" : "Your chat")}</b><div className="small muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.last_text}</div></div><span className="faint small">{r.last_at ? fmt(r.last_at) : ""}</span></a>)}{!rooms.length && <div className="empty">No chats yet. Text your assistant first.</div>}</div></div>;
+  const [rooms, setRooms] = useState<any[]>([]), [open, setOpen] = useState<any>(null);
+  useEffect(() => { api("/v1/rooms").then((rs) => setRooms(rs.filter((r: any) => r.channel !== "web"))); }, []);
+  if (open) return <div><div className="row between"><div><h1>{open.name ?? (open.kind === "group" ? "Group chat" : "Your chat")}</h1>{open.instructions && <p className="muted">{open.instructions}</p>}</div><button className="btn" onClick={() => setOpen(null)}>← All chats</button></div><div className="mt16"><Thread roomId={open.id} composer={false} /></div></div>;
+  return <div><h1>Chats</h1><p className="muted">Your iMessage conversations with it. Read here, talk in Messages.</p>
+    <div className="list mt16">{rooms.map((r) => <a key={r.id} className="item" onClick={() => setOpen(r)}><div className="grow"><b>{r.name ?? (r.kind === "group" ? "Group chat" : "Your chat")}</b><div className="small muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.last_text}</div></div><span className="faint small">{r.last_at ? fmt(r.last_at) : ""}</span></a>)}{!rooms.length && <div className="empty">No iMessage chats yet. Deploy it from Settings when it's ready.</div>}</div></div>;
+}
+function PhoneLink({ me, onLinked }: { me: any; onLinked: (u: any) => void }) {
+  const [phone, setPhone] = useState(""), [code, setCode] = useState(""), [step, setStep] = useState<"phone" | "code">("phone"), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const go = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { if (step === "phone") { await api("/v1/me/phone", { phone }); setStep("code"); } else onLinked(await api("/v1/me/phone/verify", { code })); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
+  if (me.phone) return <div className="card"><b>Deployed to iMessage</b><div className="small muted">Linked to {me.phone}. Text it there; everything it learned here comes along.</div></div>;
+  return <form onSubmit={go} className="card col"><b>Deploy to iMessage</b><div className="small muted">When it knows enough, give it your iPhone number. It texts you a code, and from then on it works in Messages and in any group you add it to.</div>
+    {step === "phone" ? <input className="input" type="tel" autoComplete="tel" placeholder="+1 555 123 4567" value={phone} onChange={(e) => setPhone(e.target.value)} required /> : <input className="input" inputMode="numeric" placeholder="6-digit code from the text" value={code} onChange={(e) => setCode(e.target.value)} required />}
+    {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
+    <button className="btn primary" disabled={busy}>{step === "phone" ? "Text me a code" : "Link"}</button></form>;
+}
+function Settings({ me, setMe }: { me: any; setMe: (u: any) => void }) {
+  const [f, setF] = useState({ agent_name: me.agent_name ?? "", name: me.name ?? "", tz: me.tz ?? "" }), [tools, setTools] = useState<{ id: string; description: string }[]>([]), [auto, setAuto] = useState<string[]>(me.auto_tools ?? []), [saved, setSaved] = useState("");
+  useEffect(() => { api("/v1/tools").then(setTools); }, []);
+  const save = async (e: any) => { e.preventDefault(); setMe(await api("/v1/me/settings", { ...f, auto_tools: auto }, "PUT")); setSaved("Saved."); setTimeout(() => setSaved(""), 1500); };
+  const toggle = (id: string) => setAuto((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
+  return <div><h1>Settings</h1>
+    <form onSubmit={save} className="card col mt16" style={{ maxWidth: 560 }}>
+      <label className="small muted">What you call it</label><input className="input" value={f.agent_name} onChange={(e) => setF({ ...f, agent_name: e.target.value })} placeholder="Carl" />
+      <label className="small muted">Your name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+      <label className="small muted">Time zone (IANA)</label><input className="input" value={f.tz} onChange={(e) => setF({ ...f, tz: e.target.value })} placeholder="America/New_York" />
+      <h2>Trust</h2><p className="small muted" style={{ margin: 0 }}>Everything below asks you first. Tick an action once it has earned it, and it runs without asking.</p>
+      {tools.map((t) => <label key={t.id} className="check"><input type="checkbox" checked={auto.includes(t.id)} onChange={() => toggle(t.id)} /> <span><b className="mono">{t.id}</b> <span className="small muted">{t.description}</span></span></label>)}
+      <div className="row"><button className="btn primary">Save</button><span className="small muted">{saved}</span></div></form>
+    <div className="mt16" style={{ maxWidth: 560 }}><PhoneLink me={me} onLinked={(u) => setMe({ ...me, ...u })} /></div></div>;
 }
 function Connections() {
   const [list, setList] = useState<any[]>([]), [f, setF] = useState({ label: "", url: "", token: "" }), [err, setErr] = useState("");
@@ -178,24 +230,24 @@ function Connections() {
   const connectGoogle = async () => { const { url } = await api("/v1/connections/google/link", {}); location.href = url; };
   const drop = async (id: string) => { await api(`/v1/connections/${id}`, undefined, "DELETE"); load(); };
   const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/connections/mcp", f); setF({ label: "", url: "", token: "" }); load(); } catch (x: any) { setErr(x.message); } };
-  return <div><h1>Connections</h1><p className="muted">Your accounts and devices. Your assistant uses them only when you ask, and in a group only after you say it may.</p>
+  return <div><h1>Connections</h1><p className="muted">Your accounts and devices. It uses them only when you ask, and in a group only after you say it may.</p>
     <h2>Google</h2><div className="card row between"><div><b>Gmail, Calendar, Contacts, Drive</b><div className="small muted">{google ? `Connected as ${google.account}${google.status === "needs_reauth" ? " · needs reconnecting" : ""}` : "Not connected"}</div></div>
       <div className="row">{google && <button className="btn" onClick={() => drop(google.id)}>Disconnect</button>}<button className="btn primary" onClick={connectGoogle}>{google ? "Reconnect" : "Connect"}</button></div></div>
-    <h2>Devices</h2><div className="list">{devices.map((d) => <div key={d.id} className="item"><div className="grow"><b>{d.label}</b><div className="small muted">{d.account} · {d.tools} tools{d.last_used_at ? ` · used ${fmt(d.last_used_at)}` : ""}</div></div><button className="btn" onClick={() => drop(d.id)}>Remove</button></div>)}{!devices.length && <div className="empty">No devices. Run <a href="https://github.com/leeguooooo/iphone-use" style={{ textDecoration: "underline" }}>iphone-use</a> on your Mac, expose it through a tunnel, and add it below.</div>}</div>
+    <h2>Devices</h2><div className="list">{devices.map((d) => <div key={d.id} className="item"><div className="grow"><b>{d.label}</b><div className="small muted">{d.account} · {d.tools} tools{d.last_used_at ? ` · used ${fmt(d.last_used_at)}` : ""}</div></div><button className="btn" onClick={() => drop(d.id)}>Remove</button></div>)}{!devices.length && <div className="empty">No devices. Run <a href="https://github.com/leeguooooo/iphone-use" style={{ textDecoration: "underline" }}>iphone-use</a> on your Mac, expose it through a tunnel, and add it below. Then it can use the apps on your phone (Uber Eats, OpenTable…).</div>}</div>
     <form onSubmit={add} className="card col mt16" style={{ maxWidth: 520 }}><b>Add a device (MCP server)</b><input className="input" placeholder="Name, e.g. My iPhone" value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} required /><input className="input" type="url" placeholder="https://…/mcp" value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} required /><input className="input" type="password" placeholder="Bearer token (if any)" value={f.token} onChange={(e) => setF({ ...f, token: e.target.value })} />{err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}<button className="btn primary">Connect</button></form></div>;
 }
 function Reminders() {
   const [list, setList] = useState<any[]>([]);
   const load = () => api("/v1/reminders").then(setList);
   useEffect(() => { load(); }, []);
-  return <div><h1>Reminders</h1><p className="muted">What your assistant will do or say later. Set them in iMessage.</p>
-    <div className="list mt16">{list.map((s) => <div key={s.id} className="item"><div className="grow"><b>{s.text}</b><div className="small muted">{s.next} · {s.spec?.at ? "once" : "repeats"} · {s.room_kind === "group" ? s.room_name ?? "group" : "your chat"}{s.kind === "task" ? " · a job" : ""}</div></div><button className="btn" onClick={async () => { await api(`/v1/reminders/${s.id}`, undefined, "DELETE"); load(); }}>Cancel</button></div>)}{!list.length && <div className="empty">No reminders.</div>}</div></div>;
+  return <div><h1>Reminders</h1><p className="muted">What it will do or say later. Set them in the training chat or in Messages ("every morning, update the grocery list").</p>
+    <div className="list mt16">{list.map((s) => <div key={s.id} className="item"><div className="grow"><b>{s.text}</b><div className="small muted">{s.next} · {s.spec?.at ? "once" : "repeats"} · {s.channel === "web" ? "training chat" : s.room_kind === "group" ? s.room_name ?? "group" : "your chat"}{s.kind === "task" ? " · a job" : ""}</div></div><button className="btn" onClick={async () => { await api(`/v1/reminders/${s.id}`, undefined, "DELETE"); load(); }}>Cancel</button></div>)}{!list.length && <div className="empty">No reminders.</div>}</div></div>;
 }
 function Activity() {
   const [runs, setRuns] = useState<any[]>([]);
   useEffect(() => { api("/v1/runs").then(setRuns); }, []);
   return <div><h1>Activity</h1><p className="muted">Every request, each tool call, and the proof behind each action.</p>
-    {runs.map((r) => <div key={r.id} className="card mt16"><div className="row between"><b>{r.request.slice(0, 140)}</b><span className="small faint">{fmt(r.created_at)} · {r.room_kind === "group" ? r.room_name ?? "group" : "your chat"} · {r.status} · {r.tier}{r.tier_reason ? ` (${r.tier_reason})` : ""} · ${Number(r.cost_usd).toFixed(4)}</span></div>
+    {runs.map((r) => <div key={r.id} className="card mt16"><div className="row between"><b>{r.request.slice(0, 140)}</b><span className="small faint">{fmt(r.created_at)} · {r.channel === "web" ? "training" : r.room_kind === "group" ? r.room_name ?? "group" : "your chat"} · {r.status} · {r.tier}{r.tier_reason ? ` (${r.tier_reason})` : ""} · ${Number(r.cost_usd).toFixed(4)}</span></div>
       {r.executions.map((e: any, i: number) => <div key={i} className={`step ${e.verified ? "ok" : e.status === "unknown" ? "warn" : e.status === "failed" ? "bad" : ""}`}><span className="mono">{e.tool}</span> <span className="small muted">{JSON.stringify(e.input).slice(0, 160)}</span>{e.provider_ref && <span className="small faint"> · proof {e.provider_ref}</span>}</div>)}
       {r.reply && <pre className="code">{r.reply}</pre>}</div>)}{!runs.length && <div className="empty">Nothing yet.</div>}</div>;
 }
@@ -208,12 +260,12 @@ function App({ clerk }: { clerk: string | null }) {
   const hash = useHash(), [signedIn, setSignedIn] = useState<boolean | null>(clerk ? null : false), [me, setMe] = useState<any>(null);
   useEffect(() => { if (signedIn) api("/v1/me").then(setMe).catch(() => setMe(null)); else setMe(null); }, [signedIn]);
   const page = hash.startsWith("/app") ? hash.replace(/\/$/, "") : "/";
+  const pages: Record<string, ReactNode> = me ? { "/app": <Train me={me} />, "/app/memory": <Memory />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <Settings me={me} setMe={setMe} /> } : {};
   return <>{clerk && <Bridge onReady={setSignedIn} />}
     {page === "/" ? <Landing signedIn={!!signedIn} clerk={clerk} />
       : signedIn === false ? <div className="auth">{clerk ? <SignIn routing={"virtual" as any} withSignUp /> : <div className="card">Sign-in isn't set up on this server.</div>}</div>
       : !me ? null
-      : !me.phone ? <Shell page={page}><PhoneGate me={me} onLinked={(u) => setMe({ ...me, ...u })} /></Shell>
-      : <Shell page={page}>{page === "/app" ? <Chats /> : page === "/app/connections" ? <Connections /> : page === "/app/reminders" ? <Reminders /> : page === "/app/activity" ? <Activity /> : <Chats />}</Shell>}
+      : <Shell page={page} me={me}>{pages[page] ?? pages["/app"]}</Shell>}
   </>;
 }
 fetch("/v1/config").then((r) => r.json()).then((c) => {

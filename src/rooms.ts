@@ -26,7 +26,16 @@ export async function roomForSpace(spaceId: string, isGroup: boolean, sender: an
   await addMember(room, sender);
   return room;
 }
-export const privateRoomOf = (userId: string) => one(sql`select * from rooms where kind='private' and owner_id=${userId}`);
+export const privateRoomOf = (userId: string) => one(sql`select * from rooms where kind='private' and channel='imessage' and owner_id=${userId}`);
+/** The person's web chat: same agent, same private memory, no phone needed. Training happens here. */
+export async function webRoomOf(user: any) {
+  const r = await one(sql`select * from rooms where kind='private' and channel='web' and owner_id=${user.id}`);
+  if (r) return r;
+  const rid = id("room");
+  await sql`insert into rooms (id, kind, channel, owner_id, name, created_at) values (${rid}, 'private', 'web', ${user.id}, 'Training', ${now()})`;
+  await sql`insert into room_members (room_id, user_id, joined_at) values (${rid}, ${user.id}, ${now()}) on conflict do nothing`;
+  return one(sql`select * from rooms where id=${rid}`);
+}
 export async function createPrivateRoom(user: any, spaceId: string) {
   const rid = id("room");
   await sql`insert into rooms (id, kind, space_id, owner_id, created_at) values (${rid}, 'private', ${spaceId}, ${user.id}, ${now()})`;

@@ -14,6 +14,8 @@ Decisions below came out of a three-round design review; each line is a settled 
 - **Tool order (planner guidance):** connector first, public API with the person's credentials second, browser last, phone only for native apps or things already signed in on the phone.
 - **Hands:** Browserbase `browser.task` is the default for the public web. iphone-use is an MCP connection (tunnel URL + token) whose `phone_*` tools appear alongside; the planner chooses from the tool descriptions plus one line: phone for native apps and things already signed in on the phone, browser for the public web. Zero phone-specific platform code. Blocked apps by default: Wallet, Passwords, banking.
 
+- **Train first, then deploy (2026-10-12, Ellie's grocery example):** a signed-in person trains the agent in a web chat before it ever texts: household rhythm, preferences and restrictions per person, stores and recurring deals, inventory from fridge and pantry photos. Memories are typed (preference, person, schedule, store, inventory, decision, fact) and dated, visible and editable on a Memory page. A trust dial in Settings lists the write actions the agent may run without asking, all off during the warm-up; the gateway enforces it. "Deploy to iMessage" is the phone-link step; the phone's row inherits everything learned on the web. Store logins for online ordering are not in this pass: ordering goes through the person's phone (iphone-use), where they are already signed in.
+
 ## Engine
 
 - **Pipeline:** one planning step. The model emits the plan as structured output; simple messages are one model turn (possibly with tool calls) plus the reply. Intake, task graph, job contracts, gate, judge, claims extractor, regex facts: all deleted.

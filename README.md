@@ -20,7 +20,7 @@ iMessage (Photon)  →  src/imessage.ts  →  src/agent.ts: one run per message
 - **Tools**: Google (Gmail, Calendar, Contacts, Drive), the web, a Browserbase browser, reminders, memory, and any MCP server you connect (iphone-use on your Mac gives it your phone).
 - **Skills** (`skills/*.md`) are internal procedures the agent reads when a task matches; users never pick them.
 - **Models** (OpenRouter): `z-ai/glm-5.3-flash` by default; `z-ai/glm-5.3` when a run has a write, a browser or phone step, three or more tool calls, or is a correction. Hard caps: $5/day model, 20 browser sessions/day.
-- **Web** (`web/`): the landing page (text your number), and a small signed-in app with Clerk: link your phone with a texted code, read your chats, manage Google and devices, cancel reminders, see every run with its proof. Google and device connect pages are also reachable by personal links the agent texts.
+- **Web** (`web/`): the landing page, and a signed-in app (Clerk) where you train the agent before it texts anyone: a web chat with photo upload, a Memory page (typed, dated, editable), a trust dial for actions it may do without asking, connections, reminders, activity with proof, and "Deploy to iMessage", which links your phone with a texted code. Google and device connect pages are also reachable by personal links the agent texts.
 
 ## Run
 

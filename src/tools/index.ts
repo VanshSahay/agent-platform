@@ -83,7 +83,9 @@ export async function execute(run: any, room: any, requester: any, call: { id: s
   }
   if (d.connection && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
   const fp = fingerprint(run.id, d.id, call.input);
-  if (kindOf(d, call.input) === "write" && !opts.approved && !(await one(sql`select 1 from approvals where run_id=${run.id} and status='approved' and call->>'fingerprint'=${fp}`)))
+  // The trust dial: actions the person said may run without asking (Settings). Off by default; the warm-up period.
+  const trusted = (Array.isArray(requester.auto_tools) ? requester.auto_tools : []).includes(d.id);
+  if (kindOf(d, call.input) === "write" && !opts.approved && !trusted && !(await one(sql`select 1 from approvals where run_id=${run.id} and status='approved' and call->>'fingerprint'=${fp}`)))
     return { kind: "approval", summary: summarize(d, call.input), preview: d.preview?.(call.input ?? {}) };
 
   // Idempotency: the same call in the same run runs once. An interrupted write is never silently retried.
