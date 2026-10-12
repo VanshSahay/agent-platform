@@ -31,7 +31,12 @@ export function serve() {
         const reply = (status: number, error?: string) => isJson ? Response.json(error ? { error } : { sent: true }, { status }) : error ? html(status, "Try again", `<p class="bad">${esc(error)}</p><p><a href="/">Back</a></p>`) : page("Check your messages", `<h1>Check your messages.</h1><p>Your assistant just texted ${esc(normPhone(phone))}. Reply there; this page is done.</p>`);
         if (!/^\+?[\d\s()\-.]{10,16}$/.test(phone)) return reply(400, "That doesn't look like a phone number.");
         if (!im.enabled() && !im.hooks.startDm) return reply(503, "The iMessage line isn't connected on this server yet.");
-        try { await agent.startConversation(normPhone(phone)); } catch (e: any) { return reply(502, `Couldn't send the first message: ${e.message}`); }
+        try { await agent.startConversation(normPhone(phone)); }
+        catch (e: any) {
+          // Photon's shared pool (Free/Pro) only texts numbers registered as users of the project in its dashboard.
+          if (/Target not allowed/i.test(e.message)) return reply(403, "This number isn't registered with the iMessage line yet. On Photon's shared pool, add it under Users in the Photon dashboard (app.photon.codes), using the exact handle iMessage uses, then try again.");
+          return reply(502, `Couldn't send the first message: ${e.message}`);
+        }
         return reply(200);
       } },
       "/health": async () => Response.json({ ok: true, imessage: im.status, model_spent_today_usd: await spentToday("model"), model_cap_usd: MODEL_CAP_USD(), browser_sessions_today: await spentToday("browser"), browser_cap: BROWSER_CAP() }),
