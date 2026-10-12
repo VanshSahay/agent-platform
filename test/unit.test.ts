@@ -8,6 +8,7 @@ import * as rooms from "../src/rooms";
 import { remember, retrieve } from "../src/memory";
 import { fingerprint, def, obj, TOOLS, prune } from "../src/tools/index";
 import { createSchedule } from "../src/schedules";
+import { linkPhoneStart, linkPhoneVerify } from "../src/web";
 import { seal } from "../src/db";
 
 const sent: { space: string; text: string }[] = [];
@@ -154,6 +155,23 @@ test("empty optional fields a model fills in are dropped, and a concrete time be
   const s = await createSchedule({ roomId: room.id, userId: u.id, text: "call mom", kind: "message", when: { every: "daily", in_minutes: 45 }, tz: "America/New_York" });
   expect(s.spec.at).toBeGreaterThan(Date.now() + 44 * 60_000);
   expect(s.spec.every).toBeUndefined();
+});
+
+test("a web account links to the phone's person with a texted code, keeping the phone's history", async () => {
+  const phoneUser = await rooms.userByPhone("+15550000090");
+  await sql`update users set agent_name='Pip' where id=${phoneUser.id}`;
+  await sql`insert into users (id, email, name, clerk_id, created_at) values ('usr_web', 'e@x.com', 'Ellie', 'clerk_1', 0)`;
+  const web = (await sql`select * from users where id='usr_web'`)[0];
+  await linkPhoneStart(web, "+1 (555) 000-0090");
+  const texted = lastTo("dm_+15550000090");
+  const code = texted.match(/\b(\d{6})\b/)![1];
+  expect(texted).toContain("sign-in code");
+  await expect(linkPhoneVerify(web, "000000")).rejects.toThrow(/wrong or expired/);
+  const merged = await linkPhoneVerify(web, code);
+  expect(merged.id).toBe(phoneUser.id);
+  expect(merged.clerk_id).toBe("clerk_1");
+  expect(merged.agent_name).toBe("Pip");
+  expect(await sql`select 1 from users where id='usr_web'`).toHaveLength(0);
 });
 
 test("fingerprints ignore key order", () => {

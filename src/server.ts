@@ -7,6 +7,9 @@ import * as agent from "./agent";
 import { normPhone, privateRoomOf } from "./rooms";
 import { MODEL_CAP_USD } from "./model";
 import { BROWSER_CAP } from "./tools/browser";
+import { routes as webRoutes } from "./web";
+import { clerkOn, clerkPublishableKey } from "./auth";
+import app from "../web/index.html";
 
 const esc = (s: any) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const page = (title: string, body: string) => new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
@@ -19,17 +22,17 @@ export function serve() {
   return Bun.serve({
     port: Number(process.env.PORT ?? 3000),
     routes: {
-      "/": page("Your assistant, in iMessage", `<h1>One assistant. Yours, in iMessage.</h1>
-<p>It works for you in your own chat, and in any group chat you add it to: trips, dinners, the family's week, a group order. It only ever says something is done when it is.</p>
-<p>Examples people start with: "What's on my calendar Thursday?" · "Find two 30-minute slots with Dana next week and email her the options" · "Remind me Friday if she hasn't replied" · "Watch for a table at Lilia this Saturday" · "Split the Airbnb four ways".</p>
-<form method="post" action="/start"><input name="phone" type="tel" placeholder="Your iPhone number" required autocomplete="tel" style="width:60%"> <button>Text me</button></form>
-<p><small>You'll get an iMessage from your assistant in a minute. US and Canada numbers.</small></p>`),
+      "/": app, "/app": app,
+      "/v1/config": () => Response.json({ clerk: clerkOn() ? clerkPublishableKey() : null }),
+      ...webRoutes,
       "/start": { POST: async (req) => {
-        const form = await req.formData().catch(() => null), phone = String(form?.get("phone") ?? "").trim();
-        if (!/^\+?[\d\s()\-.]{10,16}$/.test(phone)) return html(400, "Try again", `<p class="bad">That doesn't look like a phone number.</p><p><a href="/">Back</a></p>`);
-        if (!im.enabled() && !im.hooks.startDm) return html(503, "Not ready", `<p class="bad">The iMessage line isn't connected on this server yet.</p>`);
-        try { await agent.startConversation(normPhone(phone)); } catch (e: any) { return html(502, "Couldn't text you", `<p class="bad">Couldn't send the first message: ${esc(e.message)}</p>`); }
-        return page("Check your messages", `<h1>Check your messages.</h1><p>Your assistant just texted ${esc(normPhone(phone))}. Reply there; this page is done.</p>`);
+        const isJson = (req.headers.get("content-type") ?? "").includes("json");
+        const phone = String(isJson ? (await req.json().catch(() => ({})))?.phone ?? "" : (await req.formData().catch(() => null))?.get("phone") ?? "").trim();
+        const reply = (status: number, error?: string) => isJson ? Response.json(error ? { error } : { sent: true }, { status }) : error ? html(status, "Try again", `<p class="bad">${esc(error)}</p><p><a href="/">Back</a></p>`) : page("Check your messages", `<h1>Check your messages.</h1><p>Your assistant just texted ${esc(normPhone(phone))}. Reply there; this page is done.</p>`);
+        if (!/^\+?[\d\s()\-.]{10,16}$/.test(phone)) return reply(400, "That doesn't look like a phone number.");
+        if (!im.enabled() && !im.hooks.startDm) return reply(503, "The iMessage line isn't connected on this server yet.");
+        try { await agent.startConversation(normPhone(phone)); } catch (e: any) { return reply(502, `Couldn't send the first message: ${e.message}`); }
+        return reply(200);
       } },
       "/health": async () => Response.json({ ok: true, imessage: im.status, model_spent_today_usd: await spentToday("model"), model_cap_usd: MODEL_CAP_USD(), browser_sessions_today: await spentToday("browser"), browser_cap: BROWSER_CAP() }),
       "/webhooks/photon": { POST: (req) => im.webhook(req) },

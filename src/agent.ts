@@ -1,7 +1,7 @@
 // The run loop. A message becomes a run: one model turn that may call tools, then a reply. Writes wait for the
 // requester's yes; a person's accounts in a group wait for their consent once; a reply pending when someone new
 // joins a group is held. The reply never claims more than the verified tool executions.
-import { sql, id, now, one, J, fmtLocal, PLATFORM_TZ } from "./db";
+import { sql, id, now, one, J, fmtLocal, zoned, PLATFORM_TZ } from "./db";
 import * as rooms from "./rooms";
 import * as model from "./model";
 import * as gw from "./tools/index";
@@ -163,6 +163,7 @@ async function decide(a: any, yes: boolean) {
 }
 
 // ---- context ----
+const isoDate = (tz: string) => { const z = zoned(now(), tz); return `${z.y}-${String(z.mo + 1).padStart(2, "0")}-${String(z.d).padStart(2, "0")}`; };
 async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
   const name = await rooms.agentNameFor(room), tz = requester.tz ?? PLATFORM_TZ();
   const skills = await listSkills();
@@ -170,7 +171,7 @@ async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
   const hasPhone = tools.some((t) => t.id.startsWith("mcp."));
   return [
     who,
-    `Now: ${fmtLocal(now(), tz)} (${tz}).`,
+    `Now: ${fmtLocal(now(), tz)} (${tz}); today's date in ISO form is ${isoDate(tz)}. Use that year in any date you write.`,
     `Style: text messages. Short, plain, specific. No markdown, no headers, no bullet symbols; a dash list is fine. Lead with the answer or the question. Ask at most one question at a time.`,
     `Doing things: use tools; never pretend. Prefer a connected account (Google) first, then a public API or the web, then the browser for sites that need clicking${hasPhone ? ", then the person's phone (phone_* tools) for native apps or anything already signed in on the phone" : ""}. Sends, calendar changes, purchases and completing bookings are approved by the person before they happen; the platform asks them, you just call the tool with the final content. Never say something was sent, booked or done unless the tool result confirmed it; the platform adds a short status footer, don't repeat it. If a tool says DENIED with a link, pass the link on in plain words.`,
     `Memory: call remember for things worth keeping. Private things stay private.`,

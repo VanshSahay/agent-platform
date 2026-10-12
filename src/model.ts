@@ -1,11 +1,11 @@
-// One model gateway: OpenRouter chat completions. Cheap Chinese models by default; Sonnet only when a code rule fires
+// One model gateway: OpenRouter chat completions. GLM 5.3 flash by default; GLM 5.3 only when a code rule fires
 // (agent.ts decides the tier, this file only knows how to call). A hard daily cap, counted from OpenRouter's returned cost.
 import { recordUsage, spentToday } from "./db";
 
 export type Tier = "cheap" | "smart";
 export const MODELS: Record<Tier, string[]> = {
-  cheap: [process.env.MODEL_CHEAP ?? "deepseek/deepseek-v4-flash", process.env.MODEL_CHEAP_FALLBACK ?? "z-ai/glm-5.3-flash"],
-  smart: [process.env.MODEL_SMART ?? "anthropic/claude-sonnet-5.5", process.env.MODEL_SMART_FALLBACK ?? "openai/gpt-6-sol"],
+  cheap: [process.env.MODEL_CHEAP ?? "z-ai/glm-5.3-flash", process.env.MODEL_CHEAP_FALLBACK ?? "deepseek/deepseek-v4-flash"],
+  smart: [process.env.MODEL_SMART ?? "z-ai/glm-5.3", process.env.MODEL_SMART_FALLBACK ?? "openai/gpt-6-sol"],
 };
 export const MODEL_CAP_USD = () => Number(process.env.MODEL_CAP_USD ?? 5);
 
@@ -28,8 +28,8 @@ async function call(model: string, req: Req): Promise<Res> {
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST", signal: AbortSignal.timeout(Number(process.env.MODEL_TIMEOUT_MS ?? 90_000)),
     headers: { authorization: `Bearer ${process.env.OPENROUTER_API_KEY ?? ""}`, "content-type": "application/json", "x-title": "agent-platform" },
-    // Cheap models think only when told to; the smart tier keeps its default (Sonnet refuses to turn reasoning off).
-    body: JSON.stringify({ model, messages, max_tokens: req.maxTokens ?? 2000, usage: { include: true }, ...(req.tier === "cheap" ? { reasoning: { enabled: false } } : {}),
+    // No reasoning flag: GLM 5.3 and GLM 5.3 flash refuse requests that turn it off, and silently fell back to DeepSeek.
+    body: JSON.stringify({ model, messages, max_tokens: req.maxTokens ?? 2000, usage: { include: true },
       ...(req.tools?.length ? { tools: req.tools.map((t) => ({ type: "function", function: { name: wire(t.name), description: t.description, parameters: t.input_schema } })), provider: { require_parameters: true } } : {}) }),
   });
   if (!r.ok) throw new Error(`${model} ${r.status}: ${(await r.text()).slice(0, 200)}`);

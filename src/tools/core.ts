@@ -25,7 +25,7 @@ const WHEN = { at: str("ISO datetime in the person's zone, e.g. 2026-10-14T09:00
 def({
   id: "reminder.schedule", kind: "write", description: "Set a reminder or a recurring job in this chat, in the person's time zone. deliver=message sends the text word for word then. deliver=task wakes you up to do work then (a briefing, a check). unless_reply_from=email makes it a follow-up that only fires if that person hasn't emailed back. Confirm the returned time.",
   inputSchema: obj({ text: str(), deliver: { type: "string", enum: ["message", "task"] }, unless_reply_from: str(), ...WHEN }, ["text"]),
-  summarize: (i) => `Reminder: "${i.text}"`, verify: (o) => o?.reminder_id ?? null,
+  summarize: (i) => `Reminder: "${i.text}" ${i.in_minutes != null ? `in ${i.in_minutes} min` : i.at ? `at ${i.at}` : i.every ? `${i.every}${i.time ? ` at ${i.time}` : ""}` : i.time ? `at ${i.time}` : ""}`.trim(), verify: (o) => o?.reminder_id ?? null,
   async execute(i, ctx) {
     const s = await createSchedule({ roomId: ctx.room.id, userId: ctx.requester.id, text: i.text, kind: i.deliver === "task" ? "task" : "message", when: i, tz: ctx.requester.tz, unlessReplyFrom: i.unless_reply_from });
     return { status: "SUCCEEDED", output: { reminder_id: s.id.slice(-6), next: fmtLocal(s.next_at, ctx.requester.tz), repeats: describeSpec(J(s.spec, {})) } };
