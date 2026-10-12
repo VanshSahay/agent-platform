@@ -5,6 +5,14 @@ import { sql, id, now, sha, one } from "../db";
 import { hasConsent, userById } from "../rooms";
 import { makeLink } from "../links";
 import { agentOf } from "../agents";
+import { zoned, fromZoned } from "../db";
+
+/** Outreach is sent only between 8am and 8pm in the person's zone. ponytail: the person's zone stands in for the recipient's. */
+export function outreachWindow(tz: string, at = now()): { open: boolean; next: number } {
+  const z = zoned(at, tz);
+  if (z.h >= 8 && z.h < 20) return { open: true, next: at };
+  return { open: false, next: fromZoned(z.y, z.mo, z.h >= 20 ? z.d + 1 : z.d, 8, 0, tz) };
+}
 
 export type ErrKind = "TRANSIENT" | "AUTH" | "RATE_LIMIT" | "BUSINESS_RULE" | "PERMISSION" | "UNKNOWN_SIDE_EFFECT";
 export class ToolError extends Error { constructor(public kind: ErrKind, msg: string) { super(msg); } }
@@ -18,6 +26,8 @@ export interface ToolDef {
   connection?: "google" | "mcp";                // uses the requester's own account (or device)
   accountFor?: (input: any, requesterId: string) => Promise<any | null>; // another kind of account (a site login) this call would use
   summarize?: (input: any) => string;           // one line for the approval card and the status footer
+  amountOf?: (input: any) => number | null;     // money this call would spend, for the trust dial's threshold
+  outreach?: boolean;                           // contacts a third party: held outside daytime, delivered next morning
   preview?: (input: any) => string;             // the exact content being approved (an email body)
   verify?: (output: any) => string | null;      // provider evidence that proves a write happened
   execute: (input: any, ctx: Ctx) => Promise<Outcome>;
@@ -75,7 +85,7 @@ export async function principalFor(room: any, requester: any) {
   return { principal: requester, viaOwner: false };
 }
 
-export async function execute(run: any, room: any, requester: any, call: { id: string; name: string; input: any }, tools: ToolDef[], opts: { approved?: boolean } = {}): Promise<GatewayResult> {
+export async function execute(run: any, room: any, requester: any, call: { id: string; name: string; input: any }, tools: ToolDef[], opts: { approved?: boolean; staged?: boolean } = {}): Promise<GatewayResult> {
   const d = tools.find((t) => t.id === call.name);
   if (!d) return { kind: "result", status: "FAILED", content: `DENIED: unknown tool ${call.name}` };
   call = { ...call, input: prune(call.input ?? {}) }; // some models fill every optional field with "" or []; those mean "not given"
@@ -101,10 +111,23 @@ export async function execute(run: any, room: any, requester: any, call: { id: s
   if (connection && !viaOwner && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
   const fp = fingerprint(run.id, d.id, call.input);
   // The trust dial: actions the person said may run without asking (Settings). Off by default; the warm-up period.
-  const agent = await agentOf(room), trusted = (Array.isArray(agent?.auto_tools) ? agent.auto_tools : []).includes(d.id);
+  // Money: a purchase under the threshold runs without asking; a paused agent spends nothing.
+  const agent = await agentOf(room), amount = d.amountOf?.(call.input ?? {}) ?? null;
+  if (amount != null && amount > 0 && agent?.spending_paused) return { kind: "result", status: "FAILED", content: `DENIED: ${agent.name}'s spending is paused by its owner. Say so plainly; don't buy anything.` };
+  const underLimit = amount != null && agent?.max_usd_without_asking != null && amount <= Number(agent.max_usd_without_asking);
+  const trusted = (Array.isArray(agent?.auto_tools) ? agent.auto_tools : []).includes(d.id) || underLimit;
   if (kindOf(d, call.input) === "write" && !opts.approved && !trusted && !(await one(sql`select 1 from approvals where run_id=${run.id} and status='approved' and call->>'fingerprint'=${fp}`)))
     return { kind: "approval", summary: summarize(d, call.input), preview: d.preview?.(call.input ?? {}), approver: principal };
 
+  // Outreach outside daytime is staged: the approved call waits until the next morning, and the person is told.
+  if (d.outreach && !opts.staged) {
+    const w = outreachWindow(principal.tz ?? "America/New_York");
+    if (!w.open) {
+      const sid = id("sch");
+      await sql`insert into schedules (id, room_id, user_id, text, kind, spec, next_at, created_at) values (${sid}, ${room.id}, ${requester.id}, ${summarize(d, call.input)}, 'task', ${JSON.stringify({ at: w.next, staged_call: { name: d.id, input: call.input ?? {} }, approved: true })}::text::jsonb, ${w.next}, ${now()})`;
+      return { kind: "result", status: "SUCCEEDED", content: `STAGED: it's outside daytime hours, so this will go out at ${new Date(w.next).toLocaleString("en-US", { timeZone: principal.tz ?? "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" })}. Tell the person that plainly; it is scheduled, not sent.` };
+    }
+  }
   // Idempotency: the same call in the same run runs once. An interrupted write is never silently retried.
   const prev = await one(sql`select * from tool_executions where fingerprint=${fp}`);
   if (prev?.status === "succeeded") return { kind: "result", status: "SUCCEEDED", content: `[you already ran this; same result]\n${wrap(d, prev.output)}` };

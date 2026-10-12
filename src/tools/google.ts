@@ -58,7 +58,7 @@ def({
 });
 
 def({
-  id: "email.send", kind: "write", connection: "google", description: "Send an email from the person's Gmail, as them. Only works when they have switched on 'send email as me' for that account; otherwise save a draft with email.draft. The platform shows them the exact email and asks for their OK first; just call it with the final content.",
+  id: "email.send", kind: "write", outreach: true, connection: "google", description: "Send an email from the person's Gmail, as them. Only works when they have switched on 'send email as me' for that account; otherwise save a draft with email.draft. The platform shows them the exact email and asks for their OK first; just call it with the final content.",
   inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str(), thread_id: str() }, ["to", "subject", "body"]),
   summarize: (i) => `Send email to ${i.to.join(", ")}: "${i.subject}"`,
   preview: (i) => `To: ${i.to.join(", ")}\nSubject: ${i.subject}\n\n${String(i.body).slice(0, 1500)}`,

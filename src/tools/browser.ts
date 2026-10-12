@@ -3,7 +3,7 @@
 // and completing one is a write the person approves first. Capped per day.
 // Site logins: the person signs in themselves in a live browser (a Browserbase Context keeps the encrypted profile);
 // the agent later runs on that Context and is simply signed in. No password ever passes through here.
-import { def, obj, str, bool, ToolError } from "./index";
+import { def, obj, str, num, bool, ToolError } from "./index";
 import { generate, type Msg, type ToolSpec } from "../model";
 import { sql, recordUsage, spentToday, id, now, one, J } from "../db";
 
@@ -188,8 +188,9 @@ async function key(c: Cdp, k: string) {
 def({
   id: "browser.task", kind: "read", kindOf: (i) => (i.complete ? "write" : "read"),
   description: "Operate a website in a cloud browser for things that need clicking: forms, searches with filters, availability, bookings, order history. If the person has signed in to the site (a site login in their connections), the browser is already signed in as them; otherwise it is logged out. It stops before any irreversible final step and reports what would be submitted; to actually complete a booking, purchase or submission, call again with complete=true (the person is asked to approve first). Share the replay_url when useful.",
-  inputSchema: obj({ task: str("what to do and what to bring back, specific"), start_url: str(), site: str("site whose saved login to use, e.g. ubereats.com (defaults to the start_url's site)"), complete: bool("true only to finish an irreversible final step the person wants done") }, ["task"]),
-  summarize: (i) => (i.complete ? `Complete in the browser: ${i.task}` : `Browse: ${i.task}`),
+  inputSchema: obj({ task: str("what to do and what to bring back, specific"), start_url: str(), site: str("site whose saved login to use, e.g. ubereats.com (defaults to the start_url's site)"), complete: bool("true only to finish an irreversible final step the person wants done"), amount_usd: num("when completing a purchase or booking with a charge: the total about to be paid, in USD") }, ["task"]),
+  summarize: (i) => (i.complete ? `Complete in the browser${i.amount_usd != null ? ` ($${Number(i.amount_usd).toFixed(2)})` : ""}: ${i.task}` : `Browse: ${i.task}`),
+  amountOf: (i) => (i.complete && i.amount_usd != null ? Number(i.amount_usd) : null),
   verify: (o) => (o?.status === "succeeded" ? o.replay_url ?? "browser" : null),
   accountFor: (i, requesterId) => loginFor(requesterId, i.site ?? hostOf(i.start_url)),
   async execute({ task, start_url, site, complete }, ctx) {

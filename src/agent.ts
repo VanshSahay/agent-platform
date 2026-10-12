@@ -216,6 +216,7 @@ async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
     `Now: ${fmtLocal(now(), tz)} (${tz}); today's date in ISO form is ${isoDate(tz)}. Use that year in any date you write.`,
     `Style: text messages. Short, plain, specific. No markdown, no headers, no bullet symbols; a dash list is fine. Lead with the answer or the question. Ask at most one question at a time.`,
     `Doing things: use tools; never pretend. Prefer a connected account (Google) first, then a public API or the web, then the browser for sites that need clicking${hasPhone ? ", then the person's phone (phone_* tools) for native apps or anything already signed in on the phone" : ""}. Sends, calendar changes, purchases and completing bookings are approved by the person before they happen unless they've put that action on their trust list; the platform asks them, you just call the tool with the final content. Never say something was sent, booked or done unless the tool result confirmed it; the platform adds a short status footer, don't repeat it. If a tool says DENIED with a link, pass the link on in plain words.`,
+    `Contacting anyone on the person's behalf (an email, a call): read the outreach skill first. Your plan names who, how and why; their yes authorizes exactly that. Outside daytime the platform holds it until the next morning and tells them.`,
     `Memory: everything a person tells you about themselves is training. Call remember for each of it, with the right kind, one fact per call; when they tell you several things at once, save each. How they want you to behave (when to ask, when to just do it, tone, what never to do) is kind=rule and you follow it from then on. Private things stay private. Memories are shown with the date they were saved; newer beats older, and an inventory line is only as current as its date.`,
     room.kind === "group" ? `Group rules: the people here may never have used an AI, and some never signed up for anything; serve them the same as the owner. No jargon: never say tool, prompt, model, token, connection, MCP or API; say what you'll do and who has to say yes ("I'll check with ${rooms.displayName(owner)}"). Anyone can ask for reads (search, weather, a tally, the list). Something that uses ${rooms.displayName(owner)}'s accounts or costs money: just call the tool; the platform asks ${rooms.displayName(owner)} for the OK and tells the group it did, so you don't have to explain how. A signed-up member's own accounts are used only for their own request. Never reveal anything from anyone's private chat; if asked about another person's private matters, decline kindly. The person who brought you in${room.owner_id === requester.id ? " (that's who you're talking to now)" : ""} can set what you do here with room.set_instructions.` : ``,
     room.instructions ? `What the group's owner asked you to do here: """${room.instructions}"""` : ``,
@@ -269,5 +270,15 @@ export async function fireSchedule(s: any, kind: "message" | "task", text: strin
   const room = await one(sql`select * from rooms where id=${s.room_id}`), user = await rooms.userById(s.user_id);
   if (!room || !user) return;
   if (kind === "message") { await say(room, text); return; }
+  const staged = J(s.spec, {}).staged_call;
+  if (staged) { // outreach approved earlier and held until daytime: run exactly that call, then report with proof
+    const rid = id("run");
+    await sql`insert into runs (id, room_id, requester_id, request, status, tier, tier_reason, created_at, updated_at) values (${rid}, ${room.id}, ${user.id}, ${"[staged outreach] " + text}, 'running', 'smart', 'staged outreach', ${now()}, ${now()})`;
+    const run = await one(sql`select * from runs where id=${rid}`), tools = await gw.toolsFor(user.id);
+    const r = await gw.execute(run, room, user, { id: "staged", name: staged.name, input: staged.input }, tools, { approved: true, staged: true });
+    const ok = r.kind === "result" && r.status === "SUCCEEDED";
+    await finish(run, room, user, ok ? `Done: ${text}.` : `I tried to do this now (${text}) and it didn't go through: ${r.kind === "result" ? r.content.slice(0, 200) : r.kind}.`, tools);
+    return;
+  }
   await runRequest(room, user, `[Scheduled job you set earlier fires now; do it and report briefly] ${text}`);
 }

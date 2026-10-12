@@ -221,9 +221,9 @@ function Memory({ agent }: { agent: any }) {
     {!list.length && <div className="empty mt16">Nothing yet. Train it, or add a line above.</div>}</div>;
 }
 function AgentSettings({ agent, me, reload }: { agent: any; me: any; reload: () => void }) {
-  const [f, setF] = useState({ name: agent.name, purpose: agent.purpose ?? "" }), [tools, setTools] = useState<{ id: string; description: string }[]>([]), [auto, setAuto] = useState<string[]>(agent.auto_tools ?? []), [saved, setSaved] = useState(""), [err, setErr] = useState("");
+  const [f, setF] = useState({ name: agent.name, purpose: agent.purpose ?? "" }), [tools, setTools] = useState<{ id: string; description: string }[]>([]), [auto, setAuto] = useState<string[]>(agent.auto_tools ?? []), [saved, setSaved] = useState(""), [err, setErr] = useState(""), [maxUsd, setMaxUsd] = useState(agent.max_usd_without_asking ?? ""), [paused, setPaused] = useState(!!agent.spending_paused);
   useEffect(() => { api("/v1/tools").then(setTools); }, []);
-  const save = async (e: any) => { e.preventDefault(); await api(`/v1/agents/${agent.id}`, { ...f, auto_tools: auto }, "PUT"); reload(); setSaved("Saved."); setTimeout(() => setSaved(""), 1500); };
+  const save = async (e: any) => { e.preventDefault(); await api(`/v1/agents/${agent.id}`, { ...f, auto_tools: auto, max_usd_without_asking: maxUsd === "" ? null : Number(maxUsd), spending_paused: paused }, "PUT"); reload(); setSaved("Saved."); setTimeout(() => setSaved(""), 1500); };
   const toggle = (id: string) => setAuto((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
   const del = async () => { if (!confirm(`Delete ${agent.name} and everything it learned?`)) return; try { await api(`/v1/agents/${agent.id}`, undefined, "DELETE"); reload(); location.hash = "/app"; } catch (x: any) { setErr(x.message); } };
   return <div><h1>{agent.name}: trust & name</h1>
@@ -232,6 +232,8 @@ function AgentSettings({ agent, me, reload }: { agent: any; me: any; reload: () 
       <label className="small muted">What it's for</label><textarea className="input" value={f.purpose} onChange={(e) => setF({ ...f, purpose: e.target.value })} style={{ height: 70 }} />
       <h2>Trust</h2><p className="small muted" style={{ margin: 0 }}>Everything below asks you first. Tick an action once {agent.name} has earned it, and it runs without asking.</p>
       {tools.map((t) => <label key={t.id} className="check"><input type="checkbox" checked={auto.includes(t.id)} onChange={() => toggle(t.id)} /> <span><b className="mono">{t.id}</b> <span className="small muted">{t.description}</span></span></label>)}
+      <h2>Money</h2><label className="small muted">Ask before purchases over (USD)</label><input className="input" inputMode="decimal" placeholder="Leave empty to approve every purchase yourself" value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} />
+      <label className="check"><input type="checkbox" checked={paused} onChange={(e) => setPaused(e.target.checked)} /> <span>Pause spending <span className="small muted">· while paused, {agent.name} buys nothing</span></span></label>
       <div className="row"><button className="btn primary">Save</button><span className="small muted">{saved}</span></div></form>
     {me.agents.length > 1 && <div className="mt16"><button className="btn" onClick={del}>Delete {agent.name}</button>{err && <span className="small" style={{ color: "var(--bad)", marginLeft: 8 }}>{err}</span>}</div>}</div>;
 }

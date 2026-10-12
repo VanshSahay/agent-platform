@@ -6,7 +6,9 @@ import * as model from "../src/model";
 import * as agent from "../src/agent";
 import * as rooms from "../src/rooms";
 import { remember, retrieve } from "../src/memory";
-import { fingerprint, def, obj, TOOLS, prune } from "../src/tools/index";
+import { fingerprint, def, obj, TOOLS, prune, outreachWindow } from "../src/tools/index";
+import { tick } from "../src/schedules";
+import { draftFromBrief } from "../src/web";
 import { createSchedule } from "../src/schedules";
 import { linkPhoneStart, linkPhoneVerify, homeData } from "../src/web";
 import { createAgent, defaultAgentOf, agentsOf } from "../src/agents";
@@ -315,6 +317,60 @@ test("sending as them is off until switched on: email.send refuses and points at
   const tool = (await sql`select content from (select transcript from runs) r, jsonb_to_recordset(r.transcript) as x(role text, content text) where role='tool'`)[0];
   expect(tool.content).toContain("switched off");
   expect(lastTo("dm_+15550000140")).toContain("didn't happen");
+});
+
+test("money on the trust dial: under the threshold runs without asking, paused spends nothing", async () => {
+  const u = await trained("+15550000150");
+  def({ id: "fake.buy", kind: "write", description: "test", inputSchema: obj({ amount: { type: "number" } }), amountOf: (i) => i.amount ?? null, summarize: (i) => `Buy for $${i.amount}`, verify: () => "order-1", async execute() { return { status: "SUCCEEDED", output: { ok: true } }; } });
+  await sql`update agents set max_usd_without_asking=50 where owner_id=${u.id}`;
+  script({ id: "", name: "fake.buy", input: { amount: 20 } }, "Bought.");
+  await say("+15550000150", "buy the small thing");
+  expect((await sql`select count(*) n from approvals`)[0].n).toBe("0");
+  expect(lastTo("dm_+15550000150")).toContain("✓ Buy for $20");
+  script({ id: "", name: "fake.buy", input: { amount: 80 } }, "Bought.");
+  await say("+15550000150", "buy the big thing");
+  expect(lastTo("dm_+15550000150")).toContain('Reply "yes"');
+  await say("+15550000150", "no");
+  await sql`update agents set spending_paused=true where owner_id=${u.id}`;
+  script({ id: "", name: "fake.buy", input: { amount: 5 } }, "Can't, spending is paused.");
+  await say("+15550000150", "buy gum");
+  const tool = (await sql`select content from (select transcript from runs order by created_at desc limit 1) r, jsonb_to_recordset(r.transcript) as x(role text, content text) where role='tool'`)[0];
+  expect(tool.content).toContain("paused");
+  delete TOOLS["fake.buy"];
+});
+
+test("outreach outside daytime is staged and fires the exact approved call the next morning", async () => {
+  expect(outreachWindow("America/New_York", Date.UTC(2026, 9, 12, 14, 0)).open).toBe(true);   // 10:00 ET
+  const night = outreachWindow("America/New_York", Date.UTC(2026, 9, 13, 2, 30));                // 22:30 ET
+  expect(night.open).toBe(false); expect(new Date(night.next).toISOString()).toBe("2026-10-13T12:00:00.000Z"); // 08:00 ET next day
+  const u = await trained("+15550000160");
+  let sent = 0;
+  def({ id: "fake.contact", kind: "write", outreach: true, description: "test", inputSchema: obj({ to: { type: "string" } }), summarize: (i) => `Email ${i.to}`, verify: () => "msg-1", async execute() { sent++; return { status: "SUCCEEDED", output: { id: "msg-1" } }; } });
+  const nightZone = ["America/New_York", "Europe/London", "Asia/Kolkata", "Asia/Tokyo", "Australia/Sydney", "Pacific/Kiritimati", "Pacific/Honolulu", "America/Los_Angeles"].find((z) => !outreachWindow(z).open)!; // somewhere it's night
+  await sql`update users set tz=${nightZone} where id=${u.id}`;
+  script({ id: "", name: "fake.contact", input: { to: "venue@x.com" } }, "Scheduled for the morning.");
+  await say("+15550000160", "email the venue");
+  await say("+15550000160", "yes");
+  expect(sent).toBe(0);
+  const sch = (await sql`select * from schedules where status='active'`)[0];
+  expect(sch.spec.staged_call.name).toBe("fake.contact");
+  await sql`update schedules set next_at=${Date.now() - 1000} where id=${sch.id}`; // morning arrives
+  await tick(agent.fireSchedule, async () => null);
+  expect(sent).toBe(1);
+  expect(lastTo("dm_+15550000160")).toContain("✓ Email venue@x.com");
+  delete TOOLS["fake.contact"];
+});
+
+test("a one-paragraph brief becomes a purpose, starter rules and a first message in the training chat", async () => {
+  await sql`insert into users (id, email, name, clerk_id, created_at) values ('usr_b', 'b@x.com', 'Ellie', 'clerk_b', 0)`;
+  const u = (await sql`select * from users where id='usr_b'`)[0], a = await createAgent(u, "Carl", "groceries every Tuesday");
+  model.hooks.generate = async () => ({ text: JSON.stringify({ purpose: "Run the weekly grocery order on Tuesdays.", rules: ["Ask before any order over $100.", "Never order on a day other than Tuesday."], questions: ["Which store?", "Who's eating at home?"] }), toolCalls: [], model: "fake", costUsd: 0 });
+  await draftFromBrief(u, a, "groceries every Tuesday on uber eats, 30% off for members");
+  expect((await sql`select purpose from agents where id=${a.id}`)[0].purpose).toBe("Run the weekly grocery order on Tuesdays.");
+  expect((await sql`select kind from memories where scope_id=${a.id}`).map((m: any) => m.kind)).toEqual(["rule", "rule"]);
+  const first = (await sql`select text from messages where room_id=(select id from rooms where agent_id=${a.id} and channel='web')`)[0].text;
+  expect(first).toContain("I'm Carl");
+  expect(first).toContain("Which store?");
 });
 
 test("fingerprints ignore key order", () => {

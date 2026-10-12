@@ -5,6 +5,8 @@ import { userOf, AuthError } from "./auth";
 import { makeLink } from "./links";
 import { normPhone, userByPhone, privateRoomOf, webRoomOf } from "./rooms";
 import * as agent from "./agent";
+import * as agent_ from "./agent";
+import { structured } from "./model";
 import { agentsOf, agentById, createAgent, defaultAgentOf, readiness, MIN_MEMORIES } from "./agents";
 import { addMcpConnection } from "./tools/mcp";
 import { normSite } from "./tools/browser";
@@ -21,7 +23,20 @@ const h = (fn: H) => async (req: Request & { params?: Record<string, string> }) 
 const body = (r: Request) => r.json().catch(() => ({}));
 const fail = (status: number, message: string): never => { throw Object.assign(new Error(message), { status }); };
 async function ownAgent(u: any, aid: string) { const a = await agentById(aid); if (!a || a.owner_id !== u.id) fail(404, "no such agent"); return a; }
-const withReadiness = async (a: any) => ({ id: a.id, name: a.name, purpose: a.purpose, auto_tools: Array.isArray(a.auto_tools) ? a.auto_tools : [], created_at: a.created_at, readiness: await readiness(a) });
+const withReadiness = async (a: any) => ({ id: a.id, name: a.name, purpose: a.purpose, auto_tools: Array.isArray(a.auto_tools) ? a.auto_tools : [], max_usd_without_asking: a.max_usd_without_asking, spending_paused: !!a.spending_paused, created_at: a.created_at, readiness: await readiness(a) });
+
+/** One paragraph in, a drafted purpose and starter rules out, saved as the agent's first memories; the training chat opens
+ *  with what it understood and what it wants to know. Best-effort: no model, no draft. */
+export async function draftFromBrief(user: any, agent: any, brief: string) {
+  if (!brief?.trim()) return;
+  try {
+    const d = await structured<{ purpose: string; rules: string[]; questions: string[] }>("cheap", `Someone is creating a personal agent and wrote one paragraph about what it's for. Draft: "purpose" (one plain sentence, what the agent takes off their plate), "rules" (3 to 5 one-line standing rules in second person about how it should behave, inferred from the brief: when to ask, what never to do, tone), "questions" (2 short questions the agent should ask first to do the job well). Plain words, no jargon. Return {"purpose","rules","questions"}.`, brief, user.id);
+    if (d.purpose) await sql`update agents set purpose=${String(d.purpose).slice(0, 500)} where id=${agent.id}`;
+    for (const r of (d.rules ?? []).slice(0, 5)) await remember("agent", agent.id, String(r).slice(0, 300), user.id, "rule");
+    const room = await webRoomOf(user, agent);
+    await agent_.say(room, `I'm ${agent.name}. From what you wrote, I'll ${String(d.purpose ?? brief).replace(/^[A-Z]/, (c) => c.toLowerCase()).replace(/\.$/, "")}. I've noted ${(d.rules ?? []).length} rules for myself; you can see and change them under Memory.${d.questions?.length ? ` To do this well: ${d.questions.slice(0, 2).join(" ")}` : ""}`);
+  } catch (e: any) { console.warn("[builder]", e.message); }
+}
 
 /** Step 1: the agent texts a 6-digit code to the number. Step 2: the person types it here; the web account and the
  *  phone's person become one row (the phone's row keeps its history, the web account's agents move over). */
@@ -120,14 +135,15 @@ export const routes: Record<string, any> = {
 
   "/v1/agents": {
     GET: h(async (_r, u) => Promise.all((await agentsOf(u.id)).map(withReadiness))),
-    POST: h(async (r, u) => { const b = await body(r); if (!String(b.name ?? "").trim()) fail(400, "give it a name"); return withReadiness(await createAgent(u, b.name, b.purpose)); }),
+    POST: h(async (r, u) => { const b = await body(r); if (!String(b.name ?? "").trim()) fail(400, "give it a name"); const a = await createAgent(u, b.name, b.purpose); draftFromBrief(u, a, String(b.purpose ?? "")).catch(() => {}); return withReadiness(a); }),
   },
   "/v1/agents/:id": {
     GET: h(async (_r, u, p) => withReadiness(await ownAgent(u, p.id))),
     PUT: h(async (r, u, p) => {
       const a = await ownAgent(u, p.id), b = await body(r), allowed = new Set(writeTools().map((t) => t.id));
       const auto = Array.isArray(b.auto_tools) ? b.auto_tools.filter((t: any) => allowed.has(String(t))) : null;
-      await sql`update agents set name=coalesce(${b.name ? String(b.name).trim().slice(0, 30) : null}, name), purpose=coalesce(${b.purpose != null ? String(b.purpose).slice(0, 500) : null}, purpose), auto_tools=coalesce(${auto ? JSON.stringify(auto) : null}::text::jsonb, auto_tools) where id=${a.id}`;
+      const maxUsd = b.max_usd_without_asking === null || b.max_usd_without_asking === "" ? null : b.max_usd_without_asking != null ? Math.max(0, Number(b.max_usd_without_asking)) : undefined;
+      await sql`update agents set name=coalesce(${b.name ? String(b.name).trim().slice(0, 30) : null}, name), purpose=coalesce(${b.purpose != null ? String(b.purpose).slice(0, 500) : null}, purpose), auto_tools=coalesce(${auto ? JSON.stringify(auto) : null}::text::jsonb, auto_tools), max_usd_without_asking=${maxUsd === undefined ? sql`max_usd_without_asking` : maxUsd}, spending_paused=coalesce(${typeof b.spending_paused === "boolean" ? b.spending_paused : null}, spending_paused) where id=${a.id}`;
       return withReadiness(await agentById(a.id));
     }),
     DELETE: h(async (_r, u, p) => {
