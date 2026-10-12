@@ -18,8 +18,8 @@ insert into agents (id, owner_id, name, auto_tools, created_at)
   on conflict do nothing;
 update users u set default_agent_id = a.id from agents a where a.owner_id = u.id and u.default_agent_id is null;
 update rooms r set agent_id = u.default_agent_id from users u where r.owner_id = u.id and r.agent_id is null;
+alter table memories drop constraint if exists memories_scope_type_check;   -- the old check allows only private|room: drop it before rewriting
 update memories m set scope_type = 'agent', scope_id = u.default_agent_id from users u where m.scope_type = 'private' and m.scope_id = u.id;
-alter table memories drop constraint if exists memories_scope_type_check;
 alter table memories add constraint memories_scope_type_check check (scope_type in ('agent', 'room'));
 alter table users drop column if exists agent_name;
 alter table users drop column if exists auto_tools;
