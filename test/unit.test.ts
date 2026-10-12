@@ -20,6 +20,8 @@ const lastTo = (space: string) => sent.filter((s) => s.space === space).at(-1)?.
 /** A scripted model: tool call first, then a text reply once a tool result is in the transcript. */
 const script = (call: model.ToolCall | null, reply: string) => { model.hooks.generate = async (req) => (call && !req.messages.some((m) => m.role === "tool") ? { text: "", toolCalls: [{ ...call, id: `c${++n}` }], model: `fake-${req.tier}`, costUsd: 0.001 } : { text: reply, toolCalls: [], model: `fake-${req.tier}`, costUsd: 0.001 }); };
 const say = (phone: string, text: string, space = `dm_${phone}`, isGroup = false) => agent.onInbound({ spaceId: space, isGroup, phone, text, externalId: `in_${++n}` });
+/** Most tests talk to a deployed (trained) agent: its owner is a web account. */
+const trained = async (phone: string) => { const u = await rooms.userByPhone(phone); await sql`update users set clerk_id=${"clerk_" + phone}, agent_name=coalesce(agent_name, 'Assistant') where id=${u.id}`; return rooms.userById(u.id); };
 
 beforeAll(async () => { await migrate(); });
 beforeEach(async () => {
@@ -29,6 +31,7 @@ beforeEach(async () => {
 
 test("a duplicate inbound message is stored once and answered once", async () => {
   script(null, "Hi there.");
+  await trained("+15550000001");
   await agent.onInbound({ spaceId: "dm_+15550000001", isGroup: false, phone: "+15550000001", text: "hello", externalId: "same" });
   await agent.onInbound({ spaceId: "dm_+15550000001", isGroup: false, phone: "+15550000001", text: "hello", externalId: "same" });
   expect((await sql`select count(*) n from messages where direction='in'`)[0].n).toBe("1");
@@ -37,6 +40,7 @@ test("a duplicate inbound message is stored once and answered once", async () =>
 
 test("a write waits for yes, runs on the smart tier, and the reply footer shows the verified action", async () => {
   script({ id: "", name: "reminder.schedule", input: { text: "stretch", in_minutes: 30 } }, "Set.");
+  await trained("+15550000002");
   await say("+15550000002", "remind me in 30 min to stretch");
   const run = (await sql`select * from runs`)[0];
   expect(run.status).toBe("waiting_approval");
@@ -52,6 +56,7 @@ test("a write waits for yes, runs on the smart tier, and the reply footer shows 
 
 test("no skips the write and nothing is scheduled", async () => {
   script({ id: "", name: "reminder.schedule", input: { text: "stretch", in_minutes: 30 } }, "Skipped it.");
+  await trained("+15550000003");
   await say("+15550000003", "remind me in 30 min to stretch");
   await say("+15550000003", "no");
   expect((await sql`select count(*) n from schedules`)[0].n).toBe("0");
@@ -60,6 +65,7 @@ test("no skips the write and nothing is scheduled", async () => {
 
 test("a 👍 tapback on the card approves it", async () => {
   script({ id: "", name: "reminder.schedule", input: { text: "water", in_minutes: 5 } }, "Done.");
+  await trained("+15550000004");
   await say("+15550000004", "remind me to water in 5");
   const card = (await sql`select out_message_id from approvals`)[0].out_message_id;
   await agent.onInbound({ spaceId: "dm_+15550000004", isGroup: false, phone: "+15550000004", text: "", externalId: `r${++n}`, reaction: { emoji: "👍", targetId: card } });
@@ -68,6 +74,7 @@ test("a 👍 tapback on the card approves it", async () => {
 });
 
 test("in a group the agent stays quiet unless named", async () => {
+  await trained("+15550000010");
   const owner = await rooms.userByPhone("+15550000010");
   await sql`update users set agent_name='Pip' where id=${owner.id}`;
   script(null, "Here!");
@@ -79,6 +86,7 @@ test("in a group the agent stays quiet unless named", async () => {
 
 test("an account tool without a connection is denied with a personal connect link", async () => {
   script({ id: "", name: "calendar.list_events", input: { from: "today" } }, "You'll need to connect Google first.");
+  await trained("+15550000019");
   await say("+15550000019", "what's on my calendar");
   const tool = (await sql`select content from (select transcript from runs) r, jsonb_to_recordset(r.transcript) as x(role text, content text) where role='tool'`)[0];
   expect(tool.content).toContain("DENIED");
@@ -87,8 +95,9 @@ test("an account tool without a connection is denied with a personal connect lin
 
 test("a member's accounts in a group need their consent once, asked in their DM", async () => {
   def({ id: "fake.account", kind: "read", connection: "google", description: "test", inputSchema: obj({}), async execute() { return { status: "SUCCEEDED", output: { ok: true } }; } });
+  await trained("+15550000020");
   await rooms.userByPhone("+15550000020");
-  const member = await rooms.userByPhone("+15550000021");
+  const member = await trained("+15550000021"); // first to speak in grp2, so its owner; a web account
   await sql`insert into connections (id, user_id, provider, cred_enc, created_at) values ('con_test', ${member.id}, 'google', ${seal({ access_token: "x" })}, 0)`;
   script({ id: "", name: "fake.account", input: {} }, "Nothing today.");
   await say("+15550000021", "@Assistant what's on my calendar", "grp2", true);
@@ -117,11 +126,13 @@ test("private memories never reach a group; room memories do", async () => {
 
 test("a reply that claims an action without a verified write gets corrected", async () => {
   script(null, "Sent it to Dana!");
+  await trained("+15550000040");
   await say("+15550000040", "email dana");
   expect(lastTo("dm_+15550000040")).toContain("nothing has actually been sent");
 });
 
 test("a reply pending when someone new joins a group is held and offered in the requester's DM", async () => {
+  await trained("+15550000050");
   const owner = await rooms.userByPhone("+15550000050");
   await sql`update users set agent_name='Pip' where id=${owner.id}`;
   await say("+15550000050", "hi all", "grp5", true); // the room now has history
@@ -135,6 +146,7 @@ test("a reply pending when someone new joins a group is held and offered in the 
 
 test("a correction starts on the smart tier; a lookup stays cheap", async () => {
   script(null, "ok");
+  await trained("+15550000060");
   await say("+15550000060", "what's the weather tomorrow");
   await say("+15550000060", "no, I meant Thursday");
   const tiers = (await sql`select request, tier from runs order by created_at`).map((r: any) => r.tier);
@@ -144,6 +156,7 @@ test("a correction starts on the smart tier; a lookup stays cheap", async () => 
 test("the daily cap stops the model and the agent says so", async () => {
   model.hooks.generate = null;
   process.env.MODEL_CAP_USD = "0"; process.env.OPENROUTER_API_KEY ||= "x";
+  await trained("+15550000070");
   await say("+15550000070", "hello");
   expect(lastTo("dm_+15550000070")).toContain("today's budget");
   delete process.env.MODEL_CAP_USD;
@@ -160,8 +173,10 @@ test("empty optional fields a model fills in are dropped, and a concrete time be
 test("a web account links to the phone's person with a texted code, keeping the phone's history", async () => {
   const phoneUser = await rooms.userByPhone("+15550000090");
   await sql`update users set agent_name='Pip' where id=${phoneUser.id}`;
-  await sql`insert into users (id, email, name, clerk_id, created_at) values ('usr_web', 'e@x.com', 'Ellie', 'clerk_1', 0)`;
+  await sql`insert into users (id, email, name, clerk_id, agent_name, created_at) values ('usr_web', 'e@x.com', 'Ellie', 'clerk_1', 'Pip', 0)`;
   const web = (await sql`select * from users where id='usr_web'`)[0];
+  await expect(linkPhoneStart(web, "+1 (555) 000-0090")).rejects.toThrow(/train it first/);
+  for (const t of ["Likes pasta", "Shops on Tuesdays", "Two kids"]) await remember("private", web.id, t, web.id, "preference");
   await linkPhoneStart(web, "+1 (555) 000-0090");
   const texted = lastTo("dm_+15550000090");
   const code = texted.match(/\b(\d{6})\b/)![1];
@@ -183,15 +198,27 @@ test("training in the web chat: no phone, replies are stored, memories carry a k
   const out = (await sql`select text from messages where room_id=${room.id} and direction='out'`)[0];
   expect(out.text).toBe("Noted: Tuesdays it is.");
   expect((await sql`select kind, scope_type, scope_id from memories`)[0]).toMatchObject({ kind: "store", scope_type: "private", scope_id: "usr_w2" });
-  // Deploy to iMessage: the phone's row inherits the memories.
-  await linkPhoneStart(web, "+15550000091");
+  // Deploy to iMessage once trained: the phone's row inherits the memories.
+  await sql`update users set agent_name='Carl' where id='usr_w2'`;
+  for (const t of ["Kids like noodles", "Busy Thursdays"]) await remember("private", web.id, t, web.id, "fact");
+  await linkPhoneStart({ ...web, agent_name: "Carl" }, "+15550000091");
   const code = lastTo("dm_+15550000091").match(/\b(\d{6})\b/)![1];
   const merged = await linkPhoneVerify(web, code);
-  expect((await sql`select scope_id from memories`)[0].scope_id).toBe(merged.id);
+  expect((await sql`select distinct scope_id from memories`).map((m: any) => m.scope_id)).toEqual([merged.id]);
   expect(await rooms.webRoomOf(merged)).toMatchObject({ owner_id: merged.id });
 });
 
+test("a text from a number that isn't a trained account gets one pointer, not a conversation", async () => {
+  script(null, "should not be called");
+  await say("+15550000099", "hello?");
+  expect(lastTo("dm_+15550000099")).toContain("Train yours first");
+  await say("+15550000099", "hello??");
+  expect(sent.filter((s) => s.space === "dm_+15550000099").length).toBe(1);
+  expect((await sql`select count(*) n from runs`)[0].n).toBe("0");
+});
+
 test("the trust list lets a write run without a card", async () => {
+  await trained("+15550000095");
   const u = await rooms.userByPhone("+15550000095");
   await sql`update users set auto_tools='["reminder.schedule"]'::jsonb where id=${u.id}`;
   script({ id: "", name: "reminder.schedule", input: { text: "water", in_minutes: 5 } }, "Set.");

@@ -106,37 +106,30 @@ function PhoneMock() {
 }
 
 function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null }) {
-  const [phone, setPhone] = useState(""), [state, setState] = useState<"idle" | "busy" | "sent" | "error">("idle"), [err, setErr] = useState(""), [auth, setAuth] = useState(false);
-  const submit = async (e: any) => { e.preventDefault(); setState("busy"); try { await api("/start", { phone }); setState("sent"); } catch (x: any) { setErr(x.message); setState("error"); } };
+  const [auth, setAuth] = useState(false);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && setAuth(false); addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+  const cta = signedIn ? <a className="gm-btn dark" href="#/app">Open your agent</a> : clerk ? <button className="gm-btn dark" onClick={() => setAuth(true)}>Train your agent</button> : null;
   return <div className="landing gm">
     <nav className="gm-nav"><div className="gm-logo">agents<Eyes size={26} /></div><div className="gm-links" />
-      <div className="row" style={{ gap: 14 }}>{signedIn ? <a className="gm-btn dark" href="#/app">Open app</a> : clerk ? <><button className="gm-link" onClick={() => setAuth(true)}>Sign in</button><button className="gm-btn dark" onClick={() => setAuth(true)}>Train your agent</button></> : null}</div></nav>
+      <div className="row" style={{ gap: 14 }}>{!signedIn && clerk && <button className="gm-link" onClick={() => setAuth(true)}>Sign in</button>}{cta}</div></nav>
     <section className="gm-hero">
       <Sparkle size={22} style={{ left: "12%", top: 70 }} />
       <p className="gm-hand">psst… hover the letters ↓</p>
-      <div className="gm-title-wrap"><LetterHero text="text your agent" /></div>
-      <p className="gm-for"><span>for</span><Rotator /><span className="gm-anywhere">in iMessage.</span></p>
-      <p className="gm-sub">One assistant that's yours. It works for you in your own chat, and in any group chat you add it to: the trip, dinner, the family's week, a group order. It asks before it sends, books or pays, and it only says something is done when it is.</p>
-      <div className="gm-bubble" style={{ marginTop: 26 }}>
-        {state === "sent" ? <div><h3 style={{ font: "800 22px Rubik, sans-serif" }}>Check your messages.</h3><p className="gm-p" style={{ margin: "8px auto 0" }}>Your assistant just texted you. Reply there; the rest happens in iMessage.</p></div>
-          : <form onSubmit={submit} className="row wrap" style={{ gap: 10, justifyContent: "center" }}>
-            <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} type="tel" autoComplete="tel" placeholder="Your iPhone number" required style={{ flex: 1, minWidth: 220, border: "2px solid #111", borderRadius: 14, padding: "11px 14px", fontSize: 17, background: "#fff", color: "#111" }} />
-            <button className="gm-btn dark" disabled={state === "busy"}>{state === "busy" ? "Texting…" : "Text me"}</button>
-            {state === "error" && <div className="small" style={{ width: "100%", color: "#b42318" }}>{err}</div>}
-            <div className="gm-fine" style={{ width: "100%", marginTop: 8 }}>US and Canada numbers · nothing to install</div>
-          </form>}
-      </div>
+      <div className="gm-title-wrap"><LetterHero text="train your agent" /></div>
+      <p className="gm-for"><span>for</span><Rotator /><span className="gm-anywhere">then text it.</span></p>
+      <p className="gm-sub">One assistant that's yours. Teach it first: what to take off your plate, how you like things done, who and what matters. Then deploy it to iMessage, and into any group chat you add it to. It asks before it sends, books or pays, and it only says something is done when it is.</p>
+      <div className="gm-ctas">{cta}</div>
+      <p className="gm-fine">Nothing to install · it earns trust one action at a time</p>
     </section>
     <section className="gm-sec gm-split" style={{ paddingTop: 20 }}>
       <div className="gm-steps">
-        {[["1", "Text it what you need.", "Like you'd text a friend. It remembers what matters to you.", "#c6f432"], ["2", "It does the work.", "Calendar, email, the web, a real browser, even your phone. It asks before anything goes out.", "#ffe14d"], ["3", "Add it to any group chat.", "Trips, dinners, the family. It acts for the group, and never touches anyone's accounts without their say.", "#9be7c4"]].map(([n, b, p, c]) =>
+        {[["1", "Train it.", "Chat with it on the web. What you'd like to hand off, how you want it to behave, the people and routines that matter. It remembers, and you can see and fix what it kept.", "#c6f432"], ["2", "Deploy it to iMessage.", "When it knows enough, link your number. It texts you, with everything you taught it, and works in any group chat you add it to.", "#ffe14d"], ["3", "Hand over more as it earns it.", "At first it suggests and you decide. Tick an action in Settings when it has earned it, and it runs that without asking.", "#9be7c4"]].map(([n, b, p, c]) =>
           <div key={n} className="gm-card" style={{ "--c": c } as any}><div className="gm-step"><span className="gm-num">{n}</span><div><b>{b}</b><p>{p}</p></div></div></div>)}
       </div>
       <PhoneMock />
     </section>
     <section className="gm-sec gm-end"><h2 className="gm-h2">Your group chat just got<br />a new <Circled>friend</Circled></h2>
-      <div className="gm-ctas"><a className="gm-btn dark" href="#top" onClick={(e) => { e.preventDefault(); scrollTo({ top: 0, behavior: "smooth" }); }}>Text me</a></div>
+      <div className="gm-ctas">{cta}</div>
       <p className="gm-fine">It asks before it sends, books or pays · Private chats stay private</p></section>
     {auth && clerk && <div className="modal-bg" onClick={(e) => e.target === e.currentTarget && setAuth(false)}><div className="modal bare"><SignIn routing={"virtual" as any} withSignUp /></div></div>}
   </div>;
@@ -163,7 +156,7 @@ function Thread({ roomId, composer }: { roomId: string; composer: boolean }) {
   return <div className="convo" style={{ border: "1px solid var(--line)", borderRadius: "var(--r)", background: "var(--panel)", height: "68vh", minHeight: 420 }}>
     <div className="timeline">{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === "out" ? "agent" : ""}`}><div className="body"><div className="who">{m.direction === "out" ? "Agent" : m.sender_name ?? "You"} <span className="faint small">{fmt(m.created_at)}</span></div><div className="text">{m.text}</div></div></div>)}
       {working && <div className="waiting"><span className="dots"><span /><span /><span /></span>working…</div>}
-      {!msgs.length && !working && <div className="empty">Start by telling it about your week, who's in your household, what everyone eats, where you shop. Send photos of the fridge and pantry. It will save what matters, and you can check Memory to see what it kept.</div>}
+      {!msgs.length && !working && <div className="empty">Everything you tell it about yourself is training. Start with what you'd like to hand off, then how you want it to behave: when to ask, when to just do it, how to write. Add the people and routines that matter. Photos work too. Check Memory to see what it kept.</div>}
       <div ref={end} /></div>
     {composer && <form onSubmit={send} className="composer col" style={{ gap: 6 }}>
       {files.length > 0 && <div className="row wrap small muted">{files.map((f) => <span key={f.file_id} className="gm-chip">{f.name}</span>)}</div>}
@@ -177,17 +170,17 @@ function Thread({ roomId, composer }: { roomId: string; composer: boolean }) {
 function Train({ me }: { me: any }) {
   const [room, setRoom] = useState<any>(null);
   useEffect(() => { api("/v1/rooms").then((rs) => setRoom(rs.find((r: any) => r.channel === "web"))); }, []);
-  return <div><div className="row between"><div><h1>Train {me.agent_name ?? "your agent"}</h1><p className="muted">Teach it here first. What it learns is what it uses in iMessage and in your group chats.</p></div></div>
+  return <div><div className="row between"><div><h1>Train {me.agent_name ?? "your agent"}</h1><p className="muted">Teach it here first. What it learns is what it uses in iMessage and in your group chats.{me.readiness && !me.phone && <> {me.readiness.ready ? <a href="#/app/settings" style={{ textDecoration: "underline" }}>It's ready to deploy.</a> : `It knows ${me.readiness.memories} of ${me.readiness.min_memories} things it needs before deploying.`}</>}</p></div></div>
     <div className="mt16">{room ? <Thread roomId={room.id} composer /> : null}</div></div>;
 }
 function Memory() {
   const [list, setList] = useState<any[]>([]), [text, setText] = useState(""), [kind, setKind] = useState("preference"), [err, setErr] = useState("");
-  const KINDS = ["preference", "person", "schedule", "store", "inventory", "decision", "fact"];
+  const KINDS = ["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact"];
   const load = () => api("/v1/memories").then(setList);
   useEffect(() => { load(); }, []);
   const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/memories", { text, kind }); setText(""); load(); } catch (x: any) { setErr(x.message); } };
-  return <div><h1>Memory</h1><p className="muted">Everything it knows about you, dated. Delete what's wrong; add what it should know.</p>
-    <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Uber Eats members get 30% off every Tuesday, so we order groceries on Tuesdays" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
+  return <div><h1>Memory</h1><p className="muted">Everything it knows about you, dated. Rules are how you want it to behave; it follows them on every run. Delete what's wrong; add what it should know.</p>
+    <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Ask me before emailing anyone at work · Uber Eats is 30% off on Tuesdays, so order then · My mom is Linda, in Boston" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
     {KINDS.filter((k) => list.some((m) => m.kind === k)).map((k) => <div key={k}><h2>{k}</h2><div className="list">{list.filter((m) => m.kind === k).map((m) => <div key={m.id} className="item"><div className="grow">{m.text}<div className="small faint">{fmt(m.created_at)}{m.scope_type === "room" ? ` · shared in ${m.room_name ?? "a group"}` : ""}</div></div><button className="btn ghost" onClick={async () => { await api(`/v1/memories/${m.id}`, undefined, "DELETE"); load(); }}>Forget</button></div>)}</div></div>)}
     {!list.length && <div className="empty mt16">Nothing yet. Train it, or add a line above.</div>}</div>;
 }
@@ -202,10 +195,14 @@ function PhoneLink({ me, onLinked }: { me: any; onLinked: (u: any) => void }) {
   const [phone, setPhone] = useState(""), [code, setCode] = useState(""), [step, setStep] = useState<"phone" | "code">("phone"), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
   const go = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { if (step === "phone") { await api("/v1/me/phone", { phone }); setStep("code"); } else onLinked(await api("/v1/me/phone/verify", { code })); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
   if (me.phone) return <div className="card"><b>Deployed to iMessage</b><div className="small muted">Linked to {me.phone}. Text it there; everything it learned here comes along.</div></div>;
-  return <form onSubmit={go} className="card col"><b>Deploy to iMessage</b><div className="small muted">When it knows enough, give it your iPhone number. It texts you a code, and from then on it works in Messages and in any group you add it to.</div>
+  const r = me.readiness ?? { named: false, memories: 0, min_memories: 3, ready: false };
+  return <form onSubmit={go} className="card col"><b>Deploy to iMessage</b><div className="small muted">It has to be trained before it texts anyone.</div>
+    <div className="check">{r.named ? "✅" : "⬜️"} It has a name{r.named ? ` (${me.agent_name})` : " — set it above, or tell it in Train"}</div>
+    <div className="check">{r.memories >= r.min_memories ? "✅" : "⬜️"} It knows at least {r.min_memories} things about you ({r.memories} so far)</div>
+    {!r.ready ? <div className="small muted">Go to Train and teach it. Come back when both are ticked.</div> : <><div className="small muted">Give it your iPhone number. It texts you a code, and from then on it works in Messages and in any group you add it to.</div>
     {step === "phone" ? <input className="input" type="tel" autoComplete="tel" placeholder="+1 555 123 4567" value={phone} onChange={(e) => setPhone(e.target.value)} required /> : <input className="input" inputMode="numeric" placeholder="6-digit code from the text" value={code} onChange={(e) => setCode(e.target.value)} required />}
     {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
-    <button className="btn primary" disabled={busy}>{step === "phone" ? "Text me a code" : "Link"}</button></form>;
+    <button className="btn primary" disabled={busy}>{step === "phone" ? "Text me a code" : "Link"}</button></>}</form>;
 }
 function Settings({ me, setMe }: { me: any; setMe: (u: any) => void }) {
   const [f, setF] = useState({ agent_name: me.agent_name ?? "", name: me.name ?? "", tz: me.tz ?? "" }), [tools, setTools] = useState<{ id: string; description: string }[]>([]), [auto, setAuto] = useState<string[]>(me.auto_tools ?? []), [saved, setSaved] = useState("");
@@ -214,7 +211,7 @@ function Settings({ me, setMe }: { me: any; setMe: (u: any) => void }) {
   const toggle = (id: string) => setAuto((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
   return <div><h1>Settings</h1>
     <form onSubmit={save} className="card col mt16" style={{ maxWidth: 560 }}>
-      <label className="small muted">What you call it</label><input className="input" value={f.agent_name} onChange={(e) => setF({ ...f, agent_name: e.target.value })} placeholder="Carl" />
+      <label className="small muted">What you call it</label><input className="input" value={f.agent_name} onChange={(e) => setF({ ...f, agent_name: e.target.value })} placeholder="Pip" />
       <label className="small muted">Your name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
       <label className="small muted">Time zone (IANA)</label><input className="input" value={f.tz} onChange={(e) => setF({ ...f, tz: e.target.value })} placeholder="America/New_York" />
       <h2>Trust</h2><p className="small muted" style={{ margin: 0 }}>Everything below asks you first. Tick an action once it has earned it, and it runs without asking.</p>

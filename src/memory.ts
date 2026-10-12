@@ -5,7 +5,9 @@ import { sql, id, now } from "./db";
 
 export type Scope = "private" | "room";
 
-export const KINDS = ["fact", "preference", "person", "schedule", "store", "inventory", "decision"] as const;
+export const KINDS = ["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact"] as const;
+/** Standing instructions ("how I want you to behave"): every run sees all of them, not just the ones a query matches. */
+export const rules = (room: { id: string; kind: string }, requesterId: string | null) => sql`select * from memories where kind='rule' and ((scope_type='room' and scope_id=${room.id}) or (scope_type='private' and scope_id=${room.kind === "private" && requesterId ? requesterId : ""})) order by created_at`;
 export async function remember(scope: Scope, scopeId: string, text: string, createdBy: string, kind = "fact") {
   const norm = text.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
   const dup = (await sql`select id from memories where scope_type=${scope} and scope_id=${scopeId} and lower(regexp_replace(text, '[^[:alnum:] ]', '', 'g'))=${norm}`)[0];

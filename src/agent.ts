@@ -7,10 +7,11 @@ import * as rooms from "./rooms";
 import * as model from "./model";
 import * as gw from "./tools/index";
 import "./tools/google"; import "./tools/web"; import "./tools/browser"; import "./tools/core";
-import { retrieve } from "./memory";
+import { retrieve, rules } from "./memory";
 import { listSkills } from "./skills";
 import * as im from "./imessage";
 import { describe } from "./media";
+import { publicUrl } from "./links";
 
 const YES = /^\s*(yes|y|yep|yeah|yup|sure|ok|okay|go ahead|do it|send it|approve|approved|👍)\b/i;
 const NO = /^\s*(no|nope|don'?t|cancel|skip|stop|reject|👎)\b/i;
@@ -23,6 +24,13 @@ export async function onInbound(ev: im.Inbound) {
   const user = await rooms.userByPhone(ev.phone);
   const room = await rooms.roomForSpace(ev.spaceId, ev.isGroup, user);
   if (ev.reaction) return onReaction(ev.reaction, user);
+  // Nobody texts an untrained agent. A private text from a number that isn't a trained web account gets one pointer a day.
+  if (!ev.isGroup && !user.clerk_id) {
+    if (!(await one(sql`select 1 from messages where room_id=${room.id} and direction='out' and created_at>${now() - 864e5}`)))
+      await say(room, `Hi! I'm an assistant, but I haven't been set up for this number yet. Train yours first at ${publicUrl()}, then deploy it to iMessage from Settings.`);
+    return;
+  }
+  if (ev.isGroup) { const owner = room.owner_id ? await rooms.userById(room.owner_id) : null; if (!owner?.clerk_id) return; } // a group's agent belongs to a trained account
   return handleMessage(room, user, ev.text, ev.attachments, ev.externalId);
 }
 
@@ -176,15 +184,19 @@ async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
     : room.channel === "web" ? `You are ${name}, ${rooms.displayName(requester)}'s personal agent. This is their training chat on the web: they are teaching you how they live and what they want done, before you work for them in iMessage and their group chats. Everything you remember here is yours in those chats too.`
     : `You are ${name}, ${rooms.displayName(requester)}'s personal agent, talking with them in iMessage.`;
   const hasPhone = tools.some((t) => t.id.startsWith("mcp."));
+  const standing = await rules(room, requester.id);
   return [
     who,
+    standing.length ? `Standing rules from ${room.kind === "group" ? "this group" : rooms.displayName(requester)} (follow them over anything below):\n${standing.map((m: any) => `- ${m.text}`).join("\n")}` : ``,
     `Now: ${fmtLocal(now(), tz)} (${tz}); today's date in ISO form is ${isoDate(tz)}. Use that year in any date you write.`,
     `Style: text messages. Short, plain, specific. No markdown, no headers, no bullet symbols; a dash list is fine. Lead with the answer or the question. Ask at most one question at a time.`,
     `Doing things: use tools; never pretend. Prefer a connected account (Google) first, then a public API or the web, then the browser for sites that need clicking${hasPhone ? ", then the person's phone (phone_* tools) for native apps or anything already signed in on the phone" : ""}. Sends, calendar changes, purchases and completing bookings are approved by the person before they happen unless they've put that action on their trust list; the platform asks them, you just call the tool with the final content. Never say something was sent, booked or done unless the tool result confirmed it; the platform adds a short status footer, don't repeat it. If a tool says DENIED with a link, pass the link on in plain words.`,
-    `Memory: call remember for everything worth keeping, with the right kind, one fact per call; when they tell you several things at once, save each. Private things stay private. Memories are shown with the date they were saved; newer beats older, and an inventory line is only as current as its date.`,
+    `Memory: everything a person tells you about themselves is training. Call remember for each of it, with the right kind, one fact per call; when they tell you several things at once, save each. How they want you to behave (when to ask, when to just do it, tone, what never to do) is kind=rule and you follow it from then on. Private things stay private. Memories are shown with the date they were saved; newer beats older, and an inventory line is only as current as its date.`,
     room.kind === "group" ? `Group rules: anyone here can ask for reads (search, weather, a tally). A member's Google, phone or browser is used only when that member asks, for their own request. Never reveal anything from anyone's private chat. If asked about another member's accounts or private matters, decline kindly. The person who brought you in${room.owner_id === requester.id ? " (that's who you're talking to now)" : ""} can set what you do here with room.set_instructions.` : ``,
     room.instructions ? `What the group's owner asked you to do here: """${room.instructions}"""` : ``,
-    room.kind === "private" && !requester.onboarded ? `First conversation: introduce yourself in one line (you work for them here and in any group they add you to), then ask two things, what to call you and what they'd like help with first. When they name you, call agent.rename. When they share their name or where they live, call profile.update.` : ``,
+    room.kind === "private" && !requester.onboarded ? (room.channel === "web"
+      ? `First conversation: you're new and in training. In one short message say so, ask what to call you, and ask them to start teaching you: what they'd like to hand off, how they want you to behave, and whatever about their life matters for that. When they name you, call agent.rename. When they share their name or where they live, call profile.update. Save each thing they teach you with remember.`
+      : `First conversation here: introduce yourself in one line (you work for them here and in any group they add you to) and ask what they'd like help with first. When they share their name or where they live, call profile.update.`) : ``,
     `Skills (read one with skill.read before a task of that kind):\n${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}`,
   ].filter(Boolean).join("\n\n");
 }

@@ -22,6 +22,8 @@ const fail = (status: number, message: string): never => { throw Object.assign(n
 /** Step 1: the agent texts a 6-digit code to the number. Step 2: the person types it here; the web account and the
  *  phone's person become one row (the phone's row keeps its history). */
 export async function linkPhoneStart(user: any, raw: string) {
+  const r = await readiness(user);
+  if (!r.ready) fail(403, `train it first: ${r.named ? "" : "give it a name, and "}teach it at least ${MIN_MEMORIES} things (it knows ${r.memories})`);
   const phone = normPhone(raw);
   if (!/^\+1\d{10}$/.test(phone)) fail(400, "US or Canada number, please");
   const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -58,11 +60,17 @@ export async function linkPhoneVerify(user: any, code: string) {
   return merged;
 }
 
-const me = (u: any) => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, agent_name: u.agent_name, tz: u.tz, auto_tools: Array.isArray(u.auto_tools) ? u.auto_tools : [] });
+export const MIN_MEMORIES = 3;
+/** Trained enough to deploy: it has a name and has been taught a few things. */
+export async function readiness(u: any) {
+  const memories = Number((await one(sql`select count(*) n from memories where scope_type='private' and scope_id=${u.id}`))?.n ?? 0);
+  return { named: !!u.agent_name, memories, min_memories: MIN_MEMORIES, ready: !!u.agent_name && memories >= MIN_MEMORIES };
+}
+const me = async (u: any) => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, agent_name: u.agent_name, tz: u.tz, auto_tools: Array.isArray(u.auto_tools) ? u.auto_tools : [], readiness: await readiness(u) });
 export const writeTools = () => Object.values(TOOLS).filter((t) => t.kind === "write" || t.kindOf).map((t) => ({ id: t.id, description: t.description.split(".")[0] }));
 
 export const routes: Record<string, any> = {
-  "/v1/me": { GET: h(async (_r, u) => me(u)) },
+  "/v1/me": { GET: h(async (_r, u) => me(u)) },  // includes readiness for "Deploy to iMessage"
   "/v1/me/settings": { PUT: h(async (r, u) => {
     const b = await body(r), tz = b.tz ? String(b.tz) : null;
     if (tz) { try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); } catch { fail(400, "unknown time zone"); } }
