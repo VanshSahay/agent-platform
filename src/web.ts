@@ -68,6 +68,19 @@ export async function linkPhoneVerify(user: any, code: string) {
   return merged;
 }
 
+/** The home: what needs you, what's on the radar, what happened. */
+export async function homeData(u: any) {
+  const need = await sql`select a.id, a.kind, a.summary, a.created_at, a.requester_id, r.name room_name, r.kind room_kind, r.channel, ag.name agent_name, rq.name requester_name
+    from approvals a left join rooms r on r.id=a.room_id left join agents ag on ag.id=r.agent_id left join users rq on rq.id=a.requester_id where a.user_id=${u.id} and a.status='pending' order by a.created_at desc`;
+  const held = await sql`select ru.id, ru.reply, ru.created_at, r.name room_name, ag.name agent_name from runs ru join rooms r on r.id=ru.room_id left join agents ag on ag.id=r.agent_id where ru.requester_id=${u.id} and ru.status='held' order by ru.created_at desc`;
+  const radar = await sql`select s.id, s.text, s.kind, s.next_at, s.spec, r.name room_name, r.kind room_kind, r.channel, ag.name agent_name from schedules s join rooms r on r.id=s.room_id left join agents ag on ag.id=r.agent_id where s.user_id=${u.id} and s.status='active' order by s.next_at`;
+  const working = await sql`select ru.id, ru.request, ru.status, ru.created_at, r.name room_name, r.channel, ag.name agent_name from runs ru join rooms r on r.id=ru.room_id left join agents ag on ag.id=r.agent_id where ru.requester_id=${u.id} and ru.status in ('running','waiting_approval','waiting_consent') order by ru.created_at desc limit 20`;
+  const activity = await sql`select ru.id, ru.request, ru.status, ru.reply, ru.steps, ru.cost_usd, ru.updated_at, r.name room_name, r.kind room_kind, r.channel, ag.name agent_name from runs ru join rooms r on r.id=ru.room_id left join agents ag on ag.id=r.agent_id where ru.requester_id=${u.id} and ru.status in ('done','failed') order by ru.updated_at desc limit 30`;
+  return { need_input: [...need.map((a: any) => ({ type: a.kind === "consent" ? "consent" : "approval", ...a })), ...held.map((h: any) => ({ type: "held", ...h }))],
+    on_radar: { schedules: radar.map((s: any) => ({ ...s, next: s.next_at ? fmtLocal(s.next_at, u.tz) : null })), working },
+    activity };
+}
+
 const me = async (u: any) => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, tz: u.tz, default_agent_id: (await defaultAgentOf(u)).id, agents: await Promise.all((await agentsOf(u.id)).map(withReadiness)) });
 export const writeTools = () => Object.values(TOOLS).filter((t) => t.kind === "write" || t.kindOf).map((t) => ({ id: t.id, description: t.description.split(".")[0] }));
 const memoryVisible = async (u: any, m: any) => m.scope_type === "agent" ? (await agentById(m.scope_id))?.owner_id === u.id : !!(await one(sql`select 1 from room_members where room_id=${m.scope_id} and user_id=${u.id}`));
@@ -82,6 +95,26 @@ export const routes: Record<string, any> = {
     return me(await one(sql`select * from users where id=${u.id}`));
   }) },
   "/v1/tools": { GET: h(async () => writeTools()) },
+  "/v1/home": { GET: h(async (_r, u) => homeData(u)) },
+  "/v1/approvals/:id": { POST: h(async (r, u, p) => {
+    const a = await one(sql`select * from approvals where id=${p.id} and user_id=${u.id} and status='pending'`);
+    if (!a) fail(404, "nothing to decide");
+    const yes = (await body(r)).decision === "approve";
+    agent.decide(a, yes).catch((e) => console.error("[web approve]", e));
+    return { ok: true };
+  }) },
+  "/v1/runs/:id/held": { POST: h(async (r, u, p) => {
+    const run = await one(sql`select * from runs where id=${p.id} and requester_id=${u.id} and status='held'`);
+    if (!run) fail(404, "nothing held");
+    if ((await body(r)).decision === "post") await agent.releaseHeld(run); else await sql`update runs set status='done', updated_at=${now()} where id=${run.id}`;
+    return { ok: true };
+  }) },
+  "/v1/connections/:id/settings": { PUT: h(async (r, u, p) => {
+    const c = await one(sql`select * from connections where id=${p.id} and user_id=${u.id}`); if (!c) fail(404, "no such connection");
+    const b = await body(r), cfg = { ...J(c.config, {}), ...(typeof b.send_as_me === "boolean" ? { send_as_me: b.send_as_me } : {}) };
+    await sql`update connections set config=${JSON.stringify(cfg)}::text::jsonb where id=${c.id}`;
+    return { ok: true, send_as_me: !!cfg.send_as_me };
+  }) },
   "/v1/me/phone": { POST: h(async (r, u) => linkPhoneStart(u, String((await body(r)).phone ?? ""))) },
   "/v1/me/phone/verify": { POST: h(async (r, u) => me(await linkPhoneVerify(u, String((await body(r)).code ?? "")))) },
 
@@ -138,7 +171,7 @@ export const routes: Record<string, any> = {
     const messages = await sql`select m.id, m.direction, m.text, m.created_at, m.run_id, us.name sender_name, r.steps from messages m left join users us on us.id=m.sender_id left join runs r on r.id=m.run_id and m.direction='out' where m.room_id=${p.id} order by m.created_at desc limit 100`;
     return { messages: messages.reverse(), working: await agent.working(p.id) };
   }) },
-  "/v1/connections": { GET: h(async (_r, u) => sql`select id, provider, label, account, status, created_at, last_used_at, case when provider='mcp' then jsonb_array_length(coalesce(config->'tools','[]'::jsonb)) else null end tools from connections where user_id=${u.id} and status not in ('revoked','pending') order by created_at`) },
+  "/v1/connections": { GET: h(async (_r, u) => sql`select id, provider, label, account, status, created_at, last_used_at, coalesce((config->>'send_as_me')::boolean, false) send_as_me, case when provider='mcp' then jsonb_array_length(coalesce(config->'tools','[]'::jsonb)) else null end tools from connections where user_id=${u.id} and status not in ('revoked','pending') order by created_at`) },
   "/v1/connections/:id": { DELETE: h(async (_r, u, p) => { await sql`update connections set status='revoked', cred_enc=null where id=${p.id} and user_id=${u.id}`; return { ok: true }; }) },
   "/v1/connections/google/link": { POST: h(async (_r, u) => ({ url: await makeLink(u.id, "google") })) },
   "/v1/connections/browser/link": { POST: h(async (r, u) => { const site = normSite((await body(r)).site); if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(site)) fail(400, "a website address like ubereats.com"); return { url: await makeLink(u.id, "browser", { site }) }; }) },

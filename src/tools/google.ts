@@ -1,6 +1,6 @@
 // Gmail, Calendar, Contacts, Drive on the person's own Google account. OAuth lives in server.ts; tokens refresh here.
 import { def, obj, str, num, ToolError, type Ctx } from "./index";
-import { sql, seal, unseal, now, zoned, fromZoned, fmtLocal } from "../db";
+import { sql, seal, unseal, now, zoned, fromZoned, fmtLocal, J } from "../db";
 
 const refreshing = new Map<string, Promise<void>>();
 async function token(ctx: Ctx) {
@@ -48,12 +48,23 @@ def({
 });
 
 def({
-  id: "email.send", kind: "write", connection: "google", description: "Send an email from the person's Gmail. The platform shows them the exact email and asks for their OK first; just call it with the final content.",
+  id: "email.draft", kind: "read", connection: "google", description: "Save a real draft in the person's Gmail (Drafts folder), ready for them to send. Use when they want to review or send it themselves, or when sending as them is switched off.",
+  inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str(), thread_id: str() }, ["to", "subject", "body"]),
+  async execute({ to, subject, body, thread_id }, ctx) {
+    const raw = b64url(`To: ${to.join(", ")}\r\nSubject: ${String(subject).replace(/[\r\n]+/g, " ")}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`);
+    const j: any = await (await call("https://gmail.googleapis.com/gmail/v1/users/me/drafts", { method: "POST", headers: await token(ctx), body: JSON.stringify({ message: { raw, threadId: thread_id } }) })).json();
+    return { status: "SUCCEEDED", output: { draft_id: j.id, to, subject, where: "Gmail Drafts" } };
+  },
+});
+
+def({
+  id: "email.send", kind: "write", connection: "google", description: "Send an email from the person's Gmail, as them. Only works when they have switched on 'send email as me' for that account; otherwise save a draft with email.draft. The platform shows them the exact email and asks for their OK first; just call it with the final content.",
   inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str(), thread_id: str() }, ["to", "subject", "body"]),
   summarize: (i) => `Send email to ${i.to.join(", ")}: "${i.subject}"`,
   preview: (i) => `To: ${i.to.join(", ")}\nSubject: ${i.subject}\n\n${String(i.body).slice(0, 1500)}`,
   verify: (o) => o?.id ?? null,
   async execute({ to, subject, body, thread_id }, ctx) {
+    if (!J(ctx.connection.config, {}).send_as_me) throw new ToolError("PERMISSION", "sending email as them is switched off (it's off until they turn it on under Connections → Google). Save a draft with email.draft instead and tell them where it is.");
     if (to.some((a: string) => !/^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(a))) throw new ToolError("BUSINESS_RULE", "invalid recipient address");
     subject = subject.replace(/[\r\n]+/g, " ");
     const msgId = `<${ctx.idempotencyKey.slice(0, 40)}@agent.mail>`; // lets us ask Gmail afterwards whether this exact email went out

@@ -139,12 +139,12 @@ function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null 
 // ---------------- the signed-in app ----------------
 function Shell({ page, me, agent, children }: { page: string; me: any; agent?: any; children: ReactNode }) {
   const { signOut } = useClerk();
-  const top: [string, string, string][] = [["/app", "🤖", "Agents"], ["/app/deploy", "📲", "Deploy"], ["/app/chats", "💬", "Chats"], ["/app/connections", "🔌", "Connections"], ["/app/reminders", "⏰", "Reminders"], ["/app/activity", "🧾", "Activity"], ["/app/settings", "⚙️", "You"]];
+  const top: [string, string, string][] = [["/app", "🏠", "Home"], ["/app/agents", "🤖", "Agents"], ["/app/deploy", "📲", "Deploy"], ["/app/chats", "💬", "Chats"], ["/app/connections", "🔌", "Connections"], ["/app/reminders", "⏰", "Reminders"], ["/app/activity", "🧾", "Activity"], ["/app/settings", "⚙️", "You"]];
   const sub: [string, string, string][] = agent ? [[`/app/a/${agent.id}`, "🎓", "Train"], [`/app/a/${agent.id}/memory`, "🧠", "Memory"], [`/app/a/${agent.id}/settings`, "🎚️", "Trust & name"]] : [];
   return <div className="app"><nav className="rail"><a className="logo" href="#/"><i />agents</a>
-    {top.slice(0, 1).map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
+    {top.slice(0, 2).map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
     {agent && <>{sub.map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""} style={{ paddingLeft: 24 }}><span className="ic">{ic}</span>{l} <span className="faint small">· {agent.name}</span></a>)}</>}
-    {top.slice(1).map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
+    {top.slice(2).map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
     <div className="sep" /><a href="#/" onClick={() => signOut()}><span className="ic">↩</span>Sign out</a></nav>
     <main className="main"><div className="page">{children}</div></main></div>;
 }
@@ -177,6 +177,25 @@ function Steps({ steps }: { steps: any[] }) {
 }
 const Ready = ({ r }: { r: any }) => <span className={`small ${r.ready ? "" : "muted"}`}>{r.ready ? "✅ ready to deploy" : `${r.named ? "✅" : "⬜️"} named · ${r.memories}/${r.min_memories} things learned`}</span>;
 
+function Home({ me }: { me: any }) {
+  const [d, setD] = useState<any>(null), [tab, setTab] = useState<"input" | "radar" | "activity">("input");
+  const load = () => api("/v1/home").then(setD).catch(() => {});
+  useEffect(() => { load(); const t = setInterval(load, 10_000); return () => clearInterval(t); }, []);
+  if (!d) return null;
+  const decide = async (id: string, decision: "approve" | "reject") => { await api(`/v1/approvals/${id}`, { decision }); load(); };
+  const held = async (id: string, decision: "post" | "drop") => { await api(`/v1/runs/${id}/held`, { decision }); load(); };
+  const where = (x: any) => x.channel === "web" ? "training" : x.room_kind === "group" ? x.room_name ?? "group" : "your chat";
+  const tabs: [typeof tab, string, number][] = [["input", "Need your input", d.need_input.length], ["radar", "On radar", d.on_radar.schedules.length + d.on_radar.working.length], ["activity", "Last activity", d.activity.length]];
+  return <div><h1>Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}{me.name ? `, ${me.name.split(" ")[0]}` : ""}.</h1>
+    <div className="row mt16" style={{ gap: 6 }}>{tabs.map(([k, l, n]) => <button key={k} className={`btn ${tab === k ? "primary" : ""}`} onClick={() => setTab(k)}>{l}{n ? <span className="count" style={{ marginLeft: 6 }}>{n}</span> : null}</button>)}</div>
+    {tab === "input" && <div className="list mt16">{d.need_input.map((x: any) => <div key={x.id} className="item"><div className="grow"><b>{x.type === "held" ? "Someone new joined while I was replying" : x.summary}</b><div className="small muted">{x.agent_name} · {where(x)}{x.requester_name ? ` · asked by ${x.requester_name}` : ""} · {fmt(x.created_at)}</div>{x.type === "held" && <pre className="code">{x.reply}</pre>}</div>
+      {x.type === "held" ? <><button className="btn primary" onClick={() => held(x.id, "post")}>Post it</button><button className="btn" onClick={() => held(x.id, "drop")}>Drop</button></> : <><button className="btn primary" onClick={() => decide(x.id, "approve")}>Yes</button><button className="btn" onClick={() => decide(x.id, "reject")}>No</button></>}</div>)}
+      {!d.need_input.length && <div className="empty">Nothing needs you right now. When an agent gets stuck on something only you can answer, it waits for you here.</div>}</div>}
+    {tab === "radar" && <div className="mt16">{d.on_radar.working.length > 0 && <div className="list"><div className="item"><b>Working now</b></div>{d.on_radar.working.map((r: any) => <div key={r.id} className="item"><div className="grow">{r.request.slice(0, 120)}<div className="small muted">{r.agent_name} · {where(r)} · {r.status.replace("_", " ")}</div></div></div>)}</div>}
+      <div className="list mt8">{d.on_radar.schedules.map((s: any) => <div key={s.id} className="item"><div className="grow"><b>{s.text}</b><div className="small muted">Next run: {s.next} · {s.agent_name} · {where(s)}{s.spec?.at ? "" : " · repeats"}</div></div><button className="btn" onClick={async () => { await api(`/v1/reminders/${s.id}`, undefined, "DELETE"); load(); }}>Cancel</button></div>)}{!d.on_radar.schedules.length && !d.on_radar.working.length && <div className="empty">Nothing scheduled. Ask an agent to do something later, or to check in on a repeat, and it lands here.</div>}</div></div>}
+    {tab === "activity" && <div className="mt16">{d.activity.map((r: any) => <div key={r.id} className="card mt8"><div className="row between"><b>{r.request.slice(0, 120)}</b><span className="small faint">{r.agent_name} · {where(r)} · {r.status} · {fmt(r.updated_at)}</span></div>{r.reply && <div className="small mt8" style={{ whiteSpace: "pre-wrap" }}>{String(r.reply).slice(0, 400)}</div>}{Array.isArray(r.steps) && r.steps.length > 0 && <Steps steps={r.steps} />}</div>)}{!d.activity.length && <div className="empty">Nothing yet.</div>}</div>}
+    <h2>Your agents</h2><div className="grid2">{me.agents.map((a: any) => <a key={a.id} className="card" href={`#/app/a/${a.id}`}><h3>{a.name}</h3><div className="small muted" style={{ margin: "4px 0 8px" }}>{a.purpose ?? "No purpose set yet"}</div><Ready r={a.readiness} /></a>)}</div></div>;
+}
 function Agents({ me, reload }: { me: any; reload: () => void }) {
   const [f, setF] = useState({ name: "", purpose: "" }), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
   const create = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { const a = await api("/v1/agents", f); setF({ name: "", purpose: "" }); reload(); location.hash = `/app/a/${a.id}`; } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
@@ -255,8 +274,9 @@ function Connections() {
   const drop = async (id: string) => { await api(`/v1/connections/${id}`, undefined, "DELETE"); load(); };
   const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/connections/mcp", f); setF({ label: "", url: "", token: "" }); load(); } catch (x: any) { setErr(x.message); } };
   return <div><h1>Connections</h1><p className="muted">Your accounts and devices. Your agents use them only when you ask, and in a group only after you say they may.</p>
-    <h2>Google</h2><div className="card row between"><div><b>Gmail, Calendar, Contacts, Drive</b><div className="small muted">{google ? `Connected as ${google.account}${google.status === "needs_reauth" ? " · needs reconnecting" : ""}` : "Not connected"}</div></div>
+    <h2>Google</h2><div className="card"><div className="row between"><div><b>Gmail, Calendar, Contacts, Drive</b><div className="small muted">{google ? `Connected as ${google.account}${google.status === "needs_reauth" ? " · needs reconnecting" : ""}` : "Not connected"}</div></div>
       <div className="row">{google && <button className="btn" onClick={() => drop(google.id)}>Disconnect</button>}<button className="btn primary" onClick={connectGoogle}>{google ? "Reconnect" : "Connect"}</button></div></div>
+      {google && <label className="check mt8"><input type="checkbox" checked={!!google.send_as_me} onChange={async (e) => { await api(`/v1/connections/${google.id}/settings`, { send_as_me: e.target.checked }, "PUT"); load(); }} /> <span>Send email as me <span className="small muted">· off until you turn it on; each send still asks you first. When off, your agents leave drafts in your Gmail instead.</span></span></label>}</div>
     <h2>Site logins</h2><p className="small muted" style={{ marginTop: -6 }}>Sign in to a website yourself in a live browser. Your agents then use that site as you. Passwords never pass through here.</p>
     <div className="list">{logins.map((c) => <div key={c.id} className="item"><div className="grow"><b>{c.account}</b><div className="small muted">{c.status === "needs_reauth" ? "needs signing in again" : "signed in"}{c.last_used_at ? ` · used ${fmt(c.last_used_at)}` : ""}</div></div><button className="btn" onClick={() => drop(c.id)}>Sign out</button></div>)}{!logins.length && <div className="empty">No site logins yet.</div>}</div>
     <form onSubmit={signIn} className="row mt8" style={{ maxWidth: 520 }}><input className="input grow" placeholder="ubereats.com" value={site} onChange={(e) => setSite(e.target.value)} required /><button className="btn primary">Sign in</button></form>
@@ -292,7 +312,7 @@ function App({ clerk }: { clerk: string | null }) {
   const am = page.match(/^\/app\/a\/([^/]+)(?:\/(memory|settings))?$/), agent = am && me ? me.agents.find((a: any) => a.id === am[1]) : null;
   const body = !me ? null
     : agent ? (am![2] === "memory" ? <Memory agent={agent} /> : am![2] === "settings" ? <AgentSettings agent={agent} me={me} reload={reload} /> : <Train agent={agent} />)
-    : ({ "/app": <Agents me={me} reload={reload} />, "/app/deploy": <Deploy me={me} setMe={setMe} />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <You me={me} setMe={setMe} /> } as Record<string, ReactNode>)[page] ?? <Agents me={me} reload={reload} />;
+    : ({ "/app": <Home me={me} />, "/app/agents": <Agents me={me} reload={reload} />, "/app/deploy": <Deploy me={me} setMe={setMe} />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <You me={me} setMe={setMe} /> } as Record<string, ReactNode>)[page] ?? <Home me={me} />;
   return <>{clerk && <Bridge onReady={setSignedIn} />}
     {page === "/" ? <Landing signedIn={!!signedIn} clerk={clerk} />
       : signedIn === false ? <div className="auth">{clerk ? <SignIn routing={"virtual" as any} withSignUp forceRedirectUrl="/#/app" signUpForceRedirectUrl="/#/app" /> : <div className="card">Sign-in isn't set up on this server.</div>}</div>

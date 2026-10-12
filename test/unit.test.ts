@@ -8,7 +8,7 @@ import * as rooms from "../src/rooms";
 import { remember, retrieve } from "../src/memory";
 import { fingerprint, def, obj, TOOLS, prune } from "../src/tools/index";
 import { createSchedule } from "../src/schedules";
-import { linkPhoneStart, linkPhoneVerify } from "../src/web";
+import { linkPhoneStart, linkPhoneVerify, homeData } from "../src/web";
 import { createAgent, defaultAgentOf, agentsOf } from "../src/agents";
 import { seal } from "../src/db";
 
@@ -289,6 +289,32 @@ test("named steps are stored on the run and a multi-step text reply ends with a 
   expect(run.steps.length).toBe(2);
   expect(run.steps[0].tool).toBe("calc");
   expect(run.reply).toMatch(/\(2 steps · \d+s\)$/);
+});
+
+test("the home shows what needs you, what's on the radar and what happened", async () => {
+  const u = await trained("+15550000130");
+  script({ id: "", name: "reminder.schedule", input: { text: "stretch", in_minutes: 30 } }, "Set.");
+  await say("+15550000130", "remind me in 30 min to stretch");           // waiting for yes → need_input
+  let h = await homeData(u);
+  expect(h.need_input.map((x: any) => x.type)).toEqual(["approval"]);
+  expect(h.on_radar.working.map((r: any) => r.status)).toEqual(["waiting_approval"]);
+  await say("+15550000130", "yes");                                       // scheduled → on_radar, run → activity
+  h = await homeData(u);
+  expect(h.need_input).toHaveLength(0);
+  expect(h.on_radar.schedules.map((s: any) => s.text)).toEqual(["stretch"]);
+  expect(h.activity[0]).toMatchObject({ status: "done" });
+  expect(h.activity[0].steps.length).toBe(1);
+});
+
+test("sending as them is off until switched on: email.send refuses and points at drafts", async () => {
+  const u = await trained("+15550000140");
+  await sql`insert into connections (id, user_id, provider, cred_enc, config, created_at) values ('con_g140', ${u.id}, 'google', ${seal({ access_token: "x", expires_at: 9e15 })}, '{}'::jsonb, 0)`;
+  script({ id: "", name: "email.send", input: { to: ["d@x.com"], subject: "hi", body: "hello" } }, "Left a draft.");
+  await say("+15550000140", "email dana hi");
+  await say("+15550000140", "yes");
+  const tool = (await sql`select content from (select transcript from runs) r, jsonb_to_recordset(r.transcript) as x(role text, content text) where role='tool'`)[0];
+  expect(tool.content).toContain("switched off");
+  expect(lastTo("dm_+15550000140")).toContain("didn't happen");
 });
 
 test("fingerprints ignore key order", () => {

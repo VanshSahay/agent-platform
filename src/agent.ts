@@ -151,7 +151,7 @@ async function finish(run: any, room: any, requester: any, text: string, tools: 
   await say(room, reply, run.id);
 }
 
-async function releaseHeld(run: any) {
+export async function releaseHeld(run: any) {
   const room = await one(sql`select * from rooms where id=${run.room_id}`);
   await sql`update runs set status='done', updated_at=${now()} where id=${run.id}`;
   await say(room, run.reply, run.id);
@@ -181,7 +181,7 @@ async function onReaction(r: { emoji: string; targetId: string }, user: any) {
   if (/^(👍|❤️|♥️|‼️|like|love|emphasi[sz]e|thumbs_?up)$/i.test(r.emoji)) return decide(a, true);
   if (/^(👎|dislike|thumbs_?down)$/i.test(r.emoji)) return decide(a, false);
 }
-async function decide(a: any, yes: boolean) {
+export async function decide(a: any, yes: boolean) {
   await sql`update approvals set status=${yes ? "approved" : "rejected"}, decided_at=${now()} where id=${a.id}`;
   const run = await one(sql`select * from runs where id=${a.run_id}`), stored = J(a.call, {});
   if (!run || run.status === "done") return;
