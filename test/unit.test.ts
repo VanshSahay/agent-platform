@@ -9,6 +9,7 @@ import { remember, retrieve } from "../src/memory";
 import { fingerprint, def, obj, TOOLS, prune } from "../src/tools/index";
 import { createSchedule } from "../src/schedules";
 import { linkPhoneStart, linkPhoneVerify } from "../src/web";
+import { createAgent, defaultAgentOf, agentsOf } from "../src/agents";
 import { seal } from "../src/db";
 
 const sent: { space: string; text: string }[] = [];
@@ -21,11 +22,11 @@ const lastTo = (space: string) => sent.filter((s) => s.space === space).at(-1)?.
 const script = (call: model.ToolCall | null, reply: string) => { model.hooks.generate = async (req) => (call && !req.messages.some((m) => m.role === "tool") ? { text: "", toolCalls: [{ ...call, id: `c${++n}` }], model: `fake-${req.tier}`, costUsd: 0.001 } : { text: reply, toolCalls: [], model: `fake-${req.tier}`, costUsd: 0.001 }); };
 const say = (phone: string, text: string, space = `dm_${phone}`, isGroup = false) => agent.onInbound({ spaceId: space, isGroup, phone, text, externalId: `in_${++n}` });
 /** Most tests talk to a deployed (trained) agent: its owner is a web account. */
-const trained = async (phone: string) => { const u = await rooms.userByPhone(phone); await sql`update users set clerk_id=${"clerk_" + phone}, agent_name=coalesce(agent_name, 'Assistant') where id=${u.id}`; return rooms.userById(u.id); };
+const trained = async (phone: string, name = "Pip") => { const u = await rooms.userByPhone(phone); await sql`update users set clerk_id=${"clerk_" + phone} where id=${u.id}`; const a = await defaultAgentOf(u); await sql`update agents set name=${name} where id=${a.id}`; return rooms.userById(u.id); };
 
 beforeAll(async () => { await migrate(); });
 beforeEach(async () => {
-  for (const t of ["approvals", "tool_executions", "runs", "messages", "schedules", "memories", "links", "connections", "room_members", "rooms", "users", "usage"]) await sql.unsafe(`delete from ${t}`);
+  for (const t of ["approvals", "tool_executions", "runs", "messages", "schedules", "memories", "links", "connections", "room_members", "rooms", "agents", "users", "usage"]) await sql.unsafe(`delete from ${t}`);
   sent.length = 0; script(null, "ok");
 });
 
@@ -75,8 +76,7 @@ test("a 👍 tapback on the card approves it", async () => {
 
 test("in a group the agent stays quiet unless named", async () => {
   await trained("+15550000010");
-  const owner = await rooms.userByPhone("+15550000010");
-  await sql`update users set agent_name='Pip' where id=${owner.id}`;
+  await trained("+15550000010", "Pip");
   script(null, "Here!");
   await say("+15550000010", "anyone up for dinner?", "grp1", true);
   expect(sent.length).toBe(0);
@@ -100,7 +100,7 @@ test("a member's accounts in a group need their consent once, asked in their DM"
   const member = await trained("+15550000021"); // first to speak in grp2, so its owner; a web account
   await sql`insert into connections (id, user_id, provider, cred_enc, created_at) values ('con_test', ${member.id}, 'google', ${seal({ access_token: "x" })}, 0)`;
   script({ id: "", name: "fake.account", input: {} }, "Nothing today.");
-  await say("+15550000021", "@Assistant what's on my calendar", "grp2", true);
+  await say("+15550000021", "Pip, what's on my calendar", "grp2", true);
   expect((await sql`select status from runs`)[0].status).toBe("waiting_consent");
   expect(lastTo("dm_+15550000021")).toContain("OK to use your accounts");
   await say("+15550000021", "yes");
@@ -109,19 +109,34 @@ test("a member's accounts in a group need their consent once, asked in their DM"
   expect(lastTo("grp2")).toBe("Nothing today.");
   // The second time in the same group there is no question.
   script({ id: "", name: "fake.account", input: { again: true } }, "Still nothing.");
-  await say("+15550000021", "@Assistant check again", "grp2", true);
+  await say("+15550000021", "Pip, check again", "grp2", true);
   expect(lastTo("grp2")).toBe("Still nothing.");
   delete TOOLS["fake.account"];
 });
 
-test("private memories never reach a group; room memories do", async () => {
-  const u = await rooms.userByPhone("+15550000030");
+test("an agent's training follows it into its rooms; another agent's never shows; a room's stays there", async () => {
+  const u = await trained("+15550000030", "Carl");
+  const carl = await defaultAgentOf(u), max = await createAgent(u, "Max");
   const dm = await rooms.roomForSpace("dm_x", false, u), grp = await rooms.roomForSpace("grp3", true, u);
-  await remember("private", u.id, "Ellie prefers window seats", u.id);
+  await remember("agent", carl.id, "Order groceries on Tuesdays", u.id, "store");
+  await remember("agent", max.id, "The ski cabin sleeps six", u.id, "fact");
   await remember("room", grp.id, "The trip is the weekend of Nov 7", u.id);
-  expect((await retrieve(dm, u.id, "window seats")).map((m) => m.text)).toContain("Ellie prefers window seats");
-  expect((await retrieve(grp, u.id, "window seats")).map((m) => m.text)).not.toContain("Ellie prefers window seats");
-  expect((await retrieve(grp, u.id, "trip weekend")).map((m) => m.text)).toContain("The trip is the weekend of Nov 7");
+  expect((await retrieve(dm, "groceries")).map((m) => m.text)).toContain("Order groceries on Tuesdays");
+  expect((await retrieve(grp, "groceries")).map((m) => m.text)).toContain("Order groceries on Tuesdays"); // Carl is this group's agent too
+  expect((await retrieve(grp, "cabin")).map((m) => m.text)).not.toContain("The ski cabin sleeps six");
+  expect((await retrieve(dm, "trip")).map((m) => m.text)).not.toContain("The trip is the weekend of Nov 7");
+});
+
+test("'@Max' from the owner switches the room to that agent, with its own memory", async () => {
+  const u = await trained("+15550000031", "Carl");
+  const max = await createAgent(u, "Max");
+  await remember("agent", max.id, "The ski cabin sleeps six", u.id, "fact");
+  model.hooks.generate = async (req) => ({ text: req.messages[1].content.includes("sleeps six") ? "Six beds." : "No idea.", toolCalls: [], model: "fake", costUsd: 0 });
+  await say("+15550000031", "how many beds at the cabin?");
+  expect(lastTo("dm_+15550000031")).toBe("No idea.");
+  await say("+15550000031", "@Max how many beds at the cabin?");
+  expect(lastTo("dm_+15550000031")).toBe("Six beds.");
+  expect((await sql`select agent_id from rooms where space_id='dm_+15550000031'`)[0].agent_id).toBe(max.id);
 });
 
 test("a reply that claims an action without a verified write gets corrected", async () => {
@@ -133,8 +148,7 @@ test("a reply that claims an action without a verified write gets corrected", as
 
 test("a reply pending when someone new joins a group is held and offered in the requester's DM", async () => {
   await trained("+15550000050");
-  const owner = await rooms.userByPhone("+15550000050");
-  await sql`update users set agent_name='Pip' where id=${owner.id}`;
+  await trained("+15550000050", "Pip");
   await say("+15550000050", "hi all", "grp5", true); // the room now has history
   model.hooks.generate = async () => { await say("+15550000059", "hey, new here", "grp5", true); return { text: "Dinner is at 7.", toolCalls: [], model: "fake", costUsd: 0 }; };
   await say("+15550000050", "Pip when is dinner", "grp5", true);
@@ -164,7 +178,7 @@ test("the daily cap stops the model and the agent says so", async () => {
 
 test("empty optional fields a model fills in are dropped, and a concrete time beats a stray 'every'", async () => {
   expect(prune({ text: "x", at: "", days: [], every: "daily", in_minutes: 45 })).toEqual({ text: "x", every: "daily", in_minutes: 45 });
-  const u = await rooms.userByPhone("+15550000080"), room = await rooms.roomForSpace("dm_s", false, u);
+  const u = await trained("+15550000080"), room = await rooms.roomForSpace("dm_s", false, u);
   const s = await createSchedule({ roomId: room.id, userId: u.id, text: "call mom", kind: "message", when: { every: "daily", in_minutes: 45 }, tz: "America/New_York" });
   expect(s.spec.at).toBeGreaterThan(Date.now() + 44 * 60_000);
   expect(s.spec.every).toBeUndefined();
@@ -172,11 +186,12 @@ test("empty optional fields a model fills in are dropped, and a concrete time be
 
 test("a web account links to the phone's person with a texted code, keeping the phone's history", async () => {
   const phoneUser = await rooms.userByPhone("+15550000090");
-  await sql`update users set agent_name='Pip' where id=${phoneUser.id}`;
-  await sql`insert into users (id, email, name, clerk_id, agent_name, created_at) values ('usr_web', 'e@x.com', 'Ellie', 'clerk_1', 'Pip', 0)`;
-  const web = (await sql`select * from users where id='usr_web'`)[0];
-  await expect(linkPhoneStart(web, "+1 (555) 000-0090")).rejects.toThrow(/train it first/);
-  for (const t of ["Likes pasta", "Shops on Tuesdays", "Two kids"]) await remember("private", web.id, t, web.id, "preference");
+  await sql`update agents set name='Pip' where id=${(await defaultAgentOf(phoneUser)).id}`;
+  await sql`insert into users (id, email, name, clerk_id, created_at) values ('usr_web', 'e@x.com', 'Ellie', 'clerk_1', 0)`;
+  let web = (await sql`select * from users where id='usr_web'`)[0];
+  const pip = await createAgent(web, "Pip"); web = (await sql`select * from users where id='usr_web'`)[0];
+  await expect(linkPhoneStart(web, "+1 (555) 000-0090")).rejects.toThrow(/train Pip first/);
+  for (const t of ["Likes pasta", "Shops on Tuesdays", "Two kids"]) await remember("agent", pip.id, t, web.id, "preference");
   await linkPhoneStart(web, "+1 (555) 000-0090");
   const texted = lastTo("dm_+15550000090");
   const code = texted.match(/\b(\d{6})\b/)![1];
@@ -185,27 +200,29 @@ test("a web account links to the phone's person with a texted code, keeping the 
   const merged = await linkPhoneVerify(web, code);
   expect(merged.id).toBe(phoneUser.id);
   expect(merged.clerk_id).toBe("clerk_1");
-  expect(merged.agent_name).toBe("Pip");
+  expect((await defaultAgentOf(merged)).name).toBe("Pip");
   expect(await sql`select 1 from users where id='usr_web'`).toHaveLength(0);
 });
 
 test("training in the web chat: no phone, replies are stored, memories carry a kind and reach iMessage later", async () => {
   await sql`insert into users (id, email, name, clerk_id, created_at) values ('usr_w2', 'w@x.com', 'Ellie', 'clerk_2', 0)`;
-  const web = (await sql`select * from users where id='usr_w2'`)[0], room = await rooms.webRoomOf(web);
+  let web = (await sql`select * from users where id='usr_w2'`)[0];
+  const carl = await createAgent(web, "Carl"); web = (await sql`select * from users where id='usr_w2'`)[0];
+  const room = await rooms.webRoomOf(web, carl);
   script({ id: "", name: "remember", input: { text: "Uber Eats members get 30% off every Tuesday; groceries are ordered on Tuesdays", kind: "store" } }, "Noted: Tuesdays it is.");
   await agent.handleMessage(room, web, "we always shop on Tuesdays because Uber Eats gives members 30% off");
   expect(sent.length).toBe(0); // nothing goes over the iMessage line
   const out = (await sql`select text from messages where room_id=${room.id} and direction='out'`)[0];
   expect(out.text).toBe("Noted: Tuesdays it is.");
-  expect((await sql`select kind, scope_type, scope_id from memories`)[0]).toMatchObject({ kind: "store", scope_type: "private", scope_id: "usr_w2" });
-  // Deploy to iMessage once trained: the phone's row inherits the memories.
-  await sql`update users set agent_name='Carl' where id='usr_w2'`;
-  for (const t of ["Kids like noodles", "Busy Thursdays"]) await remember("private", web.id, t, web.id, "fact");
-  await linkPhoneStart({ ...web, agent_name: "Carl" }, "+15550000091");
+  expect((await sql`select kind, scope_type, scope_id from memories`)[0]).toMatchObject({ kind: "store", scope_type: "agent", scope_id: carl.id });
+  // Deploy to iMessage once trained: the phone's row takes over the agent and its memories.
+  for (const t of ["Kids like noodles", "Busy Thursdays"]) await remember("agent", carl.id, t, web.id, "fact");
+  await linkPhoneStart(web, "+15550000091");
   const code = lastTo("dm_+15550000091").match(/\b(\d{6})\b/)![1];
   const merged = await linkPhoneVerify(web, code);
-  expect((await sql`select distinct scope_id from memories`).map((m: any) => m.scope_id)).toEqual([merged.id]);
-  expect(await rooms.webRoomOf(merged)).toMatchObject({ owner_id: merged.id });
+  expect((await agentsOf(merged.id)).map((a: any) => a.name)).toContain("Carl");
+  expect((await sql`select count(*) n from memories where scope_type='agent' and scope_id=${carl.id}`)[0].n).toBe("3");
+  expect(await rooms.webRoomOf(merged, carl)).toMatchObject({ owner_id: merged.id });
 });
 
 test("a text from a number that isn't a trained account gets one pointer, not a conversation", async () => {
@@ -219,8 +236,8 @@ test("a text from a number that isn't a trained account gets one pointer, not a 
 
 test("the trust list lets a write run without a card", async () => {
   await trained("+15550000095");
-  const u = await rooms.userByPhone("+15550000095");
-  await sql`update users set auto_tools='["reminder.schedule"]'::jsonb where id=${u.id}`;
+  const u = await trained("+15550000095");
+  await sql`update agents set auto_tools='["reminder.schedule"]'::jsonb where id=${(await defaultAgentOf(u)).id}`;
   script({ id: "", name: "reminder.schedule", input: { text: "water", in_minutes: 5 } }, "Set.");
   await say("+15550000095", "remind me to water in 5");
   expect((await sql`select count(*) n from approvals`)[0].n).toBe("0");

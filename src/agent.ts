@@ -12,6 +12,7 @@ import { listSkills } from "./skills";
 import * as im from "./imessage";
 import { describe } from "./media";
 import { publicUrl } from "./links";
+import { agentOf, defaultAgentOf, switchByMention } from "./agents";
 
 const YES = /^\s*(yes|y|yep|yeah|yup|sure|ok|okay|go ahead|do it|send it|approve|approved|👍)\b/i;
 const NO = /^\s*(no|nope|don'?t|cancel|skip|stop|reject|👎)\b/i;
@@ -39,6 +40,7 @@ export async function handleMessage(room: any, user: any, text: string, attachme
   if (attachments?.length) text = [text, ...(await Promise.all(attachments.map((f) => describe(f, room, user))))].filter(Boolean).join("\n");
   if (!text.trim()) return;
   if (!(await rooms.storeMessage({ roomId: room.id, senderId: user.id, direction: "in", text, externalId }))) return; // seen before
+  const switched = await switchByMention(room, user, text); // "@Carl …" from the owner: that agent takes this chat
 
   // Plain-words answers to what we asked: an approval card, a consent question, a held reply.
   const pending = await one(sql`select * from approvals where user_id=${user.id} and status='pending' and (room_id=${room.id} or (kind='consent' and ${room.kind === "private"})) order by created_at desc limit 1`);
@@ -48,7 +50,7 @@ export async function handleMessage(room: any, user: any, text: string, attachme
     if (held && /^\s*(go|post|yes|send it|share it)\b/i.test(text)) return releaseHeld(held);
     if (held && /^\s*(drop|no|skip|cancel|never mind)\b/i.test(text)) { await sql`update runs set status='done', updated_at=${now()} where id=${held.id}`; return say(room, "Dropped it."); }
   }
-  if (room.kind === "group" && !(await shouldRespond(room, user, text))) return;
+  if (room.kind === "group" && !switched && !(await shouldRespond(room, user, text))) return;
   await runRequest(room, user, text);
 }
 
@@ -178,15 +180,18 @@ async function decide(a: any, yes: boolean) {
 const isoDate = (tz: string) => { const z = zoned(now(), tz); return `${z.y}-${String(z.mo + 1).padStart(2, "0")}-${String(z.d).padStart(2, "0")}`; };
 const shortDate = (ts: any, tz: string) => new Date(Number(ts)).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" });
 async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
-  const name = await rooms.agentNameFor(room), tz = requester.tz ?? PLATFORM_TZ();
+  const agent = await agentOf(room), name = agent?.name ?? "Assistant", tz = requester.tz ?? PLATFORM_TZ();
   const skills = await listSkills();
-  const who = room.kind === "group" ? `You are ${name}, the agent for the group chat "${room.name ?? "Group chat"}" in iMessage. You act for the group, not for any one person.`
-    : room.channel === "web" ? `You are ${name}, ${rooms.displayName(requester)}'s personal agent. This is their training chat on the web: they are teaching you how they live and what they want done, before you work for them in iMessage and their group chats. Everything you remember here is yours in those chats too.`
-    : `You are ${name}, ${rooms.displayName(requester)}'s personal agent, talking with them in iMessage.`;
+  const owner = room.owner_id === requester.id ? requester : room.owner_id ? await rooms.userById(room.owner_id) : requester;
+  const who = room.kind === "group" ? `You are ${name}, one of ${rooms.displayName(owner)}'s agents, deployed to the group chat "${room.name ?? "Group chat"}" in iMessage. You act for the group, not for any one person.`
+    : room.channel === "web" ? `You are ${name}, one of ${rooms.displayName(requester)}'s agents. This is your training chat on the web: they are teaching you what you're for, how they live and how they want you to behave, before you work for them in iMessage and their group chats. Everything you remember here is yours wherever you're deployed.`
+    : `You are ${name}, one of ${rooms.displayName(requester)}'s agents, talking with them in iMessage.`;
   const hasPhone = tools.some((t) => t.id.startsWith("mcp."));
-  const standing = await rules(room, requester.id);
+  const standing = await rules(room);
+  const first = room.channel === "web" && Number((await one(sql`select count(*) n from messages where room_id=${room.id}`))?.n ?? 0) <= 1;
   return [
     who,
+    agent?.purpose ? `What ${rooms.displayName(owner)} made you for: """${agent.purpose}"""` : ``,
     standing.length ? `Standing rules from ${room.kind === "group" ? "this group" : rooms.displayName(requester)} (follow them over anything below):\n${standing.map((m: any) => `- ${m.text}`).join("\n")}` : ``,
     `Now: ${fmtLocal(now(), tz)} (${tz}); today's date in ISO form is ${isoDate(tz)}. Use that year in any date you write.`,
     `Style: text messages. Short, plain, specific. No markdown, no headers, no bullet symbols; a dash list is fine. Lead with the answer or the question. Ask at most one question at a time.`,
@@ -194,20 +199,19 @@ async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
     `Memory: everything a person tells you about themselves is training. Call remember for each of it, with the right kind, one fact per call; when they tell you several things at once, save each. How they want you to behave (when to ask, when to just do it, tone, what never to do) is kind=rule and you follow it from then on. Private things stay private. Memories are shown with the date they were saved; newer beats older, and an inventory line is only as current as its date.`,
     room.kind === "group" ? `Group rules: anyone here can ask for reads (search, weather, a tally). A member's Google, phone or browser is used only when that member asks, for their own request. Never reveal anything from anyone's private chat. If asked about another member's accounts or private matters, decline kindly. The person who brought you in${room.owner_id === requester.id ? " (that's who you're talking to now)" : ""} can set what you do here with room.set_instructions.` : ``,
     room.instructions ? `What the group's owner asked you to do here: """${room.instructions}"""` : ``,
-    room.kind === "private" && !requester.onboarded ? (room.channel === "web"
-      ? `First conversation: you're new and in training. In one short message say so, ask what to call you, and ask them to start teaching you: what they'd like to hand off, how they want you to behave, and whatever about their life matters for that. When they name you, call agent.rename. When they share their name or where they live, call profile.update. Save each thing they teach you with remember.`
-      : `First conversation here: introduce yourself in one line (you work for them here and in any group they add you to) and ask what they'd like help with first. When they share their name or where they live, call profile.update.`) : ``,
+    first ? `First conversation: you're new and in training. In one short message say so${name === "Assistant" ? ", ask what to call you (call agent.rename when they say)" : ""}, and ask them to start teaching you: what they'd like to hand off, how they want you to behave, and whatever about their life matters for that. When they share their name or where they live, call profile.update. Save each thing they teach you with remember.`
+      : room.kind === "private" && room.channel !== "web" && !requester.onboarded ? `First conversation here: introduce yourself in one line (you work for them here and in any group they add you to) and ask what they'd like help with first.` : ``,
     `Skills (read one with skill.read before a task of that kind):\n${skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")}`,
   ].filter(Boolean).join("\n\n");
 }
 async function userMessage(room: any, requester: any, request: string) {
   const name = await rooms.agentNameFor(room), tz = requester.tz ?? PLATFORM_TZ();
   const history = (await rooms.recentMessages(room.id, 30)).slice(0, -1).map((m: any) => `${m.direction === "out" ? name : rooms.displayName(m.sender_name ? { name: m.sender_name } : { phone: m.sender_phone })}: ${m.text}`).join("\n");
-  const mems = await retrieve(room, requester.id, request);
+  const mems = await retrieve(room, request);
   const members = room.kind === "group" ? (await rooms.members(room.id)).map((m: any) => `${rooms.displayName(m)}${m.id === room.owner_id ? " (brought you in)" : ""}`).join(", ") : "";
   return [
     members ? `People in this group: ${members}` : ``,
-    mems.length ? `Things you remember (${room.kind === "private" ? "theirs and this chat's" : "this chat's"}):\n${mems.map((m: any) => `- [${m.id}] (${m.kind}, ${shortDate(m.created_at, tz)}) ${m.text}`).join("\n")}` : ``,
+    mems.length ? `Things you remember (your training, and this chat's):\n${mems.map((m: any) => `- [${m.id}] (${m.kind}, ${shortDate(m.created_at, tz)}) ${m.text}`).join("\n")}` : ``,
     history ? `Recent conversation:\n${history}` : ``,
     `New message from ${rooms.displayName(requester)}: ${request}`,
   ].filter(Boolean).join("\n\n");
@@ -224,7 +228,7 @@ export async function say(room: any, text: string, runId?: string | null): Promi
 export async function dmRoom(user: any) {
   const r = await rooms.privateRoomOf(user.id);
   if (r) return r;
-  if (!user.phone) return rooms.webRoomOf(user);
+  if (!user.phone) return rooms.webRoomOf(user, await defaultAgentOf(user));
   const spaceId = await im.startDm(user.phone, `Hi, I'm the assistant from your group chat. I'll send you anything that's just for you here.`);
   return rooms.createPrivateRoom(user, spaceId);
 }
@@ -233,8 +237,8 @@ export async function startConversation(phone: string) {
   const user = await rooms.userByPhone(phone);
   const existing = await rooms.privateRoomOf(user.id);
   if (existing) { await say(existing, "I'm here. What can I do for you?"); return existing; }
-  const hello = user.agent_name ? `Hi, it's ${user.agent_name}. I'm here in iMessage now too, with everything you taught me. What can I do for you?`
-    : `Hi! I'm your new assistant. I work for you here, and in any group chat you add me to. Two quick things: what should I call myself, and what would you like help with first?`;
+  const agent = await defaultAgentOf(user), others = (await (await import("./agents")).agentsOf(user.id)).filter((a: any) => a.id !== agent.id).map((a: any) => a.name);
+  const hello = `Hi, it's ${agent.name}. I'm here in iMessage now too, with everything you taught me.${others.length ? ` Say "@${others[0]}" to switch to ${others.length > 1 ? "another of your agents" : others[0]}.` : ""} What can I do for you?`;
   const spaceId = await im.startDm(user.phone, hello);
   const room = await rooms.createPrivateRoom(user, spaceId);
   await rooms.storeMessage({ roomId: room.id, senderId: null, direction: "out", text: hello });

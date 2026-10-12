@@ -4,6 +4,7 @@
 import { sql, id, now, sha, one } from "../db";
 import { hasConsent } from "../rooms";
 import { makeLink } from "../links";
+import { agentOf } from "../agents";
 
 export type ErrKind = "TRANSIENT" | "AUTH" | "RATE_LIMIT" | "BUSINESS_RULE" | "PERMISSION" | "UNKNOWN_SIDE_EFFECT";
 export class ToolError extends Error { constructor(public kind: ErrKind, msg: string) { super(msg); } }
@@ -15,6 +16,7 @@ export interface ToolDef {
   kind: "read" | "write";                       // writes are approved by the requester first
   kindOf?: (input: any) => "read" | "write";    // when it depends on the input (browser.task with complete=true)
   connection?: "google" | "mcp";                // uses the requester's own account (or device)
+  accountFor?: (input: any, requesterId: string) => Promise<any | null>; // another kind of account (a site login) this call would use
   summarize?: (input: any) => string;           // one line for the approval card and the status footer
   preview?: (input: any) => string;             // the exact content being approved (an email body)
   verify?: (output: any) => string | null;      // provider evidence that proves a write happened
@@ -81,10 +83,11 @@ export async function execute(run: any, room: any, requester: any, call: { id: s
       return { kind: "result", status: "FAILED", content: `DENIED: ${requester.name ?? "they"} ${connection ? "need to reconnect" : "haven't connected"} ${d.connection === "google" ? "Google" : "that device"} yet. Give them this link (personal to them): ${link}` };
     }
   }
-  if (d.connection && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
+  if (!connection && d.accountFor) connection = await d.accountFor(call.input, requester.id);
+  if (connection && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
   const fp = fingerprint(run.id, d.id, call.input);
   // The trust dial: actions the person said may run without asking (Settings). Off by default; the warm-up period.
-  const trusted = (Array.isArray(requester.auto_tools) ? requester.auto_tools : []).includes(d.id);
+  const agent = await agentOf(room), trusted = (Array.isArray(agent?.auto_tools) ? agent.auto_tools : []).includes(d.id);
   if (kindOf(d, call.input) === "write" && !opts.approved && !trusted && !(await one(sql`select 1 from approvals where run_id=${run.id} and status='approved' and call->>'fingerprint'=${fp}`)))
     return { kind: "approval", summary: summarize(d, call.input), preview: d.preview?.(call.input ?? {}) };
 

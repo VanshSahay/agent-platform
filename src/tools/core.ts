@@ -8,11 +8,12 @@ import { readSkill } from "../skills";
 import { revokeConsent } from "../rooms";
 
 def({
-  id: "remember", kind: "read", description: "Save something worth keeping. Everything a person tells you about themselves is training: how they live and how they want you to behave. kind: rule (how to behave: when to ask vs just do it, tone, what never to do, who matters; these are shown to you on every run), preference (likes, dislikes, restrictions), person (someone in their life), schedule (weekly rhythm, recurring events), store (where they shop, deals, memberships), inventory (what they have at home right now; dated), decision, fact. scope private = only for this person (default in a DM, or when it is about the requester themselves); room = everyone in this chat (default in a group). One sentence each; several calls for several facts.",
-  inputSchema: obj({ text: str("one sentence, second person for rules (\"Ask before emailing anyone at work\"), third person otherwise"), kind: { type: "string", enum: ["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact"] }, scope: { type: "string", enum: ["private", "room"] } }, ["text"]),
+  id: "remember", kind: "read", description: "Save something worth keeping. Everything a person tells you about themselves is training: how they live and how they want you to behave. kind: rule (how to behave: when to ask vs just do it, tone, what never to do, who matters; these are shown to you on every run), preference (likes, dislikes, restrictions), person (someone in their life), schedule (weekly rhythm, recurring events), store (where they shop, deals, memberships), inventory (what they have at home right now; dated), decision, fact. scope agent = your own training, it follows you into every chat you are deployed to (default in a private chat); room = this chat only (default in a group). One sentence each; several calls for several facts.",
+  inputSchema: obj({ text: str("one sentence, second person for rules (\"Ask before emailing anyone at work\"), third person otherwise"), kind: { type: "string", enum: ["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact"] }, scope: { type: "string", enum: ["agent", "room"] } }, ["text"]),
   async execute({ text, scope, kind }, ctx) {
-    const s = scope ?? (ctx.room.kind === "private" ? "private" : "room");
-    return { status: "SUCCEEDED", output: await remember(s, s === "private" ? ctx.requester.id : ctx.room.id, text, ctx.requester.id, kind ?? "fact") };
+    const s = scope ?? (ctx.room.kind === "private" ? "agent" : "room");
+    if (s === "agent" && ctx.room.kind === "group" && ctx.room.owner_id !== ctx.requester.id) throw new ToolError("PERMISSION", "only the owner trains this agent; save it for the room instead");
+    return { status: "SUCCEEDED", output: await remember(s, s === "agent" ? ctx.room.agent_id : ctx.room.id, text, ctx.requester.id, kind ?? "fact") };
   },
 });
 def({
@@ -51,11 +52,13 @@ def({
 });
 
 def({
-  id: "agent.rename", kind: "read", description: "The person told you what to call you. Sets your name for them (and for groups they bring you into).",
+  id: "agent.rename", kind: "read", description: "The person told you what to call you. Sets your name (this agent's), everywhere you are deployed.",
   inputSchema: obj({ name: str() }, ["name"]),
   async execute({ name }, ctx) {
     name = String(name).trim().slice(0, 30);
-    await sql`update users set agent_name=${name}, onboarded=true where id=${ctx.requester.id}`;
+    if (ctx.room.owner_id && ctx.room.owner_id !== ctx.requester.id) throw new ToolError("PERMISSION", "only the owner can rename this agent");
+    await sql`update agents set name=${name} where id=${ctx.room.agent_id}`;
+    await sql`update users set onboarded=true where id=${ctx.requester.id}`;
     return { status: "SUCCEEDED", output: { name } };
   },
 });
@@ -117,6 +120,11 @@ def({
 def({
   id: "device.connect_link", kind: "read", description: "A personal link for the person to connect a device (an MCP server such as iphone-use running on their Mac) so you can use their phone.", inputSchema: obj({}),
   async execute(_i, ctx) { return { status: "SUCCEEDED", output: { link: await makeLink(ctx.requester.id, "mcp") } }; },
+});
+def({
+  id: "browser.login_link", kind: "read", description: "A personal link where the person signs in to a website themselves in a live browser (Uber Eats, OpenTable, their bank…). You never see the password; afterwards browser.task on that site is already signed in as them. Use when a task needs their account on a site that has no connector.",
+  inputSchema: obj({ site: str("the website, e.g. ubereats.com") }, ["site"]),
+  async execute({ site }, ctx) { return { status: "SUCCEEDED", output: { site, link: await makeLink(ctx.requester.id, "browser", { site: String(site) }) } }; },
 });
 def({
   id: "google.connect_link", kind: "read", description: "A personal link for the person to connect Google (Gmail, Calendar, Contacts, Drive). Only when a task needs it.", inputSchema: obj({}),

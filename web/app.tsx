@@ -117,14 +117,14 @@ function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null 
       <Sparkle size={22} style={{ left: "12%", top: 70 }} />
       <p className="gm-hand">psst… hover the letters ↓</p>
       <div className="gm-title-wrap"><LetterHero text="train your agent" /></div>
-      <p className="gm-for"><span>for</span><Rotator /><span className="gm-anywhere">then text it.</span></p>
-      <p className="gm-sub">One assistant that's yours. Teach it first: what to take off your plate, how you like things done, who and what matters. Then deploy it to iMessage, and into any group chat you add it to. It asks before it sends, books or pays, and it only says something is done when it is.</p>
+      <p className="gm-for"><span>one for</span><Rotator /><span className="gm-anywhere">then text them.</span></p>
+      <p className="gm-sub">Agents that are yours, one per job. Teach each one first: what to take off your plate, how you like things done, who and what matters. Then deploy it to iMessage, and into any group chat you add it to. It asks before it sends, books or pays, and it only says something is done when it is.</p>
       <div className="gm-ctas">{cta}</div>
       <p className="gm-fine">Nothing to install · it earns trust one action at a time</p>
     </section>
     <section className="gm-sec gm-split" style={{ paddingTop: 20 }}>
       <div className="gm-steps">
-        {[["1", "Train it.", "Chat with it on the web. What you'd like to hand off, how you want it to behave, the people and routines that matter. It remembers, and you can see and fix what it kept.", "#c6f432"], ["2", "Deploy it to iMessage.", "When it knows enough, link your number. It texts you, with everything you taught it, and works in any group chat you add it to.", "#ffe14d"], ["3", "Hand over more as it earns it.", "At first it suggests and you decide. Tick an action in Settings when it has earned it, and it runs that without asking.", "#9be7c4"]].map(([n, b, p, c]) =>
+        {[["1", "Train it.", "Chat with it on the web. What you'd like to hand off, how you want it to behave, the people and routines that matter. It remembers, and you can see and fix what it kept.", "#c6f432"], ["2", "Deploy each to iMessage.", "When one knows enough, link your number. It texts you with everything you taught it. Add the number to a group and say @Name, and that agent works there.", "#ffe14d"], ["3", "Hand over more as it earns it.", "At first it suggests and you decide. Tick an action in Settings when it has earned it, and it runs that without asking.", "#9be7c4"]].map(([n, b, p, c]) =>
           <div key={n} className="gm-card" style={{ "--c": c } as any}><div className="gm-step"><span className="gm-num">{n}</span><div><b>{b}</b><p>{p}</p></div></div></div>)}
       </div>
       <PhoneMock />
@@ -137,29 +137,31 @@ function Landing({ signedIn, clerk }: { signedIn: boolean; clerk: string | null 
 }
 
 // ---------------- the signed-in app ----------------
-function Shell({ page, me, children }: { page: string; me: any; children: ReactNode }) {
+function Shell({ page, me, agent, children }: { page: string; me: any; agent?: any; children: ReactNode }) {
   const { signOut } = useClerk();
-  const links: [string, string, string][] = [["/app", "🎓", "Train"], ["/app/memory", "🧠", "Memory"], ["/app/chats", "💬", "Chats"], ["/app/connections", "🔌", "Connections"], ["/app/reminders", "⏰", "Reminders"], ["/app/activity", "🧾", "Activity"], ["/app/settings", "⚙️", "Settings"]];
+  const top: [string, string, string][] = [["/app", "🤖", "Agents"], ["/app/deploy", "📲", "Deploy"], ["/app/chats", "💬", "Chats"], ["/app/connections", "🔌", "Connections"], ["/app/reminders", "⏰", "Reminders"], ["/app/activity", "🧾", "Activity"], ["/app/settings", "⚙️", "You"]];
+  const sub: [string, string, string][] = agent ? [[`/app/a/${agent.id}`, "🎓", "Train"], [`/app/a/${agent.id}/memory`, "🧠", "Memory"], [`/app/a/${agent.id}/settings`, "🎚️", "Trust & name"]] : [];
   return <div className="app"><nav className="rail"><a className="logo" href="#/"><i />agents</a>
-    {!me.phone && <a className="new" href="#/app/settings">Deploy to iMessage →</a>}
-    {links.map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
+    {top.slice(0, 1).map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
+    {agent && <>{sub.map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""} style={{ paddingLeft: 24 }}><span className="ic">{ic}</span>{l} <span className="faint small">· {agent.name}</span></a>)}</>}
+    {top.slice(1).map(([h, ic, l]) => <a key={h} href={`#${h}`} className={page === h ? "on" : ""}><span className="ic">{ic}</span>{l}</a>)}
     <div className="sep" /><a href="#/" onClick={() => signOut()}><span className="ic">↩</span>Sign out</a></nav>
     <main className="main"><div className="page">{children}</div></main></div>;
 }
 
-function Thread({ roomId, composer }: { roomId: string; composer: boolean }) {
+function Thread({ roomId, send: sendTo }: { roomId: string; send?: (text: string, fileIds: string[]) => Promise<any> }) {
   const [msgs, setMsgs] = useState<any[]>([]), [working, setWorking] = useState(false), [text, setText] = useState(""), [files, setFiles] = useState<{ file_id: string; name: string }[]>([]), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { let on = true; const load = () => api(`/v1/rooms/${roomId}/messages`).then((r) => { if (!on) return; setMsgs(r.messages); setWorking(r.working); }).catch(() => {}); load(); const t = setInterval(load, 2500); return () => { on = false; clearInterval(t); }; }, [roomId]);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs.length, working]);
-  const send = async (e: any) => { e.preventDefault(); if (!text.trim() && !files.length) return; setBusy(true); setErr(""); try { await api("/v1/chat", { text, file_ids: files.map((f) => f.file_id) }); setText(""); setFiles([]); setWorking(true); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
+  const send = async (e: any) => { e.preventDefault(); if (!sendTo || (!text.trim() && !files.length)) return; setBusy(true); setErr(""); try { await sendTo(text, files.map((f) => f.file_id)); setText(""); setFiles([]); setWorking(true); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
   const upload = async (list: FileList | null) => { for (const f of Array.from(list ?? [])) { const fd = new FormData(); fd.append("file", f); const token = await getToken(); const r = await fetch("/v1/files", { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body: fd }); const d = await r.json(); if (!r.ok) { setErr(d.error); continue; } setFiles((x) => [...x, d]); } };
   return <div className="convo" style={{ border: "1px solid var(--line)", borderRadius: "var(--r)", background: "var(--panel)", height: "68vh", minHeight: 420 }}>
     <div className="timeline">{msgs.map((m) => <div key={m.id} className={`msg ${m.direction === "out" ? "agent" : ""}`}><div className="body"><div className="who">{m.direction === "out" ? "Agent" : m.sender_name ?? "You"} <span className="faint small">{fmt(m.created_at)}</span></div><div className="text">{m.text}</div></div></div>)}
       {working && <div className="waiting"><span className="dots"><span /><span /><span /></span>working…</div>}
       {!msgs.length && !working && <div className="empty">Everything you tell it about yourself is training. Start with what you'd like to hand off, then how you want it to behave: when to ask, when to just do it, how to write. Add the people and routines that matter. Photos work too. Check Memory to see what it kept.</div>}
       <div ref={end} /></div>
-    {composer && <form onSubmit={send} className="composer col" style={{ gap: 6 }}>
+    {sendTo && <form onSubmit={send} className="composer col" style={{ gap: 6 }}>
       {files.length > 0 && <div className="row wrap small muted">{files.map((f) => <span key={f.file_id} className="gm-chip">{f.name}</span>)}</div>}
       <div className="row"><textarea className="input grow" placeholder="Teach it something, ask it something, or send a photo…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); } }} />
         <label className="btn" title="Attach photos or files">📷<input type="file" accept="image/*,.pdf,.txt,.csv" multiple style={{ display: "none" }} onChange={(e) => upload(e.target.files)} /></label>
@@ -168,84 +170,106 @@ function Thread({ roomId, composer }: { roomId: string; composer: boolean }) {
     </form>}
   </div>;
 }
-function Train({ me }: { me: any }) {
-  const [room, setRoom] = useState<any>(null);
-  useEffect(() => { api("/v1/rooms").then((rs) => setRoom(rs.find((r: any) => r.channel === "web"))); }, []);
-  return <div><div className="row between"><div><h1>Train {me.agent_name ?? "your agent"}</h1><p className="muted">Teach it here first. What it learns is what it uses in iMessage and in your group chats.{me.readiness && !me.phone && <> {me.readiness.ready ? <a href="#/app/settings" style={{ textDecoration: "underline" }}>It's ready to deploy.</a> : `It knows ${me.readiness.memories} of ${me.readiness.min_memories} things it needs before deploying.`}</>}</p></div></div>
-    <div className="mt16">{room ? <Thread roomId={room.id} composer /> : null}</div></div>;
+const Ready = ({ r }: { r: any }) => <span className={`small ${r.ready ? "" : "muted"}`}>{r.ready ? "✅ ready to deploy" : `${r.named ? "✅" : "⬜️"} named · ${r.memories}/${r.min_memories} things learned`}</span>;
+
+function Agents({ me, reload }: { me: any; reload: () => void }) {
+  const [f, setF] = useState({ name: "", purpose: "" }), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const create = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { const a = await api("/v1/agents", f); setF({ name: "", purpose: "" }); reload(); location.hash = `/app/a/${a.id}`; } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
+  return <div><h1>Your agents</h1><p className="muted">Each one is trained on its own and deployed where you choose: your own chat, the family group, the trip group. Its training follows it; what a group says stays in that group.</p>
+    <div className="grid2 mt16">{me.agents.map((a: any) => <a key={a.id} className="card" href={`#/app/a/${a.id}`}><h3>{a.name}{a.id === me.default_agent_id && <span className="faint small"> · default</span>}</h3><div className="small muted" style={{ margin: "4px 0 8px" }}>{a.purpose ?? "No purpose set yet"}</div><Ready r={a.readiness} /></a>)}</div>
+    <form onSubmit={create} className="card col mt16" style={{ maxWidth: 520 }}><b>New agent</b><input className="input" placeholder="Name, e.g. Carl" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required /><textarea className="input" placeholder="What it's for, e.g. groceries and meal planning for the family" value={f.purpose} onChange={(e) => setF({ ...f, purpose: e.target.value })} style={{ height: 70 }} />{err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}<button className="btn primary" disabled={busy}>Create and train</button></form></div>;
 }
-function Memory() {
-  const [list, setList] = useState<any[]>([]), [text, setText] = useState(""), [kind, setKind] = useState("preference"), [err, setErr] = useState("");
+function Train({ agent }: { agent: any }) {
+  const [room, setRoom] = useState<any>(null);
+  useEffect(() => { api(`/v1/agents/${agent.id}/room`).then(setRoom); }, [agent.id]);
+  return <div><div className="row between"><div><h1>Train {agent.name}</h1><p className="muted">{agent.purpose ?? "Tell it what it's for."} <Ready r={agent.readiness} />{agent.readiness.ready && <> · <a href="#/app/deploy" style={{ textDecoration: "underline" }}>deploy</a></>}</p></div></div>
+    <div className="mt16">{room ? <Thread roomId={room.id} send={(text, file_ids) => api(`/v1/agents/${agent.id}/chat`, { text, file_ids })} /> : null}</div></div>;
+}
+function Memory({ agent }: { agent: any }) {
+  const [list, setList] = useState<any[]>([]), [text, setText] = useState(""), [kind, setKind] = useState("rule"), [err, setErr] = useState("");
   const KINDS = ["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact"];
-  const load = () => api("/v1/memories").then(setList);
-  useEffect(() => { load(); }, []);
-  const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/memories", { text, kind }); setText(""); load(); } catch (x: any) { setErr(x.message); } };
-  return <div><h1>Memory</h1><p className="muted">Everything it knows about you, dated. Rules are how you want it to behave; it follows them on every run. Delete what's wrong; add what it should know.</p>
+  const load = () => api(`/v1/agents/${agent.id}/memories`).then(setList);
+  useEffect(() => { load(); }, [agent.id]);
+  const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api(`/v1/agents/${agent.id}/memories`, { text, kind }); setText(""); load(); } catch (x: any) { setErr(x.message); } };
+  return <div><h1>{agent.name}'s memory</h1><p className="muted">Everything it knows, dated. Rules are how you want it to behave; it follows them on every run, in every chat it's deployed to. Delete what's wrong; add what it should know.</p>
     <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" style={{ width: "auto", flex: "0 0 auto" }} value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Ask me before emailing anyone at work · Uber Eats is 30% off on Tuesdays, so order then · My mom is Linda, in Boston" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
-    {KINDS.filter((k) => list.some((m) => m.kind === k)).map((k) => <div key={k}><h2>{k}</h2><div className="list">{list.filter((m) => m.kind === k).map((m) => <div key={m.id} className="item"><div className="grow">{m.text}<div className="small faint">{fmt(m.created_at)}{m.scope_type === "room" ? ` · shared in ${m.room_name ?? "a group"}` : ""}</div></div><button className="btn ghost" onClick={async () => { await api(`/v1/memories/${m.id}`, undefined, "DELETE"); load(); }}>Forget</button></div>)}</div></div>)}
+    {KINDS.filter((k) => list.some((m) => m.kind === k)).map((k) => <div key={k}><h2>{k}</h2><div className="list">{list.filter((m) => m.kind === k).map((m) => <div key={m.id} className="item"><div className="grow">{m.text}<div className="small faint">{fmt(m.created_at)}</div></div><button className="btn ghost" onClick={async () => { await api(`/v1/memories/${m.id}`, undefined, "DELETE"); load(); }}>Forget</button></div>)}</div></div>)}
     {!list.length && <div className="empty mt16">Nothing yet. Train it, or add a line above.</div>}</div>;
+}
+function AgentSettings({ agent, me, reload }: { agent: any; me: any; reload: () => void }) {
+  const [f, setF] = useState({ name: agent.name, purpose: agent.purpose ?? "" }), [tools, setTools] = useState<{ id: string; description: string }[]>([]), [auto, setAuto] = useState<string[]>(agent.auto_tools ?? []), [saved, setSaved] = useState(""), [err, setErr] = useState("");
+  useEffect(() => { api("/v1/tools").then(setTools); }, []);
+  const save = async (e: any) => { e.preventDefault(); await api(`/v1/agents/${agent.id}`, { ...f, auto_tools: auto }, "PUT"); reload(); setSaved("Saved."); setTimeout(() => setSaved(""), 1500); };
+  const toggle = (id: string) => setAuto((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
+  const del = async () => { if (!confirm(`Delete ${agent.name} and everything it learned?`)) return; try { await api(`/v1/agents/${agent.id}`, undefined, "DELETE"); reload(); location.hash = "/app"; } catch (x: any) { setErr(x.message); } };
+  return <div><h1>{agent.name}: trust & name</h1>
+    <form onSubmit={save} className="card col mt16" style={{ maxWidth: 560 }}>
+      <label className="small muted">Name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required />
+      <label className="small muted">What it's for</label><textarea className="input" value={f.purpose} onChange={(e) => setF({ ...f, purpose: e.target.value })} style={{ height: 70 }} />
+      <h2>Trust</h2><p className="small muted" style={{ margin: 0 }}>Everything below asks you first. Tick an action once {agent.name} has earned it, and it runs without asking.</p>
+      {tools.map((t) => <label key={t.id} className="check"><input type="checkbox" checked={auto.includes(t.id)} onChange={() => toggle(t.id)} /> <span><b className="mono">{t.id}</b> <span className="small muted">{t.description}</span></span></label>)}
+      <div className="row"><button className="btn primary">Save</button><span className="small muted">{saved}</span></div></form>
+    {me.agents.length > 1 && <div className="mt16"><button className="btn" onClick={del}>Delete {agent.name}</button>{err && <span className="small" style={{ color: "var(--bad)", marginLeft: 8 }}>{err}</span>}</div>}</div>;
+}
+function Deploy({ me, setMe }: { me: any; setMe: (u: any) => void }) {
+  const [phone, setPhone] = useState(""), [code, setCode] = useState(""), [step, setStep] = useState<"phone" | "code">("phone"), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const d = me.agents.find((a: any) => a.id === me.default_agent_id) ?? me.agents[0];
+  const go = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { if (step === "phone") { await api("/v1/me/phone", { phone }); setStep("code"); } else setMe(await api("/v1/me/phone/verify", { code })); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
+  return <div><h1>Deploy</h1><p className="muted">Trained agents go to iMessage: your own chat, and any group chat you add the number to.</p>
+    <div className="card mt16" style={{ maxWidth: 560 }}>{me.phone ? <><b>Linked to {me.phone}</b><div className="small muted">Your chat talks to {d?.name}. Say "@Name" to switch to another of your agents. In a group, add the number, then say "@Name" once; the owner can switch with "@Other".</div></>
+      : <form onSubmit={go} className="col"><b>Link your iPhone</b><div className="small muted">{d ? <>Your default agent is {d.name}. <Ready r={d.readiness} /></> : "Create an agent first."}</div>
+        {d?.readiness?.ready ? <>{step === "phone" ? <input className="input" type="tel" autoComplete="tel" placeholder="+1 555 123 4567" value={phone} onChange={(e) => setPhone(e.target.value)} required /> : <input className="input" inputMode="numeric" placeholder="6-digit code from the text" value={code} onChange={(e) => setCode(e.target.value)} required />}
+          <button className="btn primary" disabled={busy}>{step === "phone" ? "Text me a code" : "Link"}</button></> : <div className="small muted">Train {d?.name ?? "it"} until it's ready, then come back. Change the default agent under You.</div>}
+        {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}</form>}</div>
+    <h2>Your agents</h2><div className="list">{me.agents.map((a: any) => <div key={a.id} className="item"><div className="grow"><b>{a.name}</b>{a.id === me.default_agent_id && <span className="faint small"> · default, answers your own chat</span>}<div><Ready r={a.readiness} /></div></div><a className="btn" href={`#/app/a/${a.id}`}>Train</a></div>)}</div></div>;
+}
+function You({ me, setMe }: { me: any; setMe: (u: any) => void }) {
+  const [f, setF] = useState({ name: me.name ?? "", tz: me.tz ?? "", default_agent_id: me.default_agent_id }), [saved, setSaved] = useState("");
+  const save = async (e: any) => { e.preventDefault(); setMe(await api("/v1/me/settings", f, "PUT")); setSaved("Saved."); setTimeout(() => setSaved(""), 1500); };
+  return <div><h1>You</h1><form onSubmit={save} className="card col mt16" style={{ maxWidth: 560 }}>
+    <label className="small muted">Your name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+    <label className="small muted">Time zone (IANA)</label><input className="input" value={f.tz} onChange={(e) => setF({ ...f, tz: e.target.value })} placeholder="America/New_York" />
+    <label className="small muted">Default agent (answers your own chat)</label><select className="input" value={f.default_agent_id ?? ""} onChange={(e) => setF({ ...f, default_agent_id: e.target.value })}>{me.agents.map((a: any) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+    <div className="row"><button className="btn primary">Save</button><span className="small muted">{saved}</span></div></form></div>;
 }
 function Chats() {
   const [rooms, setRooms] = useState<any[]>([]), [open, setOpen] = useState<any>(null);
-  useEffect(() => { api("/v1/rooms").then((rs) => setRooms(rs.filter((r: any) => r.channel !== "web"))); }, []);
-  if (open) return <div><div className="row between"><div><h1>{open.name ?? (open.kind === "group" ? "Group chat" : "Your chat")}</h1>{open.instructions && <p className="muted">{open.instructions}</p>}</div><button className="btn" onClick={() => setOpen(null)}>← All chats</button></div><div className="mt16"><Thread roomId={open.id} composer={false} /></div></div>;
-  return <div><h1>Chats</h1><p className="muted">Your iMessage conversations with it. Read here, talk in Messages.</p>
-    <div className="list mt16">{rooms.map((r) => <a key={r.id} className="item" onClick={() => setOpen(r)}><div className="grow"><b>{r.name ?? (r.kind === "group" ? "Group chat" : "Your chat")}</b><div className="small muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.last_text}</div></div><span className="faint small">{r.last_at ? fmt(r.last_at) : ""}</span></a>)}{!rooms.length && <div className="empty">No iMessage chats yet. Deploy it from Settings when it's ready.</div>}</div></div>;
-}
-function PhoneLink({ me, onLinked }: { me: any; onLinked: (u: any) => void }) {
-  const [phone, setPhone] = useState(""), [code, setCode] = useState(""), [step, setStep] = useState<"phone" | "code">("phone"), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
-  const go = async (e: any) => { e.preventDefault(); setErr(""); setBusy(true); try { if (step === "phone") { await api("/v1/me/phone", { phone }); setStep("code"); } else onLinked(await api("/v1/me/phone/verify", { code })); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
-  if (me.phone) return <div className="card"><b>Deployed to iMessage</b><div className="small muted">Linked to {me.phone}. Text it there; everything it learned here comes along.</div></div>;
-  const r = me.readiness ?? { named: false, memories: 0, min_memories: 3, ready: false };
-  return <form onSubmit={go} className="card col"><b>Deploy to iMessage</b><div className="small muted">It has to be trained before it texts anyone.</div>
-    <div className="check">{r.named ? "✅" : "⬜️"} It has a name{r.named ? ` (${me.agent_name})` : " — set it above, or tell it in Train"}</div>
-    <div className="check">{r.memories >= r.min_memories ? "✅" : "⬜️"} It knows at least {r.min_memories} things about you ({r.memories} so far)</div>
-    {!r.ready ? <div className="small muted">Go to Train and teach it. Come back when both are ticked.</div> : <><div className="small muted">Give it your iPhone number. It texts you a code, and from then on it works in Messages and in any group you add it to.</div>
-    {step === "phone" ? <input className="input" type="tel" autoComplete="tel" placeholder="+1 555 123 4567" value={phone} onChange={(e) => setPhone(e.target.value)} required /> : <input className="input" inputMode="numeric" placeholder="6-digit code from the text" value={code} onChange={(e) => setCode(e.target.value)} required />}
-    {err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}
-    <button className="btn primary" disabled={busy}>{step === "phone" ? "Text me a code" : "Link"}</button></>}</form>;
-}
-function Settings({ me, setMe }: { me: any; setMe: (u: any) => void }) {
-  const [f, setF] = useState({ agent_name: me.agent_name ?? "", name: me.name ?? "", tz: me.tz ?? "" }), [tools, setTools] = useState<{ id: string; description: string }[]>([]), [auto, setAuto] = useState<string[]>(me.auto_tools ?? []), [saved, setSaved] = useState("");
-  useEffect(() => { api("/v1/tools").then(setTools); }, []);
-  const save = async (e: any) => { e.preventDefault(); setMe(await api("/v1/me/settings", { ...f, auto_tools: auto }, "PUT")); setSaved("Saved."); setTimeout(() => setSaved(""), 1500); };
-  const toggle = (id: string) => setAuto((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
-  return <div><h1>Settings</h1>
-    <form onSubmit={save} className="card col mt16" style={{ maxWidth: 560 }}>
-      <label className="small muted">What you call it</label><input className="input" value={f.agent_name} onChange={(e) => setF({ ...f, agent_name: e.target.value })} placeholder="Pip" />
-      <label className="small muted">Your name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-      <label className="small muted">Time zone (IANA)</label><input className="input" value={f.tz} onChange={(e) => setF({ ...f, tz: e.target.value })} placeholder="America/New_York" />
-      <h2>Trust</h2><p className="small muted" style={{ margin: 0 }}>Everything below asks you first. Tick an action once it has earned it, and it runs without asking.</p>
-      {tools.map((t) => <label key={t.id} className="check"><input type="checkbox" checked={auto.includes(t.id)} onChange={() => toggle(t.id)} /> <span><b className="mono">{t.id}</b> <span className="small muted">{t.description}</span></span></label>)}
-      <div className="row"><button className="btn primary">Save</button><span className="small muted">{saved}</span></div></form>
-    <div className="mt16" style={{ maxWidth: 560 }}><PhoneLink me={me} onLinked={(u) => setMe({ ...me, ...u })} /></div></div>;
+  useEffect(() => { api("/v1/rooms").then(setRooms); }, []);
+  if (open) return <div><div className="row between"><div><h1>{open.name ?? (open.kind === "group" ? "Group chat" : "Your chat")} <span className="faint small">· {open.agent_name}</span></h1>{open.instructions && <p className="muted">{open.instructions}</p>}</div><button className="btn" onClick={() => setOpen(null)}>← All chats</button></div><div className="mt16"><Thread roomId={open.id} /></div></div>;
+  return <div><h1>Chats</h1><p className="muted">Your iMessage conversations. Read here, talk in Messages.</p>
+    <div className="list mt16">{rooms.map((r) => <a key={r.id} className="item" onClick={() => setOpen(r)}><div className="grow"><b>{r.name ?? (r.kind === "group" ? "Group chat" : "Your chat")}</b> <span className="faint small">· {r.agent_name}</span><div className="small muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.last_text}</div></div><span className="faint small">{r.last_at ? fmt(r.last_at) : ""}</span></a>)}{!rooms.length && <div className="empty">No iMessage chats yet. Deploy when an agent is ready.</div>}</div></div>;
 }
 function Connections() {
   const [list, setList] = useState<any[]>([]), [f, setF] = useState({ label: "", url: "", token: "" }), [err, setErr] = useState("");
   const load = () => api("/v1/connections").then(setList);
   useEffect(() => { load(); }, []);
-  const google = list.find((c) => c.provider === "google"), devices = list.filter((c) => c.provider === "mcp");
+  const google = list.find((c) => c.provider === "google"), devices = list.filter((c) => c.provider === "mcp"), logins = list.filter((c) => c.provider === "browser_login");
+  const [site, setSite] = useState("");
+  const signIn = async (e: any) => { e.preventDefault(); setErr(""); try { const { url } = await api("/v1/connections/browser/link", { site }); window.open(url, "_blank"); setSite(""); } catch (x: any) { setErr(x.message); } };
   const connectGoogle = async () => { const { url } = await api("/v1/connections/google/link", {}); location.href = url; };
   const drop = async (id: string) => { await api(`/v1/connections/${id}`, undefined, "DELETE"); load(); };
   const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api("/v1/connections/mcp", f); setF({ label: "", url: "", token: "" }); load(); } catch (x: any) { setErr(x.message); } };
-  return <div><h1>Connections</h1><p className="muted">Your accounts and devices. It uses them only when you ask, and in a group only after you say it may.</p>
+  return <div><h1>Connections</h1><p className="muted">Your accounts and devices. Your agents use them only when you ask, and in a group only after you say they may.</p>
     <h2>Google</h2><div className="card row between"><div><b>Gmail, Calendar, Contacts, Drive</b><div className="small muted">{google ? `Connected as ${google.account}${google.status === "needs_reauth" ? " · needs reconnecting" : ""}` : "Not connected"}</div></div>
       <div className="row">{google && <button className="btn" onClick={() => drop(google.id)}>Disconnect</button>}<button className="btn primary" onClick={connectGoogle}>{google ? "Reconnect" : "Connect"}</button></div></div>
-    <h2>Devices</h2><div className="list">{devices.map((d) => <div key={d.id} className="item"><div className="grow"><b>{d.label}</b><div className="small muted">{d.account} · {d.tools} tools{d.last_used_at ? ` · used ${fmt(d.last_used_at)}` : ""}</div></div><button className="btn" onClick={() => drop(d.id)}>Remove</button></div>)}{!devices.length && <div className="empty">No devices. Run <a href="https://github.com/leeguooooo/iphone-use" style={{ textDecoration: "underline" }}>iphone-use</a> on your Mac, expose it through a tunnel, and add it below. Then it can use the apps on your phone (Uber Eats, OpenTable…).</div>}</div>
+    <h2>Site logins</h2><p className="small muted" style={{ marginTop: -6 }}>Sign in to a website yourself in a live browser. Your agents then use that site as you. Passwords never pass through here.</p>
+    <div className="list">{logins.map((c) => <div key={c.id} className="item"><div className="grow"><b>{c.account}</b><div className="small muted">{c.status === "needs_reauth" ? "needs signing in again" : "signed in"}{c.last_used_at ? ` · used ${fmt(c.last_used_at)}` : ""}</div></div><button className="btn" onClick={() => drop(c.id)}>Sign out</button></div>)}{!logins.length && <div className="empty">No site logins yet.</div>}</div>
+    <form onSubmit={signIn} className="row mt8" style={{ maxWidth: 520 }}><input className="input grow" placeholder="ubereats.com" value={site} onChange={(e) => setSite(e.target.value)} required /><button className="btn primary">Sign in</button></form>
+    <h2>Devices</h2><div className="list">{devices.map((d) => <div key={d.id} className="item"><div className="grow"><b>{d.label}</b><div className="small muted">{d.account} · {d.tools} tools{d.last_used_at ? ` · used ${fmt(d.last_used_at)}` : ""}</div></div><button className="btn" onClick={() => drop(d.id)}>Remove</button></div>)}{!devices.length && <div className="empty">No devices. Run <a href="https://github.com/leeguooooo/iphone-use" style={{ textDecoration: "underline" }}>iphone-use</a> on your Mac, expose it through a tunnel, and add it below. Then your agents can use the apps on your phone.</div>}</div>
     <form onSubmit={add} className="card col mt16" style={{ maxWidth: 520 }}><b>Add a device (MCP server)</b><input className="input" placeholder="Name, e.g. My iPhone" value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} required /><input className="input" type="url" placeholder="https://…/mcp" value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} required /><input className="input" type="password" placeholder="Bearer token (if any)" value={f.token} onChange={(e) => setF({ ...f, token: e.target.value })} />{err && <div className="small" style={{ color: "var(--bad)" }}>{err}</div>}<button className="btn primary">Connect</button></form></div>;
 }
 function Reminders() {
   const [list, setList] = useState<any[]>([]);
   const load = () => api("/v1/reminders").then(setList);
   useEffect(() => { load(); }, []);
-  return <div><h1>Reminders</h1><p className="muted">What it will do or say later. Set them in the training chat or in Messages ("every morning, update the grocery list").</p>
-    <div className="list mt16">{list.map((s) => <div key={s.id} className="item"><div className="grow"><b>{s.text}</b><div className="small muted">{s.next} · {s.spec?.at ? "once" : "repeats"} · {s.channel === "web" ? "training chat" : s.room_kind === "group" ? s.room_name ?? "group" : "your chat"}{s.kind === "task" ? " · a job" : ""}</div></div><button className="btn" onClick={async () => { await api(`/v1/reminders/${s.id}`, undefined, "DELETE"); load(); }}>Cancel</button></div>)}{!list.length && <div className="empty">No reminders.</div>}</div></div>;
+  return <div><h1>Reminders</h1><p className="muted">What your agents will do or say later. Set them in a training chat or in Messages ("every morning, update the grocery list").</p>
+    <div className="list mt16">{list.map((s) => <div key={s.id} className="item"><div className="grow"><b>{s.text}</b><div className="small muted">{s.next} · {s.spec?.at ? "once" : "repeats"} · {s.agent_name} · {s.channel === "web" ? "training chat" : s.room_kind === "group" ? s.room_name ?? "group" : "your chat"}{s.kind === "task" ? " · a job" : ""}</div></div><button className="btn" onClick={async () => { await api(`/v1/reminders/${s.id}`, undefined, "DELETE"); load(); }}>Cancel</button></div>)}{!list.length && <div className="empty">No reminders.</div>}</div></div>;
 }
 function Activity() {
   const [runs, setRuns] = useState<any[]>([]);
   useEffect(() => { api("/v1/runs").then(setRuns); }, []);
   return <div><h1>Activity</h1><p className="muted">Every request, each tool call, and the proof behind each action.</p>
-    {runs.map((r) => <div key={r.id} className="card mt16"><div className="row between"><b>{r.request.slice(0, 140)}</b><span className="small faint">{fmt(r.created_at)} · {r.channel === "web" ? "training" : r.room_kind === "group" ? r.room_name ?? "group" : "your chat"} · {r.status} · {r.tier}{r.tier_reason ? ` (${r.tier_reason})` : ""} · ${Number(r.cost_usd).toFixed(4)}</span></div>
+    {runs.map((r) => <div key={r.id} className="card mt16"><div className="row between"><b>{r.request.slice(0, 140)}</b><span className="small faint">{fmt(r.created_at)} · {r.agent_name} · {r.channel === "web" ? "training" : r.room_kind === "group" ? r.room_name ?? "group" : "your chat"} · {r.status} · {r.tier}{r.tier_reason ? ` (${r.tier_reason})` : ""} · ${Number(r.cost_usd).toFixed(4)}</span></div>
       {r.executions.map((e: any, i: number) => <div key={i} className={`step ${e.verified ? "ok" : e.status === "unknown" ? "warn" : e.status === "failed" ? "bad" : ""}`}><span className="mono">{e.tool}</span> <span className="small muted">{JSON.stringify(e.input).slice(0, 160)}</span>{e.provider_ref && <span className="small faint"> · proof {e.provider_ref}</span>}</div>)}
       {r.reply && <pre className="code">{r.reply}</pre>}</div>)}{!runs.length && <div className="empty">Nothing yet.</div>}</div>;
 }
@@ -256,15 +280,19 @@ function Bridge({ onReady }: { onReady: (signedIn: boolean) => void }) {
 }
 function App({ clerk }: { clerk: string | null }) {
   const hash = useHash(), [signedIn, setSignedIn] = useState<boolean | null>(clerk ? null : false), [me, setMe] = useState<any>(null);
-  useEffect(() => { if (signedIn) api("/v1/me").then(setMe).catch(() => setMe(null)); else setMe(null); }, [signedIn]);
+  const reload = () => api("/v1/me").then(setMe).catch(() => setMe(null));
+  useEffect(() => { if (signedIn) reload(); else setMe(null); }, [signedIn]);
   const page = hash.startsWith("/app") ? hash.replace(/\/$/, "") : "/";
   useEffect(() => { if (signedIn && !hash.startsWith("/app") && hash !== "/") location.hash = "/app"; }, [signedIn, hash]); // Clerk's steps (#/factor-one, #/sso-callback) end in the app
-  const pages: Record<string, ReactNode> = me ? { "/app": <Train me={me} />, "/app/memory": <Memory />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <Settings me={me} setMe={setMe} /> } : {};
+  const am = page.match(/^\/app\/a\/([^/]+)(?:\/(memory|settings))?$/), agent = am && me ? me.agents.find((a: any) => a.id === am[1]) : null;
+  const body = !me ? null
+    : agent ? (am![2] === "memory" ? <Memory agent={agent} /> : am![2] === "settings" ? <AgentSettings agent={agent} me={me} reload={reload} /> : <Train agent={agent} />)
+    : ({ "/app": <Agents me={me} reload={reload} />, "/app/deploy": <Deploy me={me} setMe={setMe} />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <You me={me} setMe={setMe} /> } as Record<string, ReactNode>)[page] ?? <Agents me={me} reload={reload} />;
   return <>{clerk && <Bridge onReady={setSignedIn} />}
     {page === "/" ? <Landing signedIn={!!signedIn} clerk={clerk} />
       : signedIn === false ? <div className="auth">{clerk ? <SignIn routing={"virtual" as any} withSignUp forceRedirectUrl="/#/app" signUpForceRedirectUrl="/#/app" /> : <div className="card">Sign-in isn't set up on this server.</div>}</div>
       : !me ? null
-      : <Shell page={page} me={me}>{pages[page] ?? pages["/app"]}</Shell>}
+      : <Shell page={page} me={me} agent={agent}>{body}</Shell>}
   </>;
 }
 fetch("/v1/config").then((r) => r.json()).then((c) => {

@@ -2,6 +2,7 @@
 import { sql, seal, now, one, fmtLocal, spentToday } from "./db";
 import { takeLink, publicUrl } from "./links";
 import { addMcpConnection } from "./tools/mcp";
+import { startLogin, openLogin, finishLogin, normSite } from "./tools/browser";
 import * as im from "./imessage";
 import * as agent from "./agent";
 import { privateRoomOf } from "./rooms";
@@ -70,6 +71,47 @@ export function serve() {
         },
       },
 
+      "/connect/browser": { GET: async (req) => {
+        const q = new URL(req.url).searchParams, t = q.get("t") ?? "", link = await takeLink(t, "browser");
+        if (!link) return html(404, "Link expired", `<p class="bad">This link has expired. Ask your agent for a new one.</p>`);
+        const site = normSite(q.get("site") || (link.state?.site ?? ""));
+        return page(`Sign in to ${site}`, `<style>body{max-width:none;margin:0;padding:16px}#live{width:100%;height:72vh;border:2px solid #111;border-radius:14px;background:#f4f4f4}</style>
+<h2 style="margin:0 0 6px">Sign in to ${esc(site)}</h2><p id="hint"><small>A real browser opens below. Sign in as you normally would, then press Done. Your agent never sees your password, only the signed-in browser.</small></p>
+<iframe id="live" allow="clipboard-read; clipboard-write" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"></iframe>
+<p><button id="done" disabled>Done, I'm signed in</button> <button id="cancel">Cancel</button> <span id="msg"></span></p>
+<script>
+const t=${JSON.stringify(t)}, site=${JSON.stringify(site)}; let id=null;
+const post=(p,b)=>fetch(p,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(b)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||r.status);return d});
+(async()=>{try{const s=await post("/connect/browser/start",{t,site});id=s.id;document.getElementById("live").src=s.live_view_url;await new Promise(r=>setTimeout(r,2500));await post("/connect/browser/open",{t,id});document.getElementById("done").disabled=false;}catch(e){document.getElementById("msg").textContent="Couldn't open the browser: "+e.message;}})();
+document.getElementById("done").onclick=async()=>{try{await post("/connect/browser/finish",{t,id});document.body.innerHTML="<h2>Signed in.</h2><p>Your agent can use "+site+" as you now. Go back to your chat.</p>";}catch(e){document.getElementById("msg").textContent=e.message;}};
+document.getElementById("cancel").onclick=async()=>{await post("/connect/browser/cancel",{t,id}).catch(()=>{});document.body.innerHTML="<p>Cancelled.</p>";};
+</script>`);
+      } },
+      "/connect/browser/start": { POST: async (req) => {
+        const b = await req.json().catch(() => ({})), link = await takeLink(String(b.t ?? ""), "browser");
+        if (!link) return Response.json({ error: "link expired" }, { status: 404 });
+        try { return Response.json(await startLogin(link.user_id, String(b.site ?? link.state?.site ?? ""))); } catch (e: any) { return Response.json({ error: e.message }, { status: 502 }); }
+      } },
+      "/connect/browser/open": { POST: async (req) => {
+        const b = await req.json().catch(() => ({})), link = await takeLink(String(b.t ?? ""), "browser");
+        const c = link ? await one(sql`select * from connections where id=${String(b.id ?? "")} and user_id=${link.user_id} and status='pending'`) : null;
+        if (!c) return Response.json({ error: "no such session" }, { status: 404 });
+        try { await openLogin(c); return Response.json({ ok: true }); } catch (e: any) { return Response.json({ error: e.message }, { status: 502 }); }
+      } },
+      "/connect/browser/finish": { POST: async (req) => {
+        const b = await req.json().catch(() => ({})), link = await takeLink(String(b.t ?? ""), "browser");
+        const c = link ? await one(sql`select * from connections where id=${String(b.id ?? "")} and user_id=${link.user_id} and status='pending'`) : null;
+        if (!c) return Response.json({ error: "no such session" }, { status: 404 });
+        await finishLogin(c); await sql`delete from links where token=${link!.token}`;
+        const room = await privateRoomOf(link!.user_id);
+        if (room) await agent.say(room, `Signed in to ${c.account}. I can use it as you now.`);
+        return Response.json({ ok: true });
+      } },
+      "/connect/browser/cancel": { POST: async (req) => {
+        const b = await req.json().catch(() => ({})), link = await takeLink(String(b.t ?? ""), "browser");
+        if (link) await sql`update connections set status='revoked' where id=${String(b.id ?? "")} and user_id=${link.user_id} and status='pending'`;
+        return Response.json({ ok: true });
+      } },
       "/t": { GET: async (req) => {
         const link = await takeLink(new URL(req.url).searchParams.get("t") ?? "", "trace");
         if (!link) return html(404, "Link expired", `<p class="bad">This link has expired. Ask your assistant for a new one.</p>`);
