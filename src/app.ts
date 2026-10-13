@@ -1,0 +1,73 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { systemClock, type Clock } from "./core/clock.ts";
+import type { Delivery } from "./runtime/runtime.ts";
+import { openDb } from "./store/db.ts";
+import { Store } from "./store/repos.ts";
+import { MemoryService } from "./memory/memory.ts";
+import { Consolidator } from "./memory/consolidate.ts";
+import { RoomService } from "./rooms/rooms.ts";
+import { AttentionService } from "./inbox/attention.ts";
+import { CommitmentService } from "./care/commitments.ts";
+import { Planner } from "./planning/planner.ts";
+import { Runtime } from "./runtime/runtime.ts";
+import { Scheduler } from "./scheduler/scheduler.ts";
+import { loadSkills } from "./skills/skills.ts";
+import type { ModelClient } from "./model/types.ts";
+import { fakeHands, type Hands } from "./tools/hands.ts";
+
+export interface App {
+  store: Store;
+  clock: Clock;
+  model: ModelClient;
+  memory: MemoryService;
+  consolidator: Consolidator;
+  rooms: RoomService;
+  attention: AttentionService;
+  commitments: CommitmentService;
+  planner: Planner;
+  runtime: Runtime;
+  scheduler: Scheduler;
+  hands: Hands;
+  /** Subscribe to outbound deliveries (channel adapters, UI streams, tests). */
+  onDeliver(fn: (d: Delivery) => void): () => void;
+}
+
+/** Compose the product. Everything is injectable so tests run offline. */
+export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelClient; hands?: Hands; skillsDir?: string; heartbeatEveryMs?: number; maxTurns?: number }): App {
+  const clock = opts.clock ?? systemClock;
+  const store = new Store(openDb(opts.dbPath ?? ":memory:"));
+  const memory = new MemoryService(store, clock);
+  const rooms = new RoomService(store, clock);
+  const attention = new AttentionService(store, clock);
+  const commitments = new CommitmentService(store, clock);
+  const planner = new Planner(store, clock);
+  const hands = opts.hands ?? fakeHands();
+  const here = dirname(fileURLToPath(import.meta.url));
+  const skills = loadSkills(opts.skillsDir ?? join(here, "..", "skills"));
+  const listeners = new Set<(d: Delivery) => void>();
+  const deliver = (d: Delivery) => {
+    for (const l of listeners) l(d);
+  };
+  const runtime = new Runtime({ store, clock, model: opts.model, memory, rooms, attention, commitments, planner, hands, skills, deliver, maxTurns: opts.maxTurns });
+  const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
+  const consolidator = new Consolidator(store, clock, opts.model, memory);
+  return {
+    store,
+    clock,
+    model: opts.model,
+    memory,
+    consolidator,
+    rooms,
+    attention,
+    commitments,
+    planner,
+    runtime,
+    scheduler,
+    hands,
+    onDeliver(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+}

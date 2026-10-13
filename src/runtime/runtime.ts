@@ -1,0 +1,628 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import { newId, sha256 } from "../core/ids.ts";
+import { hourIn, type Clock } from "../core/clock.ts";
+import type { AgentSpec, AgentState, AttentionItem, Id, Message, Person, Room, Run, RunEvent, RunTrigger, Session, ToolCallRecord } from "../core/types.ts";
+import type { ModelClient } from "../model/types.ts";
+import type { Store } from "../store/repos.ts";
+import type { MemoryService } from "../memory/memory.ts";
+import type { RoomService } from "../rooms/rooms.ts";
+import type { AttentionService } from "../inbox/attention.ts";
+import type { CommitmentService } from "../care/commitments.ts";
+import type { Planner } from "../planning/planner.ts";
+import type { Hands } from "../tools/hands.ts";
+import { TOOL_INDEX, toolSpecs, type GateDecision, type ToolContext, type ToolResult } from "../tools/registry.ts";
+import { matchSkills, type Skill } from "../skills/skills.ts";
+import { buildSystemPrompt } from "../agent/prompt.ts";
+import { KIND_LABEL } from "../inbox/attention.ts";
+
+export interface Delivery {
+  roomId: Id;
+  text: string;
+  /** Empty means everyone in the room. */
+  visibleTo?: Id[];
+  kind: "reply" | "notice" | "card" | "progress";
+}
+
+export interface RuntimeDeps {
+  store: Store;
+  clock: Clock;
+  model: ModelClient;
+  memory: MemoryService;
+  rooms: RoomService;
+  attention: AttentionService;
+  commitments: CommitmentService;
+  planner: Planner;
+  hands: Hands;
+  skills: Skill[];
+  /** Where outbound text goes (channel adapters subscribe here). */
+  deliver: (d: Delivery) => void | Promise<void>;
+  maxTurns?: number;
+}
+
+const MAX_TURNS = 24;
+
+/**
+ * One run per inbound message or trigger. The loop: assemble context, call
+ * the model, record every tool call with evidence, pause on gates, resume on
+ * answers, and finish with a reply whose footer comes from the records.
+ */
+export class Runtime {
+  constructor(private d: RuntimeDeps) {}
+
+  // ------------------------------------------------------------------ inbound
+
+  /** A person wrote in a room. Decides whether the agent is addressed, answers gates, steers, or starts a run. */
+  async handleMessage(input: { roomId: Id; personId: Id; text: string; dedupKey?: string }): Promise<Run | undefined> {
+    const { store } = this.d;
+    const room = store.getRoom(input.roomId);
+    if (!room) throw new Error(`room ${input.roomId} not found`);
+    const agent = store.getAgent(room.agentId);
+    if (!agent) throw new Error(`agent ${room.agentId} not found`);
+    if (input.dedupKey && store.findRunByDedup(input.dedupKey)) return undefined;
+
+    // Unknown people in a group are guests: served through the owner, never asked to sign up.
+    if (!store.getMembership(room.id, input.personId)) {
+      if (!store.getPerson(input.personId)) this.d.rooms.createPerson({ id: input.personId, displayName: input.personId, timezone: "UTC" });
+      this.d.rooms.addMember(room.id, input.personId, "guest");
+    }
+
+    const session = this.sessionFor(room, agent);
+    const msg: Message = {
+      id: newId("msg"),
+      sessionId: session.id,
+      roomId: room.id,
+      role: "user",
+      authorId: input.personId,
+      text: input.text,
+      visibleTo: [],
+      at: this.d.clock.now(),
+    };
+    store.putMessage(msg);
+    session.lastActivityAt = msg.at;
+    store.putSession(session);
+
+    // 1. Is this an answer to something the agent asked this person here?
+    const pending = this.pendingItemFor(room, session, input.personId);
+    if (pending) {
+      const item = this.d.attention.resolve(pending.id, input.text, input.personId);
+      if (item.runId) {
+        const run = store.getRun(item.runId);
+        if (run && run.status === "waiting") return this.resume(run, item);
+      }
+      return undefined;
+    }
+
+    // 2. Is the agent addressed?
+    if (!this.addressed(room, agent, input.text)) return undefined;
+
+    // 3. A run is in flight in this session: steer it.
+    const active = store.activeRunForSession(session.id);
+    if (active && active.status === "running") {
+      store.appendEvent({ runId: active.id, sessionId: session.id, type: "steer_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text } });
+      return active;
+    }
+    if (active && active.status === "waiting") {
+      // Waiting on someone else; a new ask from this person starts its own run.
+    }
+
+    return this.startRun({ room, agent, session, trigger: "message", requesterId: input.personId, text: input.text, dedupKey: input.dedupKey, excludeMessageId: msg.id });
+  }
+
+  /** An approval or answer arrived through the inbox UI rather than chat. */
+  async answerAttention(itemId: Id, answer: string, answeredBy?: Id): Promise<Run | undefined> {
+    const item = this.d.attention.resolve(itemId, answer, answeredBy);
+    if (!item.runId) return undefined;
+    const run = this.d.store.getRun(item.runId);
+    if (!run || run.status !== "waiting") return undefined;
+    return this.resume(run, item);
+  }
+
+  /** Timers call this: scheduled actions, heartbeats, commitment nudges. */
+  async startSystemRun(input: { roomId: Id; trigger: RunTrigger; text: string; dedupKey?: string; source?: string; scheduleId?: Id }): Promise<Run | undefined> {
+    const { store } = this.d;
+    const room = store.getRoom(input.roomId);
+    if (!room) return undefined;
+    const agent = store.getAgent(room.agentId);
+    if (!agent) return undefined;
+    if (input.dedupKey && store.findRunByDedup(input.dedupKey)) return undefined;
+    const session = this.sessionFor(room, agent);
+    const msg: Message = {
+      id: newId("msg"),
+      sessionId: session.id,
+      roomId: room.id,
+      role: "system",
+      authorId: agent.id,
+      text: input.text,
+      source: input.source ?? input.trigger,
+      visibleTo: [agent.ownerId],
+      at: this.d.clock.now(),
+    };
+    store.putMessage(msg);
+    return this.startRun({ room, agent, session, trigger: input.trigger, text: input.text, dedupKey: input.dedupKey, scheduleId: input.scheduleId, excludeMessageId: msg.id });
+  }
+
+  async stop(runId: Id) {
+    const run = this.d.store.getRun(runId);
+    if (!run || (run.status !== "running" && run.status !== "waiting")) return;
+    this.finish(run, "stopped", "Stopped by a person.");
+  }
+
+  // ------------------------------------------------------------------ helpers
+
+  private sessionFor(room: Room, agent: AgentSpec): Session {
+    const existing = this.d.store.latestSessionForRoom(room.id);
+    if (existing) return existing;
+    const s: Session = { id: newId("ses"), roomId: room.id, agentId: agent.id, createdAt: this.d.clock.now(), lastActivityAt: this.d.clock.now() };
+    this.d.store.putSession(s);
+    return s;
+  }
+
+  /**
+   * Which open question does this message answer? In order: one assigned to
+   * this person (here or in their DM with the agent); a question to the whole
+   * group; and, for an owner or decider, any open question in this room,
+   * since they may answer on a guest's or the cared-for person's behalf.
+   */
+  private pendingItemFor(room: Room, session: Session, personId: Id): AttentionItem | undefined {
+    const mine = this.d.attention.openFor(personId).filter((a) => a.roomId === room.id || room.kind === "dm");
+    if (mine.length) return mine[mine.length - 1];
+    const inRoom = this.d.store.listAttention({ roomId: room.id, status: ["open"] }).filter((a) => a.runId && this.d.store.getRun(a.runId)?.sessionId === session.id);
+    const groupQ = inRoom.find((a) => a.title === "Question for the group");
+    if (groupQ) return groupQ;
+    const role = this.d.rooms.role(room.id, personId);
+    if (role === "owner" || role === "decider") return inRoom[0];
+    return undefined;
+  }
+
+  private addressed(room: Room, agent: AgentSpec, text: string): boolean {
+    if (room.kind === "dm") return true;
+    const t = text.toLowerCase();
+    return t.includes(`@${agent.handle}`) || t.includes(`@${agent.name.toLowerCase()}`) || new RegExp(`\\b${escapeRe(agent.name.toLowerCase())}\\b`).test(t);
+  }
+
+  private async startRun(input: { room: Room; agent: AgentSpec; session: Session; trigger: RunTrigger; requesterId?: Id; text: string; dedupKey?: string; scheduleId?: Id; excludeMessageId?: Id }): Promise<Run> {
+    const { store, clock } = this.d;
+    const run: Run = {
+      id: newId("run"),
+      sessionId: input.session.id,
+      roomId: input.room.id,
+      agentId: input.agent.id,
+      trigger: input.trigger,
+      requesterId: input.requesterId,
+      status: "running",
+      dedupKey: input.dedupKey,
+      scheduleId: input.scheduleId,
+      startedAt: clock.now(),
+    };
+    store.putRun(run);
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "started", at: clock.now(), data: { trigger: input.trigger, requesterId: input.requesterId } });
+    const transcript: Anthropic.MessageParam[] = this.history(input.session, input.excludeMessageId).concat([{ role: "user", content: input.text }]);
+    await this.loop(run, transcript);
+    return store.getRun(run.id) ?? run;
+  }
+
+  private async resume(run: Run, item: AttentionItem): Promise<Run> {
+    const { store, clock } = this.d;
+    run.status = "running";
+    run.waitingOn = undefined;
+    store.putRun(run);
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "gate_resolved", at: clock.now(), data: { itemId: item.id, kind: item.kind, answer: item.answer } });
+    const transcript = this.loadTranscript(run);
+    const who = store.getPerson(item.answeredBy ?? item.assigneeId)?.displayName ?? "they";
+    const verdict = item.kind.endsWith("_approval") || item.kind === "guest_request" ? (isYes(item.answer ?? "") ? "APPROVED" : "DECLINED") : "ANSWERED";
+    // The tool that opened the gate is still "running"; close it with what actually happened.
+    const gated = store.toolCallsForRun(run.id).filter((c) => c.status === "running").at(-1);
+    if (gated) {
+      gated.status = "done";
+      gated.endedAt = clock.now();
+      gated.labelDone = verdict === "APPROVED" ? `${who} OK'd it` : verdict === "DECLINED" ? `${who} declined` : gated.name === "ask_room" ? "Got an answer from the group" : `Got ${who}'s answer`;
+      store.putToolCall(gated);
+    }
+    transcript.push({
+      role: "user",
+      content: `[${verdict}] ${who} answered "${item.title}": ${item.answer ?? ""}\n(${verdict === "APPROVED" ? "Re-issue the approved action now; it will go through." : verdict === "DECLINED" ? "Do not retry the same action; tell the room and try another approach or stop." : "Continue with the answer."})`,
+    });
+    await this.loop(run, transcript);
+    return store.getRun(run.id) ?? run;
+  }
+
+  /** Recent room conversation as model messages (text only, what this room may see). */
+  private history(session: Session, excludeMessageId?: Id): Anthropic.MessageParam[] {
+    const msgs = this.d.store.messagesForSession(session.id, 40).filter((m) => m.id !== excludeMessageId);
+    const out: Anthropic.MessageParam[] = [];
+    for (const m of msgs) {
+      if (m.role === "assistant") out.push({ role: "assistant", content: m.text || "(no text)" });
+      else if (m.role === "user") {
+        const who = this.d.store.getPerson(m.authorId)?.displayName ?? m.authorId;
+        out.push({ role: "user", content: `${who}: ${m.text}` });
+      } else out.push({ role: "user", content: `[system:${m.source ?? "note"}] ${m.text}` });
+    }
+    return collapse(out);
+  }
+
+  private saveTranscript(run: Run, t: Anthropic.MessageParam[]) {
+    this.d.store.setKv(`transcript:${run.id}`, JSON.stringify(t));
+  }
+  private loadTranscript(run: Run): Anthropic.MessageParam[] {
+    const raw = this.d.store.getKv(`transcript:${run.id}`);
+    return raw ? (JSON.parse(raw) as Anthropic.MessageParam[]) : [];
+  }
+
+  // ------------------------------------------------------------------ the loop
+
+  private async loop(run: Run, transcript: Anthropic.MessageParam[]) {
+    const { store, clock, model, memory, rooms, attention, commitments, planner, hands } = this.d;
+    const room = store.getRoom(run.roomId)!;
+    const agent = store.getAgent(run.agentId)!;
+    const session = store.getSession(run.sessionId)!;
+    const owner = store.getPerson(agent.ownerId);
+    const requester = run.requesterId ? store.getPerson(run.requesterId) : undefined;
+    const memberIds = rooms.memberIds(room.id);
+    const members = memberIds.map((id) => store.getPerson(id)).filter((p): p is Person => !!p);
+    const nameOf = (id: Id) => (id === agent.id ? agent.name : (store.getPerson(id)?.displayName ?? id));
+    const accounts = run.requesterId ? rooms.accountsFor(room, run.requesterId) : { accountOwnerId: agent.ownerId, needsApproval: false };
+    const hasCaredFor = rooms.members(room.id).some((m) => m.role === "cared_for");
+    const maxTurns = this.d.maxTurns ?? MAX_TURNS;
+    const emit = (type: RunEvent["type"], data: Record<string, unknown>) => store.appendEvent({ runId: run.id, sessionId: run.sessionId, type, at: clock.now(), data });
+    const setState = (state: AgentState) => emit("agent_state", { state });
+
+    const ctx: ToolContext = {
+      store,
+      clock,
+      memory,
+      rooms,
+      attention,
+      commitments,
+      planner,
+      hands,
+      agent,
+      room,
+      session,
+      run,
+      requesterId: run.requesterId,
+      gate: (g) => this.gate(run, room, agent, accounts, g),
+      dm: (personId, text) => {
+        const dm = rooms.dmFor(agent, personId);
+        const m: Message = { id: newId("msg"), sessionId: this.sessionFor(dm, agent).id, roomId: dm.id, runId: run.id, role: "assistant", authorId: agent.id, text, visibleTo: [], at: clock.now() };
+        store.putMessage(m);
+        void this.d.deliver({ roomId: dm.id, text, kind: "card" });
+      },
+      findMember: (nameOrId) => {
+        const q = nameOrId.trim().toLowerCase();
+        const p = members.find((m) => m.id === nameOrId || m.displayName.toLowerCase() === q || m.displayName.toLowerCase().split(/\s+/)[0] === q);
+        return p ? { id: p.id, name: p.displayName } : undefined;
+      },
+      progress: (text) => {
+        emit("progress", { text });
+        void this.d.deliver({ roomId: room.id, text, kind: "progress" });
+      },
+    };
+
+    const lastUser = [...transcript].reverse().find((m) => m.role === "user");
+    const requestText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    const matched = matchSkills(this.d.skills, requestText, { group: room.kind === "group", caredFor: hasCaredFor });
+    const recalled = memory.recall(agent.id, room, memberIds, requestText, 20);
+    const visible = memory.visibleIn(agent.id, room, memberIds, { requesterId: run.requesterId });
+    const memories = dedupeById(recalled.concat(visible.filter((m) => m.type !== "rule"))).slice(0, 40);
+    const profiles: { label: string; text: string; derivedAt: number }[] = [];
+    const ownerProfile = store.getProfile(agent.id, "person", agent.ownerId);
+    if (ownerProfile) profiles.push({ label: `About ${owner?.displayName ?? "the owner"}`, ...ownerProfile });
+    const roomProfile = store.getProfile(agent.id, "room", room.id);
+    if (roomProfile) profiles.push({ label: `About this room`, ...roomProfile });
+    if (requester && requester.id !== agent.ownerId) {
+      const rp = store.getProfile(agent.id, "person", requester.id);
+      if (rp) profiles.push({ label: `About ${requester.displayName}`, ...rp });
+    }
+
+    setState("working");
+    let turns = 0;
+    let lastText = "";
+    let steerCursor = store.lastSeq(run.sessionId);
+
+    while (turns < maxTurns) {
+      turns += 1;
+      // Steering: messages that arrived while we were working.
+      const steers = store.eventsAfter(run.sessionId, steerCursor).filter((e) => e.runId === run.id && e.type === "steer_queued");
+      steerCursor = store.lastSeq(run.sessionId);
+      for (const s of steers) {
+        transcript.push({ role: "user", content: `[while you were working] ${nameOf(String(s.data.personId))}: ${String(s.data.text)}` });
+        emit("steer_applied", { seq: s.seq });
+      }
+
+      const plan = planner.get(run.id);
+      const system = buildSystemPrompt({
+        agent,
+        room,
+        roomDescription: rooms.describe(room),
+        requester,
+        owner,
+        now: clock.now(),
+        trigger: run.trigger,
+        rules: memory.rulesFor(agent.id, room, memberIds),
+        profiles,
+        memories,
+        skills: this.d.skills,
+        matchedSkills: matched,
+        ledger: commitments.describe(room.id, nameOf, owner?.timezone ?? "UTC"),
+        plan,
+        planText: plan ? planner.describe(plan) : undefined,
+        accounts: { accountOwnerName: nameOf(accounts.accountOwnerId), needsApproval: accounts.needsApproval },
+      });
+
+      let turn;
+      try {
+        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools: toolSpecs() });
+      } catch (e) {
+        emit("error", { message: String((e as Error).message) });
+        this.saveTranscript(run, transcript);
+        this.finish(run, "failed", `Model error: ${String((e as Error).message)}`);
+        void this.d.deliver({ roomId: room.id, text: "Something went wrong on my side. I'll try again if you ask me again.", kind: "notice" });
+        return;
+      }
+
+      transcript.push({ role: "assistant", content: turn.content });
+      if (turn.text) {
+        lastText = turn.text;
+        emit("delta", { text: turn.text });
+      }
+
+      if (turn.stopReason === "refusal") {
+        this.saveTranscript(run, transcript);
+        this.finish(run, "failed", "The model declined this request.");
+        void this.d.deliver({ roomId: room.id, text: "I can't help with that one.", kind: "reply" });
+        return;
+      }
+      if (turn.stopReason === "max_tokens") {
+        transcript.push({ role: "user", content: "[Your reply was cut off. Continue briefly.]" });
+        continue;
+      }
+
+      if (!turn.toolUses.length) {
+        // Final reply.
+        const reply = turn.text.trim() || lastText.trim() || "(no reply)";
+        this.saveTranscript(run, transcript);
+        this.sendReply(run, room, agent, reply);
+        return;
+      }
+
+      // Tool calls, in order. A gate pauses the run after the tool that opened it.
+      const results: Anthropic.ToolResultBlockParam[] = [];
+      let paused: AttentionItem | undefined;
+      let notes: string[] = [];
+      for (const use of turn.toolUses) {
+        const def = TOOL_INDEX.get(use.name);
+        const input = (use.input && typeof use.input === "object" ? use.input : {}) as Record<string, unknown>;
+        const rec: ToolCallRecord = {
+          id: newId("tc"),
+          runId: run.id,
+          name: use.name,
+          family: def?.family ?? "unknown",
+          status: "running",
+          input,
+          labelRunning: def?.labels.running ?? `Using ${use.name}…`,
+          labelDone: def?.labels.done ?? `Used ${use.name}`,
+          fingerprint: "",
+          startedAt: clock.now(),
+        };
+        store.putToolCall(rec);
+        emit("tool_start", { id: rec.id, tool: use.name, label: rec.labelRunning, family: rec.family });
+        if (use.name === "place_call") setState("calling");
+
+        let result: ToolResult;
+        if (!def) result = { ok: false, content: `Unknown tool ${use.name}.` };
+        else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
+        else {
+          try {
+            result = await def.run(input, ctx);
+          } catch (e) {
+            result = { ok: false, content: `Tool error: ${String((e as Error).message)}` };
+          }
+        }
+
+        rec.status = result.waitingOn ? "running" : result.ok ? "done" : "failed";
+        rec.result = result.content;
+        rec.evidence = result.evidence;
+        rec.endedAt = result.waitingOn ? undefined : clock.now();
+        rec.fingerprint = sha256([use.name, input, result.content]);
+        if (result.stall && def) rec.labelDone = def.labels.failed ?? `${def.labels.done} (nothing yet)`;
+        store.putToolCall(rec);
+        emit("tool_end", { id: rec.id, tool: use.name, status: rec.status, label: rec.labelDone, evidence: result.evidence ?? null, fingerprint: rec.fingerprint });
+
+        // Plan bookkeeping.
+        if (result.approach && plan) {
+          if (result.stall) {
+            const st = planner.stall(run.id, result.stall);
+            if (st?.switchedTo) notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that.`);
+            else if (st?.exhausted) notes.push(`All approaches for that step failed; the plan moved to the next step. If nothing is left, tell the room what you tried and what you need.`);
+            else notes.push(`That approach stalled (${result.stall}). You may try once more or switch.`);
+          } else if (result.ok && !result.waitingOn && result.approach !== "wait") {
+            planner.complete(run.id, result.evidence ?? "result");
+          }
+        }
+
+        if (result.roomNotice) void this.d.deliver({ roomId: room.id, text: result.roomNotice, kind: "notice" });
+        if (result.waitingOn) paused = result.waitingOn;
+
+        const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
+        results.push({ type: "tool_result", tool_use_id: use.id, content, is_error: !result.ok });
+      }
+      transcript.push({ role: "user", content: results });
+      if (notes.length) transcript.push({ role: "user", content: `[planner] ${notes.join(" ")}` });
+
+      if (paused) {
+        run.status = "waiting";
+        run.waitingOn = paused.id;
+        store.putRun(run);
+        emit("gate_opened", { itemId: paused.id, kind: paused.kind, assigneeId: paused.assigneeId, title: paused.title });
+        setState(paused.kind === "information" || paused.kind === "decision" || paused.kind === "action" ? "waiting" : "blocked");
+        this.saveTranscript(run, transcript);
+        // Tell the assignee privately when the question is not already in this room.
+        if (paused.assigneeId !== run.requesterId && paused.title !== "Question for the group") {
+          const card = `${KIND_LABEL[paused.kind]}: ${paused.title}\n${paused.detail}${paused.options?.length ? `\nOptions: ${paused.options.join(" / ")}` : ""}\nReply here with your answer.`;
+          ctx.dm(paused.assigneeId, card);
+        }
+        return;
+      }
+      setState("working");
+    }
+
+    this.saveTranscript(run, transcript);
+    this.sendReply(run, room, agent, lastText.trim() || "I ran out of steps on this one. Tell me what matters most and I'll pick it up from there.");
+  }
+
+  /** Approval policy. Pre-authorised: owner asking within trust; disclosed outreach on a schedule; small purchases. Otherwise open an item for the right approver. */
+  private gate(run: Run, room: Room, agent: AgentSpec, accounts: { accountOwnerId: Id; needsApproval: boolean }, g: Parameters<ToolContext["gate"]>[0]): GateDecision {
+    const { store, rooms, attention, clock } = this.d;
+    const owner = store.getPerson(agent.ownerId);
+    const zone = owner?.timezone ?? "UTC";
+
+    // Working hours for outreach; held items are delivered by the scheduler sweep.
+    if (g.outreach && g.outreach.how !== "community_post") {
+      const h = hourIn(zone, clock.now());
+      if (h < room.outreachHours.start || h >= room.outreachHours.end) {
+        return { granted: false, held: `It is outside working hours (${room.outreachHours.start}:00 to ${room.outreachHours.end}:00 ${zone}). Contacting ${g.outreach.who} will wait until the morning; tell the room that and schedule it with schedule_action for the next morning, naming ${g.outreach.who} as disclosed outreach.` };
+      }
+    }
+
+    // Scheduled runs carry their own authorisation.
+    if (run.scheduleId && g.outreach) {
+      const sched = store.getSchedule(run.scheduleId);
+      const disclosed = sched?.authorization.disclosedOutreach.find((d) => d.who.toLowerCase() === g.outreach!.who.toLowerCase() && d.how === g.outreach!.how);
+      if (disclosed) return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
+    }
+
+    // An approval already given on this run for this exact ask (the model re-issues the tool after a yes).
+    const prior = store
+      .listAttention({ roomId: room.id, status: ["resolved"] })
+      .find((a) => a.runId === run.id && a.title === g.title && isYes(a.answer ?? ""));
+    if (prior) return { granted: true, reason: `approved by ${store.getPerson(prior.assigneeId)?.displayName ?? "the approver"}` };
+    const declined = store.listAttention({ roomId: room.id, status: ["resolved"] }).find((a) => a.runId === run.id && a.title === g.title && !isYes(a.answer ?? ""));
+    if (declined) return { granted: false, held: `${store.getPerson(declined.assigneeId)?.displayName ?? "The approver"} declined this. Do not retry it; tell the room and try another approach or stop.` };
+
+    const requesterIsOwner = run.requesterId === agent.ownerId;
+    const money = g.money ?? 0;
+    if (g.kind === "purchase_approval" && requesterIsOwner && money > 0 && money <= agent.trust.autoApproveUnderUsd) {
+      return { granted: true, reason: `under the $${agent.trust.autoApproveUnderUsd} threshold` };
+    }
+    if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.includes(g.outreach.who)) {
+      return { granted: true, reason: "community pre-approved by the owner" };
+    }
+    if (g.kind === "outreach_approval" && requesterIsOwner && (agent.trust.autoAllow.includes("place_call") || agent.trust.autoAllow.includes("send_sms"))) {
+      const tool = g.outreach?.how === "phone" ? "place_call" : "send_sms";
+      if (agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
+    }
+
+    // Who answers: money and accounts belong to the owner; care decisions may go to a decider.
+    const approvers = rooms.approversFor(room, { money: g.kind === "purchase_approval" || accounts.needsApproval });
+    const assignee = approvers[0] ?? owner;
+    if (!assignee) throw new Error("no approver");
+    const kind = run.requesterId && run.requesterId !== assignee.id && accounts.needsApproval ? "guest_request" : g.kind;
+    const requesterName = run.requesterId ? (store.getPerson(run.requesterId)?.displayName ?? "someone") : agent.name;
+    const item = attention.open({
+      agentId: agent.id,
+      roomId: room.id,
+      runId: run.id,
+      assigneeId: assignee.id,
+      requesterId: run.requesterId,
+      kind,
+      title: g.title,
+      detail: kind === "guest_request" ? `${requesterName} asked in "${room.name}". ${g.detail}` : g.detail,
+      options: ["Yes", "No"],
+      ttlMs: 3 * 24 * 60 * 60 * 1000,
+    });
+    const notice = run.requesterId === assignee.id ? undefined : `I've asked ${assignee.displayName} to OK that.`;
+    return { granted: false, item, notice };
+  }
+
+  private sendReply(run: Run, room: Room, agent: AgentSpec, text: string) {
+    const { store, clock } = this.d;
+    const calls = store.toolCallsForRun(run.id);
+    const footer = buildFooter(calls);
+    const integrity = integrityNote(text, calls);
+    const full = [text, integrity, footer].filter(Boolean).join("\n");
+    const m: Message = { id: newId("msg"), sessionId: run.sessionId, roomId: room.id, runId: run.id, role: "assistant", authorId: agent.id, text: full, visibleTo: [], at: clock.now() };
+    store.putMessage(m);
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "reply", at: clock.now(), data: { text: full, steps: calls.length, integrity: integrity || null } });
+    this.finish(run, "done", undefined, firstLine(text));
+    void this.d.deliver({ roomId: room.id, text: full, kind: "reply" });
+  }
+
+  private finish(run: Run, status: Run["status"], failureReason?: string, outcome?: string) {
+    const { store, clock } = this.d;
+    // A gate the model never re-issued (or a stop) leaves tool records running; close them honestly.
+    for (const c of store.toolCallsForRun(run.id)) {
+      if (c.status !== "running") continue;
+      c.status = "stopped";
+      c.endedAt = clock.now();
+      store.putToolCall(c);
+    }
+    for (const a of store.listAttention({ roomId: run.roomId, status: ["open"] })) {
+      if (a.runId !== run.id) continue;
+      a.status = status === "done" ? "dismissed" : "expired";
+      a.resolvedAt = clock.now();
+      store.putAttention(a);
+    }
+    run.status = status;
+    run.endedAt = clock.now();
+    run.failureReason = failureReason;
+    run.outcome = outcome;
+    store.putRun(run);
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: status === "done" ? "done" : "error", at: clock.now(), data: { status, failureReason: failureReason ?? null, outcome: outcome ?? null } });
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "agent_state", at: clock.now(), data: { state: status === "done" ? "done" : status === "failed" ? "failed" : "idle" } });
+  }
+}
+
+// ------------------------------------------------------------------ pure helpers
+
+/** The status footer is built from records, not from the model's words. */
+export function buildFooter(calls: ToolCallRecord[]): string {
+  const done = calls.filter((c) => c.status === "done");
+  const failed = calls.filter((c) => c.status === "failed");
+  if (!done.length && !failed.length) return "";
+  const labels = Array.from(new Set(done.map((c) => c.labelDone)));
+  const parts = [`${done.length} ${done.length === 1 ? "step" : "steps"}`];
+  if (failed.length) parts.push(`${failed.length} failed`);
+  const evidence = done.filter((c) => c.evidence).length;
+  if (evidence) parts.push(`${evidence} verified`);
+  return `— ${parts.join(" · ")}: ${labels.slice(0, 6).join(", ")}${labels.length > 6 ? "…" : ""}`;
+}
+
+const CLAIM = /\b(i|i've|i have)\s+(booked|called|texted|emailed|paid|posted|ordered|scheduled|sent|confirmed)\b/i;
+const SIDE_EFFECT = new Set(["place_call", "send_sms", "post_community", "schedule_action", "request_purchase"]);
+
+/** If the reply claims an action but no side-effect tool completed, say so instead of letting it stand. */
+export function integrityNote(text: string, calls: ToolCallRecord[]): string {
+  if (!CLAIM.test(text)) return "";
+  const acted = calls.some((c) => c.status === "done" && SIDE_EFFECT.has(c.name) && c.evidence);
+  return acted ? "" : "(Correction: no outside action was actually taken in this step.)";
+}
+
+function firstLine(s: string) {
+  return s.split("\n").find((l) => l.trim())?.trim().slice(0, 140) ?? "";
+}
+
+function isYes(s: string) {
+  return /^\s*(y|yes|yeah|yep|ok|okay|sure|go ahead|approved|do it|fine|please)\b/i.test(s) || /\b(yes|approve|approved|go ahead)\b/i.test(s);
+}
+
+function escapeRe(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function dedupeById<T extends { id: string }>(xs: T[]): T[] {
+  const seen = new Set<string>();
+  return xs.filter((x) => (seen.has(x.id) ? false : (seen.add(x.id), true)));
+}
+
+/** The API requires alternating roles; merge consecutive same-role text turns and drop a leading assistant turn. */
+function collapse(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const out: Anthropic.MessageParam[] = [];
+  for (const m of msgs) {
+    if (!out.length && m.role === "assistant") continue;
+    const prev = out[out.length - 1];
+    if (prev && prev.role === m.role && typeof prev.content === "string" && typeof m.content === "string") {
+      prev.content = `${prev.content}\n${m.content}`;
+    } else out.push({ ...m });
+  }
+  return out;
+}

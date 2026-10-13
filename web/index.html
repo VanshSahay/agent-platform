@@ -1,7 +1,153 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>agents — your assistant, in iMessage</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=Rubik:wght@700..900&family=Caveat:wght@600&display=swap"><link rel="stylesheet" href="./styles.css">
-<link rel="icon" href="./icon.svg"><meta name="theme-color" content="#111"></head>
-<body><div id="root"></div><script type="module" src="./app.tsx"></script></body>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Circle</title>
+<style>
+  :root { --bg:#fbfaf7; --fg:#1d1c19; --mut:#6b6960; --line:#e6e2d8; --acc:#2f6f5e; --card:#fff; --warn:#a2561a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ecebe6; --mut:#9a998f; --line:#2b2d33; --acc:#6fc1a7; --card:#1c1e24; --warn:#e3a06b; } }
+  * { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  header { display:flex; gap:16px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line) }
+  header h1 { font-size:16px; margin:0 } header select { font:inherit; padding:4px 6px }
+  main { display:grid; grid-template-columns: 320px 1fr; min-height:calc(100vh - 49px) }
+  @media (max-width: 800px) { main { grid-template-columns:1fr } aside { border-right:0; border-bottom:1px solid var(--line) } }
+  aside { border-right:1px solid var(--line); padding:12px 16px; overflow:auto }
+  section.chat { display:flex; flex-direction:column; height:calc(100vh - 49px) }
+  .tabs { display:flex; gap:6px; margin:8px 0 } .tabs button { font:inherit; padding:4px 10px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:999px; cursor:pointer }
+  .tabs button.on { background:var(--acc); color:#fff; border-color:var(--acc) }
+  .item { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; margin:8px 0 }
+  .item h4 { margin:0 0 4px; font-size:14px } .item p { margin:0; color:var(--mut); font-size:13px; white-space:pre-wrap }
+  .item .row { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap } .item button, form button { font:inherit; padding:5px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer }
+  .item button.primary, form button.primary { background:var(--acc); color:#fff; border-color:var(--acc) }
+  .msgs { flex:1; overflow:auto; padding:16px } .msg { max-width:720px; margin:0 0 12px } .msg .who { font-size:12px; color:var(--mut) }
+  .msg .body { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; white-space:pre-wrap }
+  .msg.me .body { background:var(--acc); color:#fff; border-color:var(--acc) } .msg.notice .body { background:transparent; border-style:dashed; color:var(--mut) }
+  .msg.progress .body { background:transparent; border:0; color:var(--mut); font-style:italic; padding:2px 12px }
+  form.composer { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line) } form.composer input { flex:1; font:inherit; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--fg) }
+  .mut { color:var(--mut); font-size:13px } .empty { color:var(--mut); font-size:13px; padding:8px 0 }
+  details { margin:8px 0 } summary { cursor:pointer; color:var(--mut); font-size:13px }
+</style>
+</head>
+<body>
+<header>
+  <h1>Circle</h1>
+  <label class="mut">You <select id="me"></select></label>
+  <label class="mut">Room <select id="room"></select></label>
+  <span id="status" class="mut"></span>
+</header>
+<main>
+  <aside>
+    <div class="tabs"><button data-tab="input" class="on">Need your input</button><button data-tab="radar">On radar</button><button data-tab="activity">Last activity</button></div>
+    <div id="inbox"></div>
+    <details><summary>Memory</summary><div id="memory"></div></details>
+    <details><summary>Responsibilities</summary><div id="ledger"></div></details>
+  </aside>
+  <section class="chat">
+    <div class="msgs" id="msgs"></div>
+    <form class="composer" id="composer"><input id="text" placeholder="Message…" autocomplete="off" /><button class="primary">Send</button></form>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { people: [], rooms: [], agents: [], me: null, room: null, tab: "input" };
+const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const api = async (path, body, method) => {
+  const r = await fetch(path, { method: method ?? (body ? "POST" : "GET"), headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  return r.json();
+};
+try { state.me = localStorage.getItem("circle.me"); state.room = localStorage.getItem("circle.room"); } catch {}
+
+async function load() {
+  const s = await api("/api/state");
+  state.agents = s.agents; state.rooms = s.rooms;
+  const people = new Map();
+  for (const r of s.rooms) for (const m of r.members) if (m.person) people.set(m.person.id, m.person);
+  state.people = [...people.values()];
+  if (!state.me || !people.has(state.me)) state.me = state.people[0]?.id ?? null;
+  const mine = s.rooms.filter((r) => r.members.some((m) => m.personId === state.me));
+  if (!state.room || !mine.some((r) => r.id === state.room)) state.room = mine[0]?.id ?? null;
+  $("#me").innerHTML = state.people.map((p) => `<option value="${p.id}" ${p.id === state.me ? "selected" : ""}>${esc(p.displayName)}</option>`).join("");
+  $("#room").innerHTML = mine.map((r) => `<option value="${r.id}" ${r.id === state.room ? "selected" : ""}>${esc(r.name)}</option>`).join("");
+  if (!state.agents.length) $("#status").textContent = "No agent yet. Start with SEED_DEMO=1 or POST /api/agents.";
+  await Promise.all([renderInbox(), renderMsgs(), renderMemory(), renderLedger()]);
+}
+$("#me").onchange = (e) => { state.me = e.target.value; try { localStorage.setItem("circle.me", state.me); } catch {} load(); };
+$("#room").onchange = (e) => { state.room = e.target.value; try { localStorage.setItem("circle.room", state.room); } catch {} renderMsgs(); renderLedger(); };
+document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b)); renderInbox(); }));
+
+function agentFor(roomId) { const r = state.rooms.find((x) => x.id === roomId); return state.agents.find((a) => a.id === r?.agentId); }
+const fmt = (ms) => ms ? new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+
+async function renderInbox() {
+  const agent = agentFor(state.room); const el = $("#inbox");
+  if (!agent || !state.me) { el.innerHTML = `<div class="empty">Nothing here yet.</div>`; return; }
+  const inbox = await api(`/api/inbox?personId=${state.me}&agentId=${agent.id}`);
+  if (state.tab === "input") {
+    el.innerHTML = inbox.needsYou.length ? inbox.needsYou.map((i) => `<div class="item"><h4>${esc(i.title)}</h4><p>${esc(i.detail)}</p><div class="row">${(i.options ?? []).map((o) => `<button data-answer="${esc(o)}" data-id="${i.id}" class="${o === "Yes" ? "primary" : ""}">${esc(o)}</button>`).join("")}<button data-id="${i.id}" data-custom="1">Reply…</button><button data-id="${i.id}" data-dismiss="1">Dismiss</button></div></div>`).join("") : `<div class="empty">Nothing needs you right now. When ${esc(agent.name)} gets stuck on something only you can answer, it waits here.</div>`;
+    el.querySelectorAll("button[data-answer]").forEach((b) => (b.onclick = async () => { await api(`/api/attention/${b.dataset.id}/resolve`, { answer: b.dataset.answer, personId: state.me }); load(); }));
+    el.querySelectorAll("button[data-custom]").forEach((b) => (b.onclick = async () => { const a = prompt("Your answer"); if (a) { await api(`/api/attention/${b.dataset.id}/resolve`, { answer: a, personId: state.me }); load(); } }));
+    el.querySelectorAll("button[data-dismiss]").forEach((b) => (b.onclick = async () => { await api(`/api/attention/${b.dataset.id}/dismiss`, {}); load(); }));
+  } else if (state.tab === "radar") {
+    const rows = inbox.inFlight.map((r) => `<div class="item"><h4>Working: ${esc(r.trigger)}</h4><p>Started ${fmt(r.startedAt)}${r.status === "waiting" ? " · waiting on someone" : ""}</p></div>`)
+      .concat(inbox.radar.map((s) => `<div class="item"><h4>${esc(s.title)}</h4><p>${s.nextRunAt ? "Next run " + fmt(s.nextRunAt) : "Scheduled"}${s.paused ? " · paused" : ""}\n${esc(s.prompt)}</p><div class="row"><button data-pause="${s.id}" data-paused="${s.paused ? 0 : 1}">${s.paused ? "Resume" : "Pause"}</button></div></div>`));
+    el.innerHTML = rows.length ? rows.join("") : `<div class="empty">${esc(agent.name)}'s schedule is empty. Ask it to do something later and it schedules itself.</div>`;
+    el.querySelectorAll("button[data-pause]").forEach((b) => (b.onclick = async () => { await api(`/api/schedules/${b.dataset.pause}/pause`, { paused: b.dataset.paused === "1" }); renderInbox(); }));
+  } else {
+    el.innerHTML = inbox.activity.length ? inbox.activity.map((r) => `<div class="item"><h4>${esc(r.outcome ?? r.failureReason ?? r.status)}</h4><p>${esc(r.status)} · ${fmt(r.endedAt ?? r.startedAt)} · ${esc(r.trigger)}</p></div>`).join("") : `<div class="empty">Nothing finished yet. What ${esc(agent.name)} gets done shows up here, in its own words.</div>`;
+  }
+}
+
+async function renderMsgs() {
+  if (!state.room) return;
+  const msgs = await api(`/api/rooms/${state.room}/messages?limit=100`);
+  const el = $("#msgs"); const agent = agentFor(state.room);
+  el.innerHTML = msgs.map((m) => {
+    const who = m.role === "assistant" ? (agent?.name ?? "Agent") : m.role === "system" ? `system · ${m.source ?? ""}` : (state.people.find((p) => p.id === m.authorId)?.displayName ?? m.authorId);
+    const cls = m.role === "user" && m.authorId === state.me ? "me" : m.role === "system" ? "notice" : "";
+    return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body">${esc(m.text)}</div></div>`;
+  }).join("");
+  el.scrollTop = el.scrollHeight;
+}
+async function renderMemory() {
+  const agent = agentFor(state.room); const el = $("#memory");
+  if (!agent) { el.innerHTML = ""; return; }
+  const { memories } = await api(`/api/memory?agentId=${agent.id}`);
+  el.innerHTML = memories.length ? memories.map((m) => `<div class="item"><p>${esc(new Date(m.statedAt).toISOString().slice(0, 10))} · ${esc(m.type)} · ${esc(m.scope)}\n${esc(m.text)}</p><div class="row"><button data-forget="${m.id}">Forget</button></div></div>`).join("") + `<div class="row"><button id="tidy">Tidy up now</button></div>` : `<div class="empty">Nothing learned yet.</div><div class="row"><button id="tidy">Tidy up now</button></div>`;
+  el.querySelectorAll("button[data-forget]").forEach((b) => (b.onclick = async () => { await api(`/api/memory/${b.dataset.forget}`, null, "DELETE"); renderMemory(); }));
+  const tidy = el.querySelector("#tidy"); if (tidy) tidy.onclick = async () => { tidy.textContent = "Tidying…"; await api("/api/memory/consolidate", { agentId: agent.id }); renderMemory(); };
+}
+async function renderLedger() {
+  if (!state.room) return;
+  const cs = await api(`/api/commitments?roomId=${state.room}`);
+  const name = (id) => state.people.find((p) => p.id === id)?.displayName ?? agentFor(state.room)?.name ?? id;
+  $("#ledger").innerHTML = cs.length ? cs.map((c) => `<div class="item"><h4>${esc(c.title)}</h4><p>${esc(name(c.ownerId))}${c.beneficiaryId ? " for " + esc(name(c.beneficiaryId)) : ""}${c.dueAt ? " · due " + fmt(c.dueAt) : ""} · ${esc(c.status)}</p></div>`).join("") : `<div class="empty">No open responsibilities.</div>`;
+}
+
+$("#composer").onsubmit = async (e) => {
+  e.preventDefault(); const text = $("#text").value.trim(); if (!text || !state.room || !state.me) return;
+  $("#text").value = ""; $("#status").textContent = "sending…";
+  await api(`/api/rooms/${state.room}/messages`, { personId: state.me, text, dedupKey: `${state.me}:${Date.now()}` });
+  $("#status").textContent = "";
+  load();
+};
+
+// Live deliveries: NDJSON stream; re-render the room when something lands there.
+(async function watch() {
+  for (;;) {
+    try {
+      const res = await fetch("/api/deliveries/watch"); const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true }); let i;
+        while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line) continue;
+          try { const d = JSON.parse(line); if (d.type === "delivery") { if (d.roomId === state.room) renderMsgs(); renderInbox(); renderLedger(); } } catch {} }
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+})();
+load();
+</script>
+</body>
 </html>

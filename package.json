@@ -1,31 +1,21 @@
 {
-  "name": "agent-platform",
-  "type": "module",
+  "name": "circle",
+  "version": "0.1.0",
   "private": true,
+  "type": "module",
+  "description": "A personal agent that lives in the group chats you already have.",
   "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --watch run src/index.ts",
-    "test": "bun test test/unit.test.ts",
-    "test:live": "LIVE=1 bun test test/live.test.ts",
-    "typecheck": "tsc --noEmit -p ."
+    "start": "bun run src/main.ts",
+    "dev": "bun --watch run src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "demo": "bun run src/demo.ts"
   },
   "dependencies": {
-    "@clerk/backend": "^3.23.2",
-    "@clerk/react": "^6.17.8",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "spectrum-ts": "^12.10.1",
-    "unpdf": "^1.8.1"
+    "@anthropic-ai/sdk": "^0.133.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0"
-  },
-  "peerDependencies": {
     "typescript": "^5"
-  },
-  "patchedDependencies": {
-    "@photon-ai/imessage-kit@3.0.0": "patches/@photon-ai%2Fimessage-kit@3.0.0.patch"
   }
 }

@@ -1,0 +1,151 @@
+import { newId } from "../core/ids.ts";
+import type { Clock } from "../core/clock.ts";
+import type { ApproachKind, Id, Plan, PlanStep } from "../core/types.ts";
+import type { Store } from "../store/repos.ts";
+
+/**
+ * Resourcefulness is a policy, not a prompt hope. The planner keeps one plan
+ * per run; each step names an approach and the fallbacks to try when it
+ * stalls. The model proposes steps through the `plan` tool; the runtime marks
+ * progress from tool results; when a step fails twice, the next approach is
+ * activated and the model is told so.
+ *
+ * Default ladder for "find someone / find out something" tasks, cheapest and
+ * least intrusive first:
+ *   search -> ask_room -> call -> community_post (needs a yes) -> ask_person
+ */
+export const DEFAULT_LADDER: ApproachKind[] = ["search", "ask_room", "call", "community_post", "ask_person"];
+
+export const APPROACH_LABEL: Record<ApproachKind, string> = {
+  search: "search the web",
+  ask_room: "ask the group",
+  ask_person: "ask a specific person",
+  call: "call a business",
+  community_post: "ask a local community (needs your OK)",
+  browse: "use a website",
+  wait: "wait for a reply",
+};
+
+export const MAX_ATTEMPTS_PER_STEP = 2;
+
+export class Planner {
+  constructor(
+    private store: Store,
+    private clock: Clock,
+  ) {}
+
+  create(runId: Id, goal: string, steps: { text: string; approach: ApproachKind; alternatives?: ApproachKind[] }[]): Plan {
+    const now = this.clock.now();
+    const plan: Plan = {
+      id: newId("plan"),
+      runId,
+      goal,
+      steps: steps.map((s, i) => ({
+        id: `s${i + 1}`,
+        text: s.text,
+        approach: s.approach,
+        status: i === 0 ? "active" : "pending",
+        alternatives: s.alternatives ?? ladderAfter(s.approach),
+        attempts: 0,
+      })),
+      cursor: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.putPlan(plan);
+    return plan;
+  }
+
+  get(runId: Id): Plan | undefined {
+    return this.store.planForRun(runId);
+  }
+
+  /** Record that the active step produced a usable result. */
+  complete(runId: Id, evidence: string): Plan | undefined {
+    const plan = this.get(runId);
+    if (!plan) return;
+    const step = plan.steps[plan.cursor];
+    if (!step) return plan;
+    step.status = "done";
+    step.evidence = evidence;
+    plan.cursor += 1;
+    const next = plan.steps[plan.cursor];
+    if (next) next.status = "active";
+    plan.updatedAt = this.clock.now();
+    this.store.putPlan(plan);
+    return plan;
+  }
+
+  /**
+   * Record that the active step's approach did not work. After
+   * MAX_ATTEMPTS_PER_STEP the next alternative approach becomes the step's
+   * approach; when alternatives run out the step fails and the plan moves on.
+   * Returns what changed so the runtime can tell the model.
+   */
+  stall(runId: Id, reason: string): { plan: Plan; switchedTo?: ApproachKind; exhausted?: boolean } | undefined {
+    const plan = this.get(runId);
+    if (!plan) return;
+    const step = plan.steps[plan.cursor];
+    if (!step) return { plan };
+    step.attempts += 1;
+    step.evidence = reason;
+    let switchedTo: ApproachKind | undefined;
+    let exhausted = false;
+    if (step.attempts >= MAX_ATTEMPTS_PER_STEP) {
+      const next = step.alternatives.shift();
+      if (next) {
+        step.approach = next;
+        step.attempts = 0;
+        switchedTo = next;
+      } else {
+        step.status = "failed";
+        exhausted = true;
+        plan.cursor += 1;
+        const n = plan.steps[plan.cursor];
+        if (n) n.status = "active";
+      }
+    }
+    plan.updatedAt = this.clock.now();
+    this.store.putPlan(plan);
+    return { plan, switchedTo, exhausted };
+  }
+
+  describe(plan: Plan): string {
+    const lines = plan.steps.map((s) => {
+      const mark = s.status === "done" ? "x" : s.status === "active" ? ">" : s.status === "failed" ? "!" : " ";
+      const alt = s.alternatives.length ? ` (then: ${s.alternatives.map((a) => APPROACH_LABEL[a]).join(", ")})` : "";
+      return `[${mark}] ${s.id} ${s.text} via ${APPROACH_LABEL[s.approach]}${alt}${s.attempts ? ` attempts=${s.attempts}` : ""}`;
+    });
+    return `Goal: ${plan.goal}\n${lines.join("\n")}`;
+  }
+
+  activeStep(plan: Plan): PlanStep | undefined {
+    return plan.steps[plan.cursor];
+  }
+}
+
+function ladderAfter(a: ApproachKind): ApproachKind[] {
+  const i = DEFAULT_LADDER.indexOf(a);
+  return i >= 0 ? DEFAULT_LADDER.slice(i + 1) : [];
+}
+
+/** Map a tool name to the approach it embodies, for automatic plan progress. */
+export function approachOfTool(tool: string): ApproachKind | undefined {
+  switch (tool) {
+    case "web_search":
+      return "search";
+    case "ask_room":
+      return "ask_room";
+    case "ask_person":
+      return "ask_person";
+    case "place_call":
+      return "call";
+    case "post_community":
+    case "read_community_replies":
+      return "community_post";
+    case "wait_for_user_input":
+      return "wait";
+    default:
+      return undefined;
+  }
+}

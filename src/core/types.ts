@@ -1,0 +1,408 @@
+// Domain types for Circle: a personal agent that lives in the group chats
+// people already have. Every object here is persisted; the runtime never
+// keeps authoritative state in memory.
+
+export type Id = string;
+export type UnixMs = number;
+
+// ---------- People and rooms ----------
+
+export interface Person {
+  id: Id;
+  displayName: string;
+  pronouns?: string;
+  timezone: string; // IANA
+  phoneE164?: string;
+  email?: string;
+  /** How patient and detailed the agent should be with this person. */
+  techComfort?: "low" | "medium" | "high";
+  createdAt: UnixMs;
+}
+
+export type RoomKind = "dm" | "group";
+export type ChannelKind = "web" | "imessage" | "sms" | "console" | "voice";
+
+/**
+ * Roles inside a room.
+ * owner      : the person who trained and deployed the agent; their accounts pay for everything.
+ * decider    : a member allowed to approve requests on the owner's behalf (a caregiver sibling, say).
+ * member     : a signed-up person; served with their own consent for their own requests.
+ * guest      : never signed up; served through the owner or a decider.
+ * cared_for  : the person the circle looks after (an aging parent); gets patient mode and extra privacy.
+ */
+export type MemberRole = "owner" | "decider" | "member" | "guest" | "cared_for";
+
+export interface Room {
+  id: Id;
+  agentId: Id;
+  kind: RoomKind;
+  channel: ChannelKind;
+  /** Channel-specific thread identity, e.g. the iMessage chat guid. */
+  externalId?: string;
+  name: string;
+  /** Working hours in the room owner's zone for third-party outreach. */
+  outreachHours: { start: number; end: number }; // 24h clock, e.g. 8..20
+  createdAt: UnixMs;
+}
+
+export interface Membership {
+  roomId: Id;
+  personId: Id;
+  role: MemberRole;
+  /** Member said "yes, use my accounts for my own asks" once. */
+  consentedAt?: UnixMs;
+  joinedAt: UnixMs;
+}
+
+// ---------- Agent ----------
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface Soul {
+  identity: string;
+  personality: string;
+  values: string;
+  operatingPrinciples: string;
+  failureRecovery?: string;
+  proactiveBehaviors?: string;
+}
+
+export interface TrustPolicy {
+  /** Tool names that may run without asking. Everything else that writes asks first. */
+  autoAllow: string[];
+  /** Purchases at or under this amount do not ask. 0 means always ask. */
+  autoApproveUnderUsd: number;
+  spendingPaused: boolean;
+  /** Posting to public communities (Reddit, Rednote) always needs a yes unless listed here by community. */
+  communityPostingAllowed: string[];
+}
+
+export interface AgentSpec {
+  id: Id;
+  ownerId: Id;
+  name: string;
+  handle: string;
+  purpose: string;
+  instructions: string;
+  soul: Soul;
+  model: string;
+  effort: Effort;
+  trust: TrustPolicy;
+  /** Standing rules the owner typed, verbatim, newest last. */
+  rules: string[];
+  createdAt: UnixMs;
+  deployedAt?: UnixMs;
+}
+
+// ---------- Memory ----------
+
+export type MemoryType =
+  | "rule"
+  | "preference"
+  | "person"
+  | "schedule"
+  | "store"
+  | "inventory"
+  | "decision"
+  | "fact"
+  | "lesson" // something the agent taught someone, and how far they got
+  | "observation"; // raw, written by the agent during a run; promoted by consolidation
+
+export type MemoryScope = "agent" | "person" | "room";
+
+export interface Memory {
+  id: Id;
+  agentId: Id;
+  scope: MemoryScope;
+  /** personId for scope=person, roomId for scope=room, agentId for scope=agent. */
+  scopeId: Id;
+  type: MemoryType;
+  /** Who said it or whom it is about; used for privacy routing. */
+  subjectPersonId?: Id;
+  /** Rooms allowed to see this memory. Empty means only the scope itself. */
+  visibleToRooms: Id[];
+  text: string;
+  /** Alternate words a keyword search should hit (Instinct-style). */
+  aliases: string[];
+  statedAt: UnixMs;
+  /** Set when a newer memory corrects this one. */
+  supersededBy?: Id;
+  /** Explicit "that is not happening" or "forget that". */
+  retractedAt?: UnixMs;
+  sourceRunId?: Id;
+  createdAt: UnixMs;
+}
+
+export interface Profile {
+  agentId: Id;
+  scope: MemoryScope;
+  scopeId: Id;
+  /** Short always-on summary the agent reads first. */
+  text: string;
+  derivedAt: UnixMs;
+}
+
+// ---------- Sessions, runs and events ----------
+
+export type RunStatus = "running" | "waiting" | "done" | "failed" | "stopped";
+
+export type RunTrigger =
+  | "message" // a person wrote in the room
+  | "scheduled_action"
+  | "heartbeat"
+  | "follow_up" // a commitment nudge
+  | "approval" // an approval came back
+  | "steer";
+
+export interface Session {
+  id: Id;
+  roomId: Id;
+  agentId: Id;
+  title?: string;
+  createdAt: UnixMs;
+  lastActivityAt: UnixMs;
+}
+
+export interface Run {
+  id: Id;
+  sessionId: Id;
+  roomId: Id;
+  agentId: Id;
+  trigger: RunTrigger;
+  /** Who caused it; absent for timers. */
+  requesterId?: Id;
+  status: RunStatus;
+  /** Why it is waiting, when status=waiting. */
+  waitingOn?: Id; // attention item id
+  /** The schedule that fired this run, if any; carries its authorisation. */
+  scheduleId?: Id;
+  dedupKey?: string;
+  startedAt: UnixMs;
+  endedAt?: UnixMs;
+  /** One line, in the agent's words, for the activity tab. */
+  outcome?: string;
+  failureReason?: string;
+}
+
+export type RunEventType =
+  | "started"
+  | "delta"
+  | "progress"
+  | "agent_state"
+  | "plan"
+  | "tool_start"
+  | "tool_end"
+  | "user_message"
+  | "steer_queued"
+  | "steer_applied"
+  | "gate_opened"
+  | "gate_resolved"
+  | "reply"
+  | "error"
+  | "done";
+
+export type AgentState =
+  | "idle"
+  | "working"
+  | "analyzing"
+  | "calling"
+  | "waiting"
+  | "blocked"
+  | "done"
+  | "failed";
+
+export interface RunEvent {
+  /** Monotonic within a session; this is the watch cursor. */
+  seq: number;
+  runId: Id;
+  sessionId: Id;
+  type: RunEventType;
+  at: UnixMs;
+  data: Record<string, unknown>;
+}
+
+export type ToolStatus = "running" | "done" | "failed" | "stopped";
+
+export interface ToolCallRecord {
+  id: Id;
+  runId: Id;
+  name: string;
+  family: string;
+  status: ToolStatus;
+  input: unknown;
+  result?: unknown;
+  labelRunning: string;
+  labelDone: string;
+  /** Provider evidence the result is real (call sid, message id, URL, etc.). */
+  evidence?: string;
+  /** SHA-256 of name+input+result for the integrity footer. */
+  fingerprint: string;
+  startedAt: UnixMs;
+  endedAt?: UnixMs;
+}
+
+// ---------- Messages ----------
+
+export type MessageRole = "user" | "assistant" | "system";
+
+export interface Message {
+  id: Id;
+  sessionId: Id;
+  roomId: Id;
+  runId?: Id;
+  role: MessageRole;
+  /** Person who wrote it (user) or the agent id (assistant). */
+  authorId: Id;
+  text: string;
+  /** For system turns: scheduled_action | heartbeat | approval | commitment ... */
+  source?: string;
+  /** Members allowed to see it; empty means the whole room. */
+  visibleTo: Id[];
+  at: UnixMs;
+}
+
+// ---------- Attention (needs you) ----------
+
+export type AttentionKind =
+  | "decision" // approve or choose
+  | "information" // the agent needs a fact only a person has
+  | "action" // a person must do something (sign in, pay, show up)
+  | "purchase_approval"
+  | "outreach_approval" // contacting a third party
+  | "community_post_approval"
+  | "guest_request" // a guest asked for something that uses the owner's accounts
+  | "credential_fix"
+  | "suggested_action";
+
+export type AttentionStatus = "open" | "resolved" | "dismissed" | "expired";
+
+export interface AttentionItem {
+  id: Id;
+  agentId: Id;
+  roomId: Id;
+  runId?: Id;
+  /** The person who must answer. */
+  assigneeId: Id;
+  /** The person who asked, when different (guest requests). */
+  requesterId?: Id;
+  kind: AttentionKind;
+  title: string;
+  detail: string;
+  /** Choices for a decision, if any. */
+  options?: string[];
+  status: AttentionStatus;
+  answer?: string;
+  /** Who answered; may differ from the assignee when an owner or decider answers on their behalf. */
+  answeredBy?: Id;
+  createdAt: UnixMs;
+  resolvedAt?: UnixMs;
+  expiresAt?: UnixMs;
+}
+
+// ---------- Schedules ----------
+
+export interface Calendar {
+  hour?: number;
+  minute?: number;
+  dayOfWeek?: number[]; // 0..6
+  dayOfMonth?: number[];
+  everyDays?: number;
+  timeZone: string;
+}
+
+/**
+ * What the owner authorised when the schedule was created. The run re-reads
+ * this before acting and re-checks the premise against live state.
+ */
+export interface Authorization {
+  basis: "user_requested" | "standing_rule" | "agent_initiative";
+  /** Third parties the owner was told about: name, how, why. Anyone else needs a fresh yes. */
+  disclosedOutreach: { who: string; how: "phone" | "email" | "sms" | "community_post"; why: string }[];
+  /** What must still be true for the action to make sense. */
+  premise: string;
+}
+
+export interface Schedule {
+  id: Id;
+  agentId: Id;
+  roomId: Id;
+  sessionId: Id;
+  title: string;
+  prompt: string;
+  calendar?: Calendar;
+  runAt?: UnixMs;
+  authorization: Authorization;
+  paused: boolean;
+  numRuns: number;
+  nextRunAt?: UnixMs;
+  lastRunAt?: UnixMs;
+  createdByRunId?: Id;
+  createdAt: UnixMs;
+}
+
+/** Outreach held until working hours; delivered by the scheduler sweep. */
+export interface StagedItem {
+  id: Id;
+  roomId: Id;
+  sessionId: Id;
+  agentId: Id;
+  kind: "sms" | "email" | "phone" | "community_post";
+  payload: Record<string, unknown>;
+  deliverAfter: UnixMs;
+  deliveredAt?: UnixMs;
+  createdAt: UnixMs;
+}
+
+// ---------- Responsibilities ----------
+
+export type CommitmentStatus = "open" | "done" | "dropped" | "blocked";
+
+/**
+ * A thing someone (a member or the agent) said they would do. The agent
+ * follows these up; this is what makes "it tracks responsibilities" real.
+ */
+export interface Commitment {
+  id: Id;
+  roomId: Id;
+  agentId: Id;
+  /** personId, or the agent id when the agent owns it. */
+  ownerId: Id;
+  /** Who it is for (the cared-for parent, for example). */
+  beneficiaryId?: Id;
+  title: string;
+  detail?: string;
+  dueAt?: UnixMs;
+  status: CommitmentStatus;
+  /** How many nudges have gone out. */
+  nudges: number;
+  nextNudgeAt?: UnixMs;
+  sourceRunId?: Id;
+  createdAt: UnixMs;
+  closedAt?: UnixMs;
+}
+
+// ---------- Plans ----------
+
+export type ApproachKind = "search" | "ask_room" | "ask_person" | "call" | "community_post" | "browse" | "wait";
+
+export interface PlanStep {
+  id: Id;
+  text: string;
+  approach: ApproachKind;
+  status: "pending" | "active" | "done" | "failed" | "skipped";
+  /** Fallbacks to try, in order, if this step fails or stalls. */
+  alternatives: ApproachKind[];
+  attempts: number;
+  evidence?: string;
+}
+
+export interface Plan {
+  id: Id;
+  runId: Id;
+  goal: string;
+  steps: PlanStep[];
+  /** Index of the active step. */
+  cursor: number;
+  createdAt: UnixMs;
+  updatedAt: UnixMs;
+}

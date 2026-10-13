@@ -1,0 +1,34 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import type { Effort } from "../core/types.ts";
+
+/** A tool as the model sees it. The runtime owns execution. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  input_schema: Anthropic.Tool["input_schema"];
+}
+
+export interface ModelRequest {
+  model: string;
+  effort: Effort;
+  system: string;
+  messages: Anthropic.MessageParam[];
+  tools: ToolSpec[];
+  maxTokens?: number;
+}
+
+/** One assistant turn: text plus zero or more tool calls, plus why it stopped. */
+export interface ModelTurn {
+  text: string;
+  toolUses: { id: string; name: string; input: unknown }[];
+  stopReason: "end_turn" | "tool_use" | "max_tokens" | "refusal" | "other";
+  /** Raw content to append back to the transcript (keeps thinking blocks intact). */
+  content: Anthropic.MessageParam["content"];
+  usage?: { input: number; output: number };
+}
+
+export interface ModelClient {
+  turn(req: ModelRequest): Promise<ModelTurn>;
+  /** Small structured call used by consolidation, premise checks and labels. */
+  complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string }): Promise<string>;
+}
