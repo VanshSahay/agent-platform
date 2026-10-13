@@ -1,43 +1,67 @@
 # Agent Platform
 
-One assistant per person, living in iMessage. It works for you in your own chat and in any group chat you add it to, and it only says something is done when its own records prove it.
+Personal agents you train on the web, then deploy to iMessage, to your own chat and to any group chat you add them to. Built for the people around you: a friend or family member in the group never signs up, never learns any syntax, and gets the same help you do. Anything that uses your accounts or costs money goes through you. The agent only says something is done when its own records prove it.
 
-Design and the decisions behind it: [docs/refactor-design.md](docs/refactor-design.md).
+Design decisions and their history: [docs/refactor-design.md](docs/refactor-design.md). Competitor research that shaped the last round: [docs/research/wajo-fo.md](docs/research/wajo-fo.md).
 
-## How it works
+## What it does today
+
+- **Train first.** Sign in (Clerk), create an agent with a name and one paragraph about what it's for. It drafts its purpose and starter rules and opens a training chat. Everything you tell it about yourself is training: rules for how it should behave, preferences, people, routines, stores, what's in the fridge. Photos work. The Memory page shows every memory, typed and dated, with a "Tidy up now" that merges duplicates and dates corrections. Once a day a background pass does the same and derives a short profile the agent reads first on every run.
+- **Deploy to iMessage.** When an agent has a name and a few memories, link your number; it texts you a code. From then on your chat talks to your default agent, "@Name" switches to another, and in a group you add the number and say "@Name" once. The agent introduces itself in plain words, answers when named, and in groups never uses jargon.
+- **Serve the group.** Anyone in the group can ask for reads: search, weather, a tally, the list. A guest's request that needs your accounts runs through you: the card lands in your own chat naming who asked and what, the group hears "I've asked Ellie to OK that", and your yes finishes the job in the group. A signed-up member's own accounts are used only for their own request, after a one-time consent in their own chat. A reply pending when someone new joins is held until you say go.
+- **Trust, one notch at a time.** Every write asks first. Per agent you can tick actions it may run without asking, set a dollar amount under which it may buy, or pause spending. "Send email as me" is a separate switch per Google account, off by default; when off the agent leaves a real Gmail draft.
+- **Hands.** Google (Gmail, Calendar, Contacts, Drive), the web, a Browserbase browser for sites that need clicking, site logins you perform yourself in a live browser (the agent inherits the session, never the password), any MCP server you connect, and your iPhone through [iphone-use](https://github.com/leeguooooo/iphone-use) for native apps. The planner's order: connected account, public API or web, browser, phone.
+- **Outreach.** Contacting a third party is disclosed first: who, how, why. Approved outreach outside 8am to 8pm in your zone is held and sent the next morning as exactly that action.
+- **Home.** Need your input (approvals, consents, held replies), On radar (scheduled jobs, runs in flight), Last activity (finished runs with their named steps). Cards are acted on from the web through the same paths as a "yes" in iMessage.
+- **Proof.** Every tool call is stored with a fingerprint and marked verified from provider evidence (a message id, an event id, a schedule row, a replay). The reply's status footer is built from those records, not from the model's words, and a reply that claims an action without one gets corrected.
+
+Not built yet: phone calls by the agent, inbox-mined suggestion cards, a human-assistant fallback, Telegram/Slack/WhatsApp. iMessage group chats need the Photon Business plan; the free pool is DM-only.
+
+## How a message is handled
 
 ```
-iMessage (Photon)  →  src/imessage.ts  →  src/agent.ts: one run per message
-                                             ├─ system prompt: who, where, skills, memories
-                                             ├─ model turn (GLM flash by default, GLM 5.3 on a code rule; no Anthropic models)
-                                             ├─ tool calls through src/tools/index.ts
-                                             │    reads for anyone · a person's accounts only for them (consent once in a group)
-                                             │    writes wait for that person's "yes" (reply or 👍) · every execution stored + verified
-                                             └─ reply + status footer built from verified executions, never from the model's words
+iMessage (Photon) or web chat
+  → src/agent.ts: the room's agent, one run per message
+      system prompt: who it is, its purpose, its profile of you, standing rules, skills index, memories (dated)
+      model turn: z-ai/glm-5.3-flash; z-ai/glm-5.3 when the run writes, browses, uses the phone, has 3+ steps, or is a correction
+      tool calls → src/tools/index.ts (the one permission rule, consent, approvals, trust dial, staged outreach, idempotency, verifiers)
+      reply + footer from verified executions + named steps
 ```
 
-- **People** are phone numbers. **Rooms** are chats: private (you and your agent) or group (the group's agent, no one's accounts).
-- **Tools**: Google (Gmail, Calendar, Contacts, Drive), the web, a Browserbase browser, reminders, memory, and any MCP server you connect (iphone-use on your Mac gives it your phone).
-- **Skills** (`skills/*.md`) are internal procedures the agent reads when a task matches; users never pick them.
-- **Models** (OpenRouter): `z-ai/glm-5.3-flash` by default; `z-ai/glm-5.3` when a run has a write, a browser or phone step, three or more tool calls, or is a correction. Hard caps: $5/day model, 20 browser sessions/day.
-- **Web** (`web/`): the landing page, and a signed-in app (Clerk) where you train the agent before it texts anyone: a web chat with photo upload, a Memory page (typed, dated, editable), a trust dial for actions it may do without asking, connections, reminders, activity with proof, and "Deploy to iMessage", which links your phone with a texted code. Google and device connect pages are also reachable by personal links the agent texts.
+## Code map
+
+| Area | Where |
+|---|---|
+| Run loop, approvals, consent, holds, welcome, prompts | `src/agent.ts` |
+| Agents (owner, purpose, trust dial, profile), "@Name" switching | `src/agents.ts` |
+| People, rooms, members, messages | `src/rooms.ts` |
+| Memory (agent and room scopes, rules, retrieval) and the daily pass | `src/memory.ts`, `src/consolidate.ts` |
+| Tool gateway and tools | `src/tools/index.ts`, `src/tools/{google,web,browser,mcp,core}.ts` |
+| Skills the agent reads on demand | `skills/*.md` |
+| Schedules, reminders, staged outreach | `src/schedules.ts` |
+| iMessage transport (Photon) | `src/imessage.ts` |
+| Models and daily caps | `src/model.ts`, `src/db.ts` |
+| Web app and its API | `web/app.tsx`, `src/web.ts`, `src/auth.ts`, `src/server.ts` |
+| Schema | `migrations/*.sql` |
 
 ## Run
 
 ```bash
 bun install
-cp .env.example .env      # fill in DATABASE_URL, OPENROUTER_API_KEY, PROJECT_ID/PROJECT_SECRET (Photon), GOOGLE_*, BROWSERBASE_API_KEY
+cp .env.example .env      # DATABASE_URL, OPENROUTER_API_KEY, MASTER_KEY, PUBLIC_URL, Photon PROJECT_*, Clerk, Google OAuth, Browserbase
 bun run start             # migrates, connects the iMessage line, serves http://localhost:3000
 ```
+
+Models run on OpenRouter only, no Anthropic models by choice. Hard caps: $5 a day on models, 20 browser sessions a day, reset at midnight in `PLATFORM_TZ`.
 
 ## Test
 
 ```bash
-bun test                  # model-free logic on local Postgres (agent_test): approvals, consent, holds, scopes, routing, dedupe
-bun run test:live         # real model + tools, counted against the daily cap; TEST_PHONE=+1… also texts a real phone
+bun test                  # 28 model-free tests on a local Postgres (agent_test): approvals, consent, guests, holds, scopes, trust, outreach, memory pass
+bun run test:live         # 5 scenarios against the real model and tools, counted against the cap; TEST_PHONE=+1… also texts a real phone
 bun run typecheck
 ```
 
 ## Deploy
 
-Railway from this repo: the `Dockerfile` and `railway.json` are picked up; add a Postgres service and set the variables from `.env.example`. Point the public domain (or the Cloudflare Worker) at it and set `PUBLIC_URL`.
+Railway from this repo: `Dockerfile` and `railway.json` are picked up; add a Postgres service, set the variables from `.env.example`, point your domain or the Cloudflare Worker at it and set `PUBLIC_URL`. Google OAuth needs a client whose redirect is `${PUBLIC_URL}/connect/google/callback`.
