@@ -82,14 +82,10 @@ export class Runtime {
     store.putSession(session);
 
     // 1. Is this an answer to something the agent asked this person here?
-    const pending = this.pendingItemFor(room, session, input.personId);
+    const pending = this.pendingItemFor(room, session, input.personId, agent, input.text);
     if (pending) {
       const item = this.d.attention.resolve(pending.id, input.text, input.personId);
-      if (item.runId) {
-        const run = store.getRun(item.runId);
-        if (run && run.status === "waiting") return this.resume(run, item);
-      }
-      return undefined;
+      return this.resumeWaitingOn(item);
     }
 
     // 2. Is the agent addressed?
@@ -111,10 +107,18 @@ export class Runtime {
   /** An approval or answer arrived through the inbox UI rather than chat. */
   async answerAttention(itemId: Id, answer: string, answeredBy?: Id): Promise<Run | undefined> {
     const item = this.d.attention.resolve(itemId, answer, answeredBy);
-    if (!item.runId) return undefined;
-    const run = this.d.store.getRun(item.runId);
-    if (!run || run.status !== "waiting") return undefined;
-    return this.resume(run, item);
+    return this.resumeWaitingOn(item);
+  }
+
+  /** One answer resumes every run that paused on this item (two people asking the same thing share one card). */
+  private async resumeWaitingOn(item: AttentionItem): Promise<Run | undefined> {
+    const waiting = this.d.store.listRuns({ roomId: item.roomId, status: ["waiting"] }).filter((r) => r.waitingOn === item.id);
+    let first: Run | undefined;
+    for (const run of waiting) {
+      const r = await this.resume(run, item);
+      first ??= r;
+    }
+    return first;
   }
 
   /** Timers call this: scheduled actions, heartbeats, commitment nudges. */
@@ -163,15 +167,24 @@ export class Runtime {
    * group; and, for an owner or decider, any open question in this room,
    * since they may answer on a guest's or the cared-for person's behalf.
    */
-  private pendingItemFor(room: Room, session: Session, personId: Id): AttentionItem | undefined {
+  private pendingItemFor(room: Room, session: Session, personId: Id, agent: AgentSpec, text: string): AttentionItem | undefined {
     const mine = this.d.attention.openFor(personId).filter((a) => a.roomId === room.id || room.kind === "dm");
     if (mine.length) return mine[mine.length - 1];
     const inRoom = this.d.store.listAttention({ roomId: room.id, status: ["open"] }).filter((a) => a.runId && this.d.store.getRun(a.runId)?.sessionId === session.id);
     const groupQ = inRoom.find((a) => a.title === "Question for the group");
     if (groupQ) return groupQ;
+    // An owner or decider may answer on someone else's behalf, but only when the message
+    // reads as an answer: it picks one of the options or starts with a plain yes or no.
+    // Anything else, even if it names the agent, is conversation and starts its own run.
     const role = this.d.rooms.role(room.id, personId);
-    if (role === "owner" || role === "decider") return inRoom[0];
-    return undefined;
+    if (role !== "owner" && role !== "decider") return undefined;
+    const item = inRoom[0];
+    if (!item) return undefined;
+    const t = text.trim().toLowerCase();
+    const picksOption = (item.options ?? []).some((o) => t === o.toLowerCase() || t.startsWith(o.toLowerCase() + " ") || t.startsWith(o.toLowerCase() + ","));
+    const yesNo = /^(y|yes|yeah|yep|ok|okay|sure|go ahead|approved|do it|fine|n|no|nope|don't|do not|decline|declined)\b/i.test(t);
+    void agent;
+    return picksOption || yesNo ? item : undefined;
   }
 
   private addressed(room: Room, agent: AgentSpec, text: string): boolean {
@@ -440,7 +453,11 @@ export class Runtime {
           }
         }
 
-        if (result.roomNotice) void this.d.deliver({ roomId: room.id, text: result.roomNotice, kind: "notice" });
+        if (result.roomNotice) {
+          // A notice is something the agent said to the room; keep it in the transcript like any reply.
+          store.putMessage({ id: newId("msg"), sessionId: run.sessionId, roomId: room.id, runId: run.id, role: "assistant", authorId: agent.id, text: result.roomNotice, source: "notice", visibleTo: [], at: clock.now() });
+          void this.d.deliver({ roomId: room.id, text: result.roomNotice, kind: "notice" });
+        }
         if (result.waitingOn) paused = result.waitingOn;
 
         const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
@@ -491,13 +508,17 @@ export class Runtime {
       if (disclosed) return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
     }
 
-    // An approval already given on this run for this exact ask (the model re-issues the tool after a yes).
-    const prior = store
+    // An answer already given for this exact ask in this room while this run was alive covers it
+    // (the model re-issues the tool after a yes; two runs waiting on one card both continue).
+    const answered = store
       .listAttention({ roomId: room.id, status: ["resolved"] })
-      .find((a) => a.runId === run.id && a.title === g.title && isYes(a.answer ?? ""));
-    if (prior) return { granted: true, reason: `approved by ${store.getPerson(prior.assigneeId)?.displayName ?? "the approver"}` };
-    const declined = store.listAttention({ roomId: room.id, status: ["resolved"] }).find((a) => a.runId === run.id && a.title === g.title && !isYes(a.answer ?? ""));
-    if (declined) return { granted: false, held: `${store.getPerson(declined.assigneeId)?.displayName ?? "The approver"} declined this. Do not retry it; tell the room and try another approach or stop.` };
+      .filter((a) => a.title === g.title && (a.runId === run.id || (a.resolvedAt ?? 0) >= run.startedAt))
+      .sort((a, b) => (b.resolvedAt ?? 0) - (a.resolvedAt ?? 0))[0];
+    if (answered) {
+      const who = store.getPerson(answered.answeredBy ?? answered.assigneeId)?.displayName ?? "the approver";
+      if (isYes(answered.answer ?? "")) return { granted: true, reason: `approved by ${who}` };
+      return { granted: false, held: `${who} declined this. Do not retry it; tell the room and try another approach or stop.` };
+    }
 
     const requesterIsOwner = run.requesterId === agent.ownerId;
     const money = g.money ?? 0;
@@ -518,6 +539,8 @@ export class Runtime {
     if (!assignee) throw new Error("no approver");
     const kind = run.requesterId && run.requesterId !== assignee.id && accounts.needsApproval ? "guest_request" : g.kind;
     const requesterName = run.requesterId ? (store.getPerson(run.requesterId)?.displayName ?? "someone") : agent.name;
+    const twin = store.listAttention({ roomId: room.id, status: ["open"] }).find((a) => a.title === g.title && a.assigneeId === assignee.id);
+    if (twin) return { granted: false, item: twin, notice: run.requesterId === assignee.id ? undefined : `${assignee.displayName} has already been asked about that; I'll continue once they answer.` };
     const item = attention.open({
       agentId: agent.id,
       roomId: room.id,

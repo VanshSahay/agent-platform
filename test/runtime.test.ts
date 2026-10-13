@@ -198,6 +198,56 @@ describe("answering on someone's behalf", () => {
   });
 });
 
+describe("one ask, one card", () => {
+  test("two people asking for the same gated action share one card, and one yes resumes both runs", async () => {
+    const w = familyWorld((req, i) => {
+      const t = JSON.stringify(req.messages);
+      const last = lastToolResult(req) ?? "";
+      if (last.includes("summary")) return reply("Lee's can come Thursday.");
+      if (t.includes("[APPROVED]") || !last) return callTool("place_call", { to: "+14085550100", who: "Lee's Repairs", objective: "Ask availability." });
+      return reply("Waiting.");
+    });
+    const a = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip get the tap fixed" });
+    const b = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "mum", text: "Pip, can you get someone for the tap?" });
+    expect(a?.status).toBe("waiting");
+    expect(b?.status).toBe("waiting");
+    expect(w.app.attention.openFor("ellie")).toHaveLength(1);
+    expect(noticesTo(w.deliveries, w.family.id).some((n) => n.includes("already been asked"))).toBe(true);
+    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "yes" });
+    expect(w.app.store.getRun(a!.id)!.status).toBe("done");
+    expect(w.app.store.getRun(b!.id)!.status).toBe("done");
+    expect(w.hands.phone.calls).toHaveLength(2);
+  });
+});
+
+describe("chatter is not an answer", () => {
+  test("a decider's unrelated message does not resolve a question put to someone else", async () => {
+    const w = familyWorld((req, i) => {
+      if (i === 0) return callTool("wait_for_user_input", { question: "Lin on Thursday or Great Wall next week?", kind: "decision", options: ["Lin", "Great Wall"] });
+      return reply("ok");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip which one?" });
+    expect(run?.status).toBe("waiting");
+    expect(await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "Thanks everyone, Mum will be home all week." })).toBeUndefined();
+    expect(w.app.store.getRun(run!.id)!.status).toBe("waiting");
+    // Naming the agent in passing starts a new run; it does not answer the open question.
+    const other = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "Thanks Pip, Mum will be home all week." });
+    expect(other?.id).not.toBe(run!.id);
+    expect(w.app.store.getRun(run!.id)!.status).toBe("waiting");
+    // A real answer from the decider does count.
+    const resumed = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "Great Wall" });
+    expect(resumed?.id).toBe(run!.id);
+    expect(w.app.store.listAttention({ roomId: w.family.id })[0]!.answer).toBe("Great Wall");
+  });
+
+  test("messages written in the same millisecond keep their order", async () => {
+    const w = familyWorld(() => reply("ok"));
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip first" });
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip second" });
+    expect(w.app.store.messagesForRoom(w.family.id).map((m) => m.text.split("\n")[0])).toEqual(["@pip first", "ok", "@pip second", "ok"]);
+  });
+});
+
 describe("planner", () => {
   test("a stalled approach switches to the next rung after two attempts and the model is told", async () => {
     const search = new FakeSearch(() => []);

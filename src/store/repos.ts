@@ -215,11 +215,11 @@ export class Store {
     ]);
   }
   messagesForSession(sessionId: string, limit = 200): Message[] {
-    const rows = this.db.query("SELECT data FROM messages WHERE session_id = ? ORDER BY at DESC LIMIT ?").all(sessionId, limit) as Row[];
+    const rows = this.db.query("SELECT data FROM messages WHERE session_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(sessionId, limit) as Row[];
     return parseAll<Message>(rows).reverse();
   }
   messagesForRoom(roomId: string, limit = 200): Message[] {
-    const rows = this.db.query("SELECT data FROM messages WHERE room_id = ? ORDER BY at DESC LIMIT ?").all(roomId, limit) as Row[];
+    const rows = this.db.query("SELECT data FROM messages WHERE room_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(roomId, limit) as Row[];
     return parseAll<Message>(rows).reverse();
   }
 

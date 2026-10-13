@@ -16,9 +16,10 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
   const here = dirname(fileURLToPath(import.meta.url));
   const cfg = authConfig();
   const auth = opts.auth === undefined ? (cfg ? new Auth(app, cfg) : null) : opts.auth;
-  const clerkBoot = cfg
-    ? `<script>window.__CLERK_PK=${JSON.stringify(cfg.publishableKey)};window.__CLERK_FAPI=${JSON.stringify(frontendApiFromKey(cfg.publishableKey) ?? "")};</script>`
-    : "";
+  const clerkBoot =
+    auth && cfg
+      ? `<script>window.__CLERK_PK=${JSON.stringify(cfg.publishableKey)};window.__CLERK_FAPI=${JSON.stringify(frontendApiFromKey(cfg.publishableKey) ?? "")};</script>`
+      : "";
   const html = readFileSync(join(here, "..", "..", "web", "index.html"), "utf8").replace("<!--AUTH-->", clerkBoot);
   const sockets = new Set<ReadableStreamDefaultController<string>>();
   app.onDeliver((d) => broadcast({ type: "delivery", ...d }));
@@ -109,7 +110,18 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
         // ---- chat
         if (p.match(/^\/api\/rooms\/[^/]+\/messages$/)) {
           const roomId = p.split("/")[3]!;
-          if (req.method === "GET") return json(app.store.messagesForRoom(roomId, Number(url.searchParams.get("limit") ?? 100)));
+          if (req.method === "GET") {
+            // Each assistant message carries its run's recorded steps, so the UI can show "Completed N steps" from records.
+            const msgs = app.store.messagesForRoom(roomId, Number(url.searchParams.get("limit") ?? 100)).map((m) => {
+              if (m.role !== "assistant" || !m.runId || m.source === "notice") return m;
+              const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
+              return { ...m, steps };
+            });
+            const session = app.store.latestSessionForRoom(roomId);
+            const active = session ? app.store.activeRunForSession(session.id) : undefined;
+            const activeSteps = active ? app.store.toolCallsForRun(active.id).map((c) => ({ name: c.name, label: c.status === "running" ? c.labelRunning : c.labelDone, status: c.status })) : [];
+            return json({ messages: msgs, activeRun: active ? { id: active.id, status: active.status, trigger: active.trigger, steps: activeSteps } : null });
+          }
           const b = asMe(await req.json());
           if (me && !app.store.getMembership(roomId, me)) return bad("not a member of this room", 403);
           const run = await app.runtime.handleMessage({ roomId, personId: String(b.personId), text: String(b.text ?? ""), dedupKey: b.dedupKey ? String(b.dedupKey) : undefined });
