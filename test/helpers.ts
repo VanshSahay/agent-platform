@@ -3,13 +3,14 @@ import { createApp, type App } from "../src/app.ts";
 import { ScriptedModel, type Script } from "../src/model/scripted.ts";
 import { newAgent } from "../src/agent/spec.ts";
 import { fakeHands, FakeCommunity, FakePhone, FakeSearch } from "../src/tools/hands.ts";
+import type { FakeBrowser } from "../src/tools/browser.ts";
 import type { Delivery } from "../src/runtime/runtime.ts";
 
 /** A family circle: Ellie (owner), Ben (decider, sibling), Mum (cared for), Uncle Wei (guest). */
-export function familyWorld(script: Script, opts: { completer?: (system: string, prompt: string) => string; search?: FakeSearch; phone?: FakePhone; community?: FakeCommunity } = {}) {
+export function familyWorld(script: Script, opts: { completer?: (system: string, prompt: string) => string; search?: FakeSearch; phone?: FakePhone; community?: FakeCommunity; browser?: FakeBrowser } = {}) {
   const clock = new FakeClock(Date.UTC(2026, 9, 13, 17, 0, 0)); // 10:00 in Los Angeles
   const model = new ScriptedModel(script, opts.completer);
-  const hands = fakeHands({ search: opts.search, phone: opts.phone, community: opts.community });
+  const hands = fakeHands({ search: opts.search, phone: opts.phone, community: opts.community, browser: opts.browser });
   const app: App = createApp({ clock, model, hands, heartbeatEveryMs: 24 * 3600 * 1000 });
   const deliveries: Delivery[] = [];
   app.onDeliver((d) => deliveries.push(d));

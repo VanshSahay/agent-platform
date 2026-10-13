@@ -20,16 +20,28 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 
 ```bash
 bun install
-cp .env.example .env     # add ANTHROPIC_API_KEY, or use `ant auth login`
+cp .env.example .env     # add OPENROUTER_API_KEY (or ANTHROPIC_API_KEY) and whatever services you have
 SEED_DEMO=1 bun run start
 # open http://localhost:3000
 ```
+
+What gets wired depends on `.env`:
+
+| Setting | What it turns on |
+|---|---|
+| `OPENROUTER_API_KEY` | The model, through OpenRouter: `z-ai/glm-5.3` for the agent and `z-ai/glm-5.3-flash` for labels, premise checks and the memory pass. Override with `MODEL` and `MODEL_SMALL` (Claude ids work too: `anthropic/claude-opus-5.5`). |
+| `ANTHROPIC_API_KEY` | The model directly from Anthropic: Claude Opus 5.5 and Haiku 5.5. |
+| `PROJECT_ID`, `PROJECT_SECRET` | iMessage through Photon Spectrum. Each iMessage chat becomes a room; senders become people; the owner is recognised by the phone number on their person record (`PATCH /api/people/:id {phoneE164}`). |
+| `BROWSERBASE_API_KEY` | The `browse_page` tool runs in a cloud browser. |
+| `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Sign-in on the owner UI; every API call is made as the signed-in person. |
+
+Without a model key the server still boots and the agent only acknowledges messages, so the UI can be explored.
 
 Offline, with no key, the whole runtime runs against a scripted model:
 
 ```bash
 bun run demo    # the handyman errand in a family chat, end to end
-bun test        # 21 tests across the run loop, gates, planner, memory, timers
+bun test        # 24 tests across the run loop, gates, planner, memory, timers, hands
 bun run typecheck
 ```
 
@@ -77,6 +89,6 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 ## Status
 
-Built: rooms with roles and guest serving; the run loop with gates, steering and resume; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI; fakes for search, phone and community posting.
+Built: rooms with roles and guest serving; the run loop with gates, steering and resume; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic.
 
-Not yet: real adapters for search, telephony, Reddit and Rednote; an iMessage or WhatsApp channel adapter (the room model is channel-agnostic; `Room.channel` and `externalId` are the hook); payments; voice. Each is an interface in `src/tools/hands.ts` or `src/channels/` with a fake you can swap.
+Not yet: real adapters for search, telephony (calls in Mandarin need a voice vendor), Reddit and Rednote; WhatsApp and Telegram channels; payments; voice chat. Each is an interface in `src/tools/hands.ts` or `src/channels/` with a fake you can swap. Postgres is not used: the store is one SQLite file.

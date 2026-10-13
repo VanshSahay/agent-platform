@@ -88,10 +88,14 @@ Every gate decision is in the records: the item, the `gate_opened` and `gate_res
 
 Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), staged outreach once working hours begin, commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
 
-## 9. What is deliberately not built yet
+## 9. Services wired, and what is deliberately not built yet
 
-- Channel adapters for iMessage, WhatsApp, Telegram and Slack. The room model is channel-agnostic (`Room.channel`, `externalId`, `Delivery`); an adapter maps a thread id to a room and a sender to a person, and subscribes to deliveries.
-- Real hands: a search API, a telephony vendor that can hold a conversation in Mandarin, Reddit and Rednote clients, a browser. Each is an interface with a fake.
+Wired through `.env` (see README): the model through OpenRouter (GLM 5.3 by default; the OpenRouter door speaks the Anthropic Messages shape, so the same adapter serves Claude directly), iMessage through Photon Spectrum (`src/channels/imessage.ts`: one Spectrum space is one room, one sender handle is one person, the owner is recognised by phone number, deliveries go back through the space), the browser hand through Browserbase (`src/tools/browser.ts`: a fresh cloud session per page read, released after), and Clerk sign-in on the web channel (`src/channels/auth.ts`: the bearer token maps to a person on first sight and the caller may only act as that person).
+
+Not built yet:
+
+- Channel adapters for WhatsApp, Telegram and Slack (Spectrum has providers for all three; the iMessage adapter is the template).
+- Real hands for search, telephony (a voice vendor that can hold a call in Mandarin), Reddit and Rednote. Each is an interface with a fake.
 - Payments. `request_purchase` enforces the budget policy; nothing charges a card.
 - Embeddings for memory recall; an eval loop that scores runs against outcomes; a plan the person can edit before a long task runs.
 

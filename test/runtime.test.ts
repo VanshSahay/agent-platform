@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { callTool, callTools, lastToolResult, reply } from "../src/model/scripted.ts";
 import { familyWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
+import type { FakeBrowser } from "../src/tools/browser.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
 
 describe("run loop", () => {
@@ -222,5 +223,35 @@ describe("planner", () => {
       return reply("ok");
     });
     await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip check notes" });
+  });
+});
+
+describe("hands", () => {
+  test("browse_page reads a page through the browser hand and records evidence", async () => {
+    const { FakeBrowser } = await import("../src/tools/browser.ts");
+    const browser = new FakeBrowser((url) => (url.includes("lin-repair") ? { title: "Lin Home Repair", text: "Open Mon–Sat 8–6. Call 408-555-0142.", links: [{ text: "Book", href: "https://lin-repair.example/book" }] } : {}));
+    const w = familyWorld((req, i) => {
+      if (i === 0) return callTool("browse_page", { url: "https://lin-repair.example" });
+      const last = lastToolResult(req) ?? "";
+      expect(last).toContain("408-555-0142");
+      return reply("They're open Mon to Sat, 8 to 6.");
+    }, { browser });
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip when is Lin Home Repair open?" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    expect(call.name).toBe("browse_page");
+    expect(call.evidence).toBe("fake-browser:1");
+    expect(call.labelDone).toBe("Read a web page");
+    expect(browser.visited).toEqual(["https://lin-repair.example"]);
+  });
+
+  test("model config picks OpenRouter with GLM 5.3 by default and maps Claude ids between doors", async () => {
+    const { modelConfig, normalizeModelId } = await import("../src/model/config.ts");
+    expect(modelConfig({ OPENROUTER_API_KEY: "x" })).toEqual({ provider: "openrouter", model: "z-ai/glm-5.3", smallModel: "z-ai/glm-5.3-flash" });
+    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5" }).model).toBe("anthropic/claude-opus-5.5");
+    expect(modelConfig({ ANTHROPIC_API_KEY: "x" })).toEqual({ provider: "anthropic", model: "claude-opus-5-5", smallModel: "claude-haiku-5-5" });
+    expect(modelConfig({}).provider).toBe("none");
+    expect(normalizeModelId("claude-opus-5-5", "openrouter")).toBe("anthropic/claude-opus-5.5");
+    expect(normalizeModelId("anthropic/claude-haiku-5.5", "anthropic")).toBe("claude-haiku-5-5");
+    expect(normalizeModelId("z-ai/glm-5.3", "openrouter")).toBe("z-ai/glm-5.3");
   });
 });

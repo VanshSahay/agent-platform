@@ -5,15 +5,21 @@ import type { App } from "../app.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { newAgent } from "../agent/spec.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
+import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 
 /**
  * The web channel: a JSON API and one page for the owner. The API shape is
  * what we learned works: a message creates a run; a watch stream replays
  * events after a cursor; the inbox is one list with statuses.
  */
-export function startWebServer(app: App, opts: { port?: number; hostname?: string } = {}) {
+export function startWebServer(app: App, opts: { port?: number; hostname?: string; auth?: Auth | null } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const html = readFileSync(join(here, "..", "..", "web", "index.html"), "utf8");
+  const cfg = authConfig();
+  const auth = opts.auth === undefined ? (cfg ? new Auth(app, cfg) : null) : opts.auth;
+  const clerkBoot = cfg
+    ? `<script>window.__CLERK_PK=${JSON.stringify(cfg.publishableKey)};window.__CLERK_FAPI=${JSON.stringify(frontendApiFromKey(cfg.publishableKey) ?? "")};</script>`
+    : "";
+  const html = readFileSync(join(here, "..", "..", "web", "index.html"), "utf8").replace("<!--AUTH-->", clerkBoot);
   const sockets = new Set<ReadableStreamDefaultController<string>>();
   app.onDeliver((d) => broadcast({ type: "delivery", ...d }));
   const broadcast = (payload: unknown) => {
@@ -39,12 +45,22 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
       const p = url.pathname;
       try {
         if (p === "/" || p === "/index.html") return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-        if (p === "/health") return json({ ok: true, now: app.clock.now() });
+        if (p === "/health") return json({ ok: true, now: app.clock.now(), auth: !!auth });
+
+        // With Clerk configured, every API call is made as a signed-in person; the body may not impersonate anyone else.
+        let me: string | undefined;
+        if (auth && p.startsWith("/api/")) {
+          const person = await auth.personFor(req);
+          if (!person) return bad("sign in required", 401);
+          me = person.id;
+        }
+        if (p === "/api/me") return json(me ? app.store.getPerson(me) : null);
+        const asMe = (b: Record<string, unknown>) => (me ? { ...b, personId: me } : b);
 
         // ---- bootstrap: people, agents, rooms
         if (p === "/api/state" && req.method === "GET") {
           const agents = app.store.listAgents();
-          const rooms = app.store.listRooms();
+          const rooms = me ? app.store.listRooms().filter((r) => !!app.store.getMembership(r.id, me!)) : app.store.listRooms();
           return json({
             agents,
             rooms: rooms.map((r) => ({ ...r, members: app.rooms.members(r.id).map((m) => ({ ...m, person: app.store.getPerson(m.personId) })) })),
@@ -54,9 +70,19 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
           const b = await req.json();
           return json(app.rooms.createPerson({ id: b.id, displayName: b.displayName, timezone: b.timezone ?? "UTC", pronouns: b.pronouns, phoneE164: b.phoneE164, techComfort: b.techComfort }));
         }
+        if (p.match(/^\/api\/people\/[^/]+$/) && req.method === "PATCH") {
+          const id = p.split("/")[3]!;
+          if (me && id !== me) return bad("you can only edit yourself", 403);
+          const person = app.store.getPerson(id);
+          if (!person) return bad("no such person", 404);
+          const b = await req.json();
+          Object.assign(person, { displayName: b.displayName ?? person.displayName, timezone: b.timezone ?? person.timezone, pronouns: b.pronouns ?? person.pronouns, phoneE164: b.phoneE164 ?? person.phoneE164, email: b.email ?? person.email, techComfort: b.techComfort ?? person.techComfort });
+          app.store.putPerson(person);
+          return json(person);
+        }
         if (p === "/api/agents" && req.method === "POST") {
           const b = await req.json();
-          const a = newAgent({ ownerId: b.ownerId, name: b.name, purpose: b.purpose, instructions: b.instructions, trust: b.trust });
+          const a = newAgent({ ownerId: me ?? b.ownerId, name: b.name, purpose: b.purpose, instructions: b.instructions, trust: b.trust });
           app.store.putAgent(a);
           return json(a);
         }
@@ -84,8 +110,9 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
         if (p.match(/^\/api\/rooms\/[^/]+\/messages$/)) {
           const roomId = p.split("/")[3]!;
           if (req.method === "GET") return json(app.store.messagesForRoom(roomId, Number(url.searchParams.get("limit") ?? 100)));
-          const b = await req.json();
-          const run = await app.runtime.handleMessage({ roomId, personId: b.personId, text: b.text, dedupKey: b.dedupKey });
+          const b = asMe(await req.json());
+          if (me && !app.store.getMembership(roomId, me)) return bad("not a member of this room", 403);
+          const run = await app.runtime.handleMessage({ roomId, personId: String(b.personId), text: String(b.text ?? ""), dedupKey: b.dedupKey ? String(b.dedupKey) : undefined });
           return json({ run, session: app.store.latestSessionForRoom(roomId) });
         }
         if (p.match(/^\/api\/sessions\/[^/]+\/events$/)) {
@@ -139,7 +166,9 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
           return json(app.attention.inbox(personId, agentId));
         }
         if (p.match(/^\/api\/attention\/[^/]+\/resolve$/) && req.method === "POST") {
-          const b = await req.json();
+          const b = asMe(await req.json());
+          const item = app.store.getAttention(p.split("/")[3]!);
+          if (me && item && item.assigneeId !== me && !["owner", "decider"].includes(app.rooms.role(item.roomId, me) ?? "")) return bad("not yours to answer", 403);
           const run = await app.runtime.answerAttention(p.split("/")[3]!, String(b.answer ?? ""), b.personId ? String(b.personId) : undefined);
           return json({ ok: true, run });
         }

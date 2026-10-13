@@ -9,6 +9,8 @@
  * never from the model's own words.
  */
 
+import { FakeBrowser, type BrowserProvider } from "./browser.ts";
+
 export interface SearchResult {
   title: string;
   url: string;
@@ -53,6 +55,7 @@ export interface Hands {
   search: SearchProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
+  browser: BrowserProvider;
 }
 
 // ---------- Fakes ----------
@@ -106,14 +109,16 @@ export class FakeCommunity implements CommunityProvider {
   }
 }
 
-export function fakeHands(opts: { search?: FakeSearch; phone?: FakePhone; community?: FakeCommunity } = {}): Hands & {
+export function fakeHands(opts: { search?: FakeSearch; phone?: FakePhone; community?: FakeCommunity; browser?: FakeBrowser } = {}): Hands & {
   search: FakeSearch;
   phone: FakePhone;
   community: FakeCommunity;
+  browser: FakeBrowser;
 } {
   return {
     search: opts.search ?? new FakeSearch(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
+    browser: opts.browser ?? new FakeBrowser(),
   };
 }

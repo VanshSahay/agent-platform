@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Circle</title>
+<!--AUTH-->
 <style>
   :root { --bg:#fbfaf7; --fg:#1d1c19; --mut:#6b6960; --line:#e6e2d8; --acc:#2f6f5e; --card:#fff; --warn:#a2561a; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ecebe6; --mut:#9a998f; --line:#2b2d33; --acc:#6fc1a7; --card:#1c1e24; --warn:#e3a06b; } }
@@ -52,27 +53,56 @@
 const $ = (s) => document.querySelector(s);
 const state = { people: [], rooms: [], agents: [], me: null, room: null, tab: "input" };
 const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+let authToken = null;
 const api = async (path, body, method) => {
-  const r = await fetch(path, { method: method ?? (body ? "POST" : "GET"), headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  const headers = body ? { "content-type": "application/json" } : {};
+  if (authToken) headers.authorization = `Bearer ${authToken}`;
+  const r = await fetch(path, { method: method ?? (body ? "POST" : "GET"), headers, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { $("#status").textContent = "Sign in required."; throw new Error("unauthorized"); }
   return r.json();
 };
+// Clerk sign-in, when the server is configured for it. The signed-in person is "You".
+async function ensureAuth() {
+  if (!window.__CLERK_PK) return true;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = `https://${window.__CLERK_FAPI}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`;
+    s.setAttribute("data-clerk-publishable-key", window.__CLERK_PK);
+    s.async = true; s.crossOrigin = "anonymous"; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  await window.Clerk.load();
+  if (!window.Clerk.user) {
+    document.querySelector("main").innerHTML = '<div id="signin" style="padding:24px"></div>';
+    window.Clerk.mountSignIn(document.getElementById("signin"));
+    window.Clerk.addListener(({ user }) => { if (user) location.reload(); });
+    return false;
+  }
+  authToken = await window.Clerk.session.getToken();
+  setInterval(async () => { authToken = await window.Clerk.session.getToken(); }, 50_000);
+  const me = await api("/api/me");
+  state.me = me?.id ?? null;
+  $("#me").outerHTML = `<span class="mut">${esc(me?.displayName ?? "")}</span>`;
+  return true;
+}
 try { state.me = localStorage.getItem("circle.me"); state.room = localStorage.getItem("circle.room"); } catch {}
 
 async function load() {
   const s = await api("/api/state");
+  if (window.__CLERK_PK) { try { localStorage.removeItem("circle.me"); } catch {} }
   state.agents = s.agents; state.rooms = s.rooms;
   const people = new Map();
   for (const r of s.rooms) for (const m of r.members) if (m.person) people.set(m.person.id, m.person);
   state.people = [...people.values()];
-  if (!state.me || !people.has(state.me)) state.me = state.people[0]?.id ?? null;
+  if (!window.__CLERK_PK && (!state.me || !people.has(state.me))) state.me = state.people[0]?.id ?? null;
   const mine = s.rooms.filter((r) => r.members.some((m) => m.personId === state.me));
   if (!state.room || !mine.some((r) => r.id === state.room)) state.room = mine[0]?.id ?? null;
-  $("#me").innerHTML = state.people.map((p) => `<option value="${p.id}" ${p.id === state.me ? "selected" : ""}>${esc(p.displayName)}</option>`).join("");
+  const meSel = $("#me"); if (meSel) meSel.innerHTML = state.people.map((p) => `<option value="${p.id}" ${p.id === state.me ? "selected" : ""}>${esc(p.displayName)}</option>`).join("");
   $("#room").innerHTML = mine.map((r) => `<option value="${r.id}" ${r.id === state.room ? "selected" : ""}>${esc(r.name)}</option>`).join("");
   if (!state.agents.length) $("#status").textContent = "No agent yet. Start with SEED_DEMO=1 or POST /api/agents.";
   await Promise.all([renderInbox(), renderMsgs(), renderMemory(), renderLedger()]);
 }
-$("#me").onchange = (e) => { state.me = e.target.value; try { localStorage.setItem("circle.me", state.me); } catch {} load(); };
+if ($("#me")) $("#me").onchange = (e) => { state.me = e.target.value; try { localStorage.setItem("circle.me", state.me); } catch {} load(); };
 $("#room").onchange = (e) => { state.room = e.target.value; try { localStorage.setItem("circle.room", state.room); } catch {} renderMsgs(); renderLedger(); };
 document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b)); renderInbox(); }));
 
@@ -147,7 +177,7 @@ $("#composer").onsubmit = async (e) => {
     await new Promise((r) => setTimeout(r, 2000));
   }
 })();
-load();
+ensureAuth().then((ok) => { if (ok) load(); }).catch((e) => { $("#status").textContent = "Sign-in failed to load: " + e; });
 </script>
 </body>
 </html>

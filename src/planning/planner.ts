@@ -134,6 +134,8 @@ export function approachOfTool(tool: string): ApproachKind | undefined {
   switch (tool) {
     case "web_search":
       return "search";
+    case "browse_page":
+      return "browse";
     case "ask_room":
       return "ask_room";
     case "ask_person":

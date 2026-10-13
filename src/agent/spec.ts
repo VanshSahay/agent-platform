@@ -1,6 +1,6 @@
 import { newId } from "../core/ids.ts";
 import type { AgentSpec, Id, Soul, TrustPolicy } from "../core/types.ts";
-import { DEFAULT_MODEL } from "../model/anthropic.ts";
+import { modelConfig } from "../model/config.ts";
 
 export const DEFAULT_TRUST: TrustPolicy = {
   autoAllow: [],
@@ -19,7 +19,7 @@ export const DEFAULT_SOUL: Soul = {
   proactiveBehaviors: "Nudge owners of responsibilities before they are due. Report in one line when something closes or slips.",
 };
 
-export function newAgent(input: { ownerId: Id; name: string; purpose: string; handle?: string; instructions?: string; soul?: Partial<Soul>; trust?: Partial<TrustPolicy> }): AgentSpec {
+export function newAgent(input: { ownerId: Id; name: string; purpose: string; handle?: string; instructions?: string; soul?: Partial<Soul>; trust?: Partial<TrustPolicy>; model?: string }): AgentSpec {
   return {
     id: newId("agt"),
     ownerId: input.ownerId,
@@ -28,7 +28,7 @@ export function newAgent(input: { ownerId: Id; name: string; purpose: string; ha
     purpose: input.purpose,
     instructions: input.instructions ?? "",
     soul: { ...DEFAULT_SOUL, ...input.soul },
-    model: DEFAULT_MODEL,
+    model: input.model ?? modelConfig().model,
     effort: "high",
     trust: { ...DEFAULT_TRUST, ...input.trust },
     rules: [],

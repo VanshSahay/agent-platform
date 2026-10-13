@@ -2,32 +2,48 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createApp } from "./app.ts";
-import { AnthropicModel } from "./model/anthropic.ts";
 import type { ModelClient } from "./model/types.ts";
 import { reply, ScriptedModel } from "./model/scripted.ts";
+import { createModel, modelConfig } from "./model/config.ts";
 import { startWebServer } from "./channels/web.ts";
+import { startIMessage } from "./channels/imessage.ts";
 import { seedDemoWorld } from "./demo-world.ts";
+import { fakeHands, type Hands } from "./tools/hands.ts";
+import { BrowserbaseBrowser } from "./tools/browser.ts";
 
 /**
- * Boot: SQLite file, Anthropic model (or an offline stand-in when no
- * credentials are configured), fake hands unless real adapters are wired,
- * the web server, and a scheduler tick every 30 seconds.
+ * Boot. What is wired depends on what is configured:
+ *  - model: OPENROUTER_API_KEY (GLM 5.3 by default) or ANTHROPIC_API_KEY; otherwise an offline stand-in
+ *  - browser hand: BROWSERBASE_API_KEY; otherwise a fake
+ *  - iMessage: PROJECT_ID + PROJECT_SECRET (Photon Spectrum); otherwise web only
+ *  - sign-in: CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY; otherwise the UI trusts the "You" picker
+ * Search, phone and community posting are still fakes; see src/tools/hands.ts.
  */
 function pickModel(): ModelClient {
-  // The SDK resolves credentials lazily (env key, auth token, or an `ant auth login` profile), so check up front.
-  const hasCreds =
-    !!process.env.ANTHROPIC_API_KEY ||
-    !!process.env.ANTHROPIC_AUTH_TOKEN ||
-    !!process.env.ANTHROPIC_FEDERATION_RULE_ID ||
-    existsSync(join(homedir(), ".config", "anthropic"));
-  if (hasCreds) return new AnthropicModel();
-  console.warn("No model credentials found. Running offline: the agent will only acknowledge messages. Set ANTHROPIC_API_KEY or run `ant auth login`, then restart.");
-  return new ScriptedModel(() => reply("I'm running without a model key, so I can only acknowledge this. Set ANTHROPIC_API_KEY and restart me."), () => "");
+  const env = { ...process.env, ANTHROPIC_PROFILE_PRESENT: existsSync(join(homedir(), ".config", "anthropic")) ? "1" : "" };
+  const cfg = modelConfig(env);
+  const m = createModel(cfg, env);
+  if (m) {
+    console.log(`Model: ${cfg.model} (small: ${cfg.smallModel}) via ${cfg.provider}`);
+    return m;
+  }
+  console.warn("No model credentials found. Running offline: the agent will only acknowledge messages. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, then restart.");
+  return new ScriptedModel(() => reply("I'm running without a model key, so I can only acknowledge this. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY and restart me."), () => "");
+}
+
+function pickHands(): Hands {
+  const hands: Hands = fakeHands();
+  if (process.env.BROWSERBASE_API_KEY) {
+    hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
+    console.log("Browser: Browserbase");
+  } else console.log("Browser: fake (set BROWSERBASE_API_KEY)");
+  console.log("Search, phone, community: fakes (adapters in src/tools/hands.ts)");
+  return hands;
 }
 
 const dbPath = process.env.DB_PATH ?? "data/circle.sqlite";
 if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
-const app = createApp({ dbPath, model: pickModel() });
+const app = createApp({ dbPath, model: pickModel(), hands: pickHands() });
 
 if (process.env.SEED_DEMO === "1" && app.store.listAgents().length === 0) {
   const w = seedDemoWorld(app);
@@ -35,7 +51,13 @@ if (process.env.SEED_DEMO === "1" && app.store.listAgents().length === 0) {
 }
 
 const server = startWebServer(app);
-console.log(`Circle listening on http://localhost:${server.port}`);
+console.log(`Circle listening on http://localhost:${server.port}${process.env.CLERK_SECRET_KEY ? " (Clerk sign-in on)" : ""}`);
+
+if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
+  startIMessage(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET })
+    .then((im) => console.log(`iMessage: connected${im.phone ? ` as ${im.phone}` : ""}`))
+    .catch((e) => console.error("iMessage: failed to start", e));
+} else console.log("iMessage: off (set PROJECT_ID and PROJECT_SECRET)");
 
 setInterval(() => {
   app.scheduler.tick().catch((e) => console.error("tick failed", e));

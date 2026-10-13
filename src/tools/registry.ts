@@ -122,6 +122,39 @@ export const TOOLS: ToolDef[] = [
   },
   {
     spec: {
+      name: "browse_page",
+      description:
+        "Open a web page in a real browser and read it as text (hours, prices, booking forms, listings). Optionally fill one field or click one element first. Never enter passwords or payment details; stop and ask the person instead.",
+      input_schema: obj(
+        {
+          url: str("Absolute URL."),
+          click: str("CSS selector or text=... selector to click after load, if needed."),
+          fill: obj({ selector: str("CSS selector of the field"), value: str("Text to type") }, ["selector", "value"]),
+        },
+        ["url"],
+      ),
+    },
+    family: "search",
+    labels: { running: "Using a website…", done: "Read a web page", failed: "Couldn't load the page" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const url = s(input.url);
+      if (!/^https?:\/\//i.test(url)) return { ok: false, content: "url must start with http:// or https://" };
+      const fill = input.fill && typeof input.fill === "object" ? (input.fill as { selector?: unknown; value?: unknown }) : undefined;
+      try {
+        const r = await ctx.hands.browser.readPage({
+          url,
+          action: { click: s(input.click) || undefined, fill: fill && s(fill.selector) ? { selector: s(fill.selector), value: s(fill.value) } : undefined },
+        });
+        if (!r.text.trim()) return { ok: true, content: { url: r.url, title: r.title, text: "", links: r.links }, evidence: r.evidence, stall: `empty page at ${url}`, approach: "browse" };
+        return { ok: true, content: { url: r.url, title: r.title, text: r.text, links: r.links.slice(0, 30) }, evidence: r.evidence, approach: "browse" };
+      } catch (e) {
+        return { ok: false, content: `Could not load ${url}: ${String((e as Error).message).slice(0, 200)}`, stall: `page failed: ${url}`, approach: "browse" };
+      }
+    },
+  },
+  {
+    spec: {
       name: "ask_room",
       description:
         "Ask the whole group a question and wait for an answer (recommendations, availability, who can do what). The run pauses until someone replies. Use before calling strangers.",

@@ -16,7 +16,8 @@ Circle is a personal agent that lives in group chats. Read `docs/design.md` befo
 - The agent writes only `observation` memories during a run (owner rules excepted). Durable memory is written by `Consolidator`.
 - Memory and messages carry scope and visibility; context assembly filters by room. Do not add a code path that reads memory without going through `MemoryService.visibleIn` or `recall`.
 - Events are append-only with a per-session `seq`. Never update or delete a run event.
-- Model: `claude-opus-5-5` through the Anthropic SDK (`src/model/anthropic.ts`); thinking is adaptive, depth via `output_config.effort`. Do not add other providers or shims.
+- Model: the Anthropic SDK (`src/model/anthropic.ts`) through one of two doors chosen in `src/model/config.ts`: OpenRouter (default `z-ai/glm-5.3`, small `z-ai/glm-5.3-flash`) or Anthropic directly (Claude Opus 5.5 / Haiku 5.5). Both speak the Messages shape with tools and effort. Do not add OpenAI-style adapters; change `MODEL` instead.
+- Secrets live only in `.env` (gitignored). Never write a key into code, docs, tests or commit messages.
 
 ## Where things live
 

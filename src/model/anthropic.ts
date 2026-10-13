@@ -13,13 +13,17 @@ export const SMALL_MODEL = "claude-haiku-5-5";
  */
 export class AnthropicModel implements ModelClient {
   private client: Anthropic;
-  constructor(client?: Anthropic) {
+  private smallModel: string;
+  private mapModel: (id: string) => string;
+  constructor(client?: Anthropic, opts: { smallModel?: string; mapModel?: (id: string) => string } = {}) {
     this.client = client ?? new Anthropic();
+    this.smallModel = opts.smallModel ?? SMALL_MODEL;
+    this.mapModel = opts.mapModel ?? ((id) => id);
   }
 
   async turn(req: ModelRequest): Promise<ModelTurn> {
     const stream = this.client.messages.stream({
-      model: req.model,
+      model: this.mapModel(req.model),
       max_tokens: req.maxTokens ?? 16000,
       output_config: { effort: req.effort },
       system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
@@ -48,7 +52,7 @@ export class AnthropicModel implements ModelClient {
 
   async complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string }): Promise<string> {
     const res = await this.client.messages.create({
-      model: opts.model ?? SMALL_MODEL,
+      model: this.mapModel(opts.model ?? this.smallModel),
       max_tokens: opts.maxTokens ?? 4000,
       output_config: { effort: opts.effort ?? "low" },
       system: opts.system,
