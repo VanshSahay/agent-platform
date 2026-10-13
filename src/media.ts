@@ -1,91 +1,63 @@
-// What people send besides text — photos, voice notes, files — turned into text an agent can work with.
-// Photos are described (and any text in them transcribed: receipts, menus, screenshots), voice notes transcribed, files read.
-// Uses one cheap multimodal model on the platform's OpenRouter key; without it, the agent gets an honest placeholder.
-import { exec, one, id, now, recordUsage } from "./db";
+// Photos, voice notes and files people send, turned into text the agent can read. One cheap multimodal model via OpenRouter.
+import { sql, id, now, one, recordUsage } from "./db";
 
-export type Media = { kind: "photo" | "voice" | "file"; name: string; mime: string; data: Uint8Array };
-
-/** Text for agents to read: PDFs via unpdf, text-like files as UTF-8; anything else is stored but unreadable. */
+export async function storeMedia(m: { name: string; mime: string; data: Uint8Array }) {
+  const fid = id("fil");
+  await sql`insert into files (id, name, mime, data, created_at) values (${fid}, ${m.name}, ${m.mime}, ${Buffer.from(m.data)}, ${now()})`;
+  return fid;
+}
 export async function extractText(name: string, mime: string, buf: Uint8Array) {
   try {
     if (mime === "application/pdf" || /\.pdf$/i.test(name)) {
       const { extractText: pdf, getDocumentProxy } = await import("unpdf");
-      const { text } = await pdf(await getDocumentProxy(new Uint8Array(buf)), { mergePages: true }); // a copy: the parser detaches what it reads
+      const { text } = await pdf(await getDocumentProxy(new Uint8Array(buf)), { mergePages: true });
       return String(text).slice(0, 500_000);
     }
     if (/^text\/|json|xml|csv|markdown/.test(mime) || /\.(txt|md|csv|json|html?|xml|ya?ml|log|tsv)$/i.test(name)) return new TextDecoder().decode(buf).slice(0, 500_000);
   } catch {}
   return null;
 }
+const AUDIO: Record<string, string> = { "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg", "audio/aac": "aac", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/m4a": "m4a", "audio/flac": "flac", "audio/webm": "webm" };
 
-/** Keep the bytes (so files.read works later) before anyone has looked at them. Room/workspace are filled in once routed. */
-export function storeMedia(m: Media) {
-  const fid = id("fil");
-  exec("insert into files (id, workspace_id, room_id, name, mime, size, data, text, uploaded_by, created_at) values (?,?,?,?,?,?,?,?,?,?)",
-    fid, null, null, m.name, m.mime, m.data.byteLength, Buffer.from(m.data), null, null, now());
-  return fid;
-}
-
-const AUDIO_FORMAT: Record<string, string> = { "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg",
-  "audio/aac": "aac", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/m4a": "m4a", "audio/flac": "flac", "audio/aiff": "aiff", "audio/webm": "webm" };
-
-/** One line of text describing a stored attachment, ready to put in front of the agent. */
-export async function describe(fileId: string, ctx: { workspaceId: string; roomId: string; userId: string; sender: string }) {
-  exec("update files set workspace_id=?, room_id=?, uploaded_by=? where id=? and workspace_id is null", ctx.workspaceId, ctx.roomId, ctx.userId, fileId);
-  const f = one<any>("select * from files where id=?", fileId);
+/** One line describing a stored attachment, ready to put in front of the agent. */
+export async function describe(fileId: string, room: any, user: any) {
+  await sql`update files set room_id=${room.id}, user_id=${user.id} where id=${fileId} and room_id is null`;
+  const f = await one(sql`select * from files where id=${fileId}`);
   if (!f) return "";
-  const data = new Uint8Array(f.data);
-  const kind = /^image\//.test(f.mime) ? "photo" : /^audio\//.test(f.mime) ? "voice" : "file";
+  const data = new Uint8Array(f.data), who = user.name ?? "they", kind = /^image\//.test(f.mime) ? "photo" : /^audio\//.test(f.mime) ? "voice" : "file";
   if (kind === "file") {
     const text = await extractText(f.name, f.mime, data);
-    if (text) exec("update files set text=? where id=?", text, fileId);
-    return text ? `[${ctx.sender} sent a file "${f.name}" (file id ${fileId}): ${text.slice(0, 3000)}${text.length > 3000 ? " …(use files.read for the rest)" : ""}]`
-      : `[${ctx.sender} sent a file "${f.name}" (${f.mime}) that I can't read]`;
+    if (text) await sql`update files set text=${text} where id=${fileId}`;
+    return text ? `[${who} sent a file "${f.name}" (file id ${fileId}): ${text.slice(0, 3000)}${text.length > 3000 ? " …(files.read for the rest)" : ""}]` : `[${who} sent a file "${f.name}" (${f.mime}) I can't read]`;
   }
-  const said = await understand(kind, f.mime, data, ctx.workspaceId);
-  if (said) exec("update files set text=? where id=?", said, fileId);
-  return kind === "photo"
-    ? (said ? `[${ctx.sender} sent a photo: ${said}]` : `[${ctx.sender} sent a photo — I can't see photos right now; ask them to describe it if it matters]`)
-    : (said ? `[${ctx.sender} sent a voice note: "${said}"]` : `[${ctx.sender} sent a voice note — I couldn't listen to it; ask them to type it]`);
+  const said = await understand(kind, f.mime, data, user.id);
+  if (said) await sql`update files set text=${said} where id=${fileId}`;
+  return kind === "photo" ? (said ? `[${who} sent a photo: ${said}]` : `[${who} sent a photo I can't see right now]`) : (said ? `[${who} sent a voice note: "${said}"]` : `[${who} sent a voice note I couldn't listen to]`);
 }
 
-async function understand(kind: "photo" | "voice", mime: string, data: Uint8Array, workspaceId: string): Promise<string | null> {
+async function understand(kind: "photo" | "voice", mime: string, data: Uint8Array, userId: string): Promise<string | null> {
   const key = process.env.OPENROUTER_API_KEY;
-  if (!key || process.env.MEDIA_UNDERSTANDING === "off") return null;
-  if (kind === "voice" && !AUDIO_FORMAT[mime]) { // e.g. iMessage .caf voice memos: no model accepts the container, so transcode
-    const mp3 = await toMp3(data);
-    if (!mp3) return null;
-    data = mp3; mime = "audio/mpeg";
-  }
+  if (!key) return null;
+  if (kind === "voice" && !AUDIO[mime]) { const mp3 = await toMp3(data); if (!mp3) return null; data = mp3; mime = "audio/mpeg"; }
   const b64 = Buffer.from(data).toString("base64");
-  const part = kind === "photo"
-    ? { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }
-    : { type: "input_audio", input_audio: { data: b64, format: AUDIO_FORMAT[mime] } };
-  const ask = kind === "photo"
-    ? "Describe this photo in 1-3 plain sentences for someone who can't see it. If it contains text (receipt, menu, screenshot, ticket, sign), transcribe the important text exactly, including amounts, dates and names."
-    : "Transcribe this voice note exactly. Return only the transcript.";
+  const part = kind === "photo" ? { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } } : { type: "input_audio", input_audio: { data: b64, format: AUDIO[mime] } };
+  const ask = kind === "photo" ? "Describe this photo in 1-3 plain sentences. If it contains text (receipt, menu, screenshot, ticket), transcribe the important text exactly, including amounts, dates and names." : "Transcribe this voice note exactly. Return only the transcript.";
   try {
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST", signal: AbortSignal.timeout(45_000), headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: process.env.MEDIA_MODEL ?? "google/gemini-2.5-flash", max_tokens: 800, messages: [{ role: "user", content: [{ type: "text", text: ask }, part] }] }),
-    });
-    const j: any = await r.json();
-    const text = j.choices?.[0]?.message?.content?.trim();
+    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(45_000), headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: process.env.MEDIA_MODEL ?? "google/gemini-2.5-flash", max_tokens: 800, usage: { include: true }, messages: [{ role: "user", content: [{ type: "text", text: ask }, part] }] }) });
+    const j: any = await r.json(), text = j.choices?.[0]?.message?.content?.trim();
     if (!text) return null;
-    recordUsage({ workspace_id: workspaceId, kind: kind === "photo" ? "photo_understanding" : "voice_transcription", qty: 1 });
+    await recordUsage({ user_id: userId, kind: "media", qty: 1, cost_usd: Number(j.usage?.cost ?? 0) });
     return text.slice(0, 4000);
   } catch { return null; }
 }
-
-/** Any audio → 16 kHz mono MP3 via ffmpeg (installed in the server image). null when ffmpeg isn't available or fails. */
-export async function toMp3(data: Uint8Array): Promise<Uint8Array | null> {
+async function toMp3(data: Uint8Array): Promise<Uint8Array | null> {
   if (!Bun.which("ffmpeg")) return null;
   const { tmpdir } = await import("node:os"), { join } = await import("node:path"), { rm } = await import("node:fs/promises");
   const src = join(tmpdir(), `${id("aud")}.in`), dst = `${src}.mp3`;
   try {
     await Bun.write(src, data);
-    const p = Bun.spawn(["ffmpeg", "-v", "error", "-y", "-i", src, "-ac", "1", "-ar", "16000", "-f", "mp3", dst], { stdout: "ignore", stderr: "ignore" });
-    if ((await p.exited) !== 0) return null;
+    if ((await Bun.spawn(["ffmpeg", "-v", "error", "-y", "-i", src, "-ac", "1", "-ar", "16000", "-f", "mp3", dst], { stdout: "ignore", stderr: "ignore" }).exited) !== 0) return null;
     return new Uint8Array(await Bun.file(dst).arrayBuffer());
   } catch { return null; } finally { await rm(src, { force: true }); await rm(dst, { force: true }); }
 }

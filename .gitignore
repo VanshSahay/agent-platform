@@ -13,3 +13,11 @@ agent/
 .env.photon
 .tools/
 .env.imessage-local
+
+# Claude Code skills for working on this repo (Matt Pocock set); not part of the product
+.agents/
+.claude/skills/
+skills-lock.json
+.DS_Store
+.env.test
+.env.offline
