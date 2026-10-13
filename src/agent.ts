@@ -212,6 +212,7 @@ async function systemPrompt(room: any, requester: any, tools: gw.ToolDef[]) {
   return [
     who,
     agent?.purpose ? `What ${rooms.displayName(owner)} made you for: """${agent.purpose}"""` : ``,
+    agent?.profile ? `Your profile of ${rooms.displayName(owner)} (derived from your memory on ${shortDate(agent.profile_at, tz)}; newer memories below win if they differ):\n${agent.profile}` : ``,
     standing.length ? `Standing rules from ${room.kind === "group" ? "this group" : rooms.displayName(requester)} (follow them over anything below):\n${standing.map((m: any) => `- ${m.text}`).join("\n")}` : ``,
     `Now: ${fmtLocal(now(), tz)} (${tz}); today's date in ISO form is ${isoDate(tz)}. Use that year in any date you write.`,
     `Style: text messages. Short, plain, specific. No markdown, no headers, no bullet symbols; a dash list is fine. Lead with the answer or the question. Ask at most one question at a time.`,

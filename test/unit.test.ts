@@ -9,6 +9,7 @@ import { remember, retrieve } from "../src/memory";
 import { fingerprint, def, obj, TOOLS, prune, outreachWindow } from "../src/tools/index";
 import { tick } from "../src/schedules";
 import { draftFromBrief } from "../src/web";
+import { consolidateAgent } from "../src/consolidate";
 import { createSchedule } from "../src/schedules";
 import { linkPhoneStart, linkPhoneVerify, homeData } from "../src/web";
 import { createAgent, defaultAgentOf, agentsOf } from "../src/agents";
@@ -371,6 +372,21 @@ test("a one-paragraph brief becomes a purpose, starter rules and a first message
   const first = (await sql`select text from messages where room_id=(select id from rooms where agent_id=${a.id} and channel='web')`)[0].text;
   expect(first).toContain("I'm Carl");
   expect(first).toContain("Which store?");
+});
+
+test("the memory pass merges, dates a correction, drops a retraction and writes a profile", async () => {
+  const u = await trained("+15550000170", "Carl"), a = await defaultAgentOf(u);
+  const m1 = await remember("agent", a.id, "Shops at Whole Foods", u.id, "store");
+  const m2 = await remember("agent", a.id, "Shops at Whole Foods on Tuesdays", u.id, "store");
+  const m3 = await remember("agent", a.id, "Now shops at Trader Joe's", u.id, "store");
+  const m4 = await remember("agent", a.id, "Has exams this weekend", u.id, "fact");
+  model.hooks.generate = async () => ({ text: JSON.stringify({ profile: "Ellie shops on Tuesdays at Trader Joe's.", rewrite: [{ id: m1.id, text: "Used to shop at Whole Foods; since Oct 12 shops at Trader Joe's on Tuesdays", kind: "store" }], delete: [m2.id, m3.id, m4.id] }), toolCalls: [], model: "fake", costUsd: 0 });
+  const r = await consolidateAgent(a, u);
+  expect(r.changed).toBe(4);
+  const left = await sql`select id, text from memories where scope_id=${a.id}`;
+  expect(left.map((m: any) => m.id)).toEqual([m1.id]);
+  expect(left[0].text).toContain("since Oct 12");
+  expect((await sql`select profile from agents where id=${a.id}`)[0].profile).toContain("Trader Joe's");
 });
 
 test("fingerprints ignore key order", () => {

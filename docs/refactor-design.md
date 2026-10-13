@@ -37,6 +37,18 @@ Decisions below came out of a three-round design review; each line is a settled 
 
 Domain modules (reservations, orders, groupkit polls/splits/lists, watches, objectives, stories, scam, paperwork, people, social, family), marketplace tables and code, Temporal, pg.ts, offline planner, `agent/`, `reports/`, tracked `.env.demo` and `.env.stack`, WhatsApp groups, synchronous phone handler, fake `email.draft`, all channel adapters except iMessage. (Clerk and a small React app came back the same day; the old agent builder, templates and deploy panel did not.)
 
+## Applied from Wajo Fo and Instinct (2026-10-12, evening)
+
+- **Serving friends and family in a group.** A guest (never signed up) is served through the owner's accounts; the approval card goes to the owner's own chat naming who asked and what, the group hears "I've asked Ellie to OK that", the owner's yes finishes the run in the group. One plain-words introduction per group; no jargon in groups; `rooms.guest_accounts` is the owner's switch.
+- **Named steps** on every run (`runs.steps`), collapsed under agent messages on the web, a one-line proof on texts.
+- **Home**: Need your input (approvals, consents, held replies), On radar (schedules, runs in flight), Last activity. Cards are acted on from the web through the same paths as iMessage.
+- **Send-as-me** is a per-connection switch, off by default; `email.draft` makes real Gmail drafts; `email.send` refuses when the switch is off.
+- **Money on the trust dial**: `max_usd_without_asking` and `spending_paused` per agent; `browser.task` reports `amount_usd` when completing a purchase.
+- **Outreach**: `skills/outreach.md` (disclose who, how, why; re-check the premise; share details only as disclosed); approved outreach outside 8am–8pm in the person's zone is staged and fired the next morning as exactly that call.
+- **Builder from a brief**: a new agent's paragraph becomes a drafted purpose, 3–5 rule memories and a first message in its training chat.
+- **Memory pass** (`src/consolidate.ts`): daily per changed agent, merges duplicates, dates corrections, drops retractions, derives a ≤120-word profile injected at the top of every run (with its date). "Tidy up now" on the Memory page runs it on demand.
+- Not taken: stored site passwords, a human-assistant pool, calling (later), inbox-mined suggestion cards (needs Gmail push; later).
+
 ## Reference products
 
 Meta Muse (per-user cloud VM with its own browser, a Sentinel agent gating every outbound action, a credential vault the agent cannot read, connectors → API → browser) and Instinct (text or call it, separate group agent, consent before connecting a personal agent to a group). REA is used only when a specific feature question comes up, never to reproduce their code.

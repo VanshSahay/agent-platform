@@ -4,6 +4,8 @@ import { test, expect, beforeAll } from "bun:test";
 import { sql, migrate, spentToday } from "../src/db";
 import * as im from "../src/imessage";
 import * as agent from "../src/agent";
+import { userByPhone } from "../src/rooms";
+import { defaultAgentOf } from "../src/agents";
 
 const live = process.env.LIVE === "1" && !!process.env.OPENROUTER_API_KEY;
 const sent: { space: string; text: string }[] = [];
@@ -13,14 +15,20 @@ const phone = process.env.TEST_PHONE ?? "+15559990001";
 const say = (text: string, space = `dm_${phone}`, isGroup = false, from = phone) => agent.onInbound({ spaceId: space, isGroup, phone: from, text, externalId: `live_${Date.now()}_${++n}` });
 const last = (space = `dm_${phone}`) => sent.filter((s) => s.space === space).at(-1)?.text ?? "";
 
-beforeAll(async () => { await migrate(); for (const t of ["approvals", "tool_executions", "runs", "messages", "schedules", "memories", "links", "room_members", "rooms", "users"]) await sql.unsafe(`delete from ${t}`); });
+beforeAll(async () => {
+  await migrate();
+  for (const t of ["approvals", "tool_executions", "runs", "messages", "schedules", "memories", "links", "room_members", "rooms", "agents", "users"]) await sql.unsafe(`delete from ${t}`);
+  const u = await userByPhone(phone); // a trained web account: only those get answered in iMessage
+  await sql`update users set clerk_id='clerk_live', name='Ellie' where id=${u.id}`;
+  await defaultAgentOf(u);
+});
 
 test.skipIf(!live)("onboarding: the agent introduces itself and asks for a name", async () => {
   await say("hi");
   expect(last().length).toBeGreaterThan(20);
   await say("call yourself Pip. I'm Ellie, in New York.");
   const u = (await sql`select * from users where phone=${phone}`)[0];
-  expect(u.agent_name).toBe("Pip");
+  expect((await defaultAgentOf(u)).name).toBe("Pip");
 }, 120_000);
 
 test.skipIf(!live)("a lookup uses the web and claims nothing", async () => {

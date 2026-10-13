@@ -209,13 +209,15 @@ function Train({ agent }: { agent: any }) {
   return <div><div className="row between"><div><h1>Train {agent.name}</h1><p className="muted">{agent.purpose ?? "Tell it what it's for."} <Ready r={agent.readiness} />{agent.readiness.ready && <> · <a href="#/app/deploy" style={{ textDecoration: "underline" }}>deploy</a></>}</p></div></div>
     <div className="mt16">{room ? <Thread roomId={room.id} send={(text, file_ids) => api(`/v1/agents/${agent.id}/chat`, { text, file_ids })} /> : null}</div></div>;
 }
-function Memory({ agent }: { agent: any }) {
-  const [list, setList] = useState<any[]>([]), [text, setText] = useState(""), [kind, setKind] = useState("rule"), [err, setErr] = useState("");
+function Memory({ agent, reload }: { agent: any; reload: () => void }) {
+  const [list, setList] = useState<any[]>([]), [text, setText] = useState(""), [kind, setKind] = useState("rule"), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  const tidy = async () => { setBusy(true); try { await api(`/v1/agents/${agent.id}/consolidate`, {}); reload(); load(); } catch (x: any) { setErr(x.message); } finally { setBusy(false); } };
   const KINDS = ["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact"];
   const load = () => api(`/v1/agents/${agent.id}/memories`).then(setList);
   useEffect(() => { load(); }, [agent.id]);
   const add = async (e: any) => { e.preventDefault(); setErr(""); try { await api(`/v1/agents/${agent.id}/memories`, { text, kind }); setText(""); load(); } catch (x: any) { setErr(x.message); } };
-  return <div><h1>{agent.name}'s memory</h1><p className="muted">Everything it knows, dated. Rules are how you want it to behave; it follows them on every run, in every chat it's deployed to. Delete what's wrong; add what it should know.</p>
+  return <div><div className="row between"><div><h1>{agent.name}'s memory</h1><p className="muted">Everything it knows, dated. Rules are how you want it to behave; it follows them on every run, in every chat it's deployed to. Delete what's wrong; add what it should know.</p></div><button className="btn" disabled={busy} onClick={tidy} title="Merge duplicates, date corrections, refresh the profile. Runs on its own once a day.">{busy ? "Tidying…" : "Tidy up now"}</button></div>
+    {agent.profile && <div className="card mt16"><b>How {agent.name} sees you</b> <span className="small faint">· from its memory, {agent.profile_at ? fmt(agent.profile_at) : ""}</span><div className="mt8" style={{ whiteSpace: "pre-wrap" }}>{agent.profile}</div></div>}
     <form onSubmit={add} className="card row mt16" style={{ gap: 8, alignItems: "stretch" }}><select className="input" style={{ width: "auto", flex: "0 0 auto" }} value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k}>{k}</option>)}</select><input className="input grow" placeholder="e.g. Ask me before emailing anyone at work · Uber Eats is 30% off on Tuesdays, so order then · My mom is Linda, in Boston" value={text} onChange={(e) => setText(e.target.value)} required /><button className="btn primary">Remember</button>{err && <span className="small" style={{ color: "var(--bad)" }}>{err}</span>}</form>
     {KINDS.filter((k) => list.some((m) => m.kind === k)).map((k) => <div key={k}><h2>{k}</h2><div className="list">{list.filter((m) => m.kind === k).map((m) => <div key={m.id} className="item"><div className="grow">{m.text}<div className="small faint">{fmt(m.created_at)}</div></div><button className="btn ghost" onClick={async () => { await api(`/v1/memories/${m.id}`, undefined, "DELETE"); load(); }}>Forget</button></div>)}</div></div>)}
     {!list.length && <div className="empty mt16">Nothing yet. Train it, or add a line above.</div>}</div>;
@@ -313,7 +315,7 @@ function App({ clerk }: { clerk: string | null }) {
   useEffect(() => { if (signedIn && !hash.startsWith("/app") && hash !== "/") location.hash = "/app"; }, [signedIn, hash]); // Clerk's steps (#/factor-one, #/sso-callback) end in the app
   const am = page.match(/^\/app\/a\/([^/]+)(?:\/(memory|settings))?$/), agent = am && me ? me.agents.find((a: any) => a.id === am[1]) : null;
   const body = !me ? null
-    : agent ? (am![2] === "memory" ? <Memory agent={agent} /> : am![2] === "settings" ? <AgentSettings agent={agent} me={me} reload={reload} /> : <Train agent={agent} />)
+    : agent ? (am![2] === "memory" ? <Memory agent={agent} reload={reload} /> : am![2] === "settings" ? <AgentSettings agent={agent} me={me} reload={reload} /> : <Train agent={agent} />)
     : ({ "/app": <Home me={me} />, "/app/agents": <Agents me={me} reload={reload} />, "/app/deploy": <Deploy me={me} setMe={setMe} />, "/app/chats": <Chats />, "/app/connections": <Connections />, "/app/reminders": <Reminders />, "/app/activity": <Activity />, "/app/settings": <You me={me} setMe={setMe} /> } as Record<string, ReactNode>)[page] ?? <Home me={me} />;
   return <>{clerk && <Bridge onReady={setSignedIn} />}
     {page === "/" ? <Landing signedIn={!!signedIn} clerk={clerk} />

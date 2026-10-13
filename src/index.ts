@@ -5,6 +5,7 @@ import * as agent from "./agent";
 import { tick } from "./schedules";
 import { repliedSince } from "./tools/google";
 import { userById } from "./rooms";
+import { consolidateDue } from "./consolidate";
 
 if (process.env.NODE_ENV === "production") {
   const missing = [!process.env.OPENROUTER_API_KEY && "OPENROUTER_API_KEY", !process.env.MASTER_KEY && "MASTER_KEY", !process.env.DATABASE_URL && "DATABASE_URL", !process.env.PUBLIC_URL && "PUBLIC_URL"].filter(Boolean);
@@ -18,4 +19,5 @@ im.onMessage((ev) => agent.onInbound(ev).catch((e) => console.error("[agent] inb
 const server = serve();
 await im.start();
 setInterval(() => tick(agent.fireSchedule, async (userId, from, since) => repliedSince(await userById(userId), from, since)).catch((e) => console.error("[schedules]", e.message)), 30_000);
+setInterval(() => consolidateDue().then((n) => n && console.log(`[consolidate] ${n} agent(s)`)).catch((e) => console.error("[consolidate]", e.message)), 60 * 60_000); // the nightly memory pass, checked hourly
 console.log(`agent-platform on ${server.url}`);

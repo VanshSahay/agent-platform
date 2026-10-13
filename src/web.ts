@@ -7,6 +7,7 @@ import { normPhone, userByPhone, privateRoomOf, webRoomOf } from "./rooms";
 import * as agent from "./agent";
 import * as agent_ from "./agent";
 import { structured } from "./model";
+import { consolidateAgent } from "./consolidate";
 import { agentsOf, agentById, createAgent, defaultAgentOf, readiness, MIN_MEMORIES } from "./agents";
 import { addMcpConnection } from "./tools/mcp";
 import { normSite } from "./tools/browser";
@@ -23,7 +24,7 @@ const h = (fn: H) => async (req: Request & { params?: Record<string, string> }) 
 const body = (r: Request) => r.json().catch(() => ({}));
 const fail = (status: number, message: string): never => { throw Object.assign(new Error(message), { status }); };
 async function ownAgent(u: any, aid: string) { const a = await agentById(aid); if (!a || a.owner_id !== u.id) fail(404, "no such agent"); return a; }
-const withReadiness = async (a: any) => ({ id: a.id, name: a.name, purpose: a.purpose, auto_tools: Array.isArray(a.auto_tools) ? a.auto_tools : [], max_usd_without_asking: a.max_usd_without_asking, spending_paused: !!a.spending_paused, created_at: a.created_at, readiness: await readiness(a) });
+const withReadiness = async (a: any) => ({ id: a.id, name: a.name, purpose: a.purpose, profile: a.profile, profile_at: a.profile_at, auto_tools: Array.isArray(a.auto_tools) ? a.auto_tools : [], max_usd_without_asking: a.max_usd_without_asking, spending_paused: !!a.spending_paused, created_at: a.created_at, readiness: await readiness(a) });
 
 /** One paragraph in, a drafted purpose and starter rules out, saved as the agent's first memories; the training chat opens
  *  with what it understood and what it wants to know. Best-effort: no model, no draft. */
@@ -159,6 +160,7 @@ export const routes: Record<string, any> = {
       return { ok: true };
     }),
   },
+  "/v1/agents/:id/consolidate": { POST: h(async (_r, u, p) => { const a = await ownAgent(u, p.id); return consolidateAgent(a, u); }) },
   "/v1/agents/:id/room": { GET: h(async (_r, u, p) => webRoomOf(u, await ownAgent(u, p.id))) },
   "/v1/agents/:id/chat": { POST: h(async (r, u, p) => {
     const a = await ownAgent(u, p.id), b = await body(r), room = await webRoomOf(u, a), text = String(b.text ?? "").trim(), files: string[] = Array.isArray(b.file_ids) ? b.file_ids.map(String) : [];
