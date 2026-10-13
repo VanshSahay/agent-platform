@@ -10,6 +10,7 @@ import { startIMessage } from "./channels/imessage.ts";
 import { seedDemoWorld } from "./demo-world.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
 import { BrowserbaseBrowser } from "./tools/browser.ts";
+import { createSearch } from "./tools/search.ts";
 
 /**
  * Boot. What is wired depends on what is configured:
@@ -37,7 +38,10 @@ function pickHands(): Hands {
     hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
     console.log("Browser: Browserbase");
   } else console.log("Browser: fake (set BROWSERBASE_API_KEY)");
-  console.log("Search, phone, community: fakes (adapters in src/tools/hands.ts)");
+  const search = createSearch(process.env);
+  hands.search = search;
+  console.log(`Search: ${search.name === "brave" ? "Brave" : "DuckDuckGo (keyless; set BRAVE_API_KEY for Brave)"}`);
+  console.log("Phone, community: fakes (adapters in src/tools/hands.ts)");
   return hands;
 }
 
