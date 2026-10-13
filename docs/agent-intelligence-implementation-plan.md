@@ -1,3 +1,5 @@
+> **Historical (pre-refactor, October 2026).** Describes the platform before the rebuild; kept for the record. The current design is in docs/refactor-design.md and the README.
+
 # Agent intelligence: implementation plan
 
 **Baseline:** GitHub `main` at `3f7985e` (2026-10-07). **First release:** Ava in a 1:1 iMessage chat, with Google Calendar, Gmail, contacts, and reminders. Extend to Booker, Buyer, Milo, and other channels only after the same outcome gates pass. This plan builds on [the earlier transport and pilot plan](../REAL_AGENTS_PLAN.md).

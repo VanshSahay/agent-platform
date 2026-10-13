@@ -1,3 +1,5 @@
+> **Historical (pre-refactor, October 2026).** Describes the platform before the rebuild; kept for the record. The current design is in docs/refactor-design.md and the README.
+
 # Acceptance criteria
 
 Every row is checked automatically by `bun run criteria`: it runs the test suite (JUnit), the typecheck and the web bundle build, then marks each criterion **pass** only when every test tagged with that ID passed. Plan section numbers refer to `agent_platform_product_technical_plan.md`.

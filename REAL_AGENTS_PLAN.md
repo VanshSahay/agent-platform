@@ -1,3 +1,5 @@
+> **Historical (pre-refactor, October 2026).** Describes the platform before the rebuild; kept for the record. The current design is in docs/refactor-design.md and the README.
+
 # Plan: agents that finish real work over iMessage
 
 ## Target for the first release
