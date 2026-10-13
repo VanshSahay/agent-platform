@@ -1,21 +1,98 @@
 # Agent Platform
 
-Personal agents you train on the web, then deploy to iMessage, to your own chat and to any group chat you add them to. Built for the people around you: a friend or family member in the group never signs up, never learns any syntax, and gets the same help you do. Anything that uses your accounts or costs money goes through you. The agent only says something is done when its own records prove it.
+Personal agents you train on the web and deploy into the chats you already have: your own iMessage, the family group, the trip group, the couple's thread. The people in those chats never sign up and never learn anything: they ask the agent by name and it does the job for them the way it does for you. Anything that uses your accounts or costs money goes through you. The agent only says something is done when its own records prove it.
 
-Design decisions and their history: [docs/refactor-design.md](docs/refactor-design.md). Competitor research that shaped the last round: [docs/research/wajo-fo.md](docs/research/wajo-fo.md).
+This README is the spec: the ideal state of the product, section by section, with an honest status line for each. Decisions and their history live in [docs/refactor-design.md](docs/refactor-design.md); the competitor research that shaped it in [docs/research/wajo-fo.md](docs/research/wajo-fo.md).
 
-## What it does today
+## The ideal state
 
-- **Train first.** Sign in (Clerk), create an agent with a name and one paragraph about what it's for. It drafts its purpose and starter rules and opens a training chat. Everything you tell it about yourself is training: rules for how it should behave, preferences, people, routines, stores, what's in the fridge. Photos work. The Memory page shows every memory, typed and dated, with a "Tidy up now" that merges duplicates and dates corrections. Once a day a background pass does the same and derives a short profile the agent reads first on every run.
-- **Deploy to iMessage.** When an agent has a name and a few memories, link your number; it texts you a code. From then on your chat talks to your default agent, "@Name" switches to another, and in a group you add the number and say "@Name" once. The agent introduces itself in plain words, answers when named, and in groups never uses jargon.
-- **Serve the group.** Anyone in the group can ask for reads: search, weather, a tally, the list. A guest's request that needs your accounts runs through you: the card lands in your own chat naming who asked and what, the group hears "I've asked Ellie to OK that", and your yes finishes the job in the group. A signed-up member's own accounts are used only for their own request, after a one-time consent in their own chat. A reply pending when someone new joins is held until you say go.
-- **Trust, one notch at a time.** Every write asks first. Per agent you can tick actions it may run without asking, set a dollar amount under which it may buy, or pause spending. "Send email as me" is a separate switch per Google account, off by default; when off the agent leaves a real Gmail draft.
-- **Hands.** Google (Gmail, Calendar, Contacts, Drive), the web, a Browserbase browser for sites that need clicking, site logins you perform yourself in a live browser (the agent inherits the session, never the password), any MCP server you connect, and your iPhone through [iphone-use](https://github.com/leeguooooo/iphone-use) for native apps. The planner's order: connected account, public API or web, browser, phone.
-- **Outreach.** Contacting a third party is disclosed first: who, how, why. Approved outreach outside 8am to 8pm in your zone is held and sent the next morning as exactly that action.
-- **Home.** Need your input (approvals, consents, held replies), On radar (scheduled jobs, runs in flight), Last activity (finished runs with their named steps). Cards are acted on from the web through the same paths as a "yes" in iMessage.
-- **Proof.** Every tool call is stored with a fingerprint and marked verified from provider evidence (a message id, an event id, a schedule row, a replay). The reply's status footer is built from those records, not from the model's words, and a reply that claims an action without one gets corrected.
+### 1. Training: the agent learns you before it works for anyone
 
-Not built yet: phone calls by the agent, inbox-mined suggestion cards, a human-assistant fallback, Telegram/Slack/WhatsApp. iMessage group chats need the Photon Business plan; the free pool is DM-only.
+You create an agent with a name and one paragraph about what it's for. It drafts its purpose and a few starter rules, then opens a training chat and asks what to hand off first and how you want it to behave. Everything you say about yourself is training: rules ("ask before emailing anyone at work", "keep it short"), preferences, people, routines, stores and deals, what's in the fridge from a photo. You can see all of it, typed and dated, on a Memory page, delete what's wrong and add what it should know. Once a day a background pass merges duplicates, turns examples into traits, rewrites corrected facts with their date and derives a short profile the agent reads first on every run. An agent can't be deployed until it has a name and has learned a few things.
+
+**Status:** built. Nightly pass and profile built; "Tidy up now" runs it on demand.
+
+### 2. Intelligent planning: one plan, cheap by default, proven at the end
+
+A message becomes one run. The agent sees who it is, its purpose, its profile of you, your standing rules, an index of skills it can read, and dated memories matched to the request. It plans by calling tools; the model is cheap (GLM 5.3 flash) until the run writes, browses, uses the phone, needs three or more steps, or is a correction, when it moves to GLM 5.3. Skills are markdown procedures it reads when a task matches (reservations, tickets, customer service, group tallies, outreach, phone vs browser); users never see or choose them. Every tool call is stored with a fingerprint and marked verified from provider evidence. The reply's status footer and its named steps come from those records, not from the model's words; a reply that claims an action with no record is corrected. Scheduled work re-checks its premise before acting and tells you what it found instead of acting when the premise no longer holds.
+
+**Status:** built. Planned: a true plan object the person can edit before a long task runs, and an eval loop that scores runs against outcomes.
+
+### 3. Deploying: your chat, then any group chat
+
+When an agent is ready, you link your number; it texts you a code. Your own chat talks to your default agent and "@Name" switches to another. In a group you add the number and say "@Name" once. The agent introduces itself in plain words, answers when named or when the message falls under what you asked it to do there, and never uses jargon. Guests, the people who never signed up, get served through you: a request that needs your accounts produces a card in your own chat naming who asked and what, the group hears "I've asked Ellie to OK that", and your yes finishes the job in the group. A signed-up member's own accounts are used only for their own request after a one-time consent. A reply pending when someone new joins is held until you say go.
+
+**Status:** built for iMessage. The Photon shared pool is DM-only; group chats need the Photon Business line. Planned: Telegram and Slack through the same room model.
+
+### 4. Trust: earned one notch at a time
+
+Every write asks first. Per agent you tick actions it may run without asking, set a dollar amount under which it may buy, or pause spending. "Send email as me" is a separate switch per Google account, off by default; when off the agent leaves a real Gmail draft. Contacting a third party is disclosed first (who, how, why); approved outreach outside 8am to 8pm in your zone waits until the morning and goes out as exactly that action. A trace of every run, tool call and its proof is one link away.
+
+**Status:** built. Planned: signed run attestations per agent key, and the agent's own email identity so "send from my own address and copy you" is the fallback when sending as you is off.
+
+### 5. Hands: accounts, the web, a browser, your phone
+
+In order of preference: a connected account (Google: Gmail, Calendar, Contacts, Drive), a public API or the web, a cloud browser for sites that need clicking (Browserbase), then your phone. Site logins you perform yourself in a live browser; the agent inherits the signed-in session and never the password. Your iPhone connects through [iphone-use](https://github.com/leeguooooo/iphone-use) on your Mac as an MCP device: the agent reads the screen as text and taps, for native apps and anything already signed in on the phone (Uber Eats, OpenTable, banking), and stops at any sign-in, passcode or payment for you to do. Any other MCP server you connect becomes tools the same way.
+
+**Status:** Google, web, browser and MCP built; site logins built; iphone-use installed on the Mac and waiting on the phone setup. Planned: payments through single-use virtual cards so merchants never see your real card; a connector builder that turns an API's public docs into tools.
+
+### 6. Multimodal and voice
+
+Photos are described and read (receipts, menus, the fridge), voice notes are transcribed, files are read, all before the agent answers. Planned: the agent gets its own phone number and voice, so it can call a restaurant or a clinic, navigate the menu, wait on hold, and come back with a confirmation; every call gets a post-call analysis, and a call is outreach like any other, disclosed and approved first. Also planned: a voice conversation with the agent itself, and the agent seeing your screen when you ask.
+
+**Status:** photos, voice notes and files built. Calls and voice chat not started; the largest gap against Fo.
+
+### 7. Home: what needs you, what's on the radar, what happened
+
+One page. Need your input: approval cards, consent questions, held replies, answered with a tap. On radar: scheduled jobs and runs in flight. Last activity: finished runs with their named steps. Planned: suggestion cards mined from your inbox and calendar ("reply to the renter inquiry", "the package is late, want me to chase it?"), and heartbeats: the agent waking on a schedule to check on standing work and messaging you only when something changed.
+
+**Status:** the three tabs built. Suggestions and heartbeats planned.
+
+### 8. Memory: the agent's, and the room's
+
+An agent's training follows it into every chat it is deployed to. What a group says stays with that group. Another agent's memory never shows. Memories are typed (rule, preference, person, schedule, store, inventory, decision, fact) and dated, so newer wins and an inventory line is only as current as its date. Planned: embeddings when paraphrase recall becomes the bottleneck; today retrieval is full-text plus recency.
+
+**Status:** built.
+
+## Status at a glance
+
+| Capability | State |
+|---|---|
+| Train on the web, typed dated memory, daily pass, profile | Built |
+| Deploy to your iMessage chat; "@Name" switching | Built |
+| Group chats: welcome, plain words, guests through the owner, consent, holds | Built; needs Photon Business for groups |
+| Approvals, trust list, money threshold, pause, send-as-me | Built |
+| Outreach disclosure and daytime staging | Built |
+| Google, web, Browserbase browser, site logins, MCP devices | Built |
+| iPhone through iphone-use | Installed, phone setup pending |
+| Photos, voice notes, files | Built |
+| Home tabs | Built |
+| Google OAuth client configured | Pending (no client id yet) |
+| Agent's own email and phone number | Planned |
+| Calls and voice | Planned |
+| Inbox-mined suggestions, heartbeats | Planned |
+| Virtual cards for purchases | Planned |
+| Telegram, Slack | Planned |
+
+## Takeaways from Fo and Instinct
+
+What we took from Wajo's Fo, learned from a logged-in walk-through, their public bundle and docs ([details](docs/research/wajo-fo.md)):
+
+- **The three home tabs** and the "nothing needs you right now" idle state.
+- **Named steps under every reply**, collapsed, with a proof line ("3 shops called · Thu 10:00 AM · 9 min").
+- **The outreach disclosure rule**, written into every scheduled contact: disclosed to the user as who, how and why; re-verify the premise before acting; contact third parties only in working hours; anyone not named needs a fresh confirmation.
+- **Send-as-you is a separate permission**, off by default, each send still asking; the fallback is a draft, and later the agent's own address with you copied.
+- **A spending threshold and a pause switch**, with single-use cards as the planned next step.
+- **Staged outreach as data**, delivered by a sweep inside daytime hours, not as a prompt hope.
+- **An agent builder that starts from one paragraph.**
+- **The agent's own identity** (email, number, cards) as the model for calls and payments.
+
+What we took from Instinct:
+
+- **A group agent is separate from personal accounts**; a member's own accounts enter a group only with that member's consent, once, revocable.
+- **Replies pending when someone new joins are held** until the requester says go.
+
+What we deliberately did not take: storing site passwords (a live login the agent inherits is enough), a human-assistant pool, Firebase auth. And from Instinct's memory design: a 24-hour ingestion lag the user can feel (our `remember` writes instantly; the daily pass only tidies) and grep as the only retrieval.
 
 ## How a message is handled
 
@@ -24,7 +101,7 @@ iMessage (Photon) or web chat
   → src/agent.ts: the room's agent, one run per message
       system prompt: who it is, its purpose, its profile of you, standing rules, skills index, memories (dated)
       model turn: z-ai/glm-5.3-flash; z-ai/glm-5.3 when the run writes, browses, uses the phone, has 3+ steps, or is a correction
-      tool calls → src/tools/index.ts (the one permission rule, consent, approvals, trust dial, staged outreach, idempotency, verifiers)
+      tool calls → src/tools/index.ts (whose accounts, consent, approvals, trust dial, staged outreach, idempotency, verifiers)
       reply + footer from verified executions + named steps
 ```
 
