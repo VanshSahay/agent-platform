@@ -232,11 +232,12 @@ export const SCENARIOS: Scenario[] = [
         pass: (app, w) => app.store.listAttention({ roomId: w.family.id }).some((a) => a.assigneeId === "ellie" && a.status === "resolved" && a.answeredBy === "ellie" && /20/.test(a.answer ?? "")),
       },
       {
-        name: "the run resumed and finished in the family room",
-        detail: "The run that asked Ellie is done and the agent replied in the family room after the answer.",
+        name: "the run resumed and replied in the family room",
+        detail: "The run that asked Ellie no longer waits on her and the agent replied in the family room after the answer (asking the group who drives is fine).",
         pass: (app, w) => {
           const run = runsIn(app, w.family.id)[0];
-          if (!run || run.status !== "done") return false;
+          if (!run || run.status === "failed" || run.status === "stopped") return false;
+          if (run.status === "waiting" && app.store.getAttention(run.waitingOn ?? "")?.assigneeId === "ellie") return false;
           const resolved = events(app, w, "gate_resolved").find((e) => e.runId === run.id);
           return !!resolved && app.store.messagesForRoom(w.family.id).some((m) => m.runId === run.id && m.authorId === w.agent.id && m.at >= resolved.at && m.source !== "notice");
         },

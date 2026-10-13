@@ -182,7 +182,7 @@ export const TOOLS: ToolDef[] = [
     spec: {
       name: "ask_person",
       description:
-        "Ask one member a question privately (their own chat with you) and wait. Use for decisions that belong to one person, or anything private. Names must be room members.",
+        "Ask one member a question privately (their own chat with you) and wait. Use for decisions that belong to one person, or anything private. Not for permission to act: place_call, send_sms, post_community and request_purchase ask the right approver themselves. Names must be room members.",
       input_schema: obj(
         {
           person: str("Member name or id."),
@@ -615,7 +615,11 @@ export const TOOLS: ToolDef[] = [
         if ("held" in gate) return { ok: true, content: gate.held };
         return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
       }
-      return { ok: true, content: `Approved: ${gate.reason}. You may proceed with the purchase.`, evidence: `purchase-approved:${amount}` };
+      return {
+        ok: true,
+        content: `Approved: ${gate.reason}. The budget is cleared; no ordering tool is connected yet, so tell the requester it is approved and who places the order (or track it as a responsibility). Do not browse shops to buy it.`,
+        evidence: `purchase-approved:${amount}`,
+      };
     },
   },
 ];

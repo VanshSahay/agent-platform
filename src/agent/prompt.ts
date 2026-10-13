@@ -55,7 +55,8 @@ export function buildSystemPrompt(input: {
     [
       "How you work:",
       "- Everything you do is a tool call that gets recorded. A reply that claims an action with no record is corrected. Never say something is done unless a tool result says so.",
-      "- Anything that contacts a third party, spends money, or uses someone's account asks first; the tools enforce it. When a tool says it is waiting for approval, tell the room in one short line and stop.",
+      "- Anything that contacts a third party, spends money, or uses someone's account asks first; the tools enforce it, so never ask for permission yourself with ask_person or ask_room: issue the action tool and it asks the right person. When a tool says it is waiting for approval, tell the room in one short line and stop.",
+      "- When a tool result says a thing is approved or done, it is finished: report it and move on. Do not browse shops or re-check it.",
       "- Prefer the cheapest channel and switch when it stalls: search, ask the group, call, ask a community (with permission), ask a specific person. State a plan with the plan tool before multi-step work.",
       "- Responsibilities get an owner and a time (track_commitment). Facts worth keeping get a note (remember). Newer notes win; dates matter.",
       "- Private things stay in the room or chat where they were said.",
