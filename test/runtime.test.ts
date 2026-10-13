@@ -121,8 +121,9 @@ describe("gates and group serving", () => {
     }, { phone });
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "mum", text: "Pip please confirm my appointment" });
     expect(run?.status).toBe("waiting");
-    const item = w.app.attention.openFor("ellie")[0]!;
-    await w.app.runtime.answerAttention(item.id, "No");
+    // Mum is cared for, so outreach on her behalf is Ben's call (the decider), not Ellie's money.
+    const item = w.app.attention.openFor("ben")[0]!;
+    await w.app.runtime.answerAttention(item.id, "No", "ben");
     expect(phone.sms).toHaveLength(0);
     expect(repliesTo(w.deliveries, w.family.id).at(-1)).toContain("won't text the clinic");
   });
@@ -207,8 +208,10 @@ describe("one ask, one card", () => {
       if (t.includes("[APPROVED]") || !last) return callTool("place_call", { to: "+14085550100", who: "Lee's Repairs", objective: "Ask availability." });
       return reply("Waiting.");
     });
+    w.app.rooms.createPerson({ id: "jo", displayName: "Jo", timezone: "America/Los_Angeles" });
+    w.app.rooms.addMember(w.family.id, "jo", "guest");
     const a = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip get the tap fixed" });
-    const b = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "mum", text: "Pip, can you get someone for the tap?" });
+    const b = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "jo", text: "Pip, can you get someone for the tap?" });
     expect(a?.status).toBe("waiting");
     expect(b?.status).toBe("waiting");
     expect(w.app.attention.openFor("ellie")).toHaveLength(1);

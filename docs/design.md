@@ -53,11 +53,15 @@ Membership(role: owner | decider | member | guest | cared_for, consentedAt?)
 - **guest**: never signed up; served through the owner. A guest's request that needs accounts or money becomes a `guest_request` card in the owner's own chat, the group hears "I've asked Ellie to OK that", and the yes finishes the job in the group.
 - **cared_for**: the person the circle looks after; patient mode, their preferences consulted first, extra privacy, never discussed in the third person while present.
 
-`RoomService.accountsFor(room, requesterId)` decides whose accounts a request may use and whether approval is needed. `approversFor(room, {money})` decides who gets the card. The agent is one identity across rooms (its training follows it), with a DM room per person created on demand for cards and private questions.
+`RoomService.accountsFor(room, requesterId)` decides whose accounts a request may use and whether approval is needed. `approversFor(room, {money, forCaredFor})` decides who gets the card: money and the owner's accounts always go to the owner; a care decision for a cared-for member (outreach on their behalf, a question about their care) goes to a decider first when the room has one. The agent is one identity across rooms (its training follows it), with a DM room per person created on demand for cards and private questions.
+
+**Training before deployment.** A new agent has no `deployedAt`. Until it does, the owner's private chat runs in training mode: the prompt tells the agent to ask what to hand off first and how to behave, to note everything as memory (rules as `rule`), and not to contact anyone outside the chat. `deployAgent` (`src/agent/deploy.ts`, `POST /api/agents/:id/deploy`) marks it deployed once it has a name, a purpose and either a rule or a few notes; the same check backs the Deploy button. Group rooms are created only for a deployed agent.
+
+**Patient mode.** When the requester's role is `cared_for` the prompt switches to one step at a time, no jargon, their words for things, "ask what they see before saying what to tap", and anything needing a password, a code, money or a care decision goes to a named family member.
 
 ## 5. A run
 
-`Runtime.handleMessage` → is this an answer to something the agent asked this person here or in their DM? resolve and resume. Else is the agent addressed (named, or a DM)? Else ignore. If a run is in flight, queue a steer. Otherwise start a run.
+`Runtime.handleMessage` → is this an answer to something the agent asked this person here or in their DM? resolve and resume. Else is the agent addressed (named, or a DM), or, in a group, is the message a request within its purpose (one yes/no from the small model, skipped for messages under 20 characters)? Else ignore. If a run is in flight, queue a steer. Otherwise start a run.
 
 The loop (`Runtime.loop`): assemble the system prompt in a stable order (identity, soul, rules, skills index, room, accounts, profiles, matched skill bodies, dated memories, ledger, plan, situation) → model turn → record each tool call (`tool_start`), run it, record the result with evidence and a fingerprint (`tool_end`) → plan bookkeeping (a stall counts against the active step; two stalls switch to the next approach and the model is told) → if a tool opened a gate, set `waiting`, save the transcript, card the assignee, stop → otherwise loop. A final text turn becomes the reply with the footer from records. Limits: 24 model turns per run.
 
@@ -84,7 +88,7 @@ Every gate decision is in the records: the item, the `gate_opened` and `gate_res
 
 ## 8. Following through
 
-`CommitmentService` is the responsibilities ledger: owner, beneficiary, due time, status, nudges. The first nudge goes a day before due (or in two days with no due date), then daily while open, and after three overdue nudges the item is marked blocked for a person to decide. `Scheduler.tick` turns due nudges into `follow_up` runs whose prompt tells the agent to do it (if it owns it) or check in with the owner in one line and update the ledger. The ledger is in every prompt for the room.
+`CommitmentService` is the responsibilities ledger: owner, beneficiary, due time, status, nudges. The first nudge goes a day before due (or in two days with no due date), then daily while open, and after three overdue nudges the item is marked blocked. A blocked item is escalated once: a `decision` card ("X is stuck": reassign, drop, keep nudging) opens for a decider when the beneficiary is cared for, otherwise for the owner, and the nudging stops. `Scheduler.tick` turns due nudges into `follow_up` runs whose prompt tells the agent to do it (if it owns it) or check in with the owner in one line and update the ledger. The ledger is in every prompt for the room.
 
 Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), staged outreach once working hours begin, commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
 
@@ -97,7 +101,9 @@ Not built yet:
 - Channel adapters for WhatsApp, Telegram and Slack (Spectrum has providers for all three; the iMessage adapter is the template).
 - Real hands for search, telephony (a voice vendor that can hold a call in Mandarin), Reddit and Rednote. Each is an interface with a fake.
 - Payments. `request_purchase` enforces the budget policy; nothing charges a card.
-- Embeddings for memory recall; an eval loop that scores runs against outcomes; a plan the person can edit before a long task runs.
+- Embeddings for memory recall; a plan the person can edit before a long task runs.
+
+Proactive suggestions (`src/inbox/suggestions.ts`, `GET /api/suggestions`) are mined from the ledger and the schedules first (overdue or blocked items, items due within two days, schedules firing today) and topped up with at most three ideas from the small model given the room's recent messages, ledger and notes; the home page and the empty thread show them as "want me to…" cards that prefill the composer.
 
 ## 10. Evidence this works
 

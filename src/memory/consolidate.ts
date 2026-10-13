@@ -109,7 +109,13 @@ export class Consolidator {
   async deriveProfile(agent: AgentSpec, scope: Memory["scope"], scopeId: Id) {
     const mems = this.store.listMemories(agent.id, { scope, scopeId }).filter((m) => m.type !== "observation");
     if (!mems.length) return;
-    const who = scope === "person" ? (this.store.getPerson(scopeId)?.displayName ?? "this person") : scope === "room" ? `the room "${this.store.getRoom(scopeId)?.name ?? scopeId}"` : agent.name;
+    const ownerName = this.store.getPerson(agent.ownerId)?.displayName ?? "the owner";
+    const who =
+      scope === "person"
+        ? (this.store.getPerson(scopeId)?.displayName ?? "this person")
+        : scope === "room"
+          ? `the room "${this.store.getRoom(scopeId)?.name ?? scopeId}"`
+          : `the assistant ${agent.name}'s own standing instructions from its owner ${ownerName} (write it as "how ${ownerName} wants ${agent.name} to work", not as facts about ${agent.name})`;
     const text = await this.model.complete({
       system:
         "Write a short profile (under 180 words) an assistant reads before every conversation: who they are, how they like things done, standing arrangements, open threads, what to be careful about. Dated facts keep their dates. Plain prose, no headings. If a fact is old, say when it was last confirmed.",

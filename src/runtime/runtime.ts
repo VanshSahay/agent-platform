@@ -88,8 +88,8 @@ export class Runtime {
       return this.resumeWaitingOn(item);
     }
 
-    // 2. Is the agent addressed?
-    if (!this.addressed(room, agent, input.text)) return undefined;
+    // 2. Is the agent addressed, by name or by the shape of the request?
+    if (!this.addressed(room, agent, input.text) && !(await this.impliedRequest(room, agent, input.text))) return undefined;
 
     // 3. A run is in flight in this session: steer it.
     const active = store.activeRunForSession(session.id);
@@ -187,6 +187,25 @@ export class Runtime {
     return picksOption || yesNo ? item : undefined;
   }
 
+  /**
+   * In a group the agent also answers when a message falls under what it was deployed for,
+   * even without its name: a cheap yes/no from the small model, skipped for short chatter.
+   */
+  private async impliedRequest(room: Room, agent: AgentSpec, text: string): Promise<boolean> {
+    if (room.kind !== "group" || text.trim().length < 20) return false;
+    try {
+      const out = await this.d.model.complete({
+        system: `You decide whether a group chat message is a request the assistant "${agent.name}" should act on. Its purpose: ${agent.purpose}. Answer with exactly yes or no. Say yes only when the message asks for something within that purpose (a task, a booking, finding someone, a reminder, help with something). Chatter between people, thanks, jokes, and messages clearly aimed at a specific person are no.`,
+        prompt: text,
+        effort: "low",
+        maxTokens: 50, // a few tokens of thinking may precede the word
+      });
+      return /^\s*yes\b/i.test(out);
+    } catch {
+      return false;
+    }
+  }
+
   private addressed(room: Room, agent: AgentSpec, text: string): boolean {
     if (room.kind === "dm") return true;
     const t = text.toLowerCase();
@@ -274,6 +293,8 @@ export class Runtime {
     const members = memberIds.map((id) => store.getPerson(id)).filter((p): p is Person => !!p);
     const nameOf = (id: Id) => (id === agent.id ? agent.name : (store.getPerson(id)?.displayName ?? id));
     const accounts = run.requesterId ? rooms.accountsFor(room, run.requesterId) : { accountOwnerId: agent.ownerId, needsApproval: false };
+    const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
+    const mode: "training" | "normal" = !agent.deployedAt && room.kind === "dm" && run.requesterId === agent.ownerId ? "training" : "normal";
     const hasCaredFor = rooms.members(room.id).some((m) => m.role === "cared_for");
     const maxTurns = this.d.maxTurns ?? MAX_TURNS;
     const emit = (type: RunEvent["type"], data: Record<string, unknown>) => store.appendEvent({ runId: run.id, sessionId: run.sessionId, type, at: clock.now(), data });
@@ -360,6 +381,8 @@ export class Runtime {
         plan,
         planText: plan ? planner.describe(plan) : undefined,
         accounts: { accountOwnerName: nameOf(accounts.accountOwnerId), needsApproval: accounts.needsApproval },
+        mode,
+        requesterRole,
       });
 
       let turn;
@@ -533,8 +556,12 @@ export class Runtime {
       if (agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
     }
 
-    // Who answers: money and accounts belong to the owner; care decisions may go to a decider.
-    const approvers = rooms.approversFor(room, { money: g.kind === "purchase_approval" || accounts.needsApproval });
+    // Who answers: money and the owner's accounts belong to the owner. Outreach on behalf of
+    // someone the circle looks after (a call or text from the agent's own line) is a care
+    // decision, which a decider takes first when there is one.
+    const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
+    const careDecision = requesterRole === "cared_for" && (g.kind === "outreach_approval" || g.kind === "decision");
+    const approvers = rooms.approversFor(room, { money: !careDecision && (g.kind === "purchase_approval" || accounts.needsApproval), forCaredFor: requesterRole === "cared_for" });
     const assignee = approvers[0] ?? owner;
     if (!assignee) throw new Error("no approver");
     const kind = run.requesterId && run.requesterId !== assignee.id && accounts.needsApproval ? "guest_request" : g.kind;

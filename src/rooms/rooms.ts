@@ -81,9 +81,11 @@ export class RoomService {
    * Who may say yes for a request in this room. The owner always can.
    * Deciders can approve anything that is not the owner's money.
    */
-  approversFor(room: Room, opts: { money?: boolean } = {}): Person[] {
+  approversFor(room: Room, opts: { money?: boolean; forCaredFor?: boolean } = {}): Person[] {
     const ms = this.members(room.id).filter((m) => m.role === "owner" || (m.role === "decider" && !opts.money));
-    return ms.map((m) => this.store.getPerson(m.personId)).filter((p): p is Person => !!p);
+    // Decisions about the cared-for person's care go to a decider first when one exists; money stays with the owner.
+    const ordered = opts.forCaredFor && !opts.money ? [...ms.filter((m) => m.role === "decider"), ...ms.filter((m) => m.role === "owner")] : [...ms.filter((m) => m.role === "owner"), ...ms.filter((m) => m.role === "decider")];
+    return ordered.map((m) => this.store.getPerson(m.personId)).filter((p): p is Person => !!p);
   }
 
   /**

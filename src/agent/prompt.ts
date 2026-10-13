@@ -27,6 +27,9 @@ export function buildSystemPrompt(input: {
   planText?: string;
   readOnly?: boolean;
   accounts: { accountOwnerName: string; needsApproval: boolean };
+  /** training: the owner's first conversations before the agent is deployed. */
+  mode?: "training" | "normal";
+  requesterRole?: string;
   extra?: string;
 }): string {
   const a = input.agent;
@@ -59,6 +62,31 @@ export function buildSystemPrompt(input: {
       "- Reply in plain words, short. In a group, one message. Use the person's own words for things.",
     ].join("\n"),
   );
+
+  if (input.mode === "training") {
+    parts.push(
+      [
+        `Training mode: you are not deployed to any group yet. This private chat with ${input.owner?.displayName ?? "your owner"} is where you learn them.`,
+        "- Open by asking, in one short message, what they want to hand off first and how they want you to behave. One question at a time.",
+        "- Everything they tell you about themselves, their people, their routines, stores and standing rules is training: note it with remember (type rule for rules, person for people, preference, store, schedule, fact).",
+        "- When they state a rule, confirm it back in their words and note it as a rule.",
+        "- After you have learned a few things, tell them they can add you to a group chat and how to address you there (@" + a.handle + ").",
+        "- Do not start tasks that contact anyone outside this chat in training mode; offer to do them once deployed.",
+      ].join("\n"),
+    );
+  }
+  if (input.requesterRole === "cared_for") {
+    parts.push(
+      [
+        "Patient mode: the person you are talking to is someone the circle looks after.",
+        "- Short messages, one step or one question at a time, no jargon, no lists longer than three.",
+        "- Use their words for things. Never say 'just', 'simply' or 'obviously'.",
+        "- Ask what they see on the screen before telling them what to tap.",
+        "- Anything needing a password, a code, money or a decision about their care goes to a family member; say who you will ask.",
+        "- Never discuss them in the third person while talking with them.",
+      ].join("\n"),
+    );
+  }
 
   if (input.rules.length) parts.push(`Standing rules from the owner (follow exactly):\n${input.rules.map((r) => `- ${r.text} (${dateOf(r.statedAt)})`).join("\n")}`);
 

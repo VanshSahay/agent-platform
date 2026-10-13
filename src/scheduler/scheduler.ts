@@ -99,6 +99,32 @@ export class Scheduler {
     for (const c of this.commitments.takeDueNudges(now)) {
       const owner = this.store.getPerson(c.ownerId);
       const ben = c.beneficiaryId ? this.store.getPerson(c.beneficiaryId) : undefined;
+      if (c.status === "blocked") {
+        // Nudging stopped working: a person must decide. Deciders first for someone cared for, else the owner.
+        const room = this.store.getRoom(c.roomId);
+        const agent = room ? this.store.getAgent(room.agentId) : undefined;
+        if (room && agent) {
+          const members = this.store.listMembers(room.id);
+          const forCaredFor = !!c.beneficiaryId && members.some((m) => m.personId === c.beneficiaryId && m.role === "cared_for");
+          const deciders = members.filter((m) => m.role === "decider").map((m) => m.personId);
+          const assignee = (forCaredFor && deciders[0]) || agent.ownerId;
+          const already = this.store.listAttention({ roomId: room.id, status: ["open"] }).some((a) => a.title === `"${c.title}" is stuck`);
+          if (!already) {
+            this.attention.open({
+              agentId: agent.id,
+              roomId: room.id,
+              assigneeId: assignee,
+              kind: "decision",
+              title: `"${c.title}" is stuck`,
+              detail: `${owner?.displayName ?? "The owner"} has not confirmed it after ${c.nudges} reminders${c.dueAt ? ` and it was due ${new Date(c.dueAt).toISOString().slice(0, 10)}` : ""}. Reassign it, drop it, or say what should happen.`,
+              options: ["Reassign to me", "Drop it", "Keep nudging"],
+              ttlMs: 7 * 24 * 60 * 60 * 1000,
+            });
+            out.nudged += 1;
+          }
+        }
+        continue;
+      }
       await this.runtime.startSystemRun({
         roomId: c.roomId,
         trigger: "follow_up",
