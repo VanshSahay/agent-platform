@@ -28,6 +28,7 @@ export interface ToolDef {
   summarize?: (input: any) => string;           // one line for the approval card and the status footer
   amountOf?: (input: any) => number | null;     // money this call would spend, for the trust dial's threshold
   outreach?: boolean;                           // contacts a third party: held outside daytime, delivered next morning
+  precheck?: (input: any, connection: any) => string | null; // a reason this call can't run yet (a switch that's off), checked before asking or staging
   preview?: (input: any) => string;             // the exact content being approved (an email body)
   verify?: (output: any) => string | null;      // provider evidence that proves a write happened
   execute: (input: any, ctx: Ctx) => Promise<Outcome>;
@@ -109,6 +110,8 @@ export async function execute(run: any, room: any, requester: any, call: { id: s
   if (!connection && d.accountFor) connection = await d.accountFor(call.input, principal.id);
   if (connection && viaOwner && !room.guest_accounts) return { kind: "result", status: "FAILED", content: `DENIED: ${principal.name ?? "the owner"} hasn't allowed people in this group to use their accounts. Say so plainly.` };
   if (connection && !viaOwner && room.kind === "group" && !(await hasConsent(room.id, requester.id))) return { kind: "consent" };
+  const blocked = d.precheck?.(call.input ?? {}, connection);
+  if (blocked) return { kind: "result", status: "FAILED", content: `FAILED: ${blocked}` };
   const fp = fingerprint(run.id, d.id, call.input);
   // The trust dial: actions the person said may run without asking (Settings). Off by default; the warm-up period.
   // Money: a purchase under the threshold runs without asking; a paused agent spends nothing.

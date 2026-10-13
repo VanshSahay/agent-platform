@@ -58,13 +58,14 @@ def({
 });
 
 def({
-  id: "email.send", kind: "write", outreach: true, connection: "google", description: "Send an email from the person's Gmail, as them. Only works when they have switched on 'send email as me' for that account; otherwise save a draft with email.draft. The platform shows them the exact email and asks for their OK first; just call it with the final content.",
+  id: "email.send", kind: "write", outreach: true, connection: "google",
+  precheck: (_i, c) => (J(c?.config, {}).send_as_me ? null : "sending email as them is switched off (it's off until they turn it on under Connections → Google). Save a draft with email.draft instead and tell them where it is."),
+  description: "Send an email from the person's Gmail, as them. Only works when they have switched on 'send email as me' for that account; otherwise save a draft with email.draft. The platform shows them the exact email and asks for their OK first; just call it with the final content.",
   inputSchema: obj({ to: { type: "array", items: str() }, subject: str(), body: str(), thread_id: str() }, ["to", "subject", "body"]),
   summarize: (i) => `Send email to ${i.to.join(", ")}: "${i.subject}"`,
   preview: (i) => `To: ${i.to.join(", ")}\nSubject: ${i.subject}\n\n${String(i.body).slice(0, 1500)}`,
   verify: (o) => o?.id ?? null,
   async execute({ to, subject, body, thread_id }, ctx) {
-    if (!J(ctx.connection.config, {}).send_as_me) throw new ToolError("PERMISSION", "sending email as them is switched off (it's off until they turn it on under Connections → Google). Save a draft with email.draft instead and tell them where it is.");
     if (to.some((a: string) => !/^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(a))) throw new ToolError("BUSINESS_RULE", "invalid recipient address");
     subject = subject.replace(/[\r\n]+/g, " ");
     const msgId = `<${ctx.idempotencyKey.slice(0, 40)}@agent.mail>`; // lets us ask Gmail afterwards whether this exact email went out

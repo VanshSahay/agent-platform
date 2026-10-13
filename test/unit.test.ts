@@ -313,11 +313,12 @@ test("sending as them is off until switched on: email.send refuses and points at
   const u = await trained("+15550000140");
   await sql`insert into connections (id, user_id, provider, cred_enc, config, created_at) values ('con_g140', ${u.id}, 'google', ${seal({ access_token: "x", expires_at: 9e15 })}, '{}'::jsonb, 0)`;
   script({ id: "", name: "email.send", input: { to: ["d@x.com"], subject: "hi", body: "hello" } }, "Left a draft.");
-  await say("+15550000140", "email dana hi");
-  await say("+15550000140", "yes");
+  await say("+15550000140", "email dana hi"); // refused before any card or staging, whatever the time of day
+  expect((await sql`select count(*) n from approvals`)[0].n).toBe("0");
+  expect((await sql`select count(*) n from schedules`)[0].n).toBe("0");
   const tool = (await sql`select content from (select transcript from runs) r, jsonb_to_recordset(r.transcript) as x(role text, content text) where role='tool'`)[0];
   expect(tool.content).toContain("switched off");
-  expect(lastTo("dm_+15550000140")).toContain("didn't happen");
+  expect(lastTo("dm_+15550000140")).toBe("Left a draft."); // nothing was attempted, so no footer
 });
 
 test("money on the trust dial: under the threshold runs without asking, paused spends nothing", async () => {
