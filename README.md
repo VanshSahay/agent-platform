@@ -18,6 +18,13 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 
 **Remembers the right things in the right places.** The agent only writes dated observations during a run; a background pass promotes them into typed memories, merges duplicates, rewrites corrected facts with their date, retracts what was taken back, and derives a short profile the agent reads first. What a group says stays with that group. What someone tells the agent privately never surfaces in a group.
 
+## What it looks like
+
+| | |
+|---|---|
+| ![Empty thread with the composer centred and one card mined from the ledger](docs/screens/empty-light.png) | ![A thread with the Why? drawer showing the plan, tool records and timeline](docs/screens/family-why.png) |
+| ![Settings with trust controls and the Deploy section](docs/screens/settings-deploy.png) | ![Memory page with derived profiles and grouped notes](docs/screens/memory.png) |
+
 ## Run it
 
 ```bash
