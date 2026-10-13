@@ -2,7 +2,7 @@
 
 A personal agent that lives in the group chats people already have: the family thread, the friends' group, the neighbourhood chat. One person trains and deploys it; everyone in the chat gets help without signing up for anything. It coordinates, follows through, and asks the right person when a decision, an approval or a private detail is needed.
 
-This is a from-scratch build. Its design comes from three sources: a reverse engineering of Wajo's Fo ([docs/research/wajo-fo-build.md](docs/research/wajo-fo-build.md), [docs/research/wajo-fo.md](docs/research/wajo-fo.md)), the public teardown of Instinct's memory, and what we wanted that neither does. The design note is [docs/design.md](docs/design.md).
+This is a from-scratch build. Its design comes from three sources: a reverse engineering of Wajo's Fo ([docs/research/wajo-fo-build.md](docs/research/wajo-fo-build.md), [docs/research/wajo-fo.md](docs/research/wajo-fo.md), [docs/research/wajo-fo-client-report.md](docs/research/wajo-fo-client-report.md)), the public teardown of Instinct's memory, and what we wanted that neither does. The design note is [docs/design.md](docs/design.md).
 
 ## What it does
 
@@ -65,6 +65,14 @@ GET  /api/schedules | POST /api/schedules | POST /api/schedules/:id/pause
 GET  /api/commitments?roomId
 GET  /api/memory?agentId | POST /api/memory | DELETE /api/memory/:id | POST /api/memory/consolidate
 POST /api/tick                       run the scheduler once
+```
+
+## Starting a fresh repository
+
+This tree shares no code with what came before it. To move it into a brand-new repository with clean history:
+
+```bash
+git checkout --orphan main && git commit -m "Circle" && git remote set-url origin <new-repo-url> && git push -u origin main
 ```
 
 ## Status

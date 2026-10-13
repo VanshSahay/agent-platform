@@ -13,7 +13,7 @@ So planning and tool orchestration are central, and so is the room model.
 
 ## 2. What we took from Fo
 
-From the bundle reconstruction ([research/wajo-fo-build.md](research/wajo-fo-build.md)) and the logged-in notes ([research/wajo-fo.md](research/wajo-fo.md)):
+From the bundle reconstruction ([research/wajo-fo-build.md](research/wajo-fo-build.md)), the logged-in product map ([research/wajo-fo.md](research/wajo-fo.md)) and Ellie's logged-in client report ([research/wajo-fo-client-report.md](research/wajo-fo-client-report.md)). The three agree on the object model (agent, session, run, event, attention item, schedule, artifact) and on the run mechanics; the client report adds the live schedule prompt with its authorisation preamble and the escalation service, which shaped sections 7 and 8 below.
 
 - **Separate objects, separate contracts.** Agent, session, run, run event, tool call, attention item, schedule, artifact. The chat window is a view over them. We have the same split (`src/core/types.ts`), plus room, membership, commitment and memory.
 - **Append-only events with a cursor.** Fo's watch endpoint resumes from `"<n>-<n>"` cursors; the client reconciles against the authoritative transcript on focus. Ours: `run_events(session_id, seq)`, `GET /api/sessions/:id/watch?after=N`, and the stored transcript per run that a resume reloads.
