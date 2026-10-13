@@ -7,6 +7,7 @@
  */
 
 import { sha256 } from "../core/ids.ts";
+import { ExaSearch } from "./reach.ts";
 import type { SearchProvider, SearchResult } from "./hands.ts";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -161,7 +162,9 @@ function decodeEntities(s: string) {
 }
 
 /** Brave when a key is configured, otherwise the keyless DuckDuckGo scrape. */
-export function createSearch(env: Record<string, string | undefined> = process.env): BraveSearch | DuckDuckGoSearch {
+export function createSearch(env: Record<string, string | undefined> = process.env): BraveSearch | DuckDuckGoSearch | ExaSearch {
   if (env.BRAVE_API_KEY) return new BraveSearch(env.BRAVE_API_KEY);
-  return new DuckDuckGoSearch();
+  // Exa's public endpoint needs no key and answers local-business queries with names and phone numbers.
+  if (env.SEARCH === "duckduckgo") return new DuckDuckGoSearch();
+  return new ExaSearch();
 }

@@ -11,6 +11,7 @@ import { seedDemoWorld } from "./demo-world.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
 import { BrowserbaseBrowser } from "./tools/browser.ts";
 import { createSearch } from "./tools/search.ts";
+import { JinaReader } from "./tools/reach.ts";
 
 /**
  * Boot. What is wired depends on what is configured:
@@ -37,10 +38,13 @@ function pickHands(): Hands {
   if (process.env.BROWSERBASE_API_KEY) {
     hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
     console.log("Browser: Browserbase");
-  } else console.log("Browser: fake (set BROWSERBASE_API_KEY)");
+  } else {
+    hands.browser = new JinaReader();
+    console.log("Browser: Jina Reader (read-only pages; set BROWSERBASE_API_KEY for a real browser)");
+  }
   const search = createSearch(process.env);
   hands.search = search;
-  console.log(`Search: ${search.name === "brave" ? "Brave" : "DuckDuckGo (keyless; set BRAVE_API_KEY for Brave)"}`);
+  console.log(`Search: ${search.name === "brave" ? "Brave" : search.name === "exa" ? "Exa (keyless, via the Agent Reach channel)" : "DuckDuckGo (keyless)"}`);
   console.log("Phone, community: fakes (adapters in src/tools/hands.ts)");
   return hands;
 }

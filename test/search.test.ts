@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { BraveSearch, createSearch, DuckDuckGoSearch, parseDuckDuckGo } from "../src/tools/search.ts";
+import { ExaSearch } from "../src/tools/reach.ts";
 
 const fakeFetch = (status: number, body: string, calls: { url: string; init?: RequestInit }[] = []) => {
   const f = async (url: string, init?: RequestInit) => {
@@ -102,8 +103,9 @@ describe("Brave search", () => {
 });
 
 describe("createSearch", () => {
-  test("picks Brave when BRAVE_API_KEY is set, else DuckDuckGo", () => {
+  test("picks Brave when BRAVE_API_KEY is set, Exa by default, DuckDuckGo on request", () => {
     expect(createSearch({ BRAVE_API_KEY: "k" })).toBeInstanceOf(BraveSearch);
-    expect(createSearch({})).toBeInstanceOf(DuckDuckGoSearch);
+    expect(createSearch({})).toBeInstanceOf(ExaSearch);
+    expect(createSearch({ SEARCH: "duckduckgo" })).toBeInstanceOf(DuckDuckGoSearch);
   });
 });

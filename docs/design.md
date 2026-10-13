@@ -99,7 +99,7 @@ Wired through `.env` (see README): the model through OpenRouter (GLM 5.3 by defa
 Not built yet:
 
 - Channel adapters for WhatsApp, Telegram and Slack (Spectrum has providers for all three; the iMessage adapter is the template).
-- Real hands for search, telephony (a voice vendor that can hold a call in Mandarin), Reddit and Rednote. Each is an interface with a fake.
+- Real hands for telephony (a voice vendor that can hold a call in Mandarin) and for Reddit and Rednote. Each is an interface with a fake. Search and page reading are real: `src/tools/reach.ts` carries two keyless channels borrowed from Agent Reach (Exa's public MCP endpoint for search, which returns local businesses with ratings and phone numbers, and Jina Reader for pages), with Brave and Browserbase behind keys. `skills/internet-reach.md` tells the agent how to use them and what it cannot reach.
 - Payments. `request_purchase` enforces the budget policy; nothing charges a card.
 - Embeddings for memory recall; a plan the person can edit before a long task runs.
 

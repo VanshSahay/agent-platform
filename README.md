@@ -34,7 +34,8 @@ What gets wired depends on `.env`:
 | `OPENROUTER_API_KEY` | The model, through OpenRouter: `z-ai/glm-5.3` for the agent and `z-ai/glm-5.3-flash` for labels, premise checks and the memory pass. Override with `MODEL` and `MODEL_SMALL` (Claude ids work too: `anthropic/claude-opus-5.5`). |
 | `ANTHROPIC_API_KEY` | The model directly from Anthropic: Claude Opus 5.5 and Haiku 5.5. |
 | `PROJECT_ID`, `PROJECT_SECRET` | iMessage through Photon Spectrum. Each iMessage chat becomes a room; senders become people; the owner is recognised by the phone number on their person record (`PATCH /api/people/:id {phoneE164}`). |
-| `BROWSERBASE_API_KEY` | The `browse_page` tool runs in a cloud browser. |
+| `BROWSERBASE_API_KEY` | The `browse_page` tool runs in a cloud browser. Without it, pages are read as text through Jina Reader. |
+| `BRAVE_API_KEY`, `SEARCH` | `web_search` uses Exa's public endpoint by default (no key; the channel [Agent Reach](https://github.com/Panniantong/agent-reach) recommends, and it answers "Mandarin-speaking handyman San Jose" with names and phone numbers). A Brave key switches to Brave; `SEARCH=duckduckgo` uses the keyless scrape. |
 | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Sign-in on the owner UI; every API call is made as the signed-in person. |
 
 Without a model key the server still boots and the agent only acknowledges messages, so the UI can be explored.
@@ -43,7 +44,8 @@ Offline, with no key, the whole runtime runs against a scripted model:
 
 ```bash
 bun run demo    # the handyman errand in a family chat, end to end
-bun test        # 24 tests across the run loop, gates, planner, memory, timers, hands
+bun test        # 49 tests across the run loop, gates, care, planner, memory, timers, hands, eval
+bun run eval    # six family errands played against the configured model, graded on stored state
 bun run typecheck
 ```
 
@@ -78,6 +80,10 @@ POST /api/attention/:id/resolve     {answer}                     resumes the wai
 GET  /api/schedules | POST /api/schedules | POST /api/schedules/:id/pause
 GET  /api/commitments?roomId
 GET  /api/memory?agentId | POST /api/memory | DELETE /api/memory/:id | POST /api/memory/consolidate
+POST /api/agents/:id/deploy          ends training (409 with a reason when not ready)
+GET  /api/suggestions?agentId        "want me to…" cards mined from the ledger and schedules
+POST /api/commitments/:id            {status}                     mark a responsibility done, dropped, blocked
+GET  /api/profiles?agentId           derived summaries per scope
 POST /api/tick                       run the scheduler once
 ```
 
@@ -91,6 +97,8 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 ## Status
 
-Built: training before deployment; rooms with roles and guest serving; patient mode and decider-first care approvals; escalation of stuck responsibilities; proactive suggestions; the run loop with gates, steering and resume; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic.
+Built: training before deployment; rooms with roles and guest serving; patient mode and decider-first care approvals; escalation of stuck responsibilities; proactive suggestions; the run loop with gates, steering and resume; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
 
-Not yet: real adapters for search, telephony (calls in Mandarin need a voice vendor), Reddit and Rednote; WhatsApp and Telegram channels; payments; voice chat. Each is an interface in `src/tools/hands.ts` or `src/channels/` with a fake you can swap. Postgres is not used: the store is one SQLite file.
+Internet reach: `web_search` and `browse_page` are real (Exa and Jina Reader, both keyless; Brave and Browserbase when keyed). The agent follows `skills/internet-reach.md`, adapted from Agent Reach's skill to the two tools it has; it says plainly which platforms it cannot read yet.
+
+Not yet: telephony (calls in Mandarin need a voice vendor), reading or posting on Reddit and Rednote (both need a logged-in session); WhatsApp and Telegram channels; payments; voice chat. Each is an interface in `src/tools/hands.ts` or `src/channels/` with a fake you can swap. Postgres is not used: the store is one SQLite file.

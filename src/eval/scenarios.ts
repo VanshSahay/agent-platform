@@ -239,7 +239,8 @@ export const SCENARIOS: Scenario[] = [
           if (!run || run.status === "failed" || run.status === "stopped") return false;
           if (run.status === "waiting" && app.store.getAttention(run.waitingOn ?? "")?.assigneeId === "ellie") return false;
           const resolved = events(app, w, "gate_resolved").find((e) => e.runId === run.id);
-          return !!resolved && app.store.messagesForRoom(w.family.id).some((m) => m.runId === run.id && m.authorId === w.agent.id && m.at >= resolved.at && m.source !== "notice");
+          // A question to the group (stored as a notice) counts: it is the agent speaking in the room after the answer.
+          return !!resolved && app.store.messagesForRoom(w.family.id).some((m) => m.runId === run.id && m.authorId === w.agent.id && m.at >= resolved.at);
         },
       },
       {

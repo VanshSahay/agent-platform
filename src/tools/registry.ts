@@ -596,7 +596,7 @@ export const TOOLS: ToolDef[] = [
     spec: {
       name: "request_purchase",
       description:
-        "Before paying for anything, declare the amount and what for. Returns whether you may proceed, or waits for approval. Purchases under the owner's threshold pass automatically; a paused budget blocks.",
+        "Before paying for anything, declare the amount and what for. Call it first, as soon as you know roughly what it costs, before searching shops. Returns whether you may proceed, or waits for approval. Purchases under the owner's threshold pass automatically; a paused budget blocks.",
       input_schema: obj({ amountUsd: num("Total in USD."), what: str("What is bought."), where: str("Merchant.") }, ["amountUsd", "what", "where"]),
     },
     family: "money",
@@ -617,7 +617,7 @@ export const TOOLS: ToolDef[] = [
       }
       return {
         ok: true,
-        content: `Approved: ${gate.reason}. The budget is cleared; no ordering tool is connected yet, so tell the requester it is approved and who places the order (or track it as a responsibility). Do not browse shops to buy it.`,
+        content: `Approved: ${gate.reason}. The budget is cleared. No ordering tool is connected yet, so reply in one line that it is approved and that the order itself still has to be placed by hand, then stop. Do not ask anyone anything else and do not browse shops.`,
         evidence: `purchase-approved:${amount}`,
       };
     },

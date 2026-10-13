@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
+import { deployAgent } from "../agent/deploy.ts";
+import { SuggestionService } from "../inbox/suggestions.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { App } from "../app.ts";
+import type { Commitment, MemoryScope, Person, Profile } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { newAgent } from "../agent/spec.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
@@ -13,6 +16,7 @@ import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
  * events after a cursor; the inbox is one list with statuses.
  */
 export function startWebServer(app: App, opts: { port?: number; hostname?: string; auth?: Auth | null } = {}) {
+  const suggestions = new SuggestionService(app.store, app.clock, app.commitments, app.model);
   const here = dirname(fileURLToPath(import.meta.url));
   const cfg = authConfig();
   const auth = opts.auth === undefined ? (cfg ? new Auth(app, cfg) : null) : opts.auth;
@@ -20,7 +24,10 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
     auth && cfg
       ? `<script>window.__CLERK_PK=${JSON.stringify(cfg.publishableKey)};window.__CLERK_FAPI=${JSON.stringify(frontendApiFromKey(cfg.publishableKey) ?? "")};</script>`
       : "";
-  const html = readFileSync(join(here, "..", "..", "web", "index.html"), "utf8").replace("<!--AUTH-->", clerkBoot);
+  const webDir = join(here, "..", "..", "web");
+  const html = readFileSync(join(webDir, "index.html"), "utf8").replace("<!--AUTH-->", clerkBoot);
+  // The script and stylesheet are read per request so edits show on reload.
+  const asset = (name: string, type: string) => new Response(readFileSync(join(webDir, name)), { headers: { "content-type": type, "cache-control": "no-cache" } });
   const sockets = new Set<ReadableStreamDefaultController<string>>();
   app.onDeliver((d) => broadcast({ type: "delivery", ...d }));
   const broadcast = (payload: unknown) => {
@@ -34,6 +41,7 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
     }
   };
 
+  const listPeople = () => (app.store.db.query("SELECT data FROM persons ORDER BY created_at").all() as { data: string }[]).map((r) => JSON.parse(r.data) as Person);
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
   const bad = (msg: string, status = 400) => json({ error: msg }, status);
 
@@ -46,6 +54,8 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
       const p = url.pathname;
       try {
         if (p === "/" || p === "/index.html") return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+        if (p === "/app.js") return asset("app.js", "text/javascript; charset=utf-8");
+        if (p === "/styles.css") return asset("styles.css", "text/css; charset=utf-8");
         if (p === "/health") return json({ ok: true, now: app.clock.now(), auth: !!auth });
 
         // With Clerk configured, every API call is made as a signed-in person; the body may not impersonate anyone else.
@@ -64,9 +74,11 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
           const rooms = me ? app.store.listRooms().filter((r) => !!app.store.getMembership(r.id, me!)) : app.store.listRooms();
           return json({
             agents,
+            people: listPeople(),
             rooms: rooms.map((r) => ({ ...r, members: app.rooms.members(r.id).map((m) => ({ ...m, person: app.store.getPerson(m.personId) })) })),
           });
         }
+        if (p === "/api/people" && req.method === "GET") return json(listPeople());
         if (p === "/api/people" && req.method === "POST") {
           const b = await req.json();
           return json(app.rooms.createPerson({ id: b.id, displayName: b.displayName, timezone: b.timezone ?? "UTC", pronouns: b.pronouns, phoneE164: b.phoneE164, techComfort: b.techComfort }));
@@ -95,8 +107,23 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
           app.store.putAgent(a);
           return json(a);
         }
+        // Deploying ends training: the same check the Settings page shows.
+        if (p.match(/^\/api\/agents\/[^/]+\/deploy$/) && req.method === "POST") {
+          const r = deployAgent(app.store, app.clock, p.split("/")[3]!);
+          if (!r.ok) return bad(r.why, r.why === "no such agent" ? 404 : 409);
+          return json(r.agent);
+        }
+        if (p === "/api/suggestions" && req.method === "GET") {
+          const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+          const agent = app.store.getAgent(url.searchParams.get("agentId") ?? "");
+          if (!person || !agent) return bad("personId and agentId required");
+          return json(await suggestions.forHome(person, agent));
+        }
         if (p === "/api/rooms" && req.method === "POST") {
           const b = await req.json();
+          const agentForRoom = app.store.getAgent(b.agentId ?? "");
+          if (!agentForRoom) return bad("no such agent", 404);
+          if ((b.kind ?? "group") === "group" && !agentForRoom.deployedAt) return bad("deploy the agent first: train it in your private chat, then press Deploy", 409);
           const room = app.rooms.createRoom({ agentId: b.agentId, kind: b.kind ?? "group", channel: b.channel ?? "web", name: b.name, externalId: b.externalId, outreachHours: b.outreachHours });
           for (const m of b.members ?? []) app.rooms.addMember(room.id, m.personId, m.role, { consented: !!m.consented });
           return json(room);
@@ -209,7 +236,30 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
           app.scheduler.pause(p.split("/")[3]!, !!b.paused);
           return json({ ok: true });
         }
-        if (p === "/api/commitments") return json(app.store.listCommitments({ roomId: url.searchParams.get("roomId") ?? undefined }));
+        if (p === "/api/commitments" && req.method === "GET") return json(app.store.listCommitments({ roomId: url.searchParams.get("roomId") ?? undefined }));
+        if (p.match(/^\/api\/commitments\/[^/]+$/) && req.method === "POST") {
+          const id = p.split("/")[3]!;
+          const c = app.store.getCommitment(id);
+          if (!c) return bad("no such responsibility", 404);
+          if (me && !app.store.getMembership(c.roomId, me)) return bad("not a member of this room", 403);
+          const b = await req.json();
+          const status = b.status as Commitment["status"] | undefined;
+          if (status && !["open", "done", "dropped", "blocked"].includes(status)) return bad("status must be open, done, dropped or blocked");
+          return json(app.commitments.update(id, { status, dueAt: b.dueAt !== undefined ? Number(b.dueAt) : undefined, detail: b.detail, ownerId: b.ownerId }));
+        }
+        // Derived profiles: one per scope the agent has a summary for (itself, each room, each person).
+        if (p === "/api/profiles" && req.method === "GET") {
+          const agentId = url.searchParams.get("agentId") ?? "";
+          const out: Profile[] = [];
+          const add = (scope: MemoryScope, scopeId: string) => {
+            const prof = app.store.getProfile(agentId, scope, scopeId);
+            if (prof) out.push(prof);
+          };
+          add("agent", agentId);
+          for (const r of app.store.listRooms(agentId)) add("room", r.id);
+          for (const person of listPeople()) add("person", person.id);
+          return json(out);
+        }
         if (p === "/api/memory" && req.method === "GET") {
           const agentId = url.searchParams.get("agentId") ?? "";
           return json({ memories: app.store.listMemories(agentId, { includeInactive: url.searchParams.get("all") === "1" }), consolidatedAt: app.store.getKv(`consolidated:${agentId}`) });
