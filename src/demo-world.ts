@@ -11,16 +11,37 @@ export function seedDemoWorld(app: App) {
   const agent = newAgent({
     ownerId: ellie.id,
     name: "Pip",
-    purpose: "Keep the family organised: Mum's appointments and rides, repairs at her place, bills, and patient help with her phone. Involve the right person when a decision or approval is needed.",
+    purpose:
+      "Keep the family organised: Mum's appointments and rides, repairs at her place, bills, and patient help with her phone. Involve the right person when a decision or approval is needed.",
     trust: { autoApproveUnderUsd: 25 },
   });
   app.store.putAgent(agent);
 
   app.memory.write({ agentId: agent.id, scope: "agent", scopeId: agent.id, type: "rule", text: "Ask before calling or texting anyone outside the family." });
   app.memory.write({ agentId: agent.id, scope: "agent", scopeId: agent.id, type: "rule", text: "Keep messages short; one question at a time with Mum." });
-  app.memory.write({ agentId: agent.id, scope: "person", scopeId: ellie.id, type: "preference", text: "Ellie prefers Mum's appointments in the morning and wants to be cc'd on anything medical." });
-  app.memory.write({ agentId: agent.id, scope: "person", scopeId: mum.id, type: "person", text: "Mum speaks Mandarin and English; prefers Mandarin on the phone with strangers.", visibleToRooms: [] });
-  app.memory.write({ agentId: agent.id, scope: "person", scopeId: mum.id, type: "lesson", text: "Taught Mum to send a photo in iMessage on 2026-10-02; she can find the camera button but gets stuck choosing from the library.", visibleToRooms: [] });
+  app.memory.write({
+    agentId: agent.id,
+    scope: "person",
+    scopeId: ellie.id,
+    type: "preference",
+    text: "Ellie prefers Mum's appointments in the morning and wants to be cc'd on anything medical.",
+  });
+  app.memory.write({
+    agentId: agent.id,
+    scope: "person",
+    scopeId: mum.id,
+    type: "person",
+    text: "Mum speaks Mandarin and English; prefers Mandarin on the phone with strangers.",
+    visibleToRooms: [],
+  });
+  app.memory.write({
+    agentId: agent.id,
+    scope: "person",
+    scopeId: mum.id,
+    type: "lesson",
+    text: "Taught Mum to send a photo in iMessage on 2026-10-02; she can find the camera button but gets stuck choosing from the library.",
+    visibleToRooms: [],
+  });
 
   const family = app.rooms.createRoom({ agentId: agent.id, kind: "group", channel: "web", name: "Family", outreachHours: { start: 8, end: 20 } });
   app.rooms.addMember(family.id, ellie.id, "owner", { consented: true });

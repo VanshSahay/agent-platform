@@ -64,6 +64,17 @@ describe("eval harness", () => {
     expect(r.passed).toBe(0);
   });
 
+  test("an assertion inside a script surfaces through rethrow(), even though the runtime swallows model errors", async () => {
+    const m = new ScriptedModel((req) => {
+      expect(req.model).toBe("something-else");
+      return reply("ok");
+    });
+    const r = await runScenario(findScenarios("privacy")[0]!, { model: m, timeoutMs: 5000 });
+    expect(r.error).toContain("failed");
+    expect(m.firstError).toBeDefined();
+    expect(() => m.rethrow()).toThrow();
+  });
+
   test("--model sets the agent's model id, and usage is summed from model turns", async () => {
     let seen = "";
     const m = new ScriptedModel((req) => {

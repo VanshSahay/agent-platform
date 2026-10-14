@@ -573,7 +573,7 @@ export class Runtime {
         connectedServices: vault.services(accounts.accountOwnerId),
       });
 
-      let turn;
+      let turn: Awaited<ReturnType<ModelClient["turn"]>>;
       try {
         turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools: toolSpecs() });
       } catch (e) {

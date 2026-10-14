@@ -134,9 +134,18 @@ export class Store {
   listRuns(opts: { agentId?: string; roomId?: string; status?: RunStatus[]; limit?: number } = {}) {
     const where: string[] = [];
     const args: unknown[] = [];
-    if (opts.agentId) (where.push("agent_id = ?"), args.push(opts.agentId));
-    if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
-    if (opts.status?.length) (where.push(`status IN (${opts.status.map(() => "?").join(",")})`), args.push(...opts.status));
+    if (opts.agentId) {
+      where.push("agent_id = ?");
+      args.push(opts.agentId);
+    }
+    if (opts.roomId) {
+      where.push("room_id = ?");
+      args.push(opts.roomId);
+    }
+    if (opts.status?.length) {
+      where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
+      args.push(...opts.status);
+    }
     const sql = `SELECT data FROM runs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY started_at DESC, rowid DESC LIMIT ${Math.min(Math.max(1, opts.limit ?? 50), 500)}`;
     return parseAll<Run>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
@@ -240,9 +249,18 @@ export class Store {
   listMemories(agentId: string, opts: { scope?: MemoryScope; scopeId?: string; includeInactive?: boolean; type?: string } = {}) {
     const where = ["agent_id = ?"];
     const args: unknown[] = [agentId];
-    if (opts.scope) (where.push("scope = ?"), args.push(opts.scope));
-    if (opts.scopeId) (where.push("scope_id = ?"), args.push(opts.scopeId));
-    if (opts.type) (where.push("type = ?"), args.push(opts.type));
+    if (opts.scope) {
+      where.push("scope = ?");
+      args.push(opts.scope);
+    }
+    if (opts.scopeId) {
+      where.push("scope_id = ?");
+      args.push(opts.scopeId);
+    }
+    if (opts.type) {
+      where.push("type = ?");
+      args.push(opts.type);
+    }
     if (!opts.includeInactive) where.push("retracted = 0 AND superseded = 0");
     const rows = this.db.query(`SELECT data FROM memories WHERE ${where.join(" AND ")} ORDER BY stated_at DESC`).all(...(args as string[])) as Row[];
     return parseAll<Memory>(rows);
@@ -281,7 +299,7 @@ export class Store {
 
   // ----- attention -----
   putAttention(a: AttentionItem) {
-    this.db.run("INSERT OR REPLACE INTO attention(id, agent_id, room_id, assignee_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+    this.db.run("INSERT INTO attention(id, agent_id, room_id, assignee_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, assignee_id = excluded.assignee_id, status = excluded.status, created_at = excluded.created_at, data = excluded.data", [
       a.id,
       a.agentId,
       a.roomId,
@@ -297,17 +315,29 @@ export class Store {
   listAttention(opts: { assigneeId?: string; agentId?: string; roomId?: string; status?: AttentionStatus[] } = {}) {
     const where: string[] = [];
     const args: unknown[] = [];
-    if (opts.assigneeId) (where.push("assignee_id = ?"), args.push(opts.assigneeId));
-    if (opts.agentId) (where.push("agent_id = ?"), args.push(opts.agentId));
-    if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
-    if (opts.status?.length) (where.push(`status IN (${opts.status.map(() => "?").join(",")})`), args.push(...opts.status));
-    const sql = `SELECT data FROM attention ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    if (opts.assigneeId) {
+      where.push("assignee_id = ?");
+      args.push(opts.assigneeId);
+    }
+    if (opts.agentId) {
+      where.push("agent_id = ?");
+      args.push(opts.agentId);
+    }
+    if (opts.roomId) {
+      where.push("room_id = ?");
+      args.push(opts.roomId);
+    }
+    if (opts.status?.length) {
+      where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
+      args.push(...opts.status);
+    }
+    const sql = `SELECT data FROM attention ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC, rowid DESC`;
     return parseAll<AttentionItem>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
 
   // ----- schedules and staged items -----
   putSchedule(s: Schedule) {
-    this.db.run("INSERT OR REPLACE INTO schedules(id, agent_id, room_id, paused, next_run_at, data) VALUES (?, ?, ?, ?, ?, ?)", [
+    this.db.run("INSERT INTO schedules(id, agent_id, room_id, paused, next_run_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, paused = excluded.paused, next_run_at = excluded.next_run_at, data = excluded.data", [
       s.id,
       s.agentId,
       s.roomId,
@@ -322,8 +352,14 @@ export class Store {
   listSchedules(opts: { agentId?: string; roomId?: string } = {}) {
     const where: string[] = [];
     const args: unknown[] = [];
-    if (opts.agentId) (where.push("agent_id = ?"), args.push(opts.agentId));
-    if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
+    if (opts.agentId) {
+      where.push("agent_id = ?");
+      args.push(opts.agentId);
+    }
+    if (opts.roomId) {
+      where.push("room_id = ?");
+      args.push(opts.roomId);
+    }
     const sql = `SELECT data FROM schedules ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
     return parseAll<Schedule>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
@@ -351,7 +387,7 @@ export class Store {
 
   // ----- commitments -----
   putCommitment(c: Commitment) {
-    this.db.run("INSERT OR REPLACE INTO commitments(id, room_id, owner_id, status, next_nudge_at, data) VALUES (?, ?, ?, ?, ?, ?)", [
+    this.db.run("INSERT INTO commitments(id, room_id, owner_id, status, next_nudge_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET room_id = excluded.room_id, owner_id = excluded.owner_id, status = excluded.status, next_nudge_at = excluded.next_nudge_at, data = excluded.data", [
       c.id,
       c.roomId,
       c.ownerId,
@@ -366,9 +402,18 @@ export class Store {
   listCommitments(opts: { roomId?: string; ownerId?: string; status?: string[] } = {}) {
     const where: string[] = [];
     const args: unknown[] = [];
-    if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
-    if (opts.ownerId) (where.push("owner_id = ?"), args.push(opts.ownerId));
-    if (opts.status?.length) (where.push(`status IN (${opts.status.map(() => "?").join(",")})`), args.push(...opts.status));
+    if (opts.roomId) {
+      where.push("room_id = ?");
+      args.push(opts.roomId);
+    }
+    if (opts.ownerId) {
+      where.push("owner_id = ?");
+      args.push(opts.ownerId);
+    }
+    if (opts.status?.length) {
+      where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
+      args.push(...opts.status);
+    }
     const sql = `SELECT data FROM commitments ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
     return parseAll<Commitment>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
@@ -401,7 +446,7 @@ export class Store {
 
   // ----- tasks -----
   putTask(t: Task) {
-    this.db.run("INSERT OR REPLACE INTO tasks(id, agent_id, room_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?)", [t.id, t.agentId, t.roomId, t.status, t.createdAt, JSON.stringify(t)]);
+    this.db.run("INSERT INTO tasks(id, agent_id, room_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, status = excluded.status, created_at = excluded.created_at, data = excluded.data", [t.id, t.agentId, t.roomId, t.status, t.createdAt, JSON.stringify(t)]);
   }
   getTask(id: string) {
     return parse<Task>(this.db.query("SELECT data FROM tasks WHERE id = ?").get(id) as Row | null);
@@ -409,10 +454,19 @@ export class Store {
   listTasks(opts: { agentId?: string; roomId?: string; status?: Task["status"][] } = {}) {
     const where: string[] = [];
     const args: (string | number)[] = [];
-    if (opts.agentId) (where.push("agent_id = ?"), args.push(opts.agentId));
-    if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
-    if (opts.status?.length) (where.push(`status IN (${opts.status.map(() => "?").join(",")})`), args.push(...opts.status));
-    const sql = `SELECT data FROM tasks ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC`;
+    if (opts.agentId) {
+      where.push("agent_id = ?");
+      args.push(opts.agentId);
+    }
+    if (opts.roomId) {
+      where.push("room_id = ?");
+      args.push(opts.roomId);
+    }
+    if (opts.status?.length) {
+      where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
+      args.push(...opts.status);
+    }
+    const sql = `SELECT data FROM tasks ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, rowid DESC`;
     return (this.db.query(sql).all(...args) as Row[]).map((r) => JSON.parse(r.data as string) as Task);
   }
 

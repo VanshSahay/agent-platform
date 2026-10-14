@@ -91,7 +91,9 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
 
   const play = async () => {
     scenario.setup?.(app, world);
-    for (const t of scenario.turns) {
+    for (const [i, t] of scenario.turns.entries()) {
+      // A second between turns so "after" checks compare real order, not a frozen clock.
+      if (i) world.clock.tick(1000);
       const run = await app.runtime.handleMessage({ roomId: world.roomId(t.room), personId: t.personId, text: t.text });
       const tools = run ? app.store.toolCallsForRun(run.id).map((c) => `${c.name}${c.evidence ? "+" : ""}${c.status === "running" || c.status === "stopped" ? "?" : ""}`) : [];
       const rec = { room: t.room, personId: t.personId, runId: run?.id, status: run?.status, tools };

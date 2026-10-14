@@ -20,7 +20,7 @@ function parseArgs(argv: string[]) {
     else if (a === "--only") out.only = argv[++i];
     else if (a === "--timeout") out.timeout = Number(argv[++i]);
     else if (a === "--help" || a === "-h") {
-      console.log("usage: bun run eval [--model <id>] [--only <name>] [--json] [--timeout <ms>]\nscenarios: " + SCENARIOS.map((s) => s.name).join(", "));
+      console.log(`usage: bun run eval [--model <id>] [--only <name>] [--json] [--timeout <ms>]\nscenarios: ${SCENARIOS.map((s) => s.name).join(", ")}`);
       process.exit(0);
     } else {
       console.error(`unknown argument ${a}`);
@@ -66,7 +66,10 @@ const results = await runScenarios(scenarios, {
   timeoutMs: args.timeout,
   onTurn: args.json
     ? undefined
-    : (t, r) => console.log(`  [${t.room}] ${t.personId}: ${t.text.slice(0, 70)}${t.text.length > 70 ? "…" : ""}  →  ${r.status ?? "ignored"}${r.tools.length ? `  [${r.tools.join(", ")}]` : ""}`),
+    : (t, r) =>
+        console.log(
+          `  [${t.room}] ${t.personId}: ${t.text.slice(0, 70)}${t.text.length > 70 ? "…" : ""}  →  ${r.status ?? "ignored"}${r.tools.length ? `  [${r.tools.join(", ")}]` : ""}`,
+        ),
   onResult: args.json
     ? undefined
     : (r) => {

@@ -1,4 +1,4 @@
-import { fmtWhen } from "../core/clock.ts";
+import { dayIn, fmtWhen } from "../core/clock.ts";
 import type { AgentSpec, Memory, Person, Plan, Room, RunTrigger } from "../core/types.ts";
 import type { Skill } from "../skills/skills.ts";
 import { skillIndex } from "../skills/skills.ts";
@@ -96,7 +96,7 @@ export function buildSystemPrompt(input: {
     );
   }
 
-  if (input.rules.length) parts.push(`Standing rules from the owner (follow exactly):\n${input.rules.map((r) => `- ${r.text} (${dateOf(r.statedAt)})`).join("\n")}`);
+  if (input.rules.length) parts.push(`Standing rules from the owner (follow exactly):\n${input.rules.map((r) => `- ${r.text} (${dateOf(r.statedAt, zone)})`).join("\n")}`);
 
   if (input.skills.length) parts.push(`Procedures you can follow (read the matching ones below):\n${skillIndex(input.skills)}`);
 
@@ -108,7 +108,7 @@ export function buildSystemPrompt(input: {
       : `Accounts: this request may use ${acc.accountOwnerName}'s own accounts for their own request, within the trust settings.`,
   );
 
-  for (const p of input.profiles) parts.push(`${p.label} (summary as of ${dateOf(p.derivedAt)}):\n${p.text}`);
+  for (const p of input.profiles) parts.push(`${p.label} (summary as of ${dateOf(p.derivedAt, zone)}):\n${p.text}`);
 
   for (const s of input.matchedSkills) parts.push(`Procedure "${s.name}":\n${s.body}`);
 
@@ -116,7 +116,7 @@ export function buildSystemPrompt(input: {
     parts.push(
       `Relevant notes (newest first; dated):\n${input.memories
         .slice(0, 40)
-        .map((m) => `- ${dateOf(m.statedAt)} [${m.type}] ${m.text}`)
+        .map((m) => `- ${dateOf(m.statedAt, zone)} [${m.type}] ${m.text}`)
         .join("\n")}`,
     );
   }
@@ -140,6 +140,6 @@ export function buildSystemPrompt(input: {
   return parts.join("\n\n");
 }
 
-function dateOf(ms: number) {
-  return new Date(ms).toISOString().slice(0, 10);
+function dateOf(ms: number, zone: string) {
+  return dayIn(ms, zone);
 }

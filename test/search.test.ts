@@ -55,7 +55,7 @@ describe("DuckDuckGo search", () => {
     expect(r.results).toHaveLength(1);
     expect(r.evidence).toBe("ddg:1");
     expect(f.calls[0]!.url).toContain(encodeURIComponent("handyman San Jose"));
-    expect((f.calls[0]!.init?.headers as Record<string, string>)["User-Agent"]).toContain("Mozilla");
+    expect(((f.calls[0]!.init?.headers ?? {}) as Record<string, string>)["User-Agent"]).toContain("Mozilla");
   });
 
   test("the bot-check page, a non-200 status and a network error all give no results, never a throw", async () => {
@@ -90,7 +90,7 @@ describe("Brave search", () => {
     expect(r.evidence).toMatch(/^brave:[0-9a-f]{12}$/);
     const call = f.calls[0]!;
     expect(call.url).toBe(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent("Mandarin handyman San Jose")}&count=5`);
-    expect((call.init?.headers as Record<string, string>)["X-Subscription-Token"]).toBe("secret-token");
+    expect(((call.init?.headers ?? {}) as Record<string, string>)["X-Subscription-Token"]).toBe("secret-token");
   });
 
   test("the same query gives the same evidence; a bad status or bad JSON gives no results", async () => {

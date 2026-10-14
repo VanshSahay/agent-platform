@@ -9,6 +9,13 @@ export type Script = (req: ModelRequest, callIndex: number) => ModelTurn | strin
 export class ScriptedModel implements ModelClient {
   public calls: ModelRequest[] = [];
   public completions: { system: string; prompt: string }[] = [];
+  /**
+   * The first error a script threw. The runtime catches model errors and
+   * fails the run, so an expect() inside a script would otherwise vanish;
+   * tests call rethrow() after the run to surface it.
+   */
+  public firstError: unknown;
+  private ids = 0;
   constructor(
     private script: Script,
     private completer: (system: string, prompt: string) => string = () => "",
@@ -16,14 +23,43 @@ export class ScriptedModel implements ModelClient {
 
   async turn(req: ModelRequest): Promise<ModelTurn> {
     this.calls.push(req);
-    const out = await this.script(req, this.calls.length - 1);
+    let out: ModelTurn | string;
+    try {
+      out = await this.script(req, this.calls.length - 1);
+    } catch (e) {
+      this.firstError ??= e;
+      throw e;
+    }
     if (typeof out === "string") return reply(out);
-    return out;
+    return this.reid(out);
   }
 
   async complete(opts: { system: string; prompt: string }): Promise<string> {
     this.completions.push(opts);
-    return this.completer(opts.system, opts.prompt);
+    try {
+      return this.completer(opts.system, opts.prompt);
+    } catch (e) {
+      this.firstError ??= e;
+      throw e;
+    }
+  }
+
+  /** Throws the first error a script raised, if any. */
+  rethrow() {
+    if (this.firstError !== undefined) throw this.firstError;
+  }
+
+  /** Ids come from the helpers' module counter; re-minting them here keeps them unique per instance whatever else ran in the process. */
+  private reid(turn: ModelTurn): ModelTurn {
+    if (!turn.toolUses.length) return turn;
+    const map = new Map<string, string>();
+    for (const u of turn.toolUses) map.set(u.id, `toolu_${this.ids + map.size + 1}`);
+    this.ids += map.size;
+    return {
+      ...turn,
+      toolUses: turn.toolUses.map((u) => ({ ...u, id: map.get(u.id) ?? u.id })),
+      content: typeof turn.content === "string" ? turn.content : turn.content.map((b) => (b.type === "tool_use" ? { ...b, id: map.get(b.id) ?? b.id } : b)),
+    };
   }
 }
 
@@ -31,6 +67,7 @@ export function reply(text: string): ModelTurn {
   return { text, toolUses: [], stopReason: "end_turn", content: [{ type: "text", text }] };
 }
 
+// Fallback counter for scripts used outside a ScriptedModel; the model re-ids tool uses per instance.
 let counter = 0;
 export function callTool(name: string, input: unknown, text = ""): ModelTurn {
   const id = `toolu_${++counter}`;
