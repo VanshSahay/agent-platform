@@ -65,7 +65,9 @@ Membership(role: owner | decider | member | guest | cared_for, consentedAt?)
 
 The loop (`Runtime.loop`): assemble the system prompt in a stable order (identity, soul, rules, skills index, room, accounts, profiles, matched skill bodies, dated memories, ledger, plan, situation) → model turn → record each tool call (`tool_start`), run it, record the result with evidence and a fingerprint (`tool_end`) → plan bookkeeping (a stall counts against the active step; two stalls switch to the next approach and the model is told) → if a tool opened a gate, set `waiting`, save the transcript, card the assignee, stop → otherwise loop. A final text turn becomes the reply with the footer from records. Limits: 24 model turns per run.
 
-Resilience we copied: dedup keys on inbound messages and timer runs; a transcript saved on every pause so a resume continues exactly; pending tool records closed as `stopped` when a run ends without re-issuing; `max_tokens` continues; refusals fail the run honestly.
+Resilience we copied: dedup keys on inbound messages and timer runs (recorded on arrival, so a redelivered answer never starts a second run); a transcript saved on every pause so a resume continues exactly, deleted when the run ends; pending tool records closed as `stopped` when a run ends without re-issuing; `max_tokens` continues; refusals fail the run honestly.
+
+Lifecycle guarantees added after review: `stop` sets a cancel flag the loop checks between turns and tools, and a late reply cannot overwrite "stopped"; runs left "running" by a crash are failed at boot and a message never steers into a run this process is not executing; queued messages are drained before every exit, and only message and task runs receive them; a dismissed or expired card ends the run that waited on it; a card with no run behind it (a stuck responsibility) starts a follow-up run carrying the answer; the scheduler isolates each item, never stacks a watch on a check still in flight, and its premise check fails open.
 
 ## 6. Planning and resourcefulness
 
@@ -78,8 +80,8 @@ The procedures in `skills/` make the ladder concrete for the errands we care abo
 `Runtime.gate` is the single policy point:
 
 1. Outreach outside the room's working hours is held (the tool tells the model to schedule it for the morning, naming the person as disclosed outreach).
-2. A run fired by a schedule is granted outreach to anyone the schedule disclosed.
-3. An approval already recorded on this run for the same ask is granted; a decline is refused and the model is told not to retry.
+2. A run fired by a schedule is granted outreach to anyone the schedule disclosed. Disclosure is an approval in advance, so a schedule or watch created by anyone but the owner that names someone to contact is gated first, entries are validated, and the owner is told what was pre-approved.
+3. An approval is a record (`Approval`): the person's answer, read with negation first ("no, I don't approve" is a no), bound to the run that asked and to a gate key (the tool plus the payload that matters: number, text, amount, merchant). A yes is consumed by the first action it lets through; a different text or number asks again; a no sticks for the run. Open cards are matched by gate key, never by title.
 4. The owner's purchases under `autoApproveUnderUsd` pass; `spendingPaused` blocks everything.
 5. Communities in `communityPostingAllowed` pass; tools in `autoAllow` pass for the owner.
 6. Otherwise an attention item opens for the right approver (money and accounts: the owner; care decisions: a decider if any), the group gets a one-line notice when the requester is not the approver, and the approver gets a card in their DM.
