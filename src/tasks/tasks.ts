@@ -17,7 +17,7 @@ export class TaskService {
 
   create(input: { agentId: Id; roomId: Id; requesterId?: Id; title: string; instructions: string; createdByRunId?: Id }): Task {
     const now = this.clock.now();
-    const session: Session = { id: newId("ses"), roomId: input.roomId, agentId: input.agentId, taskId: undefined, createdAt: now, lastActivityAt: now };
+    const session: Session = { id: newId("ses"), roomId: input.roomId, agentId: input.agentId, kind: "task", taskId: undefined, createdAt: now, lastActivityAt: now };
     const t: Task = {
       id: newId("task"),
       agentId: input.agentId,

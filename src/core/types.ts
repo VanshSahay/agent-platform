@@ -161,6 +161,8 @@ export interface Session {
   roomId: Id;
   agentId: Id;
   title?: string;
+  /** room: the room's own conversation; task: a task agent's private session. The room lookup never returns a task session. */
+  kind: "room" | "task";
   /** A task agent's private session; the room session stays free. */
   taskId?: Id;
   /** Compaction: older messages folded into prose so the context stays short. */
@@ -324,6 +326,8 @@ export interface AttentionItem {
   /** The person who asked, when different (guest requests). */
   requesterId?: Id;
   kind: AttentionKind;
+  /** What a yes would permit: sha256 of the tool and the payload that matters. Set for gates. */
+  gateKey?: string;
   title: string;
   detail: string;
   /** Choices for a decision, if any. */
@@ -380,6 +384,24 @@ export interface Schedule {
   lastRunAt?: UnixMs;
   createdByRunId?: Id;
   createdAt: UnixMs;
+}
+
+/**
+ * A recorded yes or no. Gates match on the gate key (tool plus the payload
+ * that matters: number, text, amount, merchant), bound to the run that asked,
+ * and an approval is consumed the first time it lets an action through.
+ */
+export interface Approval {
+  id: Id;
+  agentId: Id;
+  roomId: Id;
+  runId: Id;
+  itemId: Id;
+  gateKey: string;
+  decision: "yes" | "no";
+  decidedBy: Id;
+  decidedAt: UnixMs;
+  consumedAt?: UnixMs;
 }
 
 /** Outreach held until working hours; delivered by the scheduler sweep. */

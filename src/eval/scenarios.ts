@@ -9,8 +9,9 @@ import type { EvalWorld } from "./world.ts";
 
 const LEES = { title: "Lee's Repairs - Mandarin-speaking handyman, San Jose", url: "https://lees-repairs.example/", snippet: "Small home repairs, taps, fences. 普通话. Call (408) 555-0100." };
 
-const runsIn = (app: App, roomId: string) => app.store.listRuns({ roomId, limit: 50 }).sort((a, b) => a.startedAt - b.startedAt);
-const allRuns = (app: App, w: EvalWorld) => app.store.listRuns({ agentId: w.agent.id, limit: 200 }).sort((a, b) => a.startedAt - b.startedAt);
+// listRuns is newest first with a stable tiebreak, so reversing gives creation order even on a frozen clock.
+const runsIn = (app: App, roomId: string) => app.store.listRuns({ roomId, limit: 50 }).reverse();
+const allRuns = (app: App, w: EvalWorld) => app.store.listRuns({ agentId: w.agent.id, limit: 200 }).reverse();
 const toolCalls = (app: App, w: EvalWorld, name?: string) => allRuns(app, w).flatMap((r) => app.store.toolCallsForRun(r.id)).filter((c) => !name || c.name === name);
 const events = (app: App, w: EvalWorld, type: string) => allRuns(app, w).flatMap((r) => app.store.eventsForRun(r.id)).filter((e) => e.type === type);
 const agentTextIn = (app: App, roomId: string, agentId: string) =>

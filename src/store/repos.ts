@@ -12,6 +12,7 @@ import type {
   Plan,
   Profile,
   Task,
+  Approval,
   Room,
   Run,
   RunEvent,
@@ -97,25 +98,23 @@ export class Store {
 
   // ----- sessions -----
   putSession(s: Session) {
-    this.db.run("INSERT OR REPLACE INTO sessions(id, room_id, agent_id, data, last_activity_at) VALUES (?, ?, ?, ?, ?)", [
-      s.id,
-      s.roomId,
-      s.agentId,
-      JSON.stringify(s),
-      s.lastActivityAt,
-    ]);
+    this.db.run(
+      "INSERT INTO sessions(id, room_id, agent_id, kind, data, last_activity_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET room_id = excluded.room_id, agent_id = excluded.agent_id, kind = excluded.kind, data = excluded.data, last_activity_at = excluded.last_activity_at",
+      [s.id, s.roomId, s.agentId, s.kind ?? "room", JSON.stringify(s), s.lastActivityAt],
+    );
   }
   getSession(id: string) {
     return parse<Session>(this.db.query("SELECT data FROM sessions WHERE id = ?").get(id) as Row | null);
   }
   latestSessionForRoom(roomId: string) {
-    return parse<Session>(this.db.query("SELECT data FROM sessions WHERE room_id = ? ORDER BY last_activity_at DESC LIMIT 1").get(roomId) as Row | null);
+    // Only the room's own conversation; a task agent's session must never answer for the room.
+    return parse<Session>(this.db.query("SELECT data FROM sessions WHERE room_id = ? AND kind = 'room' ORDER BY last_activity_at DESC, rowid DESC LIMIT 1").get(roomId) as Row | null);
   }
 
   // ----- runs -----
   putRun(r: Run) {
     this.db.run(
-      "INSERT OR REPLACE INTO runs(id, session_id, room_id, agent_id, status, dedup_key, started_at, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO runs(id, session_id, room_id, agent_id, status, dedup_key, started_at, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
       [r.id, r.sessionId, r.roomId, r.agentId, r.status, r.dedupKey ?? null, r.startedAt, JSON.stringify(r)],
     );
   }
@@ -128,7 +127,7 @@ export class Store {
   activeRunForSession(sessionId: string) {
     return parse<Run>(
       this.db
-        .query("SELECT data FROM runs WHERE session_id = ? AND status IN ('running','waiting') ORDER BY started_at DESC LIMIT 1")
+        .query("SELECT data FROM runs WHERE session_id = ? AND status IN ('running','waiting') ORDER BY started_at DESC, rowid DESC LIMIT 1")
         .get(sessionId) as Row | null,
     );
   }
@@ -138,7 +137,7 @@ export class Store {
     if (opts.agentId) (where.push("agent_id = ?"), args.push(opts.agentId));
     if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
     if (opts.status?.length) (where.push(`status IN (${opts.status.map(() => "?").join(",")})`), args.push(...opts.status));
-    const sql = `SELECT data FROM runs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY started_at DESC LIMIT ${opts.limit ?? 50}`;
+    const sql = `SELECT data FROM runs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY started_at DESC, rowid DESC LIMIT ${Math.min(Math.max(1, opts.limit ?? 50), 500)}`;
     return parseAll<Run>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
 
@@ -206,24 +205,20 @@ export class Store {
 
   // ----- messages -----
   putMessage(m: Message) {
-    this.db.run("INSERT OR REPLACE INTO messages(id, session_id, room_id, role, at, data) VALUES (?, ?, ?, ?, ?, ?)", [
-      m.id,
-      m.sessionId,
-      m.roomId,
-      m.role,
-      m.at,
-      JSON.stringify(m),
-    ]);
+    this.db.run(
+      "INSERT INTO messages(id, session_id, room_id, role, at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+      [m.id, m.sessionId, m.roomId, m.role, m.at, JSON.stringify(m)],
+    );
   }
   getMessage(id: string) {
     return parse<Message>(this.db.query("SELECT data FROM messages WHERE id = ?").get(id) as Row | null);
   }
   messagesForSession(sessionId: string, limit = 200): Message[] {
-    const rows = this.db.query("SELECT data FROM messages WHERE session_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(sessionId, limit) as Row[];
+    const rows = this.db.query("SELECT data FROM messages WHERE session_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(sessionId, Math.min(Math.max(1, limit), 500)) as Row[];
     return parseAll<Message>(rows).reverse();
   }
   messagesForRoom(roomId: string, limit = 200): Message[] {
-    const rows = this.db.query("SELECT data FROM messages WHERE room_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(roomId, limit) as Row[];
+    const rows = this.db.query("SELECT data FROM messages WHERE room_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(roomId, Math.min(Math.max(1, limit), 500)) as Row[];
     return parseAll<Message>(rows).reverse();
   }
 
@@ -387,6 +382,21 @@ export class Store {
   }
   planForRun(runId: string) {
     return parse<Plan>(this.db.query("SELECT data FROM plans WHERE run_id = ?").get(runId) as Row | null);
+  }
+
+  // ----- approvals -----
+  putApproval(a: Approval) {
+    this.db.run(
+      "INSERT INTO approvals(id, agent_id, room_id, run_id, gate_key, decided_at, data) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+      [a.id, a.agentId, a.roomId, a.runId, a.gateKey, a.decidedAt, JSON.stringify(a)],
+    );
+  }
+  approvalsFor(roomId: string, gateKey: string): Approval[] {
+    return parseAll<Approval>(this.db.query("SELECT data FROM approvals WHERE room_id = ? AND gate_key = ? ORDER BY decided_at DESC, rowid DESC").all(roomId, gateKey) as Row[]);
+  }
+  /** Runs left running or waiting, for reconciliation at boot. */
+  unfinishedRuns(): Run[] {
+    return parseAll<Run>(this.db.query("SELECT data FROM runs WHERE status IN ('running','waiting') ORDER BY started_at").all() as Row[]);
   }
 
   // ----- tasks -----

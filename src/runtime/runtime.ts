@@ -222,7 +222,7 @@ export class Runtime {
   private sessionFor(room: Room, agent: AgentSpec): Session {
     const existing = this.d.store.latestSessionForRoom(room.id);
     if (existing) return existing;
-    const s: Session = { id: newId("ses"), roomId: room.id, agentId: agent.id, createdAt: this.d.clock.now(), lastActivityAt: this.d.clock.now() };
+    const s: Session = { id: newId("ses"), roomId: room.id, agentId: agent.id, kind: "room", createdAt: this.d.clock.now(), lastActivityAt: this.d.clock.now() };
     this.d.store.putSession(s);
     return s;
   }

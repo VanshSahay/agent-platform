@@ -81,7 +81,7 @@ describe("timers", () => {
       if (t.includes("Retry Graciela")) return callTool("place_call", { to: "+16465550199", who: "Graciela", objective: "retry the reservation for 4 on Friday" });
       return reply("(nothing to report)");
     }, { phone, completer: (s) => (s.includes("holds") ? '{"holds": true, "note": "still unconfirmed"}' : "") });
-    const session = { id: "ses_x", roomId: w.family.id, agentId: w.agent.id, createdAt: w.clock.now(), lastActivityAt: w.clock.now() };
+    const session = { id: "ses_x", roomId: w.family.id, agentId: w.agent.id, kind: "room" as const, createdAt: w.clock.now(), lastActivityAt: w.clock.now() };
     w.app.store.putSession(session);
     const s = Scheduler.createSchedule(w.app.store, w.clock, {
       agentId: w.agent.id,
