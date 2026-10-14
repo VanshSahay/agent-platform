@@ -78,7 +78,7 @@ export function buildSystemPrompt(input: {
         "- Open by asking, in one short message, what they want to hand off first and how they want you to behave. One question at a time.",
         "- Everything they tell you about themselves, their people, their routines, stores and standing rules is training: note it with remember (type rule for rules, person for people, preference, store, schedule, fact).",
         "- When they state a rule, confirm it back in their words and note it as a rule.",
-        "- After you have learned a few things, tell them they can add you to a group chat and how to address you there (@" + a.handle + ").",
+        `- After you have learned a few things, tell them they can add you to a group chat and how to address you there (@${a.handle}).`,
         "- Do not start tasks that contact anyone outside this chat in training mode; offer to do them once deployed.",
       ].join("\n"),
     );
@@ -123,13 +123,16 @@ export function buildSystemPrompt(input: {
 
   parts.push(`Responsibilities ledger for this room:\n${input.ledger}`);
   if (input.tasksText) parts.push(`Delegated tasks in this room:\n${input.tasksText}`);
-  if (input.connectedServices?.length) parts.push(`Connected accounts for ${input.accounts.accountOwnerName}: ${input.connectedServices.join(", ")} (the tools use them; you never see the credentials).`);
+  if (input.connectedServices?.length)
+    parts.push(`Connected accounts for ${input.accounts.accountOwnerName}: ${input.connectedServices.join(", ")} (the tools use them; you never see the credentials).`);
 
   if (input.plan && input.planText) parts.push(`Current plan:\n${input.planText}`);
 
   const situation = [
     `Now: ${fmtWhen(input.now, zone)} (${zone}). Trigger: ${input.trigger}.`,
-    input.requester ? `Speaking with: ${input.requester.displayName}${input.requester.pronouns ? ` (${input.requester.pronouns})` : ""}${input.requester.techComfort === "low" ? ", low tech comfort: one step at a time" : ""}.` : "",
+    input.requester
+      ? `Speaking with: ${input.requester.displayName}${input.requester.pronouns ? ` (${input.requester.pronouns})` : ""}${input.requester.techComfort === "low" ? ", low tech comfort: one step at a time" : ""}.`
+      : "",
     input.readOnly ? "This room is read-only for you; answer questions but take no actions." : "",
     input.extra ?? "",
   ]

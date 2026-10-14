@@ -6,7 +6,7 @@
  */
 import { createApp } from "./app.ts";
 import { FakeClock, HOUR } from "./core/clock.ts";
-import { callTool, lastToolResult, lastUserText, reply, ScriptedModel, toolCallsSoFar, transcriptHas } from "./model/scripted.ts";
+import { callTool, type lastToolResult, lastUserText, reply, ScriptedModel, toolCallsSoFar, transcriptHas } from "./model/scripted.ts";
 import { fakeHands, FakeCommunity, FakePhone, FakeSearch } from "./tools/hands.ts";
 import { seedDemoWorld } from "./demo-world.ts";
 
@@ -28,8 +28,18 @@ const POST = {
   title: "Mandarin-speaking handyman recommendations?",
   body: "Looking for a reliable handyman who speaks Mandarin for small repairs (a dripping kitchen tap) in San Jose. Any recommendations?",
 };
-const CALL_LIN = { to: "+14085550142", who: "Lin Home Repair", objective: "Confirm Mandarin; dripping kitchen tap at a home in San Jose; availability this week; price range. Do not book.", language: "zh" };
-const CALL_GW = { to: "+14085550199", who: "Great Wall Handyman", objective: "Confirm Mandarin; dripping kitchen tap; availability this week; price range. Do not book.", language: "zh" };
+const CALL_LIN = {
+  to: "+14085550142",
+  who: "Lin Home Repair",
+  objective: "Confirm Mandarin; dripping kitchen tap at a home in San Jose; availability this week; price range. Do not book.",
+  language: "zh",
+};
+const CALL_GW = {
+  to: "+14085550199",
+  who: "Great Wall Handyman",
+  objective: "Confirm Mandarin; dripping kitchen tap; availability this week; price range. Do not book.",
+  language: "zh",
+};
 
 /** Results of every call to `name`, oldest first, by pairing tool_use ids with tool_result blocks. */
 function resultsFor(req: Parameters<typeof lastToolResult>[0], name: string): string[] {
@@ -56,7 +66,8 @@ const model = new ScriptedModel((req) => {
   const approvals = countIn(req, "[APPROVED]");
 
   // Follow-up and heartbeat runs: a short, honest check-in.
-  if (lastUserText(req).includes("Follow-up on responsibility")) return reply("Reminder: Lin Home Repair comes to Mum's tomorrow (Thu) at 2pm, $90–120. Ben, are you still around to let him in?");
+  if (lastUserText(req).includes("Follow-up on responsibility"))
+    return reply("Reminder: Lin Home Repair comes to Mum's tomorrow (Thu) at 2pm, $90–120. Ben, are you still around to let him in?");
   if (lastUserText(req).includes("Heartbeat check-in")) return callTool("stay_quiet", { reason: "nothing due before Thursday" });
 
   if (!calls.length) {
@@ -78,7 +89,9 @@ const model = new ScriptedModel((req) => {
   // A gate is open and not yet approved: say so and stop.
   if (waiting > approvals) {
     const who = String(lastCall?.input.who ?? lastCall?.input.community ?? "that");
-    return reply(lastCall?.name === "post_community" ? "I've drafted a post for r/sanjose and asked Ellie to OK it. Nothing is public yet." : `I've asked Ellie to OK calling ${who}.`);
+    return reply(
+      lastCall?.name === "post_community" ? "I've drafted a post for r/sanjose and asked Ellie to OK it. Nothing is public yet." : `I've asked Ellie to OK calling ${who}.`,
+    );
   }
 
   // Community post, then read replies.
@@ -99,10 +112,22 @@ const model = new ScriptedModel((req) => {
       recommendation: "Lin: sooner and cheaper.",
     });
   if (n("wait_for_user_input") === 0)
-    return callTool("wait_for_user_input", { question: "Lin Home Repair (Thu 2pm or Sat 10am, $90–120) or Great Wall (next Tue, $150+)? Which one, and which slot?", kind: "decision", options: ["Lin Thu 2pm", "Lin Sat 10am", "Great Wall Tue"] });
+    return callTool("wait_for_user_input", {
+      question: "Lin Home Repair (Thu 2pm or Sat 10am, $90–120) or Great Wall (next Tue, $150+)? Which one, and which slot?",
+      kind: "decision",
+      options: ["Lin Thu 2pm", "Lin Sat 10am", "Great Wall Tue"],
+    });
   if (lastCall?.name === "wait_for_user_input" && !transcriptHas(req, "Lin Thu 2pm")) return reply("Two options above; tell me which and I'll book it.");
-  if (n("track_commitment") === 0) return callTool("track_commitment", { title: "Lin Home Repair fixes the kitchen tap at Mum's", owner: "me", beneficiary: "Mum", dueAt: "2026-10-15T21:00:00Z", detail: "Thu 2pm, $90–120 incl. parts, Mandarin-speaking" });
-  if (n("remember") === 0) return callTool("remember", { type: "store", text: "Lin Home Repair (408-555-0142) is a Mandarin-speaking handyman the family used for Mum's tap.", about: "Mum" });
+  if (n("track_commitment") === 0)
+    return callTool("track_commitment", {
+      title: "Lin Home Repair fixes the kitchen tap at Mum's",
+      owner: "me",
+      beneficiary: "Mum",
+      dueAt: "2026-10-15T21:00:00Z",
+      detail: "Thu 2pm, $90–120 incl. parts, Mandarin-speaking",
+    });
+  if (n("remember") === 0)
+    return callTool("remember", { type: "store", text: "Lin Home Repair (408-555-0142) is a Mandarin-speaking handyman the family used for Mum's tap.", about: "Mum" });
   return reply("Lin Home Repair is coming Thursday 2pm to fix Mum's tap, $90–120 including parts. I'll remind whoever is there the day before.");
 });
 
@@ -125,7 +150,11 @@ await say(w.family.id, w.wei.id, "@pip Mum's kitchen tap is dripping again. Can 
 clock.advance(20 * 60_000);
 await say(w.family.id, w.ben.id, "I don't know anyone, sorry.");
 clock.advance(5 * 60_000);
-console.log(">>> Ellie's inbox:", app.attention.openFor(w.ellie.id).map((i) => `${i.kind}: ${i.title}`), "\n");
+console.log(
+  ">>> Ellie's inbox:",
+  app.attention.openFor(w.ellie.id).map((i) => `${i.kind}: ${i.title}`),
+  "\n",
+);
 await say(w.ellieDm.id, w.ellie.id, "Yes, post it.");
 clock.advance(5 * 60_000);
 await say(w.ellieDm.id, w.ellie.id, "Yes");
@@ -136,9 +165,15 @@ await say(w.family.id, w.ellie.id, "Lin Thu 2pm");
 
 console.log("=== Ellie's home ===");
 const inbox = app.attention.inbox(w.ellie.id, w.agent.id);
-console.log("Needs you:", inbox.needsYou.map((i) => i.title));
-console.log("Last activity:", inbox.activity.map((r) => `${r.status}: ${r.outcome ?? r.failureReason ?? ""}`));
-console.log("Ledger:\n" + app.commitments.describe(w.family.id, name, "America/Los_Angeles"));
+console.log(
+  "Needs you:",
+  inbox.needsYou.map((i) => i.title),
+);
+console.log(
+  "Last activity:",
+  inbox.activity.map((r) => `${r.status}: ${r.outcome ?? r.failureReason ?? ""}`),
+);
+console.log(`Ledger:\n${app.commitments.describe(w.family.id, name, "America/Los_Angeles")}`);
 const run = app.store.listRuns({ roomId: w.family.id })[0]!;
 console.log("\nRecorded steps for the last run:");
 for (const c of app.store.toolCallsForRun(run.id)) console.log(`  ${c.status.padEnd(7)} ${c.name.padEnd(22)} ${c.labelDone}${c.evidence ? `  [${c.evidence}]` : ""}`);

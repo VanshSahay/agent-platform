@@ -54,9 +54,7 @@ export class Store {
     return parse<AgentSpec>(this.db.query("SELECT data FROM agents WHERE handle = ?").get(handle) as Row | null);
   }
   listAgents(ownerId?: string) {
-    const rows = ownerId
-      ? (this.db.query("SELECT data FROM agents WHERE owner_id = ?").all(ownerId) as Row[])
-      : (this.db.query("SELECT data FROM agents").all() as Row[]);
+    const rows = ownerId ? (this.db.query("SELECT data FROM agents WHERE owner_id = ?").all(ownerId) as Row[]) : (this.db.query("SELECT data FROM agents").all() as Row[]);
     return parseAll<AgentSpec>(rows);
   }
 
@@ -77,9 +75,7 @@ export class Store {
     return parse<Room>(this.db.query("SELECT data FROM rooms WHERE channel = ? AND external_id = ?").get(channel, externalId) as Row | null);
   }
   listRooms(agentId?: string) {
-    const rows = agentId
-      ? (this.db.query("SELECT data FROM rooms WHERE agent_id = ?").all(agentId) as Row[])
-      : (this.db.query("SELECT data FROM rooms").all() as Row[]);
+    const rows = agentId ? (this.db.query("SELECT data FROM rooms WHERE agent_id = ?").all(agentId) as Row[]) : (this.db.query("SELECT data FROM rooms").all() as Row[]);
     return parseAll<Room>(rows);
   }
   putMembership(m: Membership) {
@@ -108,7 +104,9 @@ export class Store {
   }
   latestSessionForRoom(roomId: string) {
     // Only the room's own conversation; a task agent's session must never answer for the room.
-    return parse<Session>(this.db.query("SELECT data FROM sessions WHERE room_id = ? AND kind = 'room' ORDER BY last_activity_at DESC, rowid DESC LIMIT 1").get(roomId) as Row | null);
+    return parse<Session>(
+      this.db.query("SELECT data FROM sessions WHERE room_id = ? AND kind = 'room' ORDER BY last_activity_at DESC, rowid DESC LIMIT 1").get(roomId) as Row | null,
+    );
   }
 
   // ----- runs -----
@@ -126,9 +124,7 @@ export class Store {
   }
   activeRunForSession(sessionId: string) {
     return parse<Run>(
-      this.db
-        .query("SELECT data FROM runs WHERE session_id = ? AND status IN ('running','waiting') ORDER BY started_at DESC, rowid DESC LIMIT 1")
-        .get(sessionId) as Row | null,
+      this.db.query("SELECT data FROM runs WHERE session_id = ? AND status IN ('running','waiting') ORDER BY started_at DESC, rowid DESC LIMIT 1").get(sessionId) as Row | null,
     );
   }
   listRuns(opts: { agentId?: string; roomId?: string; status?: RunStatus[]; limit?: number } = {}) {
@@ -146,7 +142,7 @@ export class Store {
       where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
       args.push(...opts.status);
     }
-    const sql = `SELECT data FROM runs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY started_at DESC, rowid DESC LIMIT ${Math.min(Math.max(1, opts.limit ?? 50), 500)}`;
+    const sql = `SELECT data FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, rowid DESC LIMIT ${Math.min(Math.max(1, opts.limit ?? 50), 500)}`;
     return parseAll<Run>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
 
@@ -155,14 +151,7 @@ export class Store {
     const tx = this.db.transaction(() => {
       const row = this.db.query("SELECT COALESCE(MAX(seq), 0) AS m FROM run_events WHERE session_id = ?").get(e.sessionId) as Row;
       const seq = (row.m as number) + 1;
-      this.db.run("INSERT INTO run_events(session_id, seq, run_id, type, at, data) VALUES (?, ?, ?, ?, ?, ?)", [
-        e.sessionId,
-        seq,
-        e.runId,
-        e.type,
-        e.at,
-        JSON.stringify(e.data),
-      ]);
+      this.db.run("INSERT INTO run_events(session_id, seq, run_id, type, at, data) VALUES (?, ?, ?, ?, ?, ?)", [e.sessionId, seq, e.runId, e.type, e.at, JSON.stringify(e.data)]);
       return seq;
     });
     const seq = tx();
@@ -214,10 +203,14 @@ export class Store {
 
   // ----- messages -----
   putMessage(m: Message) {
-    this.db.run(
-      "INSERT INTO messages(id, session_id, room_id, role, at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
-      [m.id, m.sessionId, m.roomId, m.role, m.at, JSON.stringify(m)],
-    );
+    this.db.run("INSERT INTO messages(id, session_id, room_id, role, at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data", [
+      m.id,
+      m.sessionId,
+      m.roomId,
+      m.role,
+      m.at,
+      JSON.stringify(m),
+    ]);
   }
   getMessage(id: string) {
     return parse<Message>(this.db.query("SELECT data FROM messages WHERE id = ?").get(id) as Row | null);
@@ -234,10 +227,17 @@ export class Store {
   // ----- memories -----
   putMemory(m: Memory) {
     const tx = this.db.transaction(() => {
-      this.db.run(
-        "INSERT OR REPLACE INTO memories(id, agent_id, scope, scope_id, type, stated_at, retracted, superseded, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [m.id, m.agentId, m.scope, m.scopeId, m.type, m.statedAt, m.retractedAt ? 1 : 0, m.supersededBy ? 1 : 0, JSON.stringify(m)],
-      );
+      this.db.run("INSERT OR REPLACE INTO memories(id, agent_id, scope, scope_id, type, stated_at, retracted, superseded, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        m.id,
+        m.agentId,
+        m.scope,
+        m.scopeId,
+        m.type,
+        m.statedAt,
+        m.retractedAt ? 1 : 0,
+        m.supersededBy ? 1 : 0,
+        JSON.stringify(m),
+      ]);
       this.db.run("DELETE FROM memories_fts WHERE id = ?", [m.id]);
       this.db.run("INSERT INTO memories_fts(id, text, aliases) VALUES (?, ?, ?)", [m.id, m.text, m.aliases.join(" ")]);
     });
@@ -284,13 +284,7 @@ export class Store {
     return parseAll<Memory>(rows);
   }
   putProfile(p: Profile) {
-    this.db.run("INSERT OR REPLACE INTO profiles(agent_id, scope, scope_id, text, derived_at) VALUES (?, ?, ?, ?, ?)", [
-      p.agentId,
-      p.scope,
-      p.scopeId,
-      p.text,
-      p.derivedAt,
-    ]);
+    this.db.run("INSERT OR REPLACE INTO profiles(agent_id, scope, scope_id, text, derived_at) VALUES (?, ?, ?, ?, ?)", [p.agentId, p.scope, p.scopeId, p.text, p.derivedAt]);
   }
   getProfile(agentId: string, scope: MemoryScope, scopeId: string): Profile | undefined {
     const r = this.db.query("SELECT * FROM profiles WHERE agent_id = ? AND scope = ? AND scope_id = ?").get(agentId, scope, scopeId) as Row | null;
@@ -299,15 +293,10 @@ export class Store {
 
   // ----- attention -----
   putAttention(a: AttentionItem) {
-    this.db.run("INSERT INTO attention(id, agent_id, room_id, assignee_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, assignee_id = excluded.assignee_id, status = excluded.status, created_at = excluded.created_at, data = excluded.data", [
-      a.id,
-      a.agentId,
-      a.roomId,
-      a.assigneeId,
-      a.status,
-      a.createdAt,
-      JSON.stringify(a),
-    ]);
+    this.db.run(
+      "INSERT INTO attention(id, agent_id, room_id, assignee_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, assignee_id = excluded.assignee_id, status = excluded.status, created_at = excluded.created_at, data = excluded.data",
+      [a.id, a.agentId, a.roomId, a.assigneeId, a.status, a.createdAt, JSON.stringify(a)],
+    );
   }
   getAttention(id: string) {
     return parse<AttentionItem>(this.db.query("SELECT data FROM attention WHERE id = ?").get(id) as Row | null);
@@ -331,20 +320,16 @@ export class Store {
       where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
       args.push(...opts.status);
     }
-    const sql = `SELECT data FROM attention ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC, rowid DESC`;
+    const sql = `SELECT data FROM attention ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, rowid DESC`;
     return parseAll<AttentionItem>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
 
   // ----- schedules and staged items -----
   putSchedule(s: Schedule) {
-    this.db.run("INSERT INTO schedules(id, agent_id, room_id, paused, next_run_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, paused = excluded.paused, next_run_at = excluded.next_run_at, data = excluded.data", [
-      s.id,
-      s.agentId,
-      s.roomId,
-      s.paused ? 1 : 0,
-      s.nextRunAt ?? null,
-      JSON.stringify(s),
-    ]);
+    this.db.run(
+      "INSERT INTO schedules(id, agent_id, room_id, paused, next_run_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, paused = excluded.paused, next_run_at = excluded.next_run_at, data = excluded.data",
+      [s.id, s.agentId, s.roomId, s.paused ? 1 : 0, s.nextRunAt ?? null, JSON.stringify(s)],
+    );
   }
   getSchedule(id: string) {
     return parse<Schedule>(this.db.query("SELECT data FROM schedules WHERE id = ?").get(id) as Row | null);
@@ -360,7 +345,7 @@ export class Store {
       where.push("room_id = ?");
       args.push(opts.roomId);
     }
-    const sql = `SELECT data FROM schedules ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
+    const sql = `SELECT data FROM schedules ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`;
     return parseAll<Schedule>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
   dueSchedules(now: number) {
@@ -387,14 +372,10 @@ export class Store {
 
   // ----- commitments -----
   putCommitment(c: Commitment) {
-    this.db.run("INSERT INTO commitments(id, room_id, owner_id, status, next_nudge_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET room_id = excluded.room_id, owner_id = excluded.owner_id, status = excluded.status, next_nudge_at = excluded.next_nudge_at, data = excluded.data", [
-      c.id,
-      c.roomId,
-      c.ownerId,
-      c.status,
-      c.nextNudgeAt ?? null,
-      JSON.stringify(c),
-    ]);
+    this.db.run(
+      "INSERT INTO commitments(id, room_id, owner_id, status, next_nudge_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET room_id = excluded.room_id, owner_id = excluded.owner_id, status = excluded.status, next_nudge_at = excluded.next_nudge_at, data = excluded.data",
+      [c.id, c.roomId, c.ownerId, c.status, c.nextNudgeAt ?? null, JSON.stringify(c)],
+    );
   }
   getCommitment(id: string) {
     return parse<Commitment>(this.db.query("SELECT data FROM commitments WHERE id = ?").get(id) as Row | null);
@@ -414,7 +395,7 @@ export class Store {
       where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
       args.push(...opts.status);
     }
-    const sql = `SELECT data FROM commitments ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
+    const sql = `SELECT data FROM commitments ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`;
     return parseAll<Commitment>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
   dueCommitments(now: number) {
@@ -446,7 +427,10 @@ export class Store {
 
   // ----- tasks -----
   putTask(t: Task) {
-    this.db.run("INSERT INTO tasks(id, agent_id, room_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, status = excluded.status, created_at = excluded.created_at, data = excluded.data", [t.id, t.agentId, t.roomId, t.status, t.createdAt, JSON.stringify(t)]);
+    this.db.run(
+      "INSERT INTO tasks(id, agent_id, room_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, status = excluded.status, created_at = excluded.created_at, data = excluded.data",
+      [t.id, t.agentId, t.roomId, t.status, t.createdAt, JSON.stringify(t)],
+    );
   }
   getTask(id: string) {
     return parse<Task>(this.db.query("SELECT data FROM tasks WHERE id = ?").get(id) as Row | null);

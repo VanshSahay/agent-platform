@@ -38,7 +38,17 @@ export interface App {
 }
 
 /** Compose the product. Everything is injectable so tests run offline. */
-export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelClient; hands?: Hands; skillsDir?: string; heartbeatEveryMs?: number; maxTurns?: number; compactAfter?: number; masterKey?: string }): App {
+export function createApp(opts: {
+  dbPath?: string;
+  clock?: Clock;
+  model: ModelClient;
+  hands?: Hands;
+  skillsDir?: string;
+  heartbeatEveryMs?: number;
+  maxTurns?: number;
+  compactAfter?: number;
+  masterKey?: string;
+}): App {
   const clock = opts.clock ?? systemClock;
   const store = new Store(openDb(opts.dbPath ?? ":memory:"));
   const memory = new MemoryService(store, clock);
@@ -55,7 +65,23 @@ export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelCl
   };
   const tasks = new TaskService(store, clock);
   const vault = new Vault(store, clock, opts.masterKey ?? "dev-only-master-key");
-  const runtime = new Runtime({ store, clock, model: opts.model, memory, rooms, attention, commitments, planner, hands, skills, tasks, vault, deliver, maxTurns: opts.maxTurns, compactAfter: opts.compactAfter });
+  const runtime = new Runtime({
+    store,
+    clock,
+    model: opts.model,
+    memory,
+    rooms,
+    attention,
+    commitments,
+    planner,
+    hands,
+    skills,
+    tasks,
+    vault,
+    deliver,
+    maxTurns: opts.maxTurns,
+    compactAfter: opts.compactAfter,
+  });
   const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
   const consolidator = new Consolidator(store, clock, opts.model, memory);
   return {

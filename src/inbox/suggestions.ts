@@ -36,14 +36,32 @@ export class SuggestionService {
       for (const c of this.commitments.open(room.id)) {
         const overdue = c.dueAt !== undefined && c.dueAt < now;
         if (c.status === "blocked" || overdue) {
-          out.push({ id: `s_${c.id}_chase`, roomId: room.id, title: `Chase "${c.title}"`, prompt: `Check on "${c.title}" with ${nameOf(c.ownerId)} and tell the room where it stands.`, category: "follow-up" });
+          out.push({
+            id: `s_${c.id}_chase`,
+            roomId: room.id,
+            title: `Chase "${c.title}"`,
+            prompt: `Check on "${c.title}" with ${nameOf(c.ownerId)} and tell the room where it stands.`,
+            category: "follow-up",
+          });
         } else if (c.dueAt !== undefined && c.dueAt - now < 2 * DAY) {
-          out.push({ id: `s_${c.id}_confirm`, roomId: room.id, title: `Confirm "${c.title}"`, prompt: `Confirm "${c.title}" is still on for ${fmtWhen(c.dueAt, person.timezone)} and remind ${nameOf(c.ownerId)}.`, category: "upcoming" });
+          out.push({
+            id: `s_${c.id}_confirm`,
+            roomId: room.id,
+            title: `Confirm "${c.title}"`,
+            prompt: `Confirm "${c.title}" is still on for ${fmtWhen(c.dueAt, person.timezone)} and remind ${nameOf(c.ownerId)}.`,
+            category: "upcoming",
+          });
         }
       }
       for (const s of this.store.listSchedules({ roomId: room.id })) {
         if (!s.paused && s.nextRunAt !== undefined && s.nextRunAt - now < DAY) {
-          out.push({ id: `s_${s.id}_today`, roomId: room.id, title: `"${s.title}" runs today`, prompt: `Before "${s.title}" runs, check its premise still holds and tell me if anything changed.`, category: "schedule" });
+          out.push({
+            id: `s_${s.id}_today`,
+            roomId: room.id,
+            title: `"${s.title}" runs today`,
+            prompt: `Before "${s.title}" runs, check its premise still holds and tell me if anything changed.`,
+            category: "schedule",
+          });
         }
       }
     }
@@ -61,7 +79,11 @@ export class SuggestionService {
       .messagesForRoom(room.id, 20)
       .map((m) => `${m.role === "assistant" ? agent.name : (this.store.getPerson(m.authorId)?.displayName ?? "someone")}: ${m.text.slice(0, 160)}`)
       .join("\n");
-    const ledger = this.commitments.open(room.id).map((c) => `- ${c.title} (${c.status})`).join("\n") || "(empty)";
+    const ledger =
+      this.commitments
+        .open(room.id)
+        .map((c) => `- ${c.title} (${c.status})`)
+        .join("\n") || "(empty)";
     const memories = this.store
       .listMemories(agent.id, { scope: "room", scopeId: room.id })
       .slice(0, 12)

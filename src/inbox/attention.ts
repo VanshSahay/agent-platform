@@ -70,7 +70,7 @@ export class AttentionService {
 
   dismiss(id: Id) {
     const item = this.store.getAttention(id);
-    if (!item || item.status !== "open") return item;
+    if (item?.status !== "open") return item;
     item.status = "dismissed";
     item.resolvedAt = this.clock.now();
     this.store.putAttention(item);

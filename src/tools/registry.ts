@@ -101,7 +101,8 @@ function parseOutreach(v: unknown): Outreach[] {
   for (const x of v) {
     if (!x || typeof x !== "object") continue;
     const o = x as Record<string, unknown>;
-    if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how)) out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
+    if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how))
+      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
   }
   return out.slice(0, 10);
 }
@@ -183,7 +184,8 @@ export const TOOLS: ToolDef[] = [
           url,
           action: { click: s(input.click) || undefined, fill: fill && s(fill.selector) ? { selector: s(fill.selector), value: s(fill.value) } : undefined },
         });
-        if (!r.text.trim()) return { ok: true, content: { url: r.url, title: r.title, text: "", links: r.links }, evidence: r.evidence, stall: `empty page at ${url}`, approach: "browse" };
+        if (!r.text.trim())
+          return { ok: true, content: { url: r.url, title: r.title, text: "", links: r.links }, evidence: r.evidence, stall: `empty page at ${url}`, approach: "browse" };
         return { ok: true, content: { url: r.url, title: r.title, text: r.text, links: r.links.slice(0, 30) }, evidence: r.evidence, approach: "browse" };
       } catch (e) {
         return { ok: false, content: `Could not load ${url}: ${String((e as Error).message).slice(0, 200)}`, stall: `page failed: ${url}`, approach: "browse" };
@@ -390,7 +392,12 @@ export const TOOLS: ToolDef[] = [
         return { ok: true, content: "Waiting for the owner's OK before posting anything public.", waitingOn: gate.item, roomNotice: gate.notice, approach: "community_post" };
       }
       const r = await ctx.hands.community.post({ community: s(input.community), title: s(input.title), body: s(input.body), language: s(input.language) || undefined });
-      return { ok: true, content: { postId: r.postId, url: r.url, note: "Check replies later with read_community_replies, or schedule a check." }, evidence: r.evidence, approach: "community_post" };
+      return {
+        ok: true,
+        content: { postId: r.postId, url: r.url, note: "Check replies later with read_community_replies, or schedule a check." },
+        evidence: r.evidence,
+        approach: "community_post",
+      };
     },
   },
   {
@@ -541,7 +548,8 @@ export const TOOLS: ToolDef[] = [
           return { ok: true, content: "Asked the owner before scheduling.", waitingOn: gate.item, roomNotice: gate.notice };
         }
       }
-      if (outreach.length && ctx.requesterId === ctx.agent.ownerId) ctx.dm(ctx.agent.ownerId, `Scheduled "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
+      if (outreach.length && ctx.requesterId === ctx.agent.ownerId)
+        ctx.dm(ctx.agent.ownerId, `Scheduled "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
       const { Scheduler } = await import("../scheduler/scheduler.ts");
       const sched = Scheduler.createSchedule(ctx.store, ctx.clock, {
         agentId: ctx.agent.id,
@@ -605,7 +613,11 @@ export const TOOLS: ToolDef[] = [
         dueAt: due && Number.isFinite(due) ? due : undefined,
         sourceRunId: ctx.run.id,
       });
-      return { ok: true, content: { commitmentId: c.id, owner: owner.name, nextNudgeAt: c.nextNudgeAt ? new Date(c.nextNudgeAt).toISOString() : null }, evidence: `commitment:${c.id}` };
+      return {
+        ok: true,
+        content: { commitmentId: c.id, owner: owner.name, nextNudgeAt: c.nextNudgeAt ? new Date(c.nextNudgeAt).toISOString() : null },
+        evidence: `commitment:${c.id}`,
+      };
     },
   },
   {
@@ -699,9 +711,20 @@ export const TOOLS: ToolDef[] = [
     sideEffect: false,
     async run(input, ctx) {
       if (ctx.session.taskId) return { ok: false, content: "You are already a task agent; do the work here instead of delegating again." };
-      const task = ctx.tasks.create({ agentId: ctx.agent.id, roomId: ctx.room.id, requesterId: ctx.requesterId, title: s(input.title), instructions: s(input.instructions), createdByRunId: ctx.run.id });
+      const task = ctx.tasks.create({
+        agentId: ctx.agent.id,
+        roomId: ctx.room.id,
+        requesterId: ctx.requesterId,
+        title: s(input.title),
+        instructions: s(input.instructions),
+        createdByRunId: ctx.run.id,
+      });
       ctx.delegate(task);
-      return { ok: true, content: `Delegated as task [${task.id}]. It starts when you finish this reply. Tell the room in one short line that you're on it and stop; do not do the work here.`, evidence: `task:${task.id}` };
+      return {
+        ok: true,
+        content: `Delegated as task [${task.id}]. It starts when you finish this reply. Tell the room in one short line that you're on it and stop; do not do the work here.`,
+        evidence: `task:${task.id}`,
+      };
     },
   },
   {
@@ -750,7 +773,9 @@ export const TOOLS: ToolDef[] = [
       const target = ctx.store.getTask(s(input.taskId));
       if (!target || target.roomId !== ctx.room.id) return { ok: false, content: "No such task in this room." };
       const ok = ctx.steerTask(s(input.taskId), s(input.note));
-      return ok ? { ok: true, content: "The task agent will see it at its next step." } : { ok: false, content: "That task is not running right now (it may be waiting on someone or finished); update_task or a new delegate_task instead." };
+      return ok
+        ? { ok: true, content: "The task agent will see it at its next step." }
+        : { ok: false, content: "That task is not running right now (it may be waiting on someone or finished); update_task or a new delegate_task instead." };
     },
   },
   {
@@ -792,7 +817,8 @@ export const TOOLS: ToolDef[] = [
           return { ok: true, content: "Asked the owner before setting the watch.", waitingOn: gate.item, roomNotice: gate.notice };
         }
       }
-      if (outreach.length && ctx.requesterId === ctx.agent.ownerId) ctx.dm(ctx.agent.ownerId, `Watch "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
+      if (outreach.length && ctx.requesterId === ctx.agent.ownerId)
+        ctx.dm(ctx.agent.ownerId, `Watch "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
       const zone = ctx.store.getPerson(ctx.agent.ownerId)?.timezone ?? "UTC";
       const untilDays = n(input.untilDays) ?? 14;
       const { Scheduler } = await import("../scheduler/scheduler.ts");
@@ -807,7 +833,11 @@ export const TOOLS: ToolDef[] = [
         watch: { condition: s(input.condition), action: s(input.action), until: ctx.clock.now() + untilDays * 24 * 3600 * 1000 },
         createdByRunId: ctx.run.id,
       });
-      return { ok: true, content: { scheduleId: sched.id, everyHours: every, firstCheck: sched.nextRunAt ? new Date(sched.nextRunAt).toISOString() : null }, evidence: `schedule:${sched.id}` };
+      return {
+        ok: true,
+        content: { scheduleId: sched.id, everyHours: every, firstCheck: sched.nextRunAt ? new Date(sched.nextRunAt).toISOString() : null },
+        evidence: `schedule:${sched.id}`,
+      };
     },
   },
 ];

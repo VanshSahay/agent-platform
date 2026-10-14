@@ -21,7 +21,7 @@ describe("memory", () => {
   });
 
   test("remember writes observations; the owner's rules take effect at once", async () => {
-    const w = familyWorld((req, i) => {
+    const w = familyWorld((_req, i) => {
       if (i === 0) return callTool("remember", { type: "rule", text: "Never text Mum after 9pm." });
       if (i === 1) return reply("Noted.");
       if (i === 2) return callTool("remember", { type: "preference", text: "Mum likes the Chinese pharmacy on 10th St.", about: "Mum" });
@@ -53,7 +53,13 @@ describe("memory", () => {
       return "";
     };
     const w = familyWorld(() => reply("ok"), { completer });
-    const a = w.app.memory.write({ agentId: w.agent.id, scope: "person", scopeId: "ellie", type: "observation", text: "[preference] Ellie said afternoons are better for Mum now." });
+    const a = w.app.memory.write({
+      agentId: w.agent.id,
+      scope: "person",
+      scopeId: "ellie",
+      type: "observation",
+      text: "[preference] Ellie said afternoons are better for Mum now.",
+    });
     const b = w.app.memory.write({ agentId: w.agent.id, scope: "person", scopeId: "ellie", type: "observation", text: "[fact] The OTP was 442913." });
     const c = w.app.memory.write({ agentId: w.agent.id, scope: "person", scopeId: "ellie", type: "observation", text: "[store] Ellie uses Safeway on Main for groceries." });
     const stats = await w.app.consolidator.runFor(w.agent);
@@ -77,13 +83,16 @@ describe("memory", () => {
 describe("timers", () => {
   test("a scheduled action fires with its authorisation, and disclosed outreach does not re-ask", async () => {
     const phone = new FakePhone(() => ({ summary: "Table for 4 at 7:15 confirmed." }));
-    const w = familyWorld((req) => {
-      const t = JSON.stringify(req.messages);
-      const last = lastToolResult(req) ?? "";
-      if (last.includes("Table for 4")) return reply("Booked: table for 4 at 7:15.");
-      if (t.includes("Retry Graciela")) return callTool("place_call", { to: "+16465550199", who: "Graciela", objective: "retry the reservation for 4 on Friday" });
-      return reply("(nothing to report)");
-    }, { phone, completer: (s) => (s.includes("holds") ? '{"holds": true, "note": "still unconfirmed"}' : "") });
+    const w = familyWorld(
+      (req) => {
+        const t = JSON.stringify(req.messages);
+        const last = lastToolResult(req) ?? "";
+        if (last.includes("Table for 4")) return reply("Booked: table for 4 at 7:15.");
+        if (t.includes("Retry Graciela")) return callTool("place_call", { to: "+16465550199", who: "Graciela", objective: "retry the reservation for 4 on Friday" });
+        return reply("(nothing to report)");
+      },
+      { phone, completer: (s) => (s.includes("holds") ? '{"holds": true, "note": "still unconfirmed"}' : "") },
+    );
     const session = { id: "ses_x", roomId: w.family.id, agentId: w.agent.id, kind: "room" as const, createdAt: w.clock.now(), lastActivityAt: w.clock.now() };
     w.app.store.putSession(session);
     const s = Scheduler.createSchedule(w.app.store, w.clock, {
@@ -93,7 +102,11 @@ describe("timers", () => {
       title: "Retry Graciela",
       prompt: "Call Graciela and retry the reservation for 4 on Friday.",
       runAt: w.clock.now() + HOUR,
-      authorization: { basis: "user_requested", disclosedOutreach: [{ who: "Graciela", how: "phone", why: "retry the reservation" }], premise: "the reservation is still unconfirmed" },
+      authorization: {
+        basis: "user_requested",
+        disclosedOutreach: [{ who: "Graciela", how: "phone", why: "retry the reservation" }],
+        premise: "the reservation is still unconfirmed",
+      },
     });
     expect(s.nextRunAt).toBe(w.clock.now() + HOUR);
     expect((await w.app.scheduler.tick()).fired).toBe(0);
@@ -109,11 +122,14 @@ describe("timers", () => {
 
   test("when the premise no longer holds, the schedule is paused and the agent reports instead of acting", async () => {
     const phone = new FakePhone();
-    const w = familyWorld((req) => {
-      const t = JSON.stringify(req.messages);
-      expect(t).toContain("no longer seems to hold");
-      return reply("The reservation was already confirmed, so I didn't call.");
-    }, { phone, completer: (s) => (s.includes("holds") ? '{"holds": false, "note": "the ledger shows it confirmed"}' : "") });
+    const w = familyWorld(
+      (req) => {
+        const t = JSON.stringify(req.messages);
+        expect(t).toContain("no longer seems to hold");
+        return reply("The reservation was already confirmed, so I didn't call.");
+      },
+      { phone, completer: (s) => (s.includes("holds") ? '{"holds": false, "note": "the ledger shows it confirmed"}' : "") },
+    );
     const s = Scheduler.createSchedule(w.app.store, w.clock, {
       agentId: w.agent.id,
       roomId: w.family.id,
@@ -168,8 +184,11 @@ describe("timers", () => {
   });
 
   test("heartbeat wakes the agent at most once a day per room and only when there is standing work", async () => {
-    let runs = 0;
-    const w = familyWorld(() => (runs++, reply("(nothing to report)")));
+    let _runs = 0;
+    const w = familyWorld(() => {
+      _runs++;
+      return reply("(nothing to report)");
+    });
     expect((await w.app.scheduler.tick()).heartbeats).toBe(0);
     w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: "ben", title: "Fix the gate" });
     w.clock.advance(DAY + 1);

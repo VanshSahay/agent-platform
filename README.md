@@ -45,7 +45,10 @@ What gets wired depends on `.env`:
 | `PROJECT_ID`, `PROJECT_SECRET` | iMessage through Photon Spectrum. Each iMessage chat becomes a room; senders become people; the owner is recognised by the phone number on their person record (`PATCH /api/people/:id {phoneE164}`). |
 | `BROWSERBASE_API_KEY` | The `browse_page` tool runs in a cloud browser. Without it, pages are read as text through Jina Reader. |
 | `BRAVE_API_KEY`, `SEARCH` | `web_search` uses Exa's public endpoint by default (no key; the channel [Agent Reach](https://github.com/Panniantong/agent-reach) recommends, and it answers "Mandarin-speaking handyman San Jose" with names and phone numbers). A Brave key switches to Brave; `SEARCH=duckduckgo` uses the keyless scrape. |
-| `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Sign-in on the owner UI; every API call is made as the signed-in person. |
+| `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Sign-in on the owner UI; every API call is made as the signed-in person, and each route checks that person against the room, agent or item it touches (see the API section). Without these the API trusts the "You" picker, so the server binds to loopback only. |
+| `HOST`, `PORT` | Where to listen. `HOST` defaults to `127.0.0.1` without Clerk and `0.0.0.0` with it; a non-loopback host is refused unless Clerk and `MASTER_KEY` are both set. |
+| `MASTER_KEY` | Encrypts members' credentials in the vault. Required off loopback. |
+| `EVENT_TOKEN` | Shared secret for `POST /api/events` and `POST /api/tick` (`Authorization: Bearer …`). Without it, only a signed-in agent owner may call them. |
 
 Without a model key the server still boots and the agent only acknowledges messages, so the UI can be explored.
 
@@ -53,7 +56,7 @@ Offline, with no key, the whole runtime runs against a scripted model:
 
 ```bash
 bun run demo    # the handyman errand in a family chat, end to end
-bun test        # 58 tests across the run loop, gates, care, planner, memory, timers, hands, eval
+bun test        # 85 tests across the run loop, gates, care, planner, memory, timers, hands, web api, channels, eval
 bun run eval    # six family errands played against the configured model, graded on stored state
 bun run typecheck
 ```
@@ -98,6 +101,23 @@ POST /api/events                     {source, summary, detail?, roomId|agentId, 
 GET|POST /api/people/:id/credentials {service, secret}  own credentials into the vault (names only come back)
 POST /api/tick                       run the scheduler once
 ```
+
+Who may call what, when sign-in is on (every route is denied unless a rule allows it):
+
+```
+public         /, /health, static files, /api/me (null when signed out)
+signed in      /api/state (only the rooms, agents and people you share a room with), GET/POST /api/people, POST /api/agents
+self           PATCH /api/people/:id, /api/people/:id/credentials
+room member    messages, sessions (events, watch), runs (get, stop), POST /api/commitments/:id;
+               /api/tasks, /api/schedules, /api/commitments lists are filtered to your rooms
+room owner     POST /api/rooms/:id/members, POST /api/schedules, /api/schedules/:id/pause
+agent owner    PATCH /api/agents/:id, deploy, POST /api/rooms, /api/memory (all), /api/profiles
+agent reach    /api/inbox, /api/suggestions (owner or a member of one of its rooms; radar and activity filtered to your rooms)
+assignee       /api/attention/:id/resolve, /dismiss
+machines       POST /api/events and /api/tick: `Authorization: Bearer <EVENT_TOKEN>`, or a signed-in agent owner
+```
+
+`POST /api/people` always assigns the id; `POST /api/schedules` always records `user_requested` with no disclosed outreach. Bodies must be JSON objects sent as `application/json`.
 
 ## Starting a fresh repository
 

@@ -43,7 +43,13 @@ export class ExaSearch implements SearchProvider {
 
 /** The endpoint answers as JSON or as one SSE "message" event; both carry the MCP result. */
 export function mcpText(raw: string): string {
-  const payloads = raw.startsWith("event:") || raw.startsWith("data:") ? raw.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()) : [raw];
+  const payloads =
+    raw.startsWith("event:") || raw.startsWith("data:")
+      ? raw
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).trim())
+      : [raw];
   const out: string[] = [];
   for (const p of payloads) {
     try {

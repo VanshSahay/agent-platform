@@ -72,11 +72,13 @@ export class BrowserbaseBrowser implements BrowserProvider {
       else if (input.action?.click || input.action?.fill) await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
       const title = await page.title();
       const text = (await page.evaluate(() => document.body?.innerText ?? "")).replace(/\n{3,}/g, "\n\n").slice(0, MAX_TEXT);
-      const links = (await page.evaluate(() =>
-        Array.from(document.querySelectorAll("a[href]"))
-          .slice(0, 60)
-          .map((a) => ({ text: (a.textContent ?? "").trim().slice(0, 80), href: (a as HTMLAnchorElement).href })),
-      )).filter((l) => l.text);
+      const links = (
+        await page.evaluate(() =>
+          Array.from(document.querySelectorAll("a[href]"))
+            .slice(0, 60)
+            .map((a) => ({ text: (a.textContent ?? "").trim().slice(0, 80), href: (a as HTMLAnchorElement).href })),
+        )
+      ).filter((l) => l.text);
       return { url: page.url(), title, text, links, evidence: `browserbase:${session.id}` };
     } finally {
       await browser?.close().catch(() => undefined);

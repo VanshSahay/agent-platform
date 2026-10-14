@@ -39,7 +39,8 @@ describe("task agents", () => {
         if (!toolCallsSoFar(req).some((c) => c.name === "update_task")) return callTool("update_task", { progress: "Found two candidates" });
         return reply("Done: Lin Home Repair can come Thursday 2pm, $90–120.");
       }
-      if (i === 0) return callTool("delegate_task", { title: "Find a Mandarin-speaking handyman", instructions: "Search, compare two or three, report with phone numbers. Do not book." });
+      if (i === 0)
+        return callTool("delegate_task", { title: "Find a Mandarin-speaking handyman", instructions: "Search, compare two or three, report with phone numbers. Do not book." });
       return reply("On it. I'll report back here when I have options.");
     });
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip find a handyman for Mum's tap" });
@@ -68,7 +69,9 @@ describe("task agents", () => {
       const calls = toolCallsSoFar(req).map((c) => c.name);
       if (transcriptHas(req, "[APPROVED]")) {
         expect(t).toContain("Already told the room");
-        return calls.filter((c) => c === "send_sms").length < 2 ? callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm for Mum." }) : reply("Texted the clinic; they'll confirm by tonight.");
+        return calls.filter((c) => c === "send_sms").length < 2
+          ? callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm for Mum." })
+          : reply("Texted the clinic; they'll confirm by tonight.");
       }
       if (!calls.includes("update_task")) return callTool("update_task", { progress: "Drafted the text", tellRoom: true });
       return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm for Mum." });
@@ -93,8 +96,12 @@ describe("task agents", () => {
       const t = lastUserText(req);
       if (i === 0) return callTool("delegate_task", { title: "Compare dentists", instructions: "Compare three dentists near Mum." });
       if (i === 1) return reply("On it.");
-      if (t.includes("You are the task agent") || t.includes("[while you were working]")) return gate.then(() => (transcriptHas(req, "while you were working") ? reply("Noted the budget; here are two under $200.") : callTool("search_memory", { query: "dentist" })));
-      if (t.includes("under $200") && !toolCallsSoFar(req).some((c) => c.name === "steer_task")) return callTool("steer_task", { taskId: w.app.store.listTasks({ roomId: w.family.id })[0]!.id, note: "Budget is under $200." });
+      if (t.includes("You are the task agent") || t.includes("[while you were working]"))
+        return gate.then(() =>
+          transcriptHas(req, "while you were working") ? reply("Noted the budget; here are two under $200.") : callTool("search_memory", { query: "dentist" }),
+        );
+      if (t.includes("under $200") && !toolCallsSoFar(req).some((c) => c.name === "steer_task"))
+        return callTool("steer_task", { taskId: w.app.store.listTasks({ roomId: w.family.id })[0]!.id, note: "Budget is under $200." });
       return reply("Passed that on to the search.");
     });
     await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip compare dentists for Mum" });
@@ -115,9 +122,16 @@ describe("watches", () => {
     let confirmed = false;
     const w = familyWorld((req, i) => {
       const t = lastUserText(req);
-      if (i === 0) return callTool("watch_for", { title: "Pharmacy confirmation", condition: "the pharmacy has confirmed Mum's prescription", action: "tell the room it is ready for pickup", everyHours: 4 });
+      if (i === 0)
+        return callTool("watch_for", {
+          title: "Pharmacy confirmation",
+          condition: "the pharmacy has confirmed Mum's prescription",
+          action: "tell the room it is ready for pickup",
+          everyHours: 4,
+        });
       if (t.includes("Heartbeat")) return callTool("stay_quiet", { reason: "nothing new" });
-      if (t.includes('Watch "Pharmacy confirmation"')) return confirmed ? reply("The pharmacy confirmed: Mum's prescription is ready for pickup.") : callTool("stay_quiet", { reason: "no confirmation yet" });
+      if (t.includes('Watch "Pharmacy confirmation"'))
+        return confirmed ? reply("The pharmacy confirmed: Mum's prescription is ready for pickup.") : callTool("stay_quiet", { reason: "no confirmation yet" });
       return reply("Watching for the pharmacy's confirmation; I'll check every four hours.");
     });
     await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip tell us when the pharmacy confirms Mum's prescription" });
@@ -142,10 +156,18 @@ describe("app events", () => {
     const w = familyWorld((req) => {
       const t = lastUserText(req);
       if (t.includes("Event from gmail") && t.includes("newsletter")) return callTool("stay_quiet", { reason: "a newsletter, nothing for the family" });
-      if (t.includes("Event from gmail") && !toolCallsSoFar(req).some((c) => c.name === "update_commitment")) return callTool("update_commitment", { commitmentId: w.app.commitments.open(w.family.id)[0]!.id, status: "done", detail: "Clinic confirmed by email" });
+      if (t.includes("Event from gmail") && !toolCallsSoFar(req).some((c) => c.name === "update_commitment"))
+        return callTool("update_commitment", { commitmentId: w.app.commitments.open(w.family.id)[0]!.id, status: "done", detail: "Clinic confirmed by email" });
       return reply("Mum's Thursday appointment is confirmed by the clinic.");
     });
-    w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: w.agent.id, beneficiaryId: "mum", title: "Confirm Thursday with the clinic", dueAt: w.clock.now() + DAY });
+    w.app.commitments.track({
+      roomId: w.family.id,
+      agentId: w.agent.id,
+      ownerId: w.agent.id,
+      beneficiaryId: "mum",
+      title: "Confirm Thursday with the clinic",
+      dueAt: w.clock.now() + DAY,
+    });
     const quiet = await w.app.runtime.handleEvent({ roomId: w.family.id, source: "gmail", summary: "Weekly newsletter from the pharmacy", dedupKey: "mail:1" });
     expect(quiet?.quiet).toBe(true);
     expect(w.deliveries).toHaveLength(0);
@@ -182,7 +204,9 @@ describe("credential vault", () => {
 
 describe("compaction", () => {
   test("a long session is folded into a summary the prompt carries instead of the old messages", async () => {
-    const w = familyWorld(() => reply("ok"), { completer: (system) => (system.includes("Fold a chat history") ? "Ellie asked about Mum's dentist (Dr. Nguyen, Willow Glen) on Oct 13; Ben drives Thursdays." : "") });
+    const w = familyWorld(() => reply("ok"), {
+      completer: (system) => (system.includes("Fold a chat history") ? "Ellie asked about Mum's dentist (Dr. Nguyen, Willow Glen) on Oct 13; Ben drives Thursdays." : ""),
+    });
     for (let i = 0; i < 36; i++) await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: `@pip note ${i}` });
     const session = w.app.store.latestSessionForRoom(w.family.id)!;
     expect(session.summary).toContain("Dr. Nguyen");
@@ -209,7 +233,11 @@ describe("reading an answer", () => {
   });
 
   test("'no, I don't approve' declines the gate instead of approving it", async () => {
-    const w = familyWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 180, what: "a new kettle", where: "Target" }) : reply(transcriptHas(req, "[DECLINED]") ? "Understood, not buying it." : "Waiting.")));
+    const w = familyWorld((req, i) =>
+      i === 0
+        ? callTool("request_purchase", { amountUsd: 180, what: "a new kettle", where: "Target" })
+        : reply(transcriptHas(req, "[DECLINED]") ? "Understood, not buying it." : "Waiting."),
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip buy Mum a kettle, about $180" });
     expect(run?.status).toBe("waiting");
     await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "no, I don't approve that" });
@@ -224,7 +252,8 @@ describe("approvals are records", () => {
       const sent = toolCallsSoFar(req).filter((c) => c.name === "send_sms").length;
       if (i === 0) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm." });
       if (transcriptHas(req, "[APPROVED]") && sent === 1) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm." });
-      if (sent === 2 && !transcriptHas(req, "Nothing was sent")) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Also, can you call Ben instead of Ellie?" });
+      if (sent === 2 && !transcriptHas(req, "Nothing was sent"))
+        return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Also, can you call Ben instead of Ellie?" });
       return reply("Texted the clinic.");
     });
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip confirm Thursday with the clinic by text" });
@@ -241,7 +270,7 @@ describe("approvals are records", () => {
   });
 
   test("one person's approval does not leak to another run asking for a different amount", async () => {
-    const w = familyWorld((req, i) => {
+    const w = familyWorld((_req, i) => {
       if (i === 0) return callTool("request_purchase", { amountUsd: 50, what: "flowers", where: "Trader Joe's" });
       if (i === 1) return callTool("request_purchase", { amountUsd: 50, what: "a lamp", where: "IKEA" });
       return reply("ok");
@@ -258,7 +287,7 @@ describe("stopping and restarting", () => {
   test("stop ends a run between turns: no further tools run and 'stopped' is not overwritten by 'done'", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const w = familyWorld(async (req, i) => {
+    const w = familyWorld(async (_req, i) => {
       if (i === 0) return callTool("search_memory", { query: "plumber" });
       await gate;
       return callTool("search_memory", { query: "again" });
@@ -278,7 +307,8 @@ describe("stopping and restarting", () => {
 
   test("a run left running by a crash is failed at boot, and a message to its session gets a fresh run", async () => {
     const w = familyWorld(() => reply("hi"));
-    const session = w.app.store.latestSessionForRoom(w.family.id) ?? ((await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" })), w.app.store.latestSessionForRoom(w.family.id)!);
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" });
+    const session = w.app.store.latestSessionForRoom(w.family.id)!;
     w.app.store.putRun({ id: "run_dead", sessionId: session.id, roomId: w.family.id, agentId: w.agent.id, trigger: "message", status: "running", startedAt: w.clock.now() });
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip are you there?" });
     expect(run?.id).not.toBe("run_dead");
@@ -289,7 +319,9 @@ describe("stopping and restarting", () => {
 
 describe("cards and runs move together", () => {
   test("an expired question ends the run that waited on it", async () => {
-    const w = familyWorld((req, i) => (i === 0 ? callTool("ask_person", { person: "Ben", question: "Can you drive Thursday?", kind: "decision", options: ["Yes", "No"] }) : reply("ok")));
+    const w = familyWorld((_req, i) =>
+      i === 0 ? callTool("ask_person", { person: "Ben", question: "Can you drive Thursday?", kind: "decision", options: ["Yes", "No"] }) : reply("ok"),
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip ask Ben about Thursday" });
     expect(run?.status).toBe("waiting");
     w.clock.set(w.clock.now() + 4 * DAY);
@@ -298,7 +330,11 @@ describe("cards and runs move together", () => {
   });
 
   test("answering a card that has no run behind it starts a follow-up run carrying the answer", async () => {
-    const w = familyWorld((req) => (lastUserText(req).includes('answered "') ? callTool("update_commitment", { commitmentId: w.app.store.listCommitments({ roomId: w.family.id })[0]!.id, status: "dropped" }) : reply("Dropped it, as Ben asked.")));
+    const w = familyWorld((req) =>
+      lastUserText(req).includes('answered "')
+        ? callTool("update_commitment", { commitmentId: w.app.store.listCommitments({ roomId: w.family.id })[0]!.id, status: "dropped" })
+        : reply("Dropped it, as Ben asked."),
+    );
     const due = w.clock.now() + DAY;
     w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: "wei", beneficiaryId: "mum", title: "Drive Mum to the dentist", dueAt: due });
     for (let day = 0; day < 6; day++) {
@@ -325,7 +361,17 @@ describe("cards and runs move together", () => {
 
 describe("disclosed outreach is an approval in advance", () => {
   test("a decider's schedule that names someone to contact asks the owner first", async () => {
-    const w = familyWorld((req, i) => (i === 0 ? callTool("schedule_action", { title: "Call the clinic", prompt: "Call the clinic and confirm.", runAt: new Date(w.clock.now() + DAY).toISOString(), premise: "still unconfirmed", disclosedOutreach: [{ who: "the clinic", how: "phone", why: "confirm" }] }) : reply("Asked Ellie first.")));
+    const w = familyWorld((_req, i) =>
+      i === 0
+        ? callTool("schedule_action", {
+            title: "Call the clinic",
+            prompt: "Call the clinic and confirm.",
+            runAt: new Date(w.clock.now() + DAY).toISOString(),
+            premise: "still unconfirmed",
+            disclosedOutreach: [{ who: "the clinic", how: "phone", why: "confirm" }],
+          })
+        : reply("Asked Ellie first."),
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "@pip call the clinic tomorrow to confirm" });
     expect(run?.status).toBe("waiting");
     const item = w.app.store.getAttention(run!.waitingOn!)!;
@@ -337,7 +383,17 @@ describe("disclosed outreach is an approval in advance", () => {
   });
 
   test("malformed outreach entries from the model are dropped, so nothing is pre-approved by accident", async () => {
-    const w = familyWorld((req, i) => (i === 0 ? callTool("schedule_action", { title: "Sunday rundown", prompt: "List the week.", calendar: { hour: 18, minute: 0, dayOfWeek: [0] }, premise: "always", disclosedOutreach: [{ who: 42 }, "the clinic", { who: "Lin", how: "fax", why: "x" }] }) : reply("Scheduled.")));
+    const w = familyWorld((_req, i) =>
+      i === 0
+        ? callTool("schedule_action", {
+            title: "Sunday rundown",
+            prompt: "List the week.",
+            calendar: { hour: 18, minute: 0, dayOfWeek: [0] },
+            premise: "always",
+            disclosedOutreach: [{ who: 42 }, "the clinic", { who: "Lin", how: "fax", why: "x" }],
+          })
+        : reply("Scheduled."),
+    );
     await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip every Sunday list the week" });
     expect(w.app.store.listSchedules({ roomId: w.family.id })[0]!.authorization.disclosedOutreach).toEqual([]);
   });
@@ -358,7 +414,13 @@ describe("private notes stay private", () => {
 
   test("the consolidator ignores memory ids outside the scope it is working on", async () => {
     const w = familyWorld(() => reply("ok"), {
-      completer: (system, prompt) => (system.startsWith("You maintain") ? JSON.stringify([{ op: "retract", id: "mem_elsewhere" }, { op: "retract", id: (prompt.match(/mem_\S+/) ?? [""])[0] }]) : ""),
+      completer: (system, prompt) =>
+        system.startsWith("You maintain")
+          ? JSON.stringify([
+              { op: "retract", id: "mem_elsewhere" },
+              { op: "retract", id: (prompt.match(/mem_\S+/) ?? [""])[0] },
+            ])
+          : "",
     });
     const foreign = w.app.memory.write({ agentId: "agt_other", scope: "agent", scopeId: "agt_other", type: "rule", text: "Other agent's rule." });
     w.app.store.putMemory({ ...foreign, id: "mem_elsewhere" });

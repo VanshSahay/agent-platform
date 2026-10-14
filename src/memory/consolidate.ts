@@ -74,7 +74,15 @@ export class Consolidator {
         stats.retracted += 1;
       } else if (op.op === "promote" && own(op.id)) {
         const src = own(op.id)!;
-        const nm = this.memory.write({ ...scopeOf(src), agentId: agent.id, type: validType(op.type), text: String(op.text ?? src.text), aliases: arr(op.aliases), statedAt: src.statedAt, sourceRunId: src.sourceRunId });
+        const nm = this.memory.write({
+          ...scopeOf(src),
+          agentId: agent.id,
+          type: validType(op.type),
+          text: String(op.text ?? src.text),
+          aliases: arr(op.aliases),
+          statedAt: src.statedAt,
+          sourceRunId: src.sourceRunId,
+        });
         this.memory.supersede(src.id, nm);
         handled.add(src.id);
         stats.promoted += 1;
@@ -82,13 +90,30 @@ export class Consolidator {
         const srcs = op.ids.map((id) => own(id)).filter((m): m is Memory => !!m);
         if (!srcs.length) continue;
         const newest = srcs.reduce((a, b) => (a.statedAt > b.statedAt ? a : b));
-        const nm = this.memory.write({ ...scopeOf(newest), agentId: agent.id, type: validType(op.type), text: String(op.text ?? newest.text), aliases: arr(op.aliases), statedAt: newest.statedAt });
-        for (const s of srcs) (this.memory.supersede(s.id, nm), handled.add(s.id));
+        const nm = this.memory.write({
+          ...scopeOf(newest),
+          agentId: agent.id,
+          type: validType(op.type),
+          text: String(op.text ?? newest.text),
+          aliases: arr(op.aliases),
+          statedAt: newest.statedAt,
+        });
+        for (const s of srcs) {
+          this.memory.supersede(s.id, nm);
+          handled.add(s.id);
+        }
         stats.superseded += srcs.length;
       } else if (op.op === "correct" && own(op.old) && own(op.id)) {
         const src = own(op.id)!;
         const old = own(op.old)!;
-        const nm = this.memory.write({ ...scopeOf(old), agentId: agent.id, type: validType(op.type ?? old.type), text: String(op.text ?? src.text), aliases: arr(op.aliases).concat(old.aliases), statedAt: src.statedAt });
+        const nm = this.memory.write({
+          ...scopeOf(old),
+          agentId: agent.id,
+          type: validType(op.type ?? old.type),
+          text: String(op.text ?? src.text),
+          aliases: arr(op.aliases).concat(old.aliases),
+          statedAt: src.statedAt,
+        });
         this.memory.supersede(old.id, nm);
         this.memory.supersede(src.id, nm);
         handled.add(src.id);
@@ -100,7 +125,15 @@ export class Consolidator {
     for (const o of observations) {
       if (handled.has(o.id)) continue;
       const m = o.text.match(/^\[(\w+)\]\s*(.*)$/s);
-      const nm = this.memory.write({ ...scopeOf(o), agentId: agent.id, type: validType(m?.[1]), text: m?.[2] ?? o.text, aliases: o.aliases, statedAt: o.statedAt, sourceRunId: o.sourceRunId });
+      const nm = this.memory.write({
+        ...scopeOf(o),
+        agentId: agent.id,
+        type: validType(m?.[1]),
+        text: m?.[2] ?? o.text,
+        aliases: o.aliases,
+        statedAt: o.statedAt,
+        sourceRunId: o.sourceRunId,
+      });
       this.memory.supersede(o.id, nm);
       stats.promoted += 1;
     }
@@ -115,7 +148,12 @@ export class Consolidator {
   async deriveProfile(agent: AgentSpec, scope: Memory["scope"], scopeId: Id) {
     const all = this.store.listMemories(agent.id, { scope, scopeId }).filter((m) => m.type !== "observation");
     if (scope === "person") {
-      await this.writeProfile(agent, scope, scopeId, all.filter((m) => m.visibleToRooms.length > 0));
+      await this.writeProfile(
+        agent,
+        scope,
+        scopeId,
+        all.filter((m) => m.visibleToRooms.length > 0),
+      );
       await this.writeProfile(agent, scope, privateProfileId(scopeId), all);
       return;
     }
@@ -137,7 +175,12 @@ export class Consolidator {
       prompt: `Subject: ${who}\nMemories:\n${mems.map((m) => `${new Date(m.statedAt).toISOString().slice(0, 10)} [${m.type}] ${m.text}`).join("\n")}`,
       effort: "low",
     });
-    const profileText = text.trim() || mems.slice(0, 8).map((m) => m.text).join(" ");
+    const profileText =
+      text.trim() ||
+      mems
+        .slice(0, 8)
+        .map((m) => m.text)
+        .join(" ");
     this.store.putProfile({ agentId: agent.id, scope, scopeId, text: profileText, derivedAt: this.clock.now() });
   }
 }

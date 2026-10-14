@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { callTool, callTools, lastToolResult, reply } from "../src/model/scripted.ts";
 import { familyWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
-import type { FakeBrowser } from "../src/tools/browser.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
 
 describe("run loop", () => {
@@ -20,11 +19,14 @@ describe("run loop", () => {
 
   test("tool calls are recorded with labels and evidence, and the footer is built from records", async () => {
     const search = new FakeSearch((q) => (q.includes("handyman") ? [{ title: "Lee's Repairs", url: "https://x", snippet: "Mandarin-speaking handyman" }] : []));
-    const w = familyWorld((req, i) => {
-      if (i === 0) return callTool("web_search", { query: "Mandarin speaking handyman San Jose" });
-      expect(lastToolResult(req)).toContain("Lee's Repairs");
-      return reply("Found Lee's Repairs. Want me to call them?");
-    }, { search });
+    const w = familyWorld(
+      (req, i) => {
+        if (i === 0) return callTool("web_search", { query: "Mandarin speaking handyman San Jose" });
+        expect(lastToolResult(req)).toContain("Lee's Repairs");
+        return reply("Found Lee's Repairs. Want me to call them?");
+      },
+      { search },
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip find a Mandarin speaking handyman" });
     const calls = w.app.store.toolCallsForRun(run!.id);
     expect(calls).toHaveLength(1);
@@ -73,16 +75,19 @@ describe("run loop", () => {
 describe("gates and group serving", () => {
   test("a guest's request that needs the owner's accounts pauses, cards the owner, and resumes on yes", async () => {
     const phone = new FakePhone(() => ({ summary: "They can come Thursday 2pm, $120.", status: "completed" }));
-    const w = familyWorld((req, i) => {
-      const call = () => callTool("place_call", { to: "+14085550100", who: "Lee's Repairs", objective: "Ask availability this week and price for a leaking tap." });
-      if (i === 0) return call();
-      const last = lastToolResult(req) ?? "";
-      const t = JSON.stringify(req.messages);
-      if (last.includes("Thursday 2pm")) return reply("Lee's can come Thursday 2pm for about $120.");
-      if (t.includes("[APPROVED]")) return call();
-      if (last.includes("Waiting for the owner")) return reply("Waiting on Ellie.");
-      return reply(`unexpected: ${last}`);
-    }, { phone });
+    const w = familyWorld(
+      (req, i) => {
+        const call = () => callTool("place_call", { to: "+14085550100", who: "Lee's Repairs", objective: "Ask availability this week and price for a leaking tap." });
+        if (i === 0) return call();
+        const last = lastToolResult(req) ?? "";
+        const t = JSON.stringify(req.messages);
+        if (last.includes("Thursday 2pm")) return reply("Lee's can come Thursday 2pm for about $120.");
+        if (t.includes("[APPROVED]")) return call();
+        if (last.includes("Waiting for the owner")) return reply("Waiting on Ellie.");
+        return reply(`unexpected: ${last}`);
+      },
+      { phone },
+    );
 
     // Uncle Wei is a guest: he never signed up, but he gets served.
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip can you get the tap fixed at Mum's?" });
@@ -113,12 +118,15 @@ describe("gates and group serving", () => {
 
   test("a declined approval resumes with DECLINED and the agent does not retry", async () => {
     const phone = new FakePhone();
-    const w = familyWorld((req, i) => {
-      if (i === 0) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Mum's appointment" });
-      const t = JSON.stringify(req.messages);
-      if (t.includes("[DECLINED]")) return reply("Understood, I won't text the clinic.");
-      return reply("Waiting.");
-    }, { phone });
+    const w = familyWorld(
+      (req, i) => {
+        if (i === 0) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Mum's appointment" });
+        const t = JSON.stringify(req.messages);
+        if (t.includes("[DECLINED]")) return reply("Understood, I won't text the clinic.");
+        return reply("Waiting.");
+      },
+      { phone },
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "mum", text: "Pip please confirm my appointment" });
     expect(run?.status).toBe("waiting");
     // Mum is cared for, so outreach on her behalf is Ben's call (the decider), not Ellie's money.
@@ -144,10 +152,13 @@ describe("gates and group serving", () => {
 
   test("outreach outside working hours is held, not sent", async () => {
     const phone = new FakePhone();
-    const w = familyWorld((req, i) => {
-      if (i === 0) return callTool("place_call", { to: "+1", who: "the pharmacy", objective: "refill" });
-      return reply(lastToolResult(req) ?? "");
-    }, { phone });
+    const w = familyWorld(
+      (req, i) => {
+        if (i === 0) return callTool("place_call", { to: "+1", who: "the pharmacy", objective: "refill" });
+        return reply(lastToolResult(req) ?? "");
+      },
+      { phone },
+    );
     w.clock.set(Date.UTC(2026, 9, 14, 5, 0, 0)); // 22:00 in Los Angeles
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip call the pharmacy" });
     expect(run?.status).toBe("done");
@@ -160,7 +171,8 @@ describe("gates and group serving", () => {
       if (i === 0) return callTool("ask_room", { question: "Who can drive Mum on Thursday at 2?" });
       const t = JSON.stringify(req.messages);
       if ((lastToolResult(req) ?? "").includes("commitmentId")) return reply("Thanks Ben, you're down to drive.");
-      if (t.includes("[ANSWERED]") && t.includes("I can")) return callTool("track_commitment", { title: "Drive Mum to Lee's visit", owner: "Ben", beneficiary: "Mum", dueAt: "2026-10-15T20:15:00Z" });
+      if (t.includes("[ANSWERED]") && t.includes("I can"))
+        return callTool("track_commitment", { title: "Drive Mum to Lee's visit", owner: "Ben", beneficiary: "Mum", dueAt: "2026-10-15T20:15:00Z" });
       return reply("Thanks Ben, you're down to drive.");
     });
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip sort out a ride for Mum Thursday" });
@@ -201,7 +213,7 @@ describe("answering on someone's behalf", () => {
 
 describe("one ask, one card", () => {
   test("two people asking for the same gated action share one card, and one yes resumes both runs", async () => {
-    const w = familyWorld((req, i) => {
+    const w = familyWorld((req, _i) => {
       const t = JSON.stringify(req.messages);
       const last = lastToolResult(req) ?? "";
       if (last.includes("summary")) return reply("Lee's can come Thursday.");
@@ -225,7 +237,7 @@ describe("one ask, one card", () => {
 
 describe("chatter is not an answer", () => {
   test("a decider's unrelated message does not resolve a question put to someone else", async () => {
-    const w = familyWorld((req, i) => {
+    const w = familyWorld((_req, i) => {
       if (i === 0) return callTool("wait_for_user_input", { question: "Lin on Thursday or Great Wall next week?", kind: "decision", options: ["Lin", "Great Wall"] });
       return reply("ok");
     });
@@ -254,23 +266,35 @@ describe("chatter is not an answer", () => {
 describe("planner", () => {
   test("a stalled approach switches to the next rung after two attempts and the model is told", async () => {
     const search = new FakeSearch(() => []);
-    const w = familyWorld((req, i) => {
-      if (i === 0) return callTool("plan", { goal: "Find a Mandarin-speaking handyman", steps: [{ text: "Find candidates", approach: "search" }] });
-      if (i === 1 || i === 2) return callTool("web_search", { query: "handyman mandarin" });
-      const t = JSON.stringify(req.messages);
-      expect(t).toContain('the plan now tries "ask_room"');
-      return reply("Nothing online; I'll ask the group next.");
-    }, { search });
+    const w = familyWorld(
+      (req, i) => {
+        if (i === 0) return callTool("plan", { goal: "Find a Mandarin-speaking handyman", steps: [{ text: "Find candidates", approach: "search" }] });
+        if (i === 1 || i === 2) return callTool("web_search", { query: "handyman mandarin" });
+        const t = JSON.stringify(req.messages);
+        expect(t).toContain('the plan now tries "ask_room"');
+        return reply("Nothing online; I'll ask the group next.");
+      },
+      { search },
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip find a mandarin handyman" });
     const plan = w.app.planner.get(run!.id)!;
     expect(plan.steps[0]!.approach).toBe("ask_room");
     expect(plan.steps[0]!.attempts).toBe(0);
-    expect(w.app.store.toolCallsForRun(run!.id).filter((c) => c.name === "web_search").every((c) => c.labelDone.includes("nothing yet"))).toBe(true);
+    expect(
+      w.app.store
+        .toolCallsForRun(run!.id)
+        .filter((c) => c.name === "web_search")
+        .every((c) => c.labelDone.includes("nothing yet")),
+    ).toBe(true);
   });
 
   test("parallel tool calls are all answered in one user message", async () => {
     const w = familyWorld((req, i) => {
-      if (i === 0) return callTools([{ name: "search_memory", input: { query: "plumber" } }, { name: "search_memory", input: { query: "vet" } }]);
+      if (i === 0)
+        return callTools([
+          { name: "search_memory", input: { query: "plumber" } },
+          { name: "search_memory", input: { query: "vet" } },
+        ]);
       const last = req.messages.at(-1)!;
       expect(Array.isArray(last.content) && last.content.filter((b) => b.type === "tool_result").length).toBe(2);
       return reply("ok");
@@ -282,13 +306,20 @@ describe("planner", () => {
 describe("hands", () => {
   test("browse_page reads a page through the browser hand and records evidence", async () => {
     const { FakeBrowser } = await import("../src/tools/browser.ts");
-    const browser = new FakeBrowser((url) => (url.includes("lin-repair") ? { title: "Lin Home Repair", text: "Open Mon–Sat 8–6. Call 408-555-0142.", links: [{ text: "Book", href: "https://lin-repair.example/book" }] } : {}));
-    const w = familyWorld((req, i) => {
-      if (i === 0) return callTool("browse_page", { url: "https://lin-repair.example" });
-      const last = lastToolResult(req) ?? "";
-      expect(last).toContain("408-555-0142");
-      return reply("They're open Mon to Sat, 8 to 6.");
-    }, { browser });
+    const browser = new FakeBrowser((url) =>
+      url.includes("lin-repair")
+        ? { title: "Lin Home Repair", text: "Open Mon–Sat 8–6. Call 408-555-0142.", links: [{ text: "Book", href: "https://lin-repair.example/book" }] }
+        : {},
+    );
+    const w = familyWorld(
+      (req, i) => {
+        if (i === 0) return callTool("browse_page", { url: "https://lin-repair.example" });
+        const last = lastToolResult(req) ?? "";
+        expect(last).toContain("408-555-0142");
+        return reply("They're open Mon to Sat, 8 to 6.");
+      },
+      { browser },
+    );
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip when is Lin Home Repair open?" });
     const call = w.app.store.toolCallsForRun(run!.id)[0]!;
     expect(call.name).toBe("browse_page");

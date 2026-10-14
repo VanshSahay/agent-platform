@@ -142,7 +142,9 @@ function clampLimit(n: number | undefined) {
 }
 
 function stripTags(s: string) {
-  return decodeEntities(s.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+  return decodeEntities(s.replace(/<[^>]+>/g, ""))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function cleanText(s: string) {

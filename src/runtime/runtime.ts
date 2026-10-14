@@ -14,7 +14,7 @@ import { TOOL_INDEX, toolSpecs, type GateDecision, type ToolContext, type ToolRe
 import { matchSkills, type Skill } from "../skills/skills.ts";
 import type { TaskService } from "../tasks/tasks.ts";
 import type { Vault } from "../tools/vault.ts";
-import { answers, isYes, parseDecision } from "./decide.ts";
+import { answers, isYes } from "./decide.ts";
 import { privateProfileId } from "../memory/consolidate.ts";
 import { buildSystemPrompt } from "../agent/prompt.ts";
 import { KIND_LABEL } from "../inbox/attention.ts";
@@ -169,7 +169,17 @@ export class Runtime {
     const waiting = store.listRuns({ roomId: item.roomId, status: ["waiting"] }).filter((r) => r.waitingOn === item.id);
     if (item.gateKey) {
       for (const run of waiting) {
-        const a: Approval = { id: newId("apr"), agentId: item.agentId, roomId: item.roomId, runId: run.id, itemId: item.id, gateKey: item.gateKey, decision: isYes(item.answer ?? "", item.options) ? "yes" : "no", decidedBy: item.answeredBy ?? item.assigneeId, decidedAt: clock.now() };
+        const a: Approval = {
+          id: newId("apr"),
+          agentId: item.agentId,
+          roomId: item.roomId,
+          runId: run.id,
+          itemId: item.id,
+          gateKey: item.gateKey,
+          decision: isYes(item.answer ?? "", item.options) ? "yes" : "no",
+          decidedBy: item.answeredBy ?? item.assigneeId,
+          decidedAt: clock.now(),
+        };
         store.putApproval(a);
       }
     }
@@ -186,7 +196,7 @@ export class Runtime {
     let first: Run | undefined;
     for (const run of waiting) {
       const fresh = store.getRun(run.id);
-      if (!fresh || fresh.status !== "waiting" || fresh.waitingOn !== item.id) continue; // already resumed by another answer
+      if (fresh?.status !== "waiting" || fresh.waitingOn !== item.id) continue; // already resumed by another answer
       const r = await this.resume(fresh, item);
       first ??= r;
     }
@@ -214,7 +224,17 @@ export class Runtime {
       at: this.d.clock.now(),
     };
     store.putMessage(msg);
-    return this.startRun({ room, agent, session, trigger: input.trigger, text: input.text, dedupKey: input.dedupKey, scheduleId: input.scheduleId, excludeMessageId: msg.id, triggerMessageId: msg.id });
+    return this.startRun({
+      room,
+      agent,
+      session,
+      trigger: input.trigger,
+      text: input.text,
+      dedupKey: input.dedupKey,
+      scheduleId: input.scheduleId,
+      excludeMessageId: msg.id,
+      triggerMessageId: msg.id,
+    });
   }
 
   async stop(runId: Id) {
@@ -332,7 +352,19 @@ export class Runtime {
     return t.includes(`@${agent.handle}`) || t.includes(`@${agent.name.toLowerCase()}`) || new RegExp(`\\b${escapeRe(agent.name.toLowerCase())}\\b`).test(t);
   }
 
-  private async startRun(input: { room: Room; agent: AgentSpec; session: Session; trigger: RunTrigger; requesterId?: Id; text: string; dedupKey?: string; scheduleId?: Id; taskId?: Id; excludeMessageId?: Id; triggerMessageId?: Id }): Promise<Run> {
+  private async startRun(input: {
+    room: Room;
+    agent: AgentSpec;
+    session: Session;
+    trigger: RunTrigger;
+    requesterId?: Id;
+    text: string;
+    dedupKey?: string;
+    scheduleId?: Id;
+    taskId?: Id;
+    excludeMessageId?: Id;
+    triggerMessageId?: Id;
+  }): Promise<Run> {
     const { store, clock } = this.d;
     const run: Run = {
       id: newId("run"),
@@ -350,7 +382,13 @@ export class Runtime {
     };
     store.putRun(run);
     if (input.taskId) this.d.tasks.update(input.taskId, { runId: run.id, status: "running" });
-    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "started", at: clock.now(), data: { trigger: input.trigger, requesterId: input.requesterId, taskId: input.taskId ?? null } });
+    store.appendEvent({
+      runId: run.id,
+      sessionId: run.sessionId,
+      type: "started",
+      at: clock.now(),
+      data: { trigger: input.trigger, requesterId: input.requesterId, taskId: input.taskId ?? null },
+    });
     // Steers queued from here on (compaction may take a moment) belong to this run.
     const steerFrom = store.lastSeq(run.sessionId);
     await this.compact(input.session, input.agent);
@@ -373,12 +411,18 @@ export class Runtime {
     const fresh = store.messagesForSession(session.id, 500).filter((m) => m.at > (session.summaryThroughAt ?? 0) && !m.folded && m.visibleTo.length === 0);
     if (fresh.length <= after) return;
     const old = fresh.slice(0, fresh.length - KEEP_RECENT);
-    const lines = old.map((m) => `${new Date(m.at).toISOString().slice(0, 16)} ${m.role === "assistant" ? agent.name : m.role === "user" ? (store.getPerson(m.authorId)?.displayName ?? m.authorId) : `[${m.source ?? "system"}]`}: ${m.text.slice(0, 400)}`).join("\n");
+    const lines = old
+      .map(
+        (m) =>
+          `${new Date(m.at).toISOString().slice(0, 16)} ${m.role === "assistant" ? agent.name : m.role === "user" ? (store.getPerson(m.authorId)?.displayName ?? m.authorId) : `[${m.source ?? "system"}]`}: ${m.text.slice(0, 400)}`,
+      )
+      .join("\n");
     let summary = "";
     try {
       summary = (
         await model.complete({
-          system: "Fold a chat history into a running summary for an assistant that will keep working in this chat. Under 250 words, plain prose. Keep: who asked for what, decisions and their dates, open threads and who owns them, numbers, names, phone numbers, preferences stated. Drop pleasantries. Merge with the previous summary; newer facts replace older ones.",
+          system:
+            "Fold a chat history into a running summary for an assistant that will keep working in this chat. Under 250 words, plain prose. Keep: who asked for what, decisions and their dates, open threads and who owns them, numbers, names, phone numbers, preferences stated. Drop pleasantries. Merge with the previous summary; newer facts replace older ones.",
           prompt: `Previous summary:\n${session.summary ?? "(none)"}\n\nMessages to fold in:\n${lines}`,
           effort: "low",
           maxTokens: 800,
@@ -387,11 +431,20 @@ export class Runtime {
     } catch {
       summary = "";
     }
-    if (!summary) summary = `${session.summary ? session.summary + " " : ""}(${old.length} earlier messages up to ${new Date(old.at(-1)!.at).toISOString().slice(0, 10)} were not summarised.)`;
+    if (!summary)
+      summary = `${session.summary ? `${session.summary} ` : ""}(${old.length} earlier messages up to ${new Date(old.at(-1)!.at).toISOString().slice(0, 10)} were not summarised.)`;
     session.summary = summary;
     session.summaryThroughAt = old.at(-1)!.at;
     store.putSession(session);
-    memory.write({ agentId: agent.id, scope: "room", scopeId: session.roomId, type: "observation", text: `Conversation summary through ${new Date(session.summaryThroughAt).toISOString().slice(0, 10)}: ${summary}`, visibleToRooms: [session.roomId], statedAt: clock.now() });
+    memory.write({
+      agentId: agent.id,
+      scope: "room",
+      scopeId: session.roomId,
+      type: "observation",
+      text: `Conversation summary through ${new Date(session.summaryThroughAt).toISOString().slice(0, 10)}: ${summary}`,
+      visibleToRooms: [session.roomId],
+      statedAt: clock.now(),
+    });
   }
 
   private async resume(run: Run, item: AttentionItem): Promise<Run> {
@@ -404,15 +457,21 @@ export class Runtime {
     const who = store.getPerson(item.answeredBy ?? item.assigneeId)?.displayName ?? "they";
     const verdict = item.kind.endsWith("_approval") || item.kind === "guest_request" ? (isYes(item.answer ?? "", item.options) ? "APPROVED" : "DECLINED") : "ANSWERED";
     // The tool that opened the gate is still "running"; close it with what actually happened.
-    const gated = store.toolCallsForRun(run.id).filter((c) => c.status === "running").at(-1);
+    const gated = store
+      .toolCallsForRun(run.id)
+      .filter((c) => c.status === "running")
+      .at(-1);
     if (gated) {
       gated.status = "done";
       gated.endedAt = clock.now();
-      gated.labelDone = verdict === "APPROVED" ? `${who} OK'd it` : verdict === "DECLINED" ? `${who} declined` : gated.name === "ask_room" ? "Got an answer from the group" : `Got ${who}'s answer`;
+      gated.labelDone =
+        verdict === "APPROVED" ? `${who} OK'd it` : verdict === "DECLINED" ? `${who} declined` : gated.name === "ask_room" ? "Got an answer from the group" : `Got ${who}'s answer`;
       store.putToolCall(gated);
     }
     const task = run.taskId ? store.getTask(run.taskId) : undefined;
-    const told = task?.delivered.length ? `\nAlready told the room: ${task.delivered.map((d) => `"${d.text.slice(0, 120)}"`).join("; ")}. Do not repeat it; report only what is new.` : "";
+    const told = task?.delivered.length
+      ? `\nAlready told the room: ${task.delivered.map((d) => `"${d.text.slice(0, 120)}"`).join("; ")}. Do not repeat it; report only what is new.`
+      : "";
     transcript.push({
       role: "user",
       content: `[${verdict}] ${who} answered "${item.title}": ${item.answer ?? ""}\n(${verdict === "APPROVED" ? "Re-issue the approved action now; it will go through." : verdict === "DECLINED" ? "Do not retry the same action; tell the room and try another approach or stop." : "Continue with the answer."})${told}`,
@@ -426,7 +485,13 @@ export class Runtime {
   private history(session: Session, requesterId: Id | undefined, excludeMessageId?: Id): Anthropic.MessageParam[] {
     const msgs = this.d.store
       .messagesForSession(session.id, 40)
-      .filter((m) => m.id !== excludeMessageId && !m.folded && m.at > (session.summaryThroughAt ?? 0) && (m.visibleTo.length === 0 || (requesterId !== undefined && m.visibleTo.includes(requesterId))));
+      .filter(
+        (m) =>
+          m.id !== excludeMessageId &&
+          !m.folded &&
+          m.at > (session.summaryThroughAt ?? 0) &&
+          (m.visibleTo.length === 0 || (requesterId !== undefined && m.visibleTo.includes(requesterId))),
+      );
     const out: Anthropic.MessageParam[] = [];
     if (session.summary) out.push({ role: "user", content: `[system:earlier in this chat] ${session.summary}` });
     for (const m of msgs) {
@@ -489,7 +554,17 @@ export class Runtime {
       gate: (g) => this.gate(run, room, agent, accounts, g),
       dm: (personId, text) => {
         const dm = rooms.dmFor(agent, personId);
-        const m: Message = { id: newId("msg"), sessionId: this.sessionFor(dm, agent).id, roomId: dm.id, runId: run.id, role: "assistant", authorId: agent.id, text, visibleTo: [], at: clock.now() };
+        const m: Message = {
+          id: newId("msg"),
+          sessionId: this.sessionFor(dm, agent).id,
+          roomId: dm.id,
+          runId: run.id,
+          role: "assistant",
+          authorId: agent.id,
+          text,
+          visibleTo: [],
+          at: clock.now(),
+        };
         store.putMessage(m);
         void this.d.deliver({ roomId: dm.id, text, kind: "card" });
       },
@@ -512,7 +587,8 @@ export class Runtime {
     const memories = dedupeById(recalled.concat(visible.filter((m) => m.type !== "rule"))).slice(0, 40);
     // A person's private profile (what they told the agent in their own chat) is used only there.
     const profiles: { label: string; text: string; derivedAt: number }[] = [];
-    const personProfile = (pid: Id) => (room.kind === "dm" && run.requesterId === pid ? store.getProfile(agent.id, "person", privateProfileId(pid)) : undefined) ?? store.getProfile(agent.id, "person", pid);
+    const personProfile = (pid: Id) =>
+      (room.kind === "dm" && run.requesterId === pid ? store.getProfile(agent.id, "person", privateProfileId(pid)) : undefined) ?? store.getProfile(agent.id, "person", pid);
     const ownerProfile = personProfile(agent.ownerId);
     if (ownerProfile) profiles.push({ label: `About ${owner?.displayName ?? "the owner"}`, ...ownerProfile });
     const roomProfile = store.getProfile(agent.id, "room", room.id);
@@ -617,7 +693,7 @@ export class Runtime {
       // Tool calls, in order. A gate pauses the run after the tool that opened it.
       const results: Anthropic.ToolResultBlockParam[] = [];
       let paused: AttentionItem | undefined;
-      let notes: string[] = [];
+      const notes: string[] = [];
       for (const use of turn.toolUses) {
         const def = TOOL_INDEX.get(use.name);
         const input = (use.input && typeof use.input === "object" ? use.input : {}) as Record<string, unknown>;
@@ -663,7 +739,8 @@ export class Runtime {
           if (result.stall) {
             const st = planner.stall(run.id, result.stall);
             if (st?.switchedTo) notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that.`);
-            else if (st?.exhausted) notes.push(`All approaches for that step failed; the plan moved to the next step. If nothing is left, tell the room what you tried and what you need.`);
+            else if (st?.exhausted)
+              notes.push(`All approaches for that step failed; the plan moved to the next step. If nothing is left, tell the room what you tried and what you need.`);
             else notes.push(`That approach stalled (${result.stall}). You may try once more or switch.`);
           } else if (result.ok && !result.waitingOn && !result.held && result.approach !== "wait") {
             planner.complete(run.id, result.evidence ?? "result");
@@ -673,7 +750,18 @@ export class Runtime {
         if (result.roomNotice) {
           // A notice is something the agent said to the room; it gets the same honesty check as a reply.
           const notice = [result.roomNotice, integrityNote(result.roomNotice, store.toolCallsForRun(run.id))].filter(Boolean).join("\n");
-          store.putMessage({ id: newId("msg"), sessionId: run.sessionId, roomId: room.id, runId: run.id, role: "assistant", authorId: agent.id, text: notice, source: "notice", visibleTo: [], at: clock.now() });
+          store.putMessage({
+            id: newId("msg"),
+            sessionId: run.sessionId,
+            roomId: room.id,
+            runId: run.id,
+            role: "assistant",
+            authorId: agent.id,
+            text: notice,
+            source: "notice",
+            visibleTo: [],
+            at: clock.now(),
+          });
           void this.d.deliver({ roomId: room.id, text: notice, kind: "notice" });
         }
         if (result.waitingOn) paused = result.waitingOn;
@@ -727,7 +815,10 @@ export class Runtime {
     if (g.outreach && g.outreach.how !== "community_post") {
       const h = hourIn(zone, clock.now());
       if (h < room.outreachHours.start || h >= room.outreachHours.end) {
-        return { granted: false, held: `It is outside working hours (${room.outreachHours.start}:00 to ${room.outreachHours.end}:00 ${zone}). Contacting ${g.outreach.who} will wait until the morning; tell the room that and schedule it with schedule_action for the next morning, naming ${g.outreach.who} as disclosed outreach.` };
+        return {
+          granted: false,
+          held: `It is outside working hours (${room.outreachHours.start}:00 to ${room.outreachHours.end}:00 ${zone}). Contacting ${g.outreach.who} will wait until the morning; tell the room that and schedule it with schedule_action for the next morning, naming ${g.outreach.who} as disclosed outreach.`,
+        };
       }
     }
 
@@ -777,7 +868,12 @@ export class Runtime {
     const kind = run.requesterId && run.requesterId !== assignee.id && accounts.needsApproval ? "guest_request" : g.kind;
     const requesterName = run.requesterId ? (store.getPerson(run.requesterId)?.displayName ?? "someone") : agent.name;
     const twin = store.listAttention({ roomId: room.id, status: ["open"] }).find((a) => a.gateKey === gateKey && a.assigneeId === assignee.id);
-    if (twin) return { granted: false, item: twin, notice: run.requesterId === assignee.id ? undefined : `${assignee.displayName} has already been asked about that; I'll continue once they answer.` };
+    if (twin)
+      return {
+        granted: false,
+        item: twin,
+        notice: run.requesterId === assignee.id ? undefined : `${assignee.displayName} has already been asked about that; I'll continue once they answer.`,
+      };
     const item = attention.open({
       agentId: agent.id,
       roomId: room.id,
@@ -807,7 +903,17 @@ export class Runtime {
     const footer = buildFooter(calls);
     const integrity = integrityNote(text, calls);
     const full = [text, integrity, footer].filter(Boolean).join("\n");
-    const m: Message = { id: newId("msg"), sessionId: run.sessionId, roomId: room.id, runId: run.id, role: "assistant", authorId: agent.id, text: full, visibleTo: [], at: clock.now() };
+    const m: Message = {
+      id: newId("msg"),
+      sessionId: run.sessionId,
+      roomId: room.id,
+      runId: run.id,
+      role: "assistant",
+      authorId: agent.id,
+      text: full,
+      visibleTo: [],
+      at: clock.now(),
+    };
     store.putMessage(m);
     store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "reply", at: clock.now(), data: { text: full, steps: calls.length, integrity: integrity || null } });
     this.finish(run, "done", undefined, firstLine(text));
@@ -830,7 +936,8 @@ export class Runtime {
         store.putMessage(m);
       }
     }
-    if (run.taskId) this.d.tasks.update(run.taskId, { status: status === "done" ? "done" : status === "failed" ? "failed" : "stopped", progress: outcome ?? failureReason ?? "Finished." });
+    if (run.taskId)
+      this.d.tasks.update(run.taskId, { status: status === "done" ? "done" : status === "failed" ? "failed" : "stopped", progress: outcome ?? failureReason ?? "Finished." });
     // A gate the model never re-issued (or a stop) leaves tool records running; close them honestly.
     for (const c of store.toolCallsForRun(run.id)) {
       if (c.status !== "running") continue;
@@ -849,8 +956,20 @@ export class Runtime {
     run.failureReason = failureReason;
     run.outcome = outcome;
     store.putRun(run);
-    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: status === "done" ? "done" : "error", at: clock.now(), data: { status, failureReason: failureReason ?? null, outcome: outcome ?? null } });
-    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "agent_state", at: clock.now(), data: { state: status === "done" ? "done" : status === "failed" ? "failed" : "idle" } });
+    store.appendEvent({
+      runId: run.id,
+      sessionId: run.sessionId,
+      type: status === "done" ? "done" : "error",
+      at: clock.now(),
+      data: { status, failureReason: failureReason ?? null, outcome: outcome ?? null },
+    });
+    store.appendEvent({
+      runId: run.id,
+      sessionId: run.sessionId,
+      type: "agent_state",
+      at: clock.now(),
+      data: { state: status === "done" ? "done" : status === "failed" ? "failed" : "idle" },
+    });
   }
 }
 
@@ -880,7 +999,13 @@ export function integrityNote(text: string, calls: ToolCallRecord[]): string {
 }
 
 function firstLine(s: string) {
-  return s.split("\n").find((l) => l.trim())?.trim().slice(0, 140) ?? "";
+  return (
+    s
+      .split("\n")
+      .find((l) => l.trim())
+      ?.trim()
+      .slice(0, 140) ?? ""
+  );
 }
 
 function escapeRe(s: string) {
@@ -889,7 +1014,11 @@ function escapeRe(s: string) {
 
 function dedupeById<T extends { id: string }>(xs: T[]): T[] {
   const seen = new Set<string>();
-  return xs.filter((x) => (seen.has(x.id) ? false : (seen.add(x.id), true)));
+  return xs.filter((x) => {
+    if (seen.has(x.id)) return false;
+    seen.add(x.id);
+    return true;
+  });
 }
 
 /** The API requires alternating roles; merge consecutive same-role text turns and drop a leading assistant turn. */

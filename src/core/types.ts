@@ -239,15 +239,7 @@ export type RunEventType =
   | "error"
   | "done";
 
-export type AgentState =
-  | "idle"
-  | "working"
-  | "analyzing"
-  | "calling"
-  | "waiting"
-  | "blocked"
-  | "done"
-  | "failed";
+export type AgentState = "idle" | "working" | "analyzing" | "calling" | "waiting" | "blocked" | "done" | "failed";
 
 export interface RunEvent {
   /** Monotonic within a session; this is the watch cursor. */

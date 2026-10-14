@@ -15,16 +15,7 @@ export class CommitmentService {
     private clock: Clock,
   ) {}
 
-  track(input: {
-    roomId: Id;
-    agentId: Id;
-    ownerId: Id;
-    beneficiaryId?: Id;
-    title: string;
-    detail?: string;
-    dueAt?: number;
-    sourceRunId?: Id;
-  }): Commitment {
+  track(input: { roomId: Id; agentId: Id; ownerId: Id; beneficiaryId?: Id; title: string; detail?: string; dueAt?: number; sourceRunId?: Id }): Commitment {
     const now = this.clock.now();
     const c: Commitment = {
       id: newId("cmt"),
@@ -93,7 +84,9 @@ export class CommitmentService {
     if (!open.length) return "No open responsibilities.";
     return open
       .map((c) => {
-        const due = c.dueAt ? ` due ${new Intl.DateTimeFormat("en-US", { timeZone: zone, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(c.dueAt))}` : "";
+        const due = c.dueAt
+          ? ` due ${new Intl.DateTimeFormat("en-US", { timeZone: zone, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(c.dueAt))}`
+          : "";
         const forWhom = c.beneficiaryId ? ` for ${nameOf(c.beneficiaryId)}` : "";
         return `- [${c.id}] ${c.title}${forWhom}, ${nameOf(c.ownerId)}${due}${c.status === "blocked" ? " (overdue, needs a decision)" : ""}`;
       })

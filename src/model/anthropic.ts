@@ -35,9 +35,7 @@ export class AnthropicModel implements ModelClient {
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
       .map((b) => b.text)
       .join("");
-    const toolUses = message.content
-      .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
-      .map((b) => ({ id: b.id, name: b.name, input: b.input }));
+    const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input }));
     const stop = message.stop_reason;
     const stopReason: ModelTurn["stopReason"] =
       stop === "end_turn" ? "end_turn" : stop === "tool_use" ? "tool_use" : stop === "max_tokens" ? "max_tokens" : stop === "refusal" ? "refusal" : "other";

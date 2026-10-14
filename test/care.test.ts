@@ -36,7 +36,7 @@ describe("training before deployment", () => {
 
 describe("looking after someone", () => {
   test("a cared-for person gets patient mode, and a care decision goes to the decider before the owner", async () => {
-    const w = familyWorld((req, i) => {
+    const w = familyWorld((_req, i) => {
       if (i === 0) return callTool("send_sms", { to: "+14085550100", who: "Dr. Chen's office", text: "Confirming Mum's appointment Thursday 2pm." });
       return reply("I'll check with Ben.");
     });
@@ -49,7 +49,7 @@ describe("looking after someone", () => {
   });
 
   test("money for a cared-for person's request still goes to the owner", async () => {
-    const w = familyWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 80, what: "new kettle", where: "Target" }) : reply("ok")));
+    const w = familyWorld((_req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 80, what: "new kettle", where: "Target" }) : reply("ok")));
     const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "mum", text: "Pip, order me a new kettle please" });
     expect(w.app.store.getAttention(run!.waitingOn!)!.assigneeId).toBe("ellie");
   });
@@ -72,7 +72,9 @@ describe("looking after someone", () => {
 
 describe("answering without being named", () => {
   test("in a group, a message within the agent's purpose starts a run when the small model says so", async () => {
-    const w = familyWorld(() => reply("I can look for one."), { completer: (system, prompt) => (system.includes("Answer with exactly yes or no") ? (prompt.includes("plumber") ? "yes" : "no") : "") });
+    const w = familyWorld(() => reply("I can look for one."), {
+      completer: (system, prompt) => (system.includes("Answer with exactly yes or no") ? (prompt.includes("plumber") ? "yes" : "no") : ""),
+    });
     expect(await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "Does anyone know a good plumber near Mum's place?" })).toBeDefined();
     expect(await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "Great match last night, did you watch it everyone?" })).toBeUndefined();
     expect(await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "lol" })).toBeUndefined();
@@ -82,7 +84,9 @@ describe("answering without being named", () => {
 
 describe("suggestions", () => {
   test("cards are mined from the ledger and schedules, with model ideas filling in", async () => {
-    const w = familyWorld(() => reply("ok"), { completer: (system) => (system.includes("suggest things") ? '[{"title":"Book the boiler service","prompt":"Book the annual boiler service at Mum\'s."}]' : "") });
+    const w = familyWorld(() => reply("ok"), {
+      completer: (system) => (system.includes("suggest things") ? '[{"title":"Book the boiler service","prompt":"Book the annual boiler service at Mum\'s."}]' : ""),
+    });
     const svc = new SuggestionService(w.app.store, w.clock, w.app.commitments, w.model);
     w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: "ben", beneficiaryId: "mum", title: "Drive Mum to cardiology", dueAt: w.clock.now() + DAY });
     w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: "wei", title: "Fix the gate latch", dueAt: w.clock.now() - DAY });

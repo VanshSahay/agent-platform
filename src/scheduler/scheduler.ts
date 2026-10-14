@@ -137,7 +137,7 @@ export class Scheduler {
     return out;
   }
 
-  private async nudge(c: Commitment, now: number, out: { nudged: number }) {
+  private async nudge(c: Commitment, _now: number, out: { nudged: number }) {
     {
       const owner = this.store.getPerson(c.ownerId);
       const ben = c.beneficiaryId ? this.store.getPerson(c.beneficiaryId) : undefined;
@@ -219,12 +219,23 @@ export class Scheduler {
       s.paused = true;
       this.store.putSchedule(s);
     }
-    await this.runtime.startSystemRun({ roomId: s.roomId, trigger: "scheduled_action", source: "scheduled_action", dedupKey: `schedule:${s.id}:${s.numRuns}`, text: runText, scheduleId: s.id });
+    await this.runtime.startSystemRun({
+      roomId: s.roomId,
+      trigger: "scheduled_action",
+      source: "scheduled_action",
+      dedupKey: `schedule:${s.id}:${s.numRuns}`,
+      text: runText,
+      scheduleId: s.id,
+    });
   }
 
   /** Cheap model check of the premise against what the ledger and room say. Fails open (holds) when the model is silent. */
   private async checkPremise(s: Schedule): Promise<{ holds: boolean; note: string }> {
-    const ledger = this.commitments.open(s.roomId).map((c) => `- ${c.title} [${c.status}]`).join("\n") || "(empty)";
+    const ledger =
+      this.commitments
+        .open(s.roomId)
+        .map((c) => `- ${c.title} [${c.status}]`)
+        .join("\n") || "(empty)";
     const recent = this.store
       .messagesForRoom(s.roomId, 15)
       .map((m) => `${m.role}: ${m.text.slice(0, 200)}`)

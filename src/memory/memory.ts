@@ -90,7 +90,10 @@ export class MemoryService {
   /** Keyword recall restricted to what the room may see. */
   recall(agentId: Id, room: Room, memberIds: Id[], query: string, limit = 12, opts: { requesterId?: Id } = {}): Memory[] {
     const allowed = new Set(this.visibleIn(agentId, room, memberIds, { requesterId: opts.requesterId }).map((m) => m.id));
-    return this.store.searchMemories(agentId, query, limit * 6).filter((m) => allowed.has(m.id)).slice(0, limit);
+    return this.store
+      .searchMemories(agentId, query, limit * 6)
+      .filter((m) => allowed.has(m.id))
+      .slice(0, limit);
   }
 
   rulesFor(agentId: Id, room: Room, memberIds: Id[]): Memory[] {

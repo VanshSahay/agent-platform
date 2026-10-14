@@ -19,12 +19,26 @@ export const DEFAULT_SOUL: Soul = {
   proactiveBehaviors: "Nudge owners of responsibilities before they are due. Report in one line when something closes or slips.",
 };
 
-export function newAgent(input: { ownerId: Id; name: string; purpose: string; handle?: string; instructions?: string; soul?: Partial<Soul>; trust?: Partial<TrustPolicy>; model?: string }): AgentSpec {
+export function newAgent(input: {
+  ownerId: Id;
+  name: string;
+  purpose: string;
+  handle?: string;
+  instructions?: string;
+  soul?: Partial<Soul>;
+  trust?: Partial<TrustPolicy>;
+  model?: string;
+}): AgentSpec {
   return {
     id: newId("agt"),
     ownerId: input.ownerId,
     name: input.name,
-    handle: input.handle ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    handle:
+      input.handle ??
+      input.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, ""),
     purpose: input.purpose,
     instructions: input.instructions ?? "",
     soul: { ...DEFAULT_SOUL, ...input.soul },
