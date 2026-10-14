@@ -11,6 +11,7 @@ import type {
   Person,
   Plan,
   Profile,
+  Task,
   Room,
   Run,
   RunEvent,
@@ -214,6 +215,9 @@ export class Store {
       JSON.stringify(m),
     ]);
   }
+  getMessage(id: string) {
+    return parse<Message>(this.db.query("SELECT data FROM messages WHERE id = ?").get(id) as Row | null);
+  }
   messagesForSession(sessionId: string, limit = 200): Message[] {
     const rows = this.db.query("SELECT data FROM messages WHERE session_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(sessionId, limit) as Row[];
     return parseAll<Message>(rows).reverse();
@@ -383,6 +387,38 @@ export class Store {
   }
   planForRun(runId: string) {
     return parse<Plan>(this.db.query("SELECT data FROM plans WHERE run_id = ?").get(runId) as Row | null);
+  }
+
+  // ----- tasks -----
+  putTask(t: Task) {
+    this.db.run("INSERT OR REPLACE INTO tasks(id, agent_id, room_id, status, created_at, data) VALUES (?, ?, ?, ?, ?, ?)", [t.id, t.agentId, t.roomId, t.status, t.createdAt, JSON.stringify(t)]);
+  }
+  getTask(id: string) {
+    return parse<Task>(this.db.query("SELECT data FROM tasks WHERE id = ?").get(id) as Row | null);
+  }
+  listTasks(opts: { agentId?: string; roomId?: string; status?: Task["status"][] } = {}) {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (opts.agentId) (where.push("agent_id = ?"), args.push(opts.agentId));
+    if (opts.roomId) (where.push("room_id = ?"), args.push(opts.roomId));
+    if (opts.status?.length) (where.push(`status IN (${opts.status.map(() => "?").join(",")})`), args.push(...opts.status));
+    const sql = `SELECT data FROM tasks ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC`;
+    return (this.db.query(sql).all(...args) as Row[]).map((r) => JSON.parse(r.data as string) as Task);
+  }
+
+  // ----- credentials (ciphertext only; the vault holds the key) -----
+  putCredential(personId: string, service: string, ciphertext: string, at: number) {
+    this.db.run("INSERT OR REPLACE INTO credentials(person_id, service, ciphertext, updated_at) VALUES (?, ?, ?, ?)", [personId, service, ciphertext, at]);
+  }
+  getCredential(personId: string, service: string): string | undefined {
+    const r = this.db.query("SELECT ciphertext FROM credentials WHERE person_id = ? AND service = ?").get(personId, service) as Row | null;
+    return r ? (r.ciphertext as string) : undefined;
+  }
+  listCredentialServices(personId: string): string[] {
+    return (this.db.query("SELECT service FROM credentials WHERE person_id = ? ORDER BY service").all(personId) as Row[]).map((r) => r.service as string);
+  }
+  deleteCredential(personId: string, service: string) {
+    this.db.run("DELETE FROM credentials WHERE person_id = ? AND service = ?", [personId, service]);
   }
 
   // ----- kv -----

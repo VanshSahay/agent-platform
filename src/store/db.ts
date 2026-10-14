@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS commitments (
 CREATE TABLE IF NOT EXISTS plans (
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE, data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, room_id TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_room ON tasks(room_id, status, created_at);
+CREATE TABLE IF NOT EXISTS credentials (
+  person_id TEXT NOT NULL, service TEXT NOT NULL, ciphertext TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (person_id, service)
+);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY, v TEXT NOT NULL
 );

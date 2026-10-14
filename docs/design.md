@@ -92,6 +92,20 @@ Every gate decision is in the records: the item, the `gate_opened` and `gate_res
 
 Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), staged outreach once working hours begin, commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
 
+## 8b. What we took from Instinct's harness
+
+Supermemory's Instinct diagram (main harness → task agent → sandbox → reply / file / stay quiet, with saved task specs, a daily memory worker and compaction) gave us six mechanisms. All live in the run loop and the scheduler:
+
+- **Silence is an outcome.** `stay_quiet(reason)` ends a run with `run.quiet` set and nothing delivered. Heartbeats, watches, follow-ups and app events are told silence is the default. A quiet run's trigger message is `folded` so it never returns in the next run's context. The old "(nothing to report)" reply on a timer is swallowed as a backstop.
+- **Task agents.** `delegate_task` creates a `Task` with its own session; the delegating run replies to the room now and the task run starts once that reply is out (`Runtime.launchPending`, awaited by `settle()` in tests). The room session stays free, so new messages get answers while the task works, and `steer_task` passes a note into the running task.
+- **Delivery state.** A task records every line it told the room (`task.delivered`). A resume after a gate carries that list into the transcript ("already told the room, do not repeat") and the final reply is logged once. The prompt lists the room's delegated tasks with progress and what was last said.
+- **Alert rules.** `watch_for(condition, action, everyHours)` creates a schedule with a `watch` and an interval calendar. Each firing runs the check prompt; a quiet result keeps watching, a reply pauses the watch; `until` bounds it.
+- **App events as triggers.** `Runtime.handleEvent` (and `POST /api/events`) enters like a message with trigger `event`: act if it concerns a responsibility, task or watch, else stay quiet. Gmail and Calendar adapters that call it are not written yet; the door is.
+- **Credential vault.** `Vault` keeps members' own credentials encrypted with `MASTER_KEY` (AES-256-GCM, ciphertext in the `credentials` table). The prompt sees service names only ("Connected accounts for Ellie: gmail"); a hand gets the secret inside `vault.use` and nothing else does. Which person's vault applies follows `accountsFor`, so a guest's request lists the owner's services.
+- **Compaction.** When a session holds more than 30 messages past the last summary, the older ones are folded into `session.summary` by the small model (the newest 12 stay verbatim) and the summary is also written as a room observation for the nightly pass. The prompt carries the summary in place of the folded messages.
+
+Not taken: files as an outcome (channels here are chat), and a leased sandbox per task (hands run in-process; the vault is the first step toward one).
+
 ## 9. Services wired, and what is deliberately not built yet
 
 Wired through `.env` (see README): the model through OpenRouter (GLM 5.3 by default; the OpenRouter door speaks the Anthropic Messages shape, so the same adapter serves Claude directly), iMessage through Photon Spectrum (`src/channels/imessage.ts`: one Spectrum space is one room, one sender handle is one person, the owner is recognised by phone number, deliveries go back through the space), the browser hand through Browserbase (`src/tools/browser.ts`: a fresh cloud session per page read, released after), and Clerk sign-in on the web channel (`src/channels/auth.ts`: the bearer token maps to a person on first sight and the caller may only act as that person).

@@ -51,7 +51,8 @@ function pickHands(): Hands {
 
 const dbPath = process.env.DB_PATH ?? "data/circle.sqlite";
 if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
-const app = createApp({ dbPath, model: pickModel(), hands: pickHands() });
+if (!process.env.MASTER_KEY) console.log("Vault: MASTER_KEY not set; members' credentials are encrypted with a dev key (set MASTER_KEY in production)");
+const app = createApp({ dbPath, model: pickModel(), hands: pickHands(), masterKey: process.env.MASTER_KEY });
 
 if (process.env.SEED_DEMO === "1" && app.store.listAgents().length === 0) {
   const w = seedDemoWorld(app);

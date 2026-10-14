@@ -152,15 +152,45 @@ export type RunTrigger =
   | "heartbeat"
   | "follow_up" // a commitment nudge
   | "approval" // an approval came back
-  | "steer";
+  | "steer"
+  | "task" // a delegated task's own run
+  | "event"; // a connected app sent something
 
 export interface Session {
   id: Id;
   roomId: Id;
   agentId: Id;
   title?: string;
+  /** A task agent's private session; the room session stays free. */
+  taskId?: Id;
+  /** Compaction: older messages folded into prose so the context stays short. */
+  summary?: string;
+  summaryThroughAt?: UnixMs;
   createdAt: UnixMs;
   lastActivityAt: UnixMs;
+}
+
+/**
+ * A delegated task: long work handed to a task agent that runs in its own
+ * session, keeps a progress line, and records what it has delivered so a
+ * resume never reports the same thing twice.
+ */
+export interface Task {
+  id: Id;
+  agentId: Id;
+  roomId: Id;
+  sessionId: Id;
+  requesterId?: Id;
+  title: string;
+  instructions: string;
+  status: "running" | "waiting" | "done" | "failed" | "stopped";
+  progress: string;
+  runId?: Id;
+  delivered: { at: UnixMs; text: string }[];
+  createdByRunId?: Id;
+  createdAt: UnixMs;
+  updatedAt: UnixMs;
+  endedAt?: UnixMs;
 }
 
 export interface Run {
@@ -176,6 +206,12 @@ export interface Run {
   waitingOn?: Id; // attention item id
   /** The schedule that fired this run, if any; carries its authorisation. */
   scheduleId?: Id;
+  /** The delegated task this run works on, if any. */
+  taskId?: Id;
+  /** Ended without saying anything: silence was the right outcome. */
+  quiet?: boolean;
+  /** The system message that triggered this run (timers, events), folded away if the run stays quiet. */
+  triggerMessageId?: Id;
   dedupKey?: string;
   startedAt: UnixMs;
   endedAt?: UnixMs;
@@ -258,6 +294,8 @@ export interface Message {
   source?: string;
   /** Members allowed to see it; empty means the whole room. */
   visibleTo: Id[];
+  /** A trigger whose run stayed quiet: kept in the record, left out of the model's history. */
+  folded?: boolean;
   at: UnixMs;
 }
 
@@ -307,6 +345,8 @@ export interface Calendar {
   dayOfWeek?: number[]; // 0..6
   dayOfMonth?: number[];
   everyDays?: number;
+  /** Interval schedules (watches) run every N hours from the last run. */
+  everyHours?: number;
   timeZone: string;
 }
 
@@ -332,6 +372,8 @@ export interface Schedule {
   calendar?: Calendar;
   runAt?: UnixMs;
   authorization: Authorization;
+  /** An alert rule: the run checks the condition and stays quiet unless it holds. */
+  watch?: { condition: string; action: string; until?: UnixMs };
   paused: boolean;
   numRuns: number;
   nextRunAt?: UnixMs;

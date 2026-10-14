@@ -38,6 +38,7 @@ export class Scheduler {
       runAt?: number;
       calendar?: Calendar;
       authorization: Authorization;
+      watch?: Schedule["watch"];
       createdByRunId?: Id;
     },
   ): Schedule {
@@ -52,6 +53,7 @@ export class Scheduler {
       calendar: input.calendar,
       runAt: input.runAt,
       authorization: input.authorization,
+      watch: input.watch,
       paused: false,
       numRuns: 0,
       createdByRunId: input.createdByRunId,
@@ -150,7 +152,7 @@ export class Scheduler {
         trigger: "heartbeat",
         source: "heartbeat",
         dedupKey: `heartbeat:${room.id}:${Math.floor(now / every)}`,
-        text: "Heartbeat check-in. Look at the ledger and the schedules. Only speak if something changed, slipped, or needs a person; otherwise reply with exactly: (nothing to report)",
+        text: "Heartbeat check-in. Look at the ledger, the schedules and the tasks. Only speak if something changed, slipped, or needs a person; otherwise call stay_quiet.",
       });
       out.heartbeats += 1;
     }
@@ -162,6 +164,31 @@ export class Scheduler {
     s.lastRunAt = now;
     s.nextRunAt = s.calendar ? computeNext(s, now) : undefined;
     this.store.putSchedule(s);
+
+    // A watch is an alert rule: the run checks the condition itself and stays quiet unless it holds.
+    if (s.watch) {
+      if (s.watch.until !== undefined && now > s.watch.until) {
+        s.paused = true;
+        this.store.putSchedule(s);
+        return;
+      }
+      const run = await this.runtime.startSystemRun({
+        roomId: s.roomId,
+        trigger: "scheduled_action",
+        source: "watch",
+        dedupKey: `schedule:${s.id}:${s.numRuns}`,
+        text: `Watch "${s.title}" (check ${s.numRuns}). ${s.prompt}\nAuthorisation: disclosed outreach: ${s.authorization.disclosedOutreach.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ") || "none"}. Anyone not named needs a fresh yes.`,
+        scheduleId: s.id,
+      });
+      if (run && run.status === "done" && !run.quiet) {
+        const fresh = this.store.getSchedule(s.id);
+        if (fresh) {
+          fresh.paused = true;
+          this.store.putSchedule(fresh);
+        }
+      }
+      return;
+    }
 
     const premiseCheck = await this.checkPremise(s);
     const runText = premiseCheck.holds
@@ -208,6 +235,7 @@ export function computeNext(s: Schedule, now: number): number | undefined {
   if (s.runAt !== undefined) return s.numRuns === 0 ? s.runAt : undefined;
   const c = s.calendar;
   if (!c) return undefined;
+  if (c.everyHours) return (s.lastRunAt ?? now) + c.everyHours * HOUR;
   if (c.everyDays) {
     const base = s.lastRunAt ?? now;
     return nextOccurrence(base + (c.everyDays - 1) * DAY, c.timeZone, c.hour ?? 9, c.minute ?? 0);

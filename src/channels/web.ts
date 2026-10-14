@@ -113,6 +113,32 @@ export function startWebServer(app: App, opts: { port?: number; hostname?: strin
           if (!r.ok) return bad(r.why, r.why === "no such agent" ? 404 : 409);
           return json(r.agent);
         }
+        if (p === "/api/tasks" && req.method === "GET") return json(app.store.listTasks({ roomId: url.searchParams.get("roomId") ?? undefined, agentId: url.searchParams.get("agentId") ?? undefined }));
+        // Connected-app events (a webhook, an email, a calendar change) enter like messages.
+        if (p === "/api/events" && req.method === "POST") {
+          const b = await req.json();
+          if (!b.source || !b.summary) return bad("source and summary required");
+          const run = await app.runtime.handleEvent({ roomId: b.roomId, agentId: b.agentId, source: String(b.source), summary: String(b.summary), detail: b.detail ? String(b.detail) : undefined, dedupKey: b.dedupKey });
+          return json({ run: run ? { id: run.id, status: run.status, quiet: !!run.quiet, outcome: run.outcome } : null });
+        }
+        // Members' own credentials: ciphertext at rest, names only on the way out.
+        if (p.match(/^\/api\/people\/[^/]+\/credentials$/)) {
+          const personId = p.split("/")[3]!;
+          if (me && me !== personId) return bad("you can only manage your own credentials", 403);
+          if (req.method === "GET") return json({ services: app.vault.services(personId) });
+          if (req.method === "POST") {
+            const b = await req.json();
+            if (!b.service || !b.secret) return bad("service and secret required");
+            app.vault.put(personId, String(b.service), String(b.secret));
+            return json({ services: app.vault.services(personId) });
+          }
+        }
+        if (p.match(/^\/api\/people\/[^/]+\/credentials\/[^/]+$/) && req.method === "DELETE") {
+          const [, , , personId, , service] = p.split("/");
+          if (me && me !== personId) return bad("you can only manage your own credentials", 403);
+          app.vault.remove(personId!, decodeURIComponent(service!));
+          return json({ services: app.vault.services(personId!) });
+        }
         if (p === "/api/suggestions" && req.method === "GET") {
           const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
           const agent = app.store.getAgent(url.searchParams.get("agentId") ?? "");

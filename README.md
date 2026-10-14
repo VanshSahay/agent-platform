@@ -16,6 +16,8 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 
 **Earns trust one notch at a time.** Every write asks first. The owner can allow specific tools, set a dollar amount under which purchases pass, pause spending, and pre-approve communities. Contacting a third party is disclosed (who, how, why); outside 8am to 8pm it is held until morning. Scheduled work carries the authorisation it was given and re-checks its premise before acting. Every tool call is stored with evidence; the reply's footer ("— 3 steps · 2 verified: Searched the web, Made a call") comes from those records, and a reply that claims an action with no record is corrected.
 
+**Knows when to say nothing, and hands off long work.** On a timer, a watch or an app event the agent stays quiet unless something changed; silence is a recorded outcome, not a message. Long errands go to a task agent in its own session, so the chat answers now and the task reports once when done. Alert rules ("tell us when the pharmacy confirms") check every few hours and speak only when the condition holds. Members' credentials sit in an encrypted vault the model never sees. Long chats are folded into a running summary.
+
 **Remembers the right things in the right places.** The agent only writes dated observations during a run; a background pass promotes them into typed memories, merges duplicates, rewrites corrected facts with their date, retracts what was taken back, and derives a short profile the agent reads first. What a group says stays with that group. What someone tells the agent privately never surfaces in a group.
 
 ## What it looks like
@@ -51,7 +53,7 @@ Offline, with no key, the whole runtime runs against a scripted model:
 
 ```bash
 bun run demo    # the handyman errand in a family chat, end to end
-bun test        # 49 tests across the run loop, gates, care, planner, memory, timers, hands, eval
+bun test        # 58 tests across the run loop, gates, care, planner, memory, timers, hands, eval
 bun run eval    # six family errands played against the configured model, graded on stored state
 bun run typecheck
 ```
@@ -91,6 +93,9 @@ POST /api/agents/:id/deploy          ends training (409 with a reason when not r
 GET  /api/suggestions?agentId        "want me to…" cards mined from the ledger and schedules
 POST /api/commitments/:id            {status}                     mark a responsibility done, dropped, blocked
 GET  /api/profiles?agentId           derived summaries per scope
+GET  /api/tasks?roomId               delegated tasks with progress and what they told the room
+POST /api/events                     {source, summary, detail?, roomId|agentId, dedupKey}  a connected app's event
+GET|POST /api/people/:id/credentials {service, secret}  own credentials into the vault (names only come back)
 POST /api/tick                       run the scheduler once
 ```
 
@@ -104,7 +109,7 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 ## Status
 
-Built: training before deployment; rooms with roles and guest serving; patient mode and decider-first care approvals; escalation of stuck responsibilities; proactive suggestions; the run loop with gates, steering and resume; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
+Built: training before deployment; rooms with roles and guest serving; patient mode and decider-first care approvals; escalation of stuck responsibilities; proactive suggestions; the run loop with gates, steering and resume; quiet outcomes; task agents with delivery state; watches (alert rules); app events as triggers; an encrypted credential vault; session compaction; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
 
 Internet reach: `web_search` and `browse_page` are real (Exa and Jina Reader, both keyless; Brave and Browserbase when keyed). The agent follows `skills/internet-reach.md`, adapted from Agent Reach's skill to the two tools it has; it says plainly which platforms it cannot read yet.
 

@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { newId, sha256 } from "../core/ids.ts";
 import { hourIn, type Clock } from "../core/clock.ts";
-import type { AgentSpec, AgentState, AttentionItem, Id, Message, Person, Room, Run, RunEvent, RunTrigger, Session, ToolCallRecord } from "../core/types.ts";
+import type { AgentSpec, AgentState, AttentionItem, Id, Message, Person, Room, Run, RunEvent, RunTrigger, Session, Task, ToolCallRecord } from "../core/types.ts";
 import type { ModelClient } from "../model/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { MemoryService } from "../memory/memory.ts";
@@ -12,6 +12,8 @@ import type { Planner } from "../planning/planner.ts";
 import type { Hands } from "../tools/hands.ts";
 import { TOOL_INDEX, toolSpecs, type GateDecision, type ToolContext, type ToolResult } from "../tools/registry.ts";
 import { matchSkills, type Skill } from "../skills/skills.ts";
+import type { TaskService } from "../tasks/tasks.ts";
+import type { Vault } from "../tools/vault.ts";
 import { buildSystemPrompt } from "../agent/prompt.ts";
 import { KIND_LABEL } from "../inbox/attention.ts";
 
@@ -34,12 +36,19 @@ export interface RuntimeDeps {
   planner: Planner;
   hands: Hands;
   skills: Skill[];
+  tasks: TaskService;
+  vault: Vault;
   /** Where outbound text goes (channel adapters subscribe here). */
   deliver: (d: Delivery) => void | Promise<void>;
   maxTurns?: number;
+  /** Compaction: fold older messages into a summary once a session holds this many. */
+  compactAfter?: number;
 }
 
 const MAX_TURNS = 24;
+const COMPACT_AFTER = 30;
+const KEEP_RECENT = 12;
+const NOTHING = /^\(?\s*nothing (to report|new)\s*\)?\.?$/i;
 
 /**
  * One run per inbound message or trigger. The loop: assemble context, call
@@ -48,6 +57,14 @@ const MAX_TURNS = 24;
  */
 export class Runtime {
   constructor(private d: RuntimeDeps) {}
+
+  private pendingTasks: Task[] = [];
+  private inFlight = new Set<Promise<void>>();
+
+  /** Wait for delegated task runs started so far (tests, the demo, shutdown). */
+  async settle(): Promise<void> {
+    while (this.inFlight.size) await Promise.all([...this.inFlight]);
+  }
 
   // ------------------------------------------------------------------ inbound
 
@@ -142,13 +159,62 @@ export class Runtime {
       at: this.d.clock.now(),
     };
     store.putMessage(msg);
-    return this.startRun({ room, agent, session, trigger: input.trigger, text: input.text, dedupKey: input.dedupKey, scheduleId: input.scheduleId, excludeMessageId: msg.id });
+    return this.startRun({ room, agent, session, trigger: input.trigger, text: input.text, dedupKey: input.dedupKey, scheduleId: input.scheduleId, excludeMessageId: msg.id, triggerMessageId: msg.id });
   }
 
   async stop(runId: Id) {
     const run = this.d.store.getRun(runId);
     if (!run || (run.status !== "running" && run.status !== "waiting")) return;
     this.finish(run, "stopped", "Stopped by a person.");
+  }
+
+  /**
+   * Something happened in a connected app (an email from the clinic, a calendar
+   * change, a webhook). It enters like a message: the agent reads it against the
+   * ledger, the tasks and the schedules, acts if it concerns them, else stays quiet.
+   */
+  async handleEvent(input: { roomId?: Id; agentId?: Id; source: string; summary: string; detail?: string; dedupKey?: string }): Promise<Run | undefined> {
+    const { store } = this.d;
+    let room = input.roomId ? store.getRoom(input.roomId) : undefined;
+    if (!room && input.agentId) {
+      const agent = store.getAgent(input.agentId);
+      if (agent) room = this.d.rooms.dmFor(agent, agent.ownerId);
+    }
+    if (!room) return undefined;
+    const text = `Event from ${input.source}: ${input.summary}${input.detail ? `\n${input.detail.slice(0, 4000)}` : ""}\nIf this concerns an open responsibility, a delegated task, a watch or something the room asked for, act on it (update the ledger or task, tell the room in one line, or ask the right person). Otherwise call stay_quiet.`;
+    return this.startSystemRun({ roomId: room.id, trigger: "event", source: `event:${input.source}`, dedupKey: input.dedupKey, text });
+  }
+
+  /** Pass a note into a running task; false when it is not running. */
+  steerTask(taskId: Id, text: string, personId?: Id): boolean {
+    const task = this.d.store.getTask(taskId);
+    const run = task?.runId ? this.d.store.getRun(task.runId) : undefined;
+    if (!task || !run || run.status !== "running") return false;
+    this.d.store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "steer_queued", at: this.d.clock.now(), data: { personId: personId ?? task.agentId, text } });
+    return true;
+  }
+
+  /** Task agents start after the delegating run has replied, in their own sessions, without blocking the room. */
+  private launchPending() {
+    const batch = this.pendingTasks.splice(0);
+    for (const task of batch) {
+      const p: Promise<void> = this.runTask(task).finally(() => this.inFlight.delete(p));
+      this.inFlight.add(p);
+    }
+  }
+
+  private async runTask(task: Task) {
+    const { store } = this.d;
+    const room = store.getRoom(task.roomId);
+    const agent = store.getAgent(task.agentId);
+    const session = store.getSession(task.sessionId);
+    if (!room || !agent || !session) return;
+    const text = `You are the task agent for "${task.title}" [${task.id}], delegated from the room ${room.name}. Brief:\n${task.instructions}\n\nWork it through here. Record milestones with update_task (tellRoom only for real milestones). When you are done, your final reply goes to the room once; make it the complete result. If you need a person, ask with the usual tools and the run waits.`;
+    try {
+      await this.startRun({ room, agent, session, trigger: "task", requesterId: task.requesterId, text, taskId: task.id });
+    } catch (e) {
+      this.d.tasks.update(task.id, { status: "failed", progress: `Failed: ${String((e as Error).message)}` });
+    }
   }
 
   // ------------------------------------------------------------------ helpers
@@ -212,7 +278,7 @@ export class Runtime {
     return t.includes(`@${agent.handle}`) || t.includes(`@${agent.name.toLowerCase()}`) || new RegExp(`\\b${escapeRe(agent.name.toLowerCase())}\\b`).test(t);
   }
 
-  private async startRun(input: { room: Room; agent: AgentSpec; session: Session; trigger: RunTrigger; requesterId?: Id; text: string; dedupKey?: string; scheduleId?: Id; excludeMessageId?: Id }): Promise<Run> {
+  private async startRun(input: { room: Room; agent: AgentSpec; session: Session; trigger: RunTrigger; requesterId?: Id; text: string; dedupKey?: string; scheduleId?: Id; taskId?: Id; excludeMessageId?: Id; triggerMessageId?: Id }): Promise<Run> {
     const { store, clock } = this.d;
     const run: Run = {
       id: newId("run"),
@@ -224,13 +290,53 @@ export class Runtime {
       status: "running",
       dedupKey: input.dedupKey,
       scheduleId: input.scheduleId,
+      taskId: input.taskId,
+      triggerMessageId: input.triggerMessageId,
       startedAt: clock.now(),
     };
     store.putRun(run);
-    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "started", at: clock.now(), data: { trigger: input.trigger, requesterId: input.requesterId } });
+    if (input.taskId) this.d.tasks.update(input.taskId, { runId: run.id, status: "running" });
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "started", at: clock.now(), data: { trigger: input.trigger, requesterId: input.requesterId, taskId: input.taskId ?? null } });
+    // Steers queued from here on (compaction may take a moment) belong to this run.
+    const steerFrom = store.lastSeq(run.sessionId);
+    await this.compact(input.session, input.agent);
     const transcript: Anthropic.MessageParam[] = this.history(input.session, input.excludeMessageId).concat([{ role: "user", content: input.text }]);
-    await this.loop(run, transcript);
+    await this.loop(run, transcript, steerFrom);
+    this.launchPending();
     return store.getRun(run.id) ?? run;
+  }
+
+  /**
+   * Compaction. A long room history is folded into prose: the small model merges
+   * the older messages into the session summary, which the prompt carries in place
+   * of them. The summary is also written as a room observation so the nightly pass
+   * can promote anything durable out of it.
+   */
+  private async compact(session: Session, agent: AgentSpec) {
+    const { store, clock, model, memory } = this.d;
+    const after = this.d.compactAfter ?? COMPACT_AFTER;
+    const fresh = store.messagesForSession(session.id, 500).filter((m) => m.at > (session.summaryThroughAt ?? 0));
+    if (fresh.length <= after) return;
+    const old = fresh.slice(0, fresh.length - KEEP_RECENT);
+    const lines = old.map((m) => `${new Date(m.at).toISOString().slice(0, 16)} ${m.role === "assistant" ? agent.name : m.role === "user" ? (store.getPerson(m.authorId)?.displayName ?? m.authorId) : `[${m.source ?? "system"}]`}: ${m.text.slice(0, 400)}`).join("\n");
+    let summary = "";
+    try {
+      summary = (
+        await model.complete({
+          system: "Fold a chat history into a running summary for an assistant that will keep working in this chat. Under 250 words, plain prose. Keep: who asked for what, decisions and their dates, open threads and who owns them, numbers, names, phone numbers, preferences stated. Drop pleasantries. Merge with the previous summary; newer facts replace older ones.",
+          prompt: `Previous summary:\n${session.summary ?? "(none)"}\n\nMessages to fold in:\n${lines}`,
+          effort: "low",
+          maxTokens: 800,
+        })
+      ).trim();
+    } catch {
+      summary = "";
+    }
+    if (!summary) summary = `${session.summary ? session.summary + " " : ""}(${old.length} earlier messages up to ${new Date(old.at(-1)!.at).toISOString().slice(0, 10)} were not summarised.)`;
+    session.summary = summary;
+    session.summaryThroughAt = old.at(-1)!.at;
+    store.putSession(session);
+    memory.write({ agentId: agent.id, scope: "room", scopeId: session.roomId, type: "observation", text: `Conversation summary through ${new Date(session.summaryThroughAt).toISOString().slice(0, 10)}: ${summary}`, visibleToRooms: [session.roomId], statedAt: clock.now() });
   }
 
   private async resume(run: Run, item: AttentionItem): Promise<Run> {
@@ -250,18 +356,22 @@ export class Runtime {
       gated.labelDone = verdict === "APPROVED" ? `${who} OK'd it` : verdict === "DECLINED" ? `${who} declined` : gated.name === "ask_room" ? "Got an answer from the group" : `Got ${who}'s answer`;
       store.putToolCall(gated);
     }
+    const task = run.taskId ? store.getTask(run.taskId) : undefined;
+    const told = task?.delivered.length ? `\nAlready told the room: ${task.delivered.map((d) => `"${d.text.slice(0, 120)}"`).join("; ")}. Do not repeat it; report only what is new.` : "";
     transcript.push({
       role: "user",
-      content: `[${verdict}] ${who} answered "${item.title}": ${item.answer ?? ""}\n(${verdict === "APPROVED" ? "Re-issue the approved action now; it will go through." : verdict === "DECLINED" ? "Do not retry the same action; tell the room and try another approach or stop." : "Continue with the answer."})`,
+      content: `[${verdict}] ${who} answered "${item.title}": ${item.answer ?? ""}\n(${verdict === "APPROVED" ? "Re-issue the approved action now; it will go through." : verdict === "DECLINED" ? "Do not retry the same action; tell the room and try another approach or stop." : "Continue with the answer."})${told}`,
     });
     await this.loop(run, transcript);
+    this.launchPending();
     return store.getRun(run.id) ?? run;
   }
 
   /** Recent room conversation as model messages (text only, what this room may see). */
   private history(session: Session, excludeMessageId?: Id): Anthropic.MessageParam[] {
-    const msgs = this.d.store.messagesForSession(session.id, 40).filter((m) => m.id !== excludeMessageId);
+    const msgs = this.d.store.messagesForSession(session.id, 40).filter((m) => m.id !== excludeMessageId && !m.folded && m.at > (session.summaryThroughAt ?? 0));
     const out: Anthropic.MessageParam[] = [];
+    if (session.summary) out.push({ role: "user", content: `[system:earlier in this chat] ${session.summary}` });
     for (const m of msgs) {
       if (m.role === "assistant") out.push({ role: "assistant", content: m.text || "(no text)" });
       else if (m.role === "user") {
@@ -282,8 +392,8 @@ export class Runtime {
 
   // ------------------------------------------------------------------ the loop
 
-  private async loop(run: Run, transcript: Anthropic.MessageParam[]) {
-    const { store, clock, model, memory, rooms, attention, commitments, planner, hands } = this.d;
+  private async loop(run: Run, transcript: Anthropic.MessageParam[], steerFrom?: number) {
+    const { store, clock, model, memory, rooms, attention, commitments, planner, hands, tasks, vault } = this.d;
     const room = store.getRoom(run.roomId)!;
     const agent = store.getAgent(run.agentId)!;
     const session = store.getSession(run.sessionId)!;
@@ -314,6 +424,10 @@ export class Runtime {
       session,
       run,
       requesterId: run.requesterId,
+      tasks,
+      vault: { services: () => vault.services(accounts.accountOwnerId), has: (svc) => vault.has(accounts.accountOwnerId, svc) },
+      delegate: (task) => this.pendingTasks.push(task),
+      steerTask: (taskId, text) => this.steerTask(taskId, text, run.requesterId),
       gate: (g) => this.gate(run, room, agent, accounts, g),
       dm: (personId, text) => {
         const dm = rooms.dmFor(agent, personId);
@@ -351,7 +465,8 @@ export class Runtime {
     setState("working");
     let turns = 0;
     let lastText = "";
-    let steerCursor = store.lastSeq(run.sessionId);
+    let quiet: string | undefined;
+    let steerCursor = steerFrom ?? store.lastSeq(run.sessionId);
 
     while (turns < maxTurns) {
       turns += 1;
@@ -383,6 +498,8 @@ export class Runtime {
         accounts: { accountOwnerName: nameOf(accounts.accountOwnerId), needsApproval: accounts.needsApproval },
         mode,
         requesterRole,
+        tasksText: tasks.describe(room.id, owner?.timezone ?? "UTC"),
+        connectedServices: vault.services(accounts.accountOwnerId),
       });
 
       let turn;
@@ -482,11 +599,18 @@ export class Runtime {
           void this.d.deliver({ roomId: room.id, text: result.roomNotice, kind: "notice" });
         }
         if (result.waitingOn) paused = result.waitingOn;
+        if (result.quiet && !paused) quiet = result.quiet;
 
         const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
         results.push({ type: "tool_result", tool_use_id: use.id, content, is_error: !result.ok });
       }
       transcript.push({ role: "user", content: results });
+      if (quiet) {
+        // Silence is an outcome: recorded, never delivered.
+        this.saveTranscript(run, transcript);
+        this.finish(run, "done", undefined, `Stayed quiet: ${quiet}`, true);
+        return;
+      }
       if (notes.length) transcript.push({ role: "user", content: `[planner] ${notes.join(" ")}` });
 
       if (paused) {
@@ -495,6 +619,7 @@ export class Runtime {
         store.putRun(run);
         emit("gate_opened", { itemId: paused.id, kind: paused.kind, assigneeId: paused.assigneeId, title: paused.title });
         setState(paused.kind === "information" || paused.kind === "decision" || paused.kind === "action" ? "waiting" : "blocked");
+        if (run.taskId) tasks.update(run.taskId, { status: "waiting", progress: `Waiting on ${nameOf(paused.assigneeId)}: ${paused.title}` });
         this.saveTranscript(run, transcript);
         // Tell the assignee privately when the question is not already in this room.
         if (paused.assigneeId !== run.requesterId && paused.title !== "Question for the group") {
@@ -586,6 +711,11 @@ export class Runtime {
 
   private sendReply(run: Run, room: Room, agent: AgentSpec, text: string) {
     const { store, clock } = this.d;
+    if (NOTHING.test(text.trim()) && run.trigger !== "message") {
+      this.finish(run, "done", undefined, "Stayed quiet: nothing to report", true);
+      return;
+    }
+    if (run.taskId) this.d.tasks.delivered(run.taskId, text);
     const calls = store.toolCallsForRun(run.id);
     const footer = buildFooter(calls);
     const integrity = integrityNote(text, calls);
@@ -597,8 +727,18 @@ export class Runtime {
     void this.d.deliver({ roomId: room.id, text: full, kind: "reply" });
   }
 
-  private finish(run: Run, status: Run["status"], failureReason?: string, outcome?: string) {
+  private finish(run: Run, status: Run["status"], failureReason?: string, outcome?: string, quiet = false) {
     const { store, clock } = this.d;
+    run.quiet = quiet || undefined;
+    if (quiet && run.triggerMessageId) {
+      // A quiet timer or event is not worth the next run's context; the record keeps it.
+      const m = store.getMessage(run.triggerMessageId);
+      if (m) {
+        m.folded = true;
+        store.putMessage(m);
+      }
+    }
+    if (run.taskId) this.d.tasks.update(run.taskId, { status: status === "done" ? "done" : status === "failed" ? "failed" : "stopped", progress: outcome ?? failureReason ?? "Finished." });
     // A gate the model never re-issued (or a stop) leaves tool records running; close them honestly.
     for (const c of store.toolCallsForRun(run.id)) {
       if (c.status !== "running") continue;

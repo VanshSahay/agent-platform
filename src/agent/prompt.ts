@@ -30,6 +30,10 @@ export function buildSystemPrompt(input: {
   /** training: the owner's first conversations before the agent is deployed. */
   mode?: "training" | "normal";
   requesterRole?: string;
+  /** Delegated tasks in this room, with progress and what was already told the room. */
+  tasksText?: string;
+  /** Services the account owner for this request has connected (names only). */
+  connectedServices?: string[];
   extra?: string;
 }): string {
   const a = input.agent;
@@ -60,6 +64,9 @@ export function buildSystemPrompt(input: {
       "- Prefer the cheapest channel and switch when it stalls: search, ask the group, call, ask a community (with permission), ask a specific person. State a plan with the plan tool before multi-step work.",
       "- Responsibilities get an owner and a time (track_commitment). Facts worth keeping get a note (remember). Newer notes win; dates matter.",
       "- Private things stay in the room or chat where they were said.",
+      "- On a timer, a heartbeat, a watch or an app event, silence is the default: if nothing changed and nobody needs anything, call stay_quiet instead of posting. Never post '(nothing to report)'.",
+      "- Long work (many searches, several calls, minutes of effort) goes to delegate_task so the room gets an answer now; the task reports back by itself. Short things you do here.",
+      "- A delegated task reports to the room once when done. If you are the task agent, check the task record for what was already told the room and do not repeat it; record milestones with update_task.",
       "- Reply in plain words, short. In a group, one message. Use the person's own words for things.",
     ].join("\n"),
   );
@@ -115,6 +122,8 @@ export function buildSystemPrompt(input: {
   }
 
   parts.push(`Responsibilities ledger for this room:\n${input.ledger}`);
+  if (input.tasksText) parts.push(`Delegated tasks in this room:\n${input.tasksText}`);
+  if (input.connectedServices?.length) parts.push(`Connected accounts for ${input.accounts.accountOwnerName}: ${input.connectedServices.join(", ")} (the tools use them; you never see the credentials).`);
 
   if (input.plan && input.planText) parts.push(`Current plan:\n${input.planText}`);
 

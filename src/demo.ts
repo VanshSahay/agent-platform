@@ -57,7 +57,7 @@ const model = new ScriptedModel((req) => {
 
   // Follow-up and heartbeat runs: a short, honest check-in.
   if (lastUserText(req).includes("Follow-up on responsibility")) return reply("Reminder: Lin Home Repair comes to Mum's tomorrow (Thu) at 2pm, $90–120. Ben, are you still around to let him in?");
-  if (lastUserText(req).includes("Heartbeat check-in")) return reply("(nothing to report)");
+  if (lastUserText(req).includes("Heartbeat check-in")) return callTool("stay_quiet", { reason: "nothing due before Thursday" });
 
   if (!calls.length) {
     return callTool("plan", {

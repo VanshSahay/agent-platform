@@ -1,6 +1,6 @@
 import type { ModelClient, ModelRequest, ModelTurn } from "./types.ts";
 
-export type Script = (req: ModelRequest, callIndex: number) => ModelTurn | string;
+export type Script = (req: ModelRequest, callIndex: number) => ModelTurn | string | Promise<ModelTurn | string>;
 
 /**
  * A model you program. Tests and the offline demo use it to drive the real
@@ -16,7 +16,7 @@ export class ScriptedModel implements ModelClient {
 
   async turn(req: ModelRequest): Promise<ModelTurn> {
     this.calls.push(req);
-    const out = this.script(req, this.calls.length - 1);
+    const out = await this.script(req, this.calls.length - 1);
     if (typeof out === "string") return reply(out);
     return out;
   }

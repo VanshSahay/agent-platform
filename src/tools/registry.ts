@@ -1,5 +1,6 @@
 import type { Clock } from "../core/clock.ts";
-import type { AgentSpec, ApproachKind, AttentionItem, AttentionKind, Id, Room, Run, Session } from "../core/types.ts";
+import type { AgentSpec, ApproachKind, AttentionItem, AttentionKind, Id, Room, Run, Session, Task } from "../core/types.ts";
+import type { TaskService } from "../tasks/tasks.ts";
 import type { ToolSpec } from "../model/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { MemoryService } from "../memory/memory.ts";
@@ -26,6 +27,8 @@ export interface ToolResult {
   roomNotice?: string;
   /** Plan progress signal when the tool embodies an approach. */
   approach?: ApproachKind;
+  /** The run should end without saying anything; the reason goes in the record. */
+  quiet?: string;
 }
 
 export type GateDecision = { granted: true; reason: string } | { granted: false; item: AttentionItem; notice?: string } | { granted: false; held: string };
@@ -44,6 +47,13 @@ export interface ToolContext {
   session: Session;
   run: Run;
   requesterId?: Id;
+  tasks: TaskService;
+  /** Which services the person whose accounts this request may use has connected. Never the secrets. */
+  vault: { services(): string[]; has(service: string): boolean };
+  /** Hand a task to a task agent; it starts once this run has replied. */
+  delegate(task: Task): void;
+  /** Pass a note into a running task; false when it is not running. */
+  steerTask(taskId: Id, text: string): boolean;
   /** Ask for a yes before an effect, or learn it was pre-authorised. */
   gate(input: { kind: AttentionKind; title: string; detail: string; money?: number; outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" } }): GateDecision;
   /** Send a message to a person's private chat with the agent (cards, questions). */
@@ -465,6 +475,7 @@ export const TOOLS: ToolDef[] = [
             minute: num("0-59"),
             dayOfWeek: { type: "array", items: { type: "number" } },
             everyDays: num("Every N days"),
+            everyHours: num("Every N hours, for checks that repeat within a day"),
           }),
           premise: str("What must still be true for this to make sense, e.g. 'the reservation is still unconfirmed'."),
           disclosedOutreach: {
@@ -507,6 +518,7 @@ export const TOOLS: ToolDef[] = [
               minute: n(cal.minute) ?? 0,
               dayOfWeek: Array.isArray(cal.dayOfWeek) ? (cal.dayOfWeek as number[]) : undefined,
               everyDays: n(cal.everyDays),
+              everyHours: n(cal.everyHours),
               timeZone: zone,
             }
           : undefined,
@@ -620,6 +632,131 @@ export const TOOLS: ToolDef[] = [
         content: `Approved: ${gate.reason}. The budget is cleared. No ordering tool is connected yet, so reply in one line that it is approved and that the order itself still has to be placed by hand, then stop. Do not ask anyone anything else and do not browse shops.`,
         evidence: `purchase-approved:${amount}`,
       };
+    },
+  },
+  {
+    spec: {
+      name: "stay_quiet",
+      description:
+        "End this run without posting anything. Use it on timers, heartbeats, watches and app events when nothing changed, nothing slipped and nobody needs anything. In a group, silence is the default; a message is the exception.",
+      input_schema: obj({ reason: str("One line for the record, e.g. 'nothing due before Thursday'.") }, ["reason"]),
+    },
+    family: "plan",
+    labels: { running: "Checking…", done: "Nothing to say" },
+    sideEffect: false,
+    async run(input) {
+      return { ok: true, content: "Staying quiet. The run ends here.", quiet: s(input.reason) || "nothing to report" };
+    },
+  },
+  {
+    spec: {
+      name: "delegate_task",
+      description:
+        "Hand long work (many searches, several calls, anything that will take minutes) to a task agent that runs on its own, so you can answer the room now. Write the instructions as a complete brief: the goal, what done looks like, constraints, who to ask. After delegating, reply to the room in one short line that you are on it; the task reports back by itself when done or when it needs someone.",
+      input_schema: obj({ title: str("Four to eight words."), instructions: str("The full brief for the task agent.") }, ["title", "instructions"]),
+    },
+    family: "plan",
+    labels: { running: "Handing off…", done: "Handed off to a task" },
+    sideEffect: false,
+    async run(input, ctx) {
+      if (ctx.session.taskId) return { ok: false, content: "You are already a task agent; do the work here instead of delegating again." };
+      const task = ctx.tasks.create({ agentId: ctx.agent.id, roomId: ctx.room.id, requesterId: ctx.requesterId, title: s(input.title), instructions: s(input.instructions), createdByRunId: ctx.run.id });
+      ctx.delegate(task);
+      return { ok: true, content: `Delegated as task [${task.id}]. It starts when you finish this reply. Tell the room in one short line that you're on it and stop; do not do the work here.`, evidence: `task:${task.id}` };
+    },
+  },
+  {
+    spec: {
+      name: "update_task",
+      description:
+        "Record progress on a delegated task (one line), optionally telling the room the same line. Task agents call this at each milestone; the main agent can call it to mark a task done or stopped from what a person said.",
+      input_schema: obj(
+        {
+          taskId: str("The task id; inside a task run it defaults to your own task."),
+          progress: str("Where it stands, one line."),
+          status: { type: "string", enum: ["running", "waiting", "done", "failed", "stopped"], description: "Only when it changes." },
+          tellRoom: { type: "boolean", description: "Also post the progress line to the room. Use sparingly: milestones, not every step." },
+        },
+        ["progress"],
+      ),
+    },
+    family: "plan",
+    labels: { running: "Updating the task…", done: "Updated the task" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const id = s(input.taskId) || ctx.run.taskId || "";
+      const status = s(input.status) as Task["status"] | "";
+      const t = ctx.tasks.update(id, { progress: s(input.progress), ...(status ? { status } : {}) });
+      if (!t) return { ok: false, content: `No task ${id}.` };
+      if (input.tellRoom === true) {
+        ctx.tasks.delivered(t.id, s(input.progress));
+        return { ok: true, content: `Progress recorded and told to the room.`, roomNotice: s(input.progress) };
+      }
+      return { ok: true, content: "Progress recorded." };
+    },
+  },
+  {
+    spec: {
+      name: "steer_task",
+      description: "Pass a note from the room into a running delegated task (a changed constraint, a new fact, 'stop'). Use the task id from the tasks list.",
+      input_schema: obj({ taskId: str("The task id."), note: str("What the task agent should know, in one or two lines.") }, ["taskId", "note"]),
+    },
+    family: "plan",
+    labels: { running: "Passing it on…", done: "Passed a note to the task" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const ok = ctx.steerTask(s(input.taskId), s(input.note));
+      return ok ? { ok: true, content: "The task agent will see it at its next step." } : { ok: false, content: "That task is not running right now (it may be waiting on someone or finished); update_task or a new delegate_task instead." };
+    },
+  },
+  {
+    spec: {
+      name: "watch_for",
+      description:
+        "Set an alert rule: check a condition every few hours and act only when it holds, otherwise stay quiet. For 'tell me when the pharmacy confirms', 'if the price drops under $100', 'once Ben replies'. Name any third party you would contact.",
+      input_schema: obj(
+        {
+          title: str("Short title."),
+          condition: str("What must be true to act, checkable from notes, the ledger, a page or a search."),
+          action: str("What to do when it holds, in one or two lines."),
+          everyHours: num("How often to check; 1 to 24."),
+          untilDays: num("Stop after this many days (default 14)."),
+          disclosedOutreach: {
+            type: "array",
+            items: obj({ who: str("Name"), how: { type: "string", enum: ["phone", "email", "sms", "community_post"] }, why: str("Purpose") }, ["who", "how", "why"]),
+          },
+        },
+        ["title", "condition", "action", "everyHours"],
+      ),
+    },
+    family: "schedule",
+    labels: { running: "Setting a watch…", done: "Watching for it" },
+    sideEffect: true,
+    async run(input, ctx) {
+      const every = Math.min(24, Math.max(1, n(input.everyHours) ?? 6));
+      const role = ctx.requesterId ? ctx.rooms.role(ctx.room.id, ctx.requesterId) : undefined;
+      if (role !== "owner" && role !== "decider") {
+        const gate = ctx.gate({ kind: "decision", title: `OK to watch for "${s(input.title)}"?`, detail: `Every ${every}h: ${s(input.condition)} → ${s(input.action)}` });
+        if (!gate.granted) {
+          if ("held" in gate) return { ok: true, content: gate.held };
+          return { ok: true, content: "Asked the owner before setting the watch.", waitingOn: gate.item, roomNotice: gate.notice };
+        }
+      }
+      const zone = ctx.store.getPerson(ctx.agent.ownerId)?.timezone ?? "UTC";
+      const untilDays = n(input.untilDays) ?? 14;
+      const { Scheduler } = await import("../scheduler/scheduler.ts");
+      const sched = Scheduler.createSchedule(ctx.store, ctx.clock, {
+        agentId: ctx.agent.id,
+        roomId: ctx.room.id,
+        sessionId: ctx.session.id,
+        title: s(input.title),
+        prompt: `Check whether this holds: ${s(input.condition)}\nIf it holds: ${s(input.action)} Then tell the room in one line; the watch stops by itself once you report.\nIf it does not hold, call stay_quiet.`,
+        calendar: { everyHours: every, timeZone: zone },
+        authorization: { basis: "user_requested", disclosedOutreach: Array.isArray(input.disclosedOutreach) ? (input.disclosedOutreach as never) : [], premise: `still worth watching: ${s(input.condition)}` },
+        watch: { condition: s(input.condition), action: s(input.action), until: ctx.clock.now() + untilDays * 24 * 3600 * 1000 },
+        createdByRunId: ctx.run.id,
+      });
+      return { ok: true, content: { scheduleId: sched.id, everyHours: every, firstCheck: sched.nextRunAt ? new Date(sched.nextRunAt).toISOString() : null }, evidence: `schedule:${sched.id}` };
     },
   },
 ];

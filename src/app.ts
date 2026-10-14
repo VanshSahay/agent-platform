@@ -6,6 +6,8 @@ import { openDb } from "./store/db.ts";
 import { Store } from "./store/repos.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { Consolidator } from "./memory/consolidate.ts";
+import { TaskService } from "./tasks/tasks.ts";
+import { Vault } from "./tools/vault.ts";
 import { RoomService } from "./rooms/rooms.ts";
 import { AttentionService } from "./inbox/attention.ts";
 import { CommitmentService } from "./care/commitments.ts";
@@ -29,12 +31,14 @@ export interface App {
   runtime: Runtime;
   scheduler: Scheduler;
   hands: Hands;
+  tasks: TaskService;
+  vault: Vault;
   /** Subscribe to outbound deliveries (channel adapters, UI streams, tests). */
   onDeliver(fn: (d: Delivery) => void): () => void;
 }
 
 /** Compose the product. Everything is injectable so tests run offline. */
-export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelClient; hands?: Hands; skillsDir?: string; heartbeatEveryMs?: number; maxTurns?: number }): App {
+export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelClient; hands?: Hands; skillsDir?: string; heartbeatEveryMs?: number; maxTurns?: number; compactAfter?: number; masterKey?: string }): App {
   const clock = opts.clock ?? systemClock;
   const store = new Store(openDb(opts.dbPath ?? ":memory:"));
   const memory = new MemoryService(store, clock);
@@ -49,7 +53,9 @@ export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelCl
   const deliver = (d: Delivery) => {
     for (const l of listeners) l(d);
   };
-  const runtime = new Runtime({ store, clock, model: opts.model, memory, rooms, attention, commitments, planner, hands, skills, deliver, maxTurns: opts.maxTurns });
+  const tasks = new TaskService(store, clock);
+  const vault = new Vault(store, clock, opts.masterKey ?? "dev-only-master-key");
+  const runtime = new Runtime({ store, clock, model: opts.model, memory, rooms, attention, commitments, planner, hands, skills, tasks, vault, deliver, maxTurns: opts.maxTurns, compactAfter: opts.compactAfter });
   const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
   const consolidator = new Consolidator(store, clock, opts.model, memory);
   return {
@@ -65,6 +71,8 @@ export function createApp(opts: { dbPath?: string; clock?: Clock; model: ModelCl
     runtime,
     scheduler,
     hands,
+    tasks,
+    vault,
     onDeliver(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
