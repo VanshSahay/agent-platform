@@ -62,31 +62,32 @@ export class Consolidator {
     });
     const ops = parseOps(raw);
     const handled = new Set<string>();
+    // The model names memories by id; only ids from this scope's own listing are acted on.
+    const byId = new Map<string, Memory>(durable.concat(observations).map((m) => [m.id, m]));
+    const own = (id: unknown) => (typeof id === "string" ? byId.get(id) : undefined);
     const validType = (t: unknown): MemoryType => (TYPES.has(String(t)) ? (String(t) as MemoryType) : "fact");
 
     for (const op of ops) {
-      if (op.op === "retract" && typeof op.id === "string") {
-        this.memory.retract(op.id);
-        handled.add(op.id);
+      if (op.op === "retract" && own(op.id)) {
+        this.memory.retract(String(op.id));
+        handled.add(String(op.id));
         stats.retracted += 1;
-      } else if (op.op === "promote" && typeof op.id === "string") {
-        const src = this.store.getMemory(op.id);
-        if (!src) continue;
+      } else if (op.op === "promote" && own(op.id)) {
+        const src = own(op.id)!;
         const nm = this.memory.write({ ...scopeOf(src), agentId: agent.id, type: validType(op.type), text: String(op.text ?? src.text), aliases: arr(op.aliases), statedAt: src.statedAt, sourceRunId: src.sourceRunId });
         this.memory.supersede(src.id, nm);
         handled.add(src.id);
         stats.promoted += 1;
       } else if (op.op === "merge" && Array.isArray(op.ids) && op.ids.length) {
-        const srcs = op.ids.map((id) => this.store.getMemory(String(id))).filter((m): m is Memory => !!m);
+        const srcs = op.ids.map((id) => own(id)).filter((m): m is Memory => !!m);
         if (!srcs.length) continue;
         const newest = srcs.reduce((a, b) => (a.statedAt > b.statedAt ? a : b));
         const nm = this.memory.write({ ...scopeOf(newest), agentId: agent.id, type: validType(op.type), text: String(op.text ?? newest.text), aliases: arr(op.aliases), statedAt: newest.statedAt });
         for (const s of srcs) (this.memory.supersede(s.id, nm), handled.add(s.id));
         stats.superseded += srcs.length;
-      } else if (op.op === "correct" && typeof op.old === "string" && typeof op.id === "string") {
-        const src = this.store.getMemory(op.id);
-        const old = this.store.getMemory(op.old);
-        if (!src || !old) continue;
+      } else if (op.op === "correct" && own(op.old) && own(op.id)) {
+        const src = own(op.id)!;
+        const old = own(op.old)!;
         const nm = this.memory.write({ ...scopeOf(old), agentId: agent.id, type: validType(op.type ?? old.type), text: String(op.text ?? src.text), aliases: arr(op.aliases).concat(old.aliases), statedAt: src.statedAt });
         this.memory.supersede(old.id, nm);
         this.memory.supersede(src.id, nm);
@@ -106,13 +107,27 @@ export class Consolidator {
     return stats;
   }
 
+  /**
+   * Person profiles come in two: one from facts the person shared with a room
+   * (safe anywhere they are a member) and one that also holds what they told the
+   * agent privately, used only in their own chat. Agent and room scopes have one.
+   */
   async deriveProfile(agent: AgentSpec, scope: Memory["scope"], scopeId: Id) {
-    const mems = this.store.listMemories(agent.id, { scope, scopeId }).filter((m) => m.type !== "observation");
+    const all = this.store.listMemories(agent.id, { scope, scopeId }).filter((m) => m.type !== "observation");
+    if (scope === "person") {
+      await this.writeProfile(agent, scope, scopeId, all.filter((m) => m.visibleToRooms.length > 0));
+      await this.writeProfile(agent, scope, privateProfileId(scopeId), all);
+      return;
+    }
+    await this.writeProfile(agent, scope, scopeId, all);
+  }
+
+  private async writeProfile(agent: AgentSpec, scope: Memory["scope"], scopeId: Id, mems: Memory[]) {
     if (!mems.length) return;
     const ownerName = this.store.getPerson(agent.ownerId)?.displayName ?? "the owner";
     const who =
       scope === "person"
-        ? (this.store.getPerson(scopeId)?.displayName ?? "this person")
+        ? (this.store.getPerson(scopeId.replace(/#private$/, ""))?.displayName ?? "this person")
         : scope === "room"
           ? `the room "${this.store.getRoom(scopeId)?.name ?? scopeId}"`
           : `the assistant ${agent.name}'s own standing instructions from its owner ${ownerName} (write it as "how ${ownerName} wants ${agent.name} to work", not as facts about ${agent.name})`;
@@ -128,6 +143,11 @@ export class Consolidator {
 }
 
 const TYPES = new Set(["rule", "preference", "person", "schedule", "store", "inventory", "decision", "fact", "lesson"]);
+
+/** Where the private (own-chat-only) profile of a person is stored. */
+export function privateProfileId(personId: Id) {
+  return `${personId}#private`;
+}
 
 function scopeOf(m: Memory) {
   return { scope: m.scope, scopeId: m.scopeId, subjectPersonId: m.subjectPersonId, visibleToRooms: m.visibleToRooms };

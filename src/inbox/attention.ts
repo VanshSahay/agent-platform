@@ -8,10 +8,19 @@ import type { Store } from "../store/repos.ts";
  * answer. Resolving an item resumes the run that opened it.
  */
 export class AttentionService {
+  private closedHooks: ((item: AttentionItem) => void)[] = [];
   constructor(
     private store: Store,
     private clock: Clock,
   ) {}
+
+  /** The runtime listens so a run waiting on a dismissed or expired item does not wait forever. */
+  onClosed(fn: (item: AttentionItem) => void) {
+    this.closedHooks.push(fn);
+  }
+  private closed(item: AttentionItem) {
+    for (const fn of this.closedHooks) fn(item);
+  }
 
   open(input: {
     agentId: Id;
@@ -20,6 +29,7 @@ export class AttentionService {
     assigneeId: Id;
     requesterId?: Id;
     kind: AttentionKind;
+    gateKey?: string;
     title: string;
     detail: string;
     options?: string[];
@@ -34,6 +44,7 @@ export class AttentionService {
       assigneeId: input.assigneeId,
       requesterId: input.requesterId,
       kind: input.kind,
+      gateKey: input.gateKey,
       title: input.title,
       detail: input.detail,
       options: input.options,
@@ -63,6 +74,7 @@ export class AttentionService {
     item.status = "dismissed";
     item.resolvedAt = this.clock.now();
     this.store.putAttention(item);
+    this.closed(item);
     return item;
   }
 
@@ -73,6 +85,7 @@ export class AttentionService {
         item.status = "expired";
         item.resolvedAt = now;
         this.store.putAttention(item);
+        this.closed(item);
         out.push(item);
       }
     }

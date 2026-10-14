@@ -1,6 +1,6 @@
 import { newId } from "../core/ids.ts";
 import { DAY, HOUR, hourIn, nextOccurrence, type Clock } from "../core/clock.ts";
-import type { Authorization, Calendar, Id, Schedule, StagedItem } from "../core/types.ts";
+import type { Authorization, Calendar, Commitment, Id, Schedule, StagedItem } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { Runtime } from "../runtime/runtime.ts";
 import type { CommitmentService } from "../care/commitments.ts";
@@ -76,9 +76,14 @@ export class Scheduler {
     const now = this.clock.now();
     const out = { fired: 0, staged: 0, nudged: 0, expired: 0, heartbeats: 0 };
 
+    // Each item on its own: one bad firing must not skip the rest of the tick.
     for (const s of this.store.dueSchedules(now)) {
-      await this.fire(s, now);
-      out.fired += 1;
+      try {
+        await this.fire(s, now);
+        out.fired += 1;
+      } catch (e) {
+        console.error(`schedule ${s.id} failed to fire:`, (e as Error).message);
+      }
     }
 
     for (const item of this.store.dueStaged(now)) {
@@ -99,6 +104,41 @@ export class Scheduler {
     }
 
     for (const c of this.commitments.takeDueNudges(now)) {
+      try {
+        await this.nudge(c, now, out);
+      } catch (e) {
+        console.error(`nudge for ${c.id} failed:`, (e as Error).message);
+      }
+    }
+
+    out.expired = this.attention.expireDue(now).length;
+
+    const every = this.opts.heartbeatEveryMs ?? DAY;
+    for (const room of this.store.listRooms()) {
+      const last = Number(this.store.getKv(`heartbeat:${room.id}`) ?? 0);
+      if (now - last < every) continue;
+      const open = this.commitments.open(room.id);
+      const schedules = this.store.listSchedules({ roomId: room.id }).filter((s) => !s.paused);
+      this.store.setKv(`heartbeat:${room.id}`, String(now));
+      if (!open.length && !schedules.length) continue;
+      try {
+        await this.runtime.startSystemRun({
+          roomId: room.id,
+          trigger: "heartbeat",
+          source: "heartbeat",
+          dedupKey: `heartbeat:${room.id}:${Math.floor(now / every)}`,
+          text: "Heartbeat check-in. Look at the ledger, the schedules and the tasks. Only speak if something changed, slipped, or needs a person; otherwise call stay_quiet.",
+        });
+        out.heartbeats += 1;
+      } catch (e) {
+        console.error(`heartbeat for ${room.id} failed:`, (e as Error).message);
+      }
+    }
+    return out;
+  }
+
+  private async nudge(c: Commitment, now: number, out: { nudged: number }) {
+    {
       const owner = this.store.getPerson(c.ownerId);
       const ben = c.beneficiaryId ? this.store.getPerson(c.beneficiaryId) : undefined;
       if (c.status === "blocked") {
@@ -125,7 +165,7 @@ export class Scheduler {
             out.nudged += 1;
           }
         }
-        continue;
+        return;
       }
       await this.runtime.startSystemRun({
         roomId: c.roomId,
@@ -136,27 +176,6 @@ export class Scheduler {
       });
       out.nudged += 1;
     }
-
-    out.expired = this.attention.expireDue(now).length;
-
-    const every = this.opts.heartbeatEveryMs ?? DAY;
-    for (const room of this.store.listRooms()) {
-      const last = Number(this.store.getKv(`heartbeat:${room.id}`) ?? 0);
-      if (now - last < every) continue;
-      const open = this.commitments.open(room.id);
-      const schedules = this.store.listSchedules({ roomId: room.id }).filter((s) => !s.paused);
-      this.store.setKv(`heartbeat:${room.id}`, String(now));
-      if (!open.length && !schedules.length) continue;
-      await this.runtime.startSystemRun({
-        roomId: room.id,
-        trigger: "heartbeat",
-        source: "heartbeat",
-        dedupKey: `heartbeat:${room.id}:${Math.floor(now / every)}`,
-        text: "Heartbeat check-in. Look at the ledger, the schedules and the tasks. Only speak if something changed, slipped, or needs a person; otherwise call stay_quiet.",
-      });
-      out.heartbeats += 1;
-    }
-    return out;
   }
 
   private async fire(s: Schedule, now: number) {
@@ -172,6 +191,8 @@ export class Scheduler {
         this.store.putSchedule(s);
         return;
       }
+      // A previous check is still running or waiting on someone: do not stack another.
+      if (this.store.listRuns({ roomId: s.roomId, status: ["running", "waiting"], limit: 50 }).some((r) => r.scheduleId === s.id)) return;
       const run = await this.runtime.startSystemRun({
         roomId: s.roomId,
         trigger: "scheduled_action",
@@ -208,12 +229,17 @@ export class Scheduler {
       .messagesForRoom(s.roomId, 15)
       .map((m) => `${m.role}: ${m.text.slice(0, 200)}`)
       .join("\n");
-    const raw = await this.model.complete({
-      system: 'Answer with JSON only: {"holds": true|false, "note": "<one sentence>"}. "holds" is false only when the evidence clearly shows the premise is no longer true.',
-      prompt: `Premise: ${s.authorization.premise}\nLedger:\n${ledger}\nRecent messages:\n${recent}`,
-      effort: "low",
-      maxTokens: 300,
-    });
+    let raw = "";
+    try {
+      raw = await this.model.complete({
+        system: 'Answer with JSON only: {"holds": true|false, "note": "<one sentence>"}. "holds" is false only when the evidence clearly shows the premise is no longer true.',
+        prompt: `Premise: ${s.authorization.premise}\nLedger:\n${ledger}\nRecent messages:\n${recent}`,
+        effort: "low",
+        maxTokens: 300,
+      });
+    } catch {
+      return { holds: true, note: "not verified (model unavailable); verify before acting" };
+    }
     try {
       const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
       if (typeof j.holds === "boolean") return { holds: j.holds, note: String(j.note ?? "") };

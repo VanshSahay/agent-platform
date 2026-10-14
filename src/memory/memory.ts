@@ -79,7 +79,8 @@ export class MemoryService {
     for (const pid of memberIds) {
       const personal = this.store.listMemories(agentId, { scope: "person", scopeId: pid });
       for (const m of personal) {
-        const inDm = room.kind === "dm" && (pid === opts.requesterId || memberIds.length <= 2);
+        // In a person's own chat their private notes apply; never another member's, whatever the room size.
+        const inDm = room.kind === "dm" && pid === opts.requesterId;
         if (inDm || m.visibleToRooms.includes(room.id)) out.push(m);
       }
     }
@@ -87,9 +88,9 @@ export class MemoryService {
   }
 
   /** Keyword recall restricted to what the room may see. */
-  recall(agentId: Id, room: Room, memberIds: Id[], query: string, limit = 12): Memory[] {
-    const allowed = new Set(this.visibleIn(agentId, room, memberIds).map((m) => m.id));
-    return this.store.searchMemories(agentId, query, limit * 3).filter((m) => allowed.has(m.id)).slice(0, limit);
+  recall(agentId: Id, room: Room, memberIds: Id[], query: string, limit = 12, opts: { requesterId?: Id } = {}): Memory[] {
+    const allowed = new Set(this.visibleIn(agentId, room, memberIds, { requesterId: opts.requesterId }).map((m) => m.id));
+    return this.store.searchMemories(agentId, query, limit * 6).filter((m) => allowed.has(m.id)).slice(0, limit);
   }
 
   rulesFor(agentId: Id, room: Room, memberIds: Id[]): Memory[] {

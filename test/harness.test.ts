@@ -3,6 +3,8 @@ import { callTool, lastUserText, reply, toolCallsSoFar, transcriptHas } from "..
 import { familyWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
 import { Vault } from "../src/tools/vault.ts";
+import { parseDecision } from "../src/runtime/decide.ts";
+import { privateProfileId } from "../src/memory/consolidate.ts";
 
 describe("silence is an outcome", () => {
   test("a heartbeat with nothing to say ends quiet: no delivery, a quiet run in the record", async () => {
@@ -191,5 +193,177 @@ describe("compaction", () => {
     expect(JSON.stringify(last.messages)).not.toContain("note 0");
     expect(JSON.stringify(last.messages)).toContain("note 35");
     expect(w.app.store.listMemories(w.agent.id, { scope: "room", scopeId: w.family.id }).some((m) => m.text.startsWith("Conversation summary through"))).toBe(true);
+  });
+});
+
+describe("reading an answer", () => {
+  test("negation wins, options are picks, chatter is not an answer", () => {
+    expect(parseDecision("yes")).toEqual({ kind: "yes" });
+    expect(parseDecision("Sure, go ahead")).toEqual({ kind: "yes" });
+    expect(parseDecision("no, I do not approve")).toEqual({ kind: "no" });
+    expect(parseDecision("No — don't go ahead")).toEqual({ kind: "no" });
+    expect(parseDecision("please don't")).toEqual({ kind: "no" });
+    expect(parseDecision("ok but not today")).toEqual({ kind: "no" });
+    expect(parseDecision("Great Wall", ["Lin", "Great Wall"])).toEqual({ kind: "option", option: "Great Wall" });
+    expect(parseDecision("Thanks everyone, Mum will be home all week.")).toBeUndefined();
+  });
+
+  test("'no, I don't approve' declines the gate instead of approving it", async () => {
+    const w = familyWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 180, what: "a new kettle", where: "Target" }) : reply(transcriptHas(req, "[DECLINED]") ? "Understood, not buying it." : "Waiting.")));
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip buy Mum a kettle, about $180" });
+    expect(run?.status).toBe("waiting");
+    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "no, I don't approve that" });
+    expect(repliesTo(w.deliveries, w.family.id).at(-1)).toContain("not buying");
+    expect(w.app.store.approvalsFor(w.family.id, w.app.store.getAttention(run!.waitingOn!)!.gateKey!)[0]!.decision).toBe("no");
+  });
+});
+
+describe("approvals are records", () => {
+  test("a yes covers exactly the approved text to the approved number, once; a different text asks again", async () => {
+    const w = familyWorld((req, i) => {
+      const sent = toolCallsSoFar(req).filter((c) => c.name === "send_sms").length;
+      if (i === 0) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm." });
+      if (transcriptHas(req, "[APPROVED]") && sent === 1) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Confirming Thursday 2pm." });
+      if (sent === 2 && !transcriptHas(req, "Nothing was sent")) return callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Also, can you call Ben instead of Ellie?" });
+      return reply("Texted the clinic.");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip confirm Thursday with the clinic by text" });
+    const item = w.app.store.getAttention(run!.waitingOn!)!;
+    expect(item.gateKey).toBeDefined();
+    await w.app.runtime.answerAttention(item.id, "yes", "ellie");
+    // The approved text went out once; the second, different text opened a new card instead of riding the first yes.
+    expect(w.hands.phone.sms).toHaveLength(1);
+    const after = w.app.store.getRun(run!.id)!;
+    expect(after.status).toBe("waiting");
+    expect(w.app.store.getAttention(after.waitingOn!)!.gateKey).not.toBe(item.gateKey);
+    const approval = w.app.store.approvalsFor(w.family.id, item.gateKey!)[0]!;
+    expect(approval.consumedAt).toBeDefined();
+  });
+
+  test("one person's approval does not leak to another run asking for a different amount", async () => {
+    const w = familyWorld((req, i) => {
+      if (i === 0) return callTool("request_purchase", { amountUsd: 50, what: "flowers", where: "Trader Joe's" });
+      if (i === 1) return callTool("request_purchase", { amountUsd: 50, what: "a lamp", where: "IKEA" });
+      return reply("ok");
+    });
+    const a = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip get flowers for Mum, $50" });
+    const b = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "mum", text: "Pip, order me a lamp please, about $50" });
+    expect(a?.status).toBe("waiting");
+    expect(b?.status).toBe("waiting");
+    expect(w.app.store.getAttention(a!.waitingOn!)!.gateKey).not.toBe(w.app.store.getAttention(b!.waitingOn!)!.gateKey);
+  });
+});
+
+describe("stopping and restarting", () => {
+  test("stop ends a run between turns: no further tools run and 'stopped' is not overwritten by 'done'", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const w = familyWorld(async (req, i) => {
+      if (i === 0) return callTool("search_memory", { query: "plumber" });
+      await gate;
+      return callTool("search_memory", { query: "again" });
+    });
+    const p = w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip find a plumber" });
+    const run = w.app.store.listRuns({ roomId: w.family.id })[0]!;
+    // Let the first tool finish, then stop while the second model turn is in flight.
+    while (!w.app.store.toolCallsForRun(run.id).some((c) => c.status === "done")) await new Promise((r) => setTimeout(r, 1));
+    await w.app.runtime.stop(run.id);
+    release();
+    const done = await p;
+    expect(done?.status).toBe("stopped");
+    expect(w.app.store.toolCallsForRun(run.id).filter((c) => c.status === "done")).toHaveLength(1);
+    expect(w.app.store.toolCallsForRun(run.id)).toHaveLength(1);
+    expect(repliesTo(w.deliveries, w.family.id)).toHaveLength(0);
+  });
+
+  test("a run left running by a crash is failed at boot, and a message to its session gets a fresh run", async () => {
+    const w = familyWorld(() => reply("hi"));
+    const session = w.app.store.latestSessionForRoom(w.family.id) ?? ((await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" })), w.app.store.latestSessionForRoom(w.family.id)!);
+    w.app.store.putRun({ id: "run_dead", sessionId: session.id, roomId: w.family.id, agentId: w.agent.id, trigger: "message", status: "running", startedAt: w.clock.now() });
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip are you there?" });
+    expect(run?.id).not.toBe("run_dead");
+    expect(run?.status).toBe("done");
+    expect(w.app.store.getRun("run_dead")!.status).toBe("failed");
+  });
+});
+
+describe("cards and runs move together", () => {
+  test("an expired question ends the run that waited on it", async () => {
+    const w = familyWorld((req, i) => (i === 0 ? callTool("ask_person", { person: "Ben", question: "Can you drive Thursday?", kind: "decision", options: ["Yes", "No"] }) : reply("ok")));
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip ask Ben about Thursday" });
+    expect(run?.status).toBe("waiting");
+    w.clock.set(w.clock.now() + 4 * DAY);
+    await w.app.scheduler.tick();
+    expect(w.app.store.getRun(run!.id)!.status).toBe("stopped");
+  });
+
+  test("answering a card that has no run behind it starts a follow-up run carrying the answer", async () => {
+    const w = familyWorld((req) => (lastUserText(req).includes('answered "') ? callTool("update_commitment", { commitmentId: w.app.store.listCommitments({ roomId: w.family.id })[0]!.id, status: "dropped" }) : reply("Dropped it, as Ben asked.")));
+    const due = w.clock.now() + DAY;
+    w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: "wei", beneficiaryId: "mum", title: "Drive Mum to the dentist", dueAt: due });
+    for (let day = 0; day < 6; day++) {
+      w.clock.set(due + day * DAY + 1);
+      await w.app.scheduler.tick();
+    }
+    const card = w.app.attention.openFor("ben").find((a) => a.title.includes("is stuck"))!;
+    const run = await w.app.runtime.answerAttention(card.id, "Drop it", "ben");
+    expect(run?.trigger).toBe("follow_up");
+    expect(w.app.store.listCommitments({ roomId: w.family.id })[0]!.status).toBe("dropped");
+  });
+
+  test("reopening a blocked responsibility restarts its reminders", () => {
+    const w = familyWorld(() => reply("ok"));
+    const c = w.app.commitments.track({ roomId: w.family.id, agentId: w.agent.id, ownerId: "wei", title: "Fix the gate", dueAt: w.clock.now() + DAY });
+    w.app.commitments.update(c.id, { status: "blocked" });
+    expect(w.app.store.getCommitment(c.id)!.nextNudgeAt).toBeUndefined();
+    w.app.commitments.update(c.id, { status: "open" });
+    const again = w.app.store.getCommitment(c.id)!;
+    expect(again.nudges).toBe(0);
+    expect(again.nextNudgeAt).toBeDefined();
+  });
+});
+
+describe("disclosed outreach is an approval in advance", () => {
+  test("a decider's schedule that names someone to contact asks the owner first", async () => {
+    const w = familyWorld((req, i) => (i === 0 ? callTool("schedule_action", { title: "Call the clinic", prompt: "Call the clinic and confirm.", runAt: new Date(w.clock.now() + DAY).toISOString(), premise: "still unconfirmed", disclosedOutreach: [{ who: "the clinic", how: "phone", why: "confirm" }] }) : reply("Asked Ellie first.")));
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "@pip call the clinic tomorrow to confirm" });
+    expect(run?.status).toBe("waiting");
+    const item = w.app.store.getAttention(run!.waitingOn!)!;
+    // A decider acts through the owner's accounts, so the card is the owner's "guest request" form of an outreach approval.
+    expect(["outreach_approval", "guest_request"]).toContain(item.kind);
+    expect(item.gateKey).toBeDefined();
+    expect(item.assigneeId).toBe("ellie");
+    expect(w.app.store.listSchedules({ roomId: w.family.id })).toHaveLength(0);
+  });
+
+  test("malformed outreach entries from the model are dropped, so nothing is pre-approved by accident", async () => {
+    const w = familyWorld((req, i) => (i === 0 ? callTool("schedule_action", { title: "Sunday rundown", prompt: "List the week.", calendar: { hour: 18, minute: 0, dayOfWeek: [0] }, premise: "always", disclosedOutreach: [{ who: 42 }, "the clinic", { who: "Lin", how: "fax", why: "x" }] }) : reply("Scheduled.")));
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip every Sunday list the week" });
+    expect(w.app.store.listSchedules({ roomId: w.family.id })[0]!.authorization.disclosedOutreach).toEqual([]);
+  });
+});
+
+describe("private notes stay private", () => {
+  test("a person's private profile is used in their own chat and never in a group", async () => {
+    const w = familyWorld(() => reply("ok"));
+    w.app.store.putProfile({ agentId: w.agent.id, scope: "person", scopeId: "ben", text: "Ben can drive Thursdays.", derivedAt: w.clock.now() });
+    w.app.store.putProfile({ agentId: w.agent.id, scope: "person", scopeId: privateProfileId("ben"), text: "Ben is between jobs and money is tight.", derivedAt: w.clock.now() });
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "@pip hi" });
+    expect(w.model.calls.at(-1)!.system).toContain("drive Thursdays");
+    expect(w.model.calls.at(-1)!.system).not.toContain("money is tight");
+    const dm = w.app.rooms.dmFor(w.agent, "ben");
+    await w.app.runtime.handleMessage({ roomId: dm.id, personId: "ben", text: "hi" });
+    expect(w.model.calls.at(-1)!.system).toContain("money is tight");
+  });
+
+  test("the consolidator ignores memory ids outside the scope it is working on", async () => {
+    const w = familyWorld(() => reply("ok"), {
+      completer: (system, prompt) => (system.startsWith("You maintain") ? JSON.stringify([{ op: "retract", id: "mem_elsewhere" }, { op: "retract", id: (prompt.match(/mem_\S+/) ?? [""])[0] }]) : ""),
+    });
+    const foreign = w.app.memory.write({ agentId: "agt_other", scope: "agent", scopeId: "agt_other", type: "rule", text: "Other agent's rule." });
+    w.app.store.putMemory({ ...foreign, id: "mem_elsewhere" });
+    w.app.memory.write({ agentId: w.agent.id, scope: "room", scopeId: w.family.id, type: "observation", text: "[fact] Something observed." });
+    await w.app.consolidator.runFor(w.agent);
+    expect(w.app.store.getMemory("mem_elsewhere")!.retractedAt).toBeUndefined();
   });
 });

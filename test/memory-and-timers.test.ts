@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { privateProfileId } from "../src/memory/consolidate.ts";
 import { callTool, lastToolResult, reply } from "../src/model/scripted.ts";
 import { familyWorld } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
@@ -67,7 +68,9 @@ describe("memory", () => {
     expect(w.app.store.getMemory(a.id)?.supersededBy).toBeDefined();
     expect(w.app.store.getMemory(b.id)?.retractedAt).toBeDefined();
     expect(w.app.store.getMemory(c.id)?.supersededBy).toBeDefined();
-    expect(w.app.store.getProfile(w.agent.id, "person", "ellie")?.text).toContain("afternoon");
+    // These notes were told privately (no room may see them), so they shape Ellie's private profile only.
+    expect(w.app.store.getProfile(w.agent.id, "person", "ellie")).toBeUndefined();
+    expect(w.app.store.getProfile(w.agent.id, "person", privateProfileId("ellie"))?.text).toContain("afternoon");
   });
 });
 

@@ -1,5 +1,5 @@
 import type { Clock } from "../core/clock.ts";
-import type { AgentSpec, ApproachKind, AttentionItem, AttentionKind, Id, Room, Run, Session, Task } from "../core/types.ts";
+import type { AgentSpec, ApproachKind, AttentionItem, AttentionKind, Authorization, Id, Room, Run, Session, Task } from "../core/types.ts";
 import type { TaskService } from "../tasks/tasks.ts";
 import type { ToolSpec } from "../model/types.ts";
 import type { Store } from "../store/repos.ts";
@@ -29,6 +29,8 @@ export interface ToolResult {
   approach?: ApproachKind;
   /** The run should end without saying anything; the reason goes in the record. */
   quiet?: string;
+  /** The action was held (working hours, a decline): nothing happened, the plan step is not done. */
+  held?: boolean;
 }
 
 export type GateDecision = { granted: true; reason: string } | { granted: false; item: AttentionItem; notice?: string } | { granted: false; held: string };
@@ -55,7 +57,17 @@ export interface ToolContext {
   /** Pass a note into a running task; false when it is not running. */
   steerTask(taskId: Id, text: string): boolean;
   /** Ask for a yes before an effect, or learn it was pre-authorised. */
-  gate(input: { kind: AttentionKind; title: string; detail: string; money?: number; outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" } }): GateDecision;
+  gate(input: {
+    kind: AttentionKind;
+    title: string;
+    detail: string;
+    money?: number;
+    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" };
+    /** What a yes permits: the tool and the payload that matters (number, text, amount, merchant). An approval covers exactly this. */
+    key: unknown[];
+  }): GateDecision;
+  /** Stop a run (a task's run) from a tool. */
+  stopRun(runId: Id): void;
   /** Send a message to a person's private chat with the agent (cards, questions). */
   dm(personId: Id, text: string): void;
   /** Resolve a member by name or id inside this room. */
@@ -79,6 +91,21 @@ const num = (description: string) => ({ type: "number", description });
 
 const s = (v: unknown) => (typeof v === "string" ? v : "");
 const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+type Outreach = Authorization["disclosedOutreach"][number];
+const HOWS = new Set(["phone", "email", "sms", "community_post"]);
+/** Only well-formed entries become pre-approved outreach; anything else is dropped. */
+function parseOutreach(v: unknown): Outreach[] {
+  if (!Array.isArray(v)) return [];
+  const out: Outreach[] = [];
+  for (const x of v) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as Record<string, unknown>;
+    if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how)) out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
+  }
+  return out.slice(0, 10);
+}
+const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
 
 // ----------------------------------------------------------------------------
 
@@ -289,9 +316,10 @@ export const TOOLS: ToolDef[] = [
         title: `OK to call ${s(input.who)}?`,
         detail: `${ctx.agent.name} wants to call ${s(input.who)} (${s(input.to)}) by phone to: ${s(input.objective)}`,
         outreach: { who: s(input.who), how: "phone" },
+        key: ["place_call", s(input.to)],
       });
       if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "call" };
+        if ("held" in gate) return { ok: true, content: gate.held, approach: "call", held: true };
         return { ok: true, content: "Waiting for the owner's go-ahead. Nothing has been dialed.", waitingOn: gate.item, roomNotice: gate.notice, approach: "call" };
       }
       ctx.progress(`Calling ${s(input.who)}…`);
@@ -321,9 +349,10 @@ export const TOOLS: ToolDef[] = [
         title: `OK to text ${s(input.who)}?`,
         detail: `${ctx.agent.name} wants to text ${s(input.who)} (${s(input.to)}): "${s(input.text)}"`,
         outreach: { who: s(input.who), how: "sms" },
+        key: ["send_sms", s(input.to), s(input.text)],
       });
       if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held };
+        if ("held" in gate) return { ok: true, content: gate.held, held: true };
         return { ok: true, content: "Waiting for the owner's go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
       }
       const r = await ctx.hands.phone.sendSms({ to: s(input.to), text: s(input.text), from: ctx.agent.name });
@@ -354,9 +383,10 @@ export const TOOLS: ToolDef[] = [
         title: `OK to post on ${s(input.community)}?`,
         detail: `${ctx.agent.name} wants to post publicly on ${s(input.community)}:\n"${s(input.title)}"\n${s(input.body)}`,
         outreach: { who: s(input.community), how: "community_post" },
+        key: ["post_community", s(input.community), s(input.title), s(input.body)],
       });
       if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "community_post" };
+        if ("held" in gate) return { ok: true, content: gate.held, approach: "community_post", held: true };
         return { ok: true, content: "Waiting for the owner's OK before posting anything public.", waitingOn: gate.item, roomNotice: gate.notice, approach: "community_post" };
       }
       const r = await ctx.hands.community.post({ community: s(input.community), title: s(input.title), body: s(input.body), language: s(input.language) || undefined });
@@ -495,15 +525,23 @@ export const TOOLS: ToolDef[] = [
       const cal = input.calendar && typeof input.calendar === "object" ? (input.calendar as Record<string, unknown>) : undefined;
       if (!runAt && !cal) return { ok: false, content: "Give runAt or calendar." };
       if (runAt !== undefined && !Number.isFinite(runAt)) return { ok: false, content: "runAt is not a valid ISO instant." };
-      // Only the owner or a decider may put the agent on a schedule without asking.
+      const outreach = parseOutreach(input.disclosedOutreach);
+      // Only the owner may put the agent on a schedule without asking; disclosed outreach is an
+      // approval in advance, so anyone else (deciders included) needs the owner's yes for it.
       const role = ctx.requesterId ? ctx.rooms.role(ctx.room.id, ctx.requesterId) : undefined;
-      if (role !== "owner" && role !== "decider") {
-        const gate = ctx.gate({ kind: "decision", title: `OK to schedule "${s(input.title)}"?`, detail: `${s(input.prompt)}\nPremise: ${s(input.premise)}` });
+      if (role !== "owner" && (role !== "decider" || outreach.length)) {
+        const gate = ctx.gate({
+          kind: outreach.length ? "outreach_approval" : "decision",
+          title: `OK to schedule "${s(input.title)}"?`,
+          detail: `${s(input.prompt)}\nPremise: ${s(input.premise)}${outreach.length ? `\nIt may contact: ${describeOutreach(outreach)}` : ""}`,
+          key: ["schedule_action", s(input.title), s(input.prompt), outreach],
+        });
         if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held };
+          if ("held" in gate) return { ok: true, content: gate.held, held: true };
           return { ok: true, content: "Asked the owner before scheduling.", waitingOn: gate.item, roomNotice: gate.notice };
         }
       }
+      if (outreach.length && ctx.requesterId === ctx.agent.ownerId) ctx.dm(ctx.agent.ownerId, `Scheduled "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
       const { Scheduler } = await import("../scheduler/scheduler.ts");
       const sched = Scheduler.createSchedule(ctx.store, ctx.clock, {
         agentId: ctx.agent.id,
@@ -524,7 +562,7 @@ export const TOOLS: ToolDef[] = [
           : undefined,
         authorization: {
           basis: "user_requested",
-          disclosedOutreach: Array.isArray(input.disclosedOutreach) ? (input.disclosedOutreach as never) : [],
+          disclosedOutreach: outreach,
           premise: s(input.premise),
         },
         createdByRunId: ctx.run.id,
@@ -622,9 +660,10 @@ export const TOOLS: ToolDef[] = [
         title: `OK to spend $${amount.toFixed(2)}?`,
         detail: `${ctx.agent.name} wants to pay $${amount.toFixed(2)} at ${s(input.where)} for: ${s(input.what)}`,
         money: amount,
+        key: ["request_purchase", amount.toFixed(2), s(input.where), s(input.what)],
       });
       if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held };
+        if ("held" in gate) return { ok: true, content: gate.held, held: true };
         return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
       }
       return {
@@ -686,6 +725,9 @@ export const TOOLS: ToolDef[] = [
     async run(input, ctx) {
       const id = s(input.taskId) || ctx.run.taskId || "";
       const status = s(input.status) as Task["status"] | "";
+      const existing = ctx.store.getTask(id);
+      if (!existing || existing.roomId !== ctx.room.id) return { ok: false, content: `No task ${id} in this room.` };
+      if (!ctx.run.taskId && (status === "stopped" || status === "done") && existing.runId) ctx.stopRun(existing.runId);
       const t = ctx.tasks.update(id, { progress: s(input.progress), ...(status ? { status } : {}) });
       if (!t) return { ok: false, content: `No task ${id}.` };
       if (input.tellRoom === true) {
@@ -705,6 +747,8 @@ export const TOOLS: ToolDef[] = [
     labels: { running: "Passing it on…", done: "Passed a note to the task" },
     sideEffect: false,
     async run(input, ctx) {
+      const target = ctx.store.getTask(s(input.taskId));
+      if (!target || target.roomId !== ctx.room.id) return { ok: false, content: "No such task in this room." };
       const ok = ctx.steerTask(s(input.taskId), s(input.note));
       return ok ? { ok: true, content: "The task agent will see it at its next step." } : { ok: false, content: "That task is not running right now (it may be waiting on someone or finished); update_task or a new delegate_task instead." };
     },
@@ -734,14 +778,21 @@ export const TOOLS: ToolDef[] = [
     sideEffect: true,
     async run(input, ctx) {
       const every = Math.min(24, Math.max(1, n(input.everyHours) ?? 6));
+      const outreach = parseOutreach(input.disclosedOutreach);
       const role = ctx.requesterId ? ctx.rooms.role(ctx.room.id, ctx.requesterId) : undefined;
-      if (role !== "owner" && role !== "decider") {
-        const gate = ctx.gate({ kind: "decision", title: `OK to watch for "${s(input.title)}"?`, detail: `Every ${every}h: ${s(input.condition)} → ${s(input.action)}` });
+      if (role !== "owner" && (role !== "decider" || outreach.length)) {
+        const gate = ctx.gate({
+          kind: outreach.length ? "outreach_approval" : "decision",
+          title: `OK to watch for "${s(input.title)}"?`,
+          detail: `Every ${every}h: ${s(input.condition)} → ${s(input.action)}${outreach.length ? `\nIt may contact: ${describeOutreach(outreach)}` : ""}`,
+          key: ["watch_for", s(input.title), s(input.condition), s(input.action), outreach],
+        });
         if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held };
+          if ("held" in gate) return { ok: true, content: gate.held, held: true };
           return { ok: true, content: "Asked the owner before setting the watch.", waitingOn: gate.item, roomNotice: gate.notice };
         }
       }
+      if (outreach.length && ctx.requesterId === ctx.agent.ownerId) ctx.dm(ctx.agent.ownerId, `Watch "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
       const zone = ctx.store.getPerson(ctx.agent.ownerId)?.timezone ?? "UTC";
       const untilDays = n(input.untilDays) ?? 14;
       const { Scheduler } = await import("../scheduler/scheduler.ts");
@@ -752,7 +803,7 @@ export const TOOLS: ToolDef[] = [
         title: s(input.title),
         prompt: `Check whether this holds: ${s(input.condition)}\nIf it holds: ${s(input.action)} Then tell the room in one line; the watch stops by itself once you report.\nIf it does not hold, call stay_quiet.`,
         calendar: { everyHours: every, timeZone: zone },
-        authorization: { basis: "user_requested", disclosedOutreach: Array.isArray(input.disclosedOutreach) ? (input.disclosedOutreach as never) : [], premise: `still worth watching: ${s(input.condition)}` },
+        authorization: { basis: "user_requested", disclosedOutreach: outreach, premise: `still worth watching: ${s(input.condition)}` },
         watch: { condition: s(input.condition), action: s(input.action), until: ctx.clock.now() + untilDays * 24 * 3600 * 1000 },
         createdByRunId: ctx.run.id,
       });

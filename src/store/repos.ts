@@ -436,6 +436,9 @@ export class Store {
     const r = this.db.query("SELECT v FROM kv WHERE k = ?").get(k) as Row | null;
     return r ? (r.v as string) : undefined;
   }
+  deleteKv(k: string) {
+    this.db.run("DELETE FROM kv WHERE k = ?", [k]);
+  }
   setKv(k: string, v: string) {
     this.db.run("INSERT OR REPLACE INTO kv(k, v) VALUES (?, ?)", [k, v]);
   }

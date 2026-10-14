@@ -53,6 +53,11 @@ export class CommitmentService {
       if (patch.status !== "open") {
         c.closedAt = this.clock.now();
         c.nextNudgeAt = undefined;
+      } else {
+        // Reopened (or unblocked): nudging starts over, else it would never fire again.
+        c.closedAt = undefined;
+        c.nudges = 0;
+        c.nextNudgeAt = firstNudge(this.clock.now(), patch.dueAt ?? c.dueAt);
       }
     }
     if (patch.dueAt !== undefined) {
