@@ -105,7 +105,7 @@ export class JinaReader implements BrowserProvider {
     private timeoutMs = 45_000,
   ) {}
 
-  async readPage(input: { url: string; action?: unknown }): Promise<PageRead> {
+  async readPage(input: { url: string; contextId?: string; action?: unknown }): Promise<PageRead> {
     const evidence = `jina:${++this.calls}`;
     try {
       const res = await this.fetchImpl(JINA + input.url, { headers: { accept: "text/plain", "x-return-format": "markdown" }, signal: AbortSignal.timeout(this.timeoutMs) });

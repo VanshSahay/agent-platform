@@ -292,6 +292,8 @@ export interface Message {
   visibleTo: Id[];
   /** A trigger whose run stayed quiet: kept in the record, left out of the model's history. */
   folded?: boolean;
+  /** An embedded card the UI renders inside the chat. */
+  card?: ConnectCard;
   at: UnixMs;
 }
 
@@ -306,7 +308,18 @@ export type AttentionKind =
   | "community_post_approval"
   | "guest_request" // a guest asked for something that uses the owner's accounts
   | "credential_fix"
+  | "connect_account" // a member signs in to a site in an embedded browser; the agent never sees the password
   | "suggested_action";
+
+/** A rich card carried by an attention item and by the chat message that shows it. */
+export interface ConnectCard {
+  kind: "connect_account";
+  itemId: Id;
+  site: string;
+  /** The embeddable live view of the sign-in browser. */
+  liveViewUrl: string;
+  status: "open" | "done" | "cancelled";
+}
 
 export type AttentionStatus = "open" | "resolved" | "dismissed" | "expired";
 
@@ -322,6 +335,8 @@ export interface AttentionItem {
   kind: AttentionKind;
   /** What a yes would permit: sha256 of the tool and the payload that matters. Set for gates. */
   gateKey?: string;
+  /** An embedded card (a sign-in browser) instead of a plain yes/no. */
+  card?: ConnectCard;
   title: string;
   detail: string;
   /** Choices for a decision, if any. */

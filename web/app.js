@@ -362,7 +362,11 @@ async function renderInbox() {
       ? inbox.needsYou
           .map(
             (i) =>
-              `<div class="card" data-item="${esc(i.id)}"><h4>${esc(i.title)}</h4><p>${esc(i.detail)}</p><div class="meta">${esc(roomOf(i.roomId)?.name ?? "")}${i.requesterId ? ` · asked by ${esc(nameOf(i.requesterId))}` : ""} · ${fmt(i.createdAt)}</div><div class="row">${(i.options ?? []).map((o) => `<button class="btn ${o === "Yes" ? "primary" : ""}" data-answer="${esc(o)}" type="button">${esc(o)}</button>`).join("")}<button class="btn" data-custom type="button">Reply…</button><button class="btn" data-dismiss type="button">Dismiss</button></div></div>`,
+              `<div class="card" data-item="${esc(i.id)}"><h4>${esc(i.title)}</h4><p>${esc(i.detail)}</p><div class="meta">${esc(roomOf(i.roomId)?.name ?? "")}${i.requesterId ? ` · asked by ${esc(nameOf(i.requesterId))}` : ""} · ${fmt(i.createdAt)}</div><div class="row">${
+                i.kind === "connect_account"
+                  ? `<a class="btn primary" href="#chat" data-room="${esc(i.roomId)}">Open the chat to sign in</a><button class="btn" data-dismiss type="button">Dismiss</button>`
+                  : `${(i.options ?? []).map((o) => `<button class="btn ${o === "Yes" ? "primary" : ""}" data-answer="${esc(o)}" type="button">${esc(o)}</button>`).join("")}<button class="btn" data-custom type="button">Reply…</button><button class="btn" data-dismiss type="button">Dismiss</button>`
+              }</div></div>`,
           )
           .join("")
       : `<div class="empty"><strong>Nothing needs you right now.</strong>When ${esc(agent.name)} gets stuck on something only you can answer, it waits here.</div>`;
@@ -394,6 +398,17 @@ async function renderInbox() {
     $$("#inbox [data-dismiss]").forEach((b) => {
       b.onclick = async () => {
         await api(`/api/attention/${encodeURIComponent(b.closest(".card").dataset.item)}/dismiss`, {});
+        load();
+      };
+    });
+    // A sign-in card is answered inside the chat it belongs to.
+    $$("#inbox a[data-room]").forEach((a) => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        state.room = a.dataset.room;
+        state.lastMsgCount = -1;
+        if (state.page !== "chat") location.hash = "chat";
+        else setPhoneTab("chat");
         load();
       };
     });
@@ -525,7 +540,7 @@ async function renderThread() {
     el.innerHTML = `<div class="welcome"><h1>${greeting()}.</h1><p>You are not in any room yet. Make one from the Rooms list.</p></div>`;
     return;
   }
-  const data = await api(`/api/rooms/${encodeURIComponent(state.room)}/messages?limit=100`);
+  const data = await api(`/api/rooms/${encodeURIComponent(state.room)}/messages?limit=100${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
   const msgs = data.messages ?? data;
   const active = data.activeRun;
   if (!msgs.length) {
@@ -572,7 +587,8 @@ async function renderThread() {
         body = esc(m.text.slice(0, fi));
         footer = m.text.slice(fi + 1);
       }
-      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body">${body}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div></div>`;
+      const card = m.card ? cardHtml(m.card) : "";
+      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div></div>`;
     })
     .join("");
   if (active && active.status === "running") {
@@ -582,6 +598,24 @@ async function renderThread() {
     html += `<div class="working"><span class="dot hold"></span><span>${esc(agent?.name ?? "Agent")} is waiting on someone.</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
   }
   el.innerHTML = html;
+  $$("#inner [data-connect]").forEach((b) => {
+    b.onclick = async () => {
+      const card = b.closest(".acard");
+      card.querySelectorAll("button").forEach((x) => {
+        x.disabled = true;
+      });
+      try {
+        await api(`/api/attention/${encodeURIComponent(card.dataset.item)}/resolve`, { personId: state.me, answer: b.dataset.connect === "done" ? "done" : "cancel" });
+        state.lastMsgCount = -1;
+        load();
+      } catch (err) {
+        status(err.message, true);
+        card.querySelectorAll("button").forEach((x) => {
+          x.disabled = false;
+        });
+      }
+    };
+  });
   $$("#inner .why").forEach((a) => {
     a.onclick = (e) => {
       e.preventDefault();
@@ -593,6 +627,22 @@ async function renderThread() {
     thread.scrollTop = thread.scrollHeight;
     state.lastMsgCount = msgs.length;
   }
+}
+
+// An embedded sign-in card: a real browser in the chat, for the person it is addressed to.
+function cardHtml(c) {
+  if (c.kind !== "connect_account") return "";
+  const open = c.status === "open";
+  const lead = open
+    ? "A real browser opens below. Sign in as you normally would, then press Done. The assistant never sees your password, only the signed-in browser."
+    : c.status === "done"
+      ? "Signed in. The assistant can use this site as you now."
+      : "Cancelled. Nothing was connected.";
+  return `<div class="acard ${esc(c.status)}" data-item="${esc(c.itemId)}"><h4>Sign in to ${esc(c.site)}</h4><p>${lead}</p>${
+    open
+      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write"></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button></div>`
+      : ""
+  }</div>`;
 }
 
 async function send(text) {

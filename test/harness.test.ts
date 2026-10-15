@@ -429,3 +429,62 @@ describe("private notes stay private", () => {
     expect(w.app.store.getMemory("mem_elsewhere")!.retractedAt).toBeUndefined();
   });
 });
+
+describe("signing in inside the chat", () => {
+  test("connect_account shows a private sign-in card in the chat, Done keeps the signed-in browser for that person, and browse_page uses it", async () => {
+    const w = familyWorld((req, i) => {
+      if (i === 0) return callTool("connect_account", { site: "https://www.ubereats.com/", why: "order Mum's groceries" });
+      if (transcriptHas(req, "[CONNECTED]") && !toolCallsSoFar(req).some((c) => c.name === "browse_page"))
+        return callTool("browse_page", { url: "https://www.ubereats.com/orders", account: "ubereats.com" });
+      if (transcriptHas(req, "[CONNECTED]")) return reply("Order placed from your account.");
+      return reply("Waiting for you to sign in.");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip order Mum's groceries on Uber Eats" });
+    expect(run?.status).toBe("waiting");
+    const item = w.app.store.getAttention(run!.waitingOn!)!;
+    expect(item.kind).toBe("connect_account");
+    expect(item.card).toMatchObject({ kind: "connect_account", site: "ubereats.com", status: "open" });
+    // The card sits in the family chat, visible to Ellie only, and in her private chat.
+    const inRoom = w.app.store.messagesForRoom(w.family.id).find((m) => m.card?.itemId === item.id)!;
+    expect(inRoom.visibleTo).toEqual(["ellie"]);
+    expect(w.hands.browser.signIns[0]!.site).toBe("ubereats.com");
+    expect(JSON.stringify(w.model.calls)).not.toContain(w.hands.browser.signIns[0]!.sessionId);
+    await w.app.runtime.answerAttention(item.id, "done", "ellie");
+    expect(w.app.vault.has("ellie", "browser:ubereats.com")).toBe(true);
+    expect(w.hands.browser.signIns[0]!.kept).toBe(true);
+    expect(w.app.store.messagesForRoom(w.family.id).find((m) => m.card?.itemId === item.id)!.card!.status).toBe("done");
+    expect(w.app.store.getRun(run!.id)!.status).toBe("done");
+    // The page was read with the signed-in context, and the context id never reached the model.
+    const used = w.hands.browser.visitedWith.find((v) => v.url.includes("ubereats.com/orders"))!;
+    expect(used.contextId).toBe("ctx_ubereats.com_1");
+    expect(JSON.stringify(w.model.calls)).not.toContain("ctx_ubereats.com_1");
+    expect(repliesTo(w.deliveries, w.family.id).at(-1)).toContain("Order placed");
+  });
+
+  test("a guest's request routes the sign-in card to the owner; Cancel connects nothing", async () => {
+    const w = familyWorld((req, i) =>
+      i === 0
+        ? callTool("connect_account", { site: "ubereats.com", why: "order for Mum" })
+        : reply(transcriptHas(req, "[DECLINED]") ? "No problem, I won't use Uber Eats." : "Waiting."),
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "wei", text: "@pip order Mum dinner on Uber Eats" });
+    const item = w.app.store.getAttention(run!.waitingOn!)!;
+    expect(item.assigneeId).toBe("ellie");
+    expect(noticesTo(w.deliveries, w.family.id)).toContain("I've asked Ellie to sign in to ubereats.com.");
+    await w.app.runtime.answerAttention(item.id, "cancel", "ellie");
+    expect(w.app.vault.has("ellie", "browser:ubereats.com")).toBe(false);
+    expect(w.hands.browser.signIns[0]!.kept).toBe(false);
+    expect(repliesTo(w.deliveries, w.family.id).at(-1)).toContain("won't use Uber Eats");
+  });
+
+  test("browse_page with an unconnected account asks for connect_account first", async () => {
+    const w = familyWorld((req, i) =>
+      i === 0 ? callTool("browse_page", { url: "https://www.ubereats.com/orders", account: "ubereats.com" }) : reply("I need you to sign in first."),
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip check my Uber Eats orders" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    expect(call.status).toBe("failed");
+    expect(String(call.result)).toContain("connect_account");
+    expect(w.hands.browser.visitedWith).toHaveLength(0);
+  });
+});

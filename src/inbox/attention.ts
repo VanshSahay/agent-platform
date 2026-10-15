@@ -1,6 +1,6 @@
 import { newId } from "../core/ids.ts";
 import type { Clock } from "../core/clock.ts";
-import type { AttentionItem, AttentionKind, Id } from "../core/types.ts";
+import type { AttentionItem, AttentionKind, ConnectCard, Id } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 
 /**
@@ -30,6 +30,7 @@ export class AttentionService {
     requesterId?: Id;
     kind: AttentionKind;
     gateKey?: string;
+    card?: ConnectCard;
     title: string;
     detail: string;
     options?: string[];
@@ -45,6 +46,7 @@ export class AttentionService {
       requesterId: input.requesterId,
       kind: input.kind,
       gateKey: input.gateKey,
+      card: input.card,
       title: input.title,
       detail: input.detail,
       options: input.options,
@@ -118,5 +120,6 @@ export const KIND_LABEL: Record<AttentionKind, string> = {
   community_post_approval: "OK to post publicly",
   guest_request: "Someone asked for your help",
   credential_fix: "Sign-in needed",
+  connect_account: "Sign in to a site",
   suggested_action: "Suggestion",
 };

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { deployAgent } from "../agent/deploy.ts";
 import { newAgent } from "../agent/spec.ts";
 import type { App } from "../app.ts";
-import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Profile, Room, TrustPolicy } from "../core/types.ts";
+import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Profile, Room, TrustPolicy } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
@@ -142,7 +142,8 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     ["img-src 'self' data:", cfg && "https://img.clerk.com"].filter(Boolean).join(" "),
-    cfg ? "frame-src https://challenges.cloudflare.com" : "frame-src 'none'",
+    // Sign-in cards embed the Browserbase live view.
+    `frame-src https://www.browserbase.com https://*.browserbase.com${cfg ? " https://challenges.cloudflare.com" : ""}`,
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
@@ -426,15 +427,21 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/rooms\/([^/]+)\/messages$/,
       access: "roomMember",
       scope: (c) => roomScope(c.params[0]),
-      handle: ({ params, url }) => {
+      handle: ({ params, url, me }) => {
         const roomId = params[0]!;
         if (!app.store.getRoom(roomId)) return bad("no such room", 404);
+        // A message addressed to one member (a sign-in card, an owner-only note) is shown only to them.
+        const viewer = me ?? url.searchParams.get("personId") ?? undefined;
+        const visible = (m: Message) => m.visibleTo.length === 0 || (viewer !== undefined && m.visibleTo.includes(viewer));
         // Each assistant message carries its run's recorded steps, so the UI can show "Completed N steps" from records.
-        const msgs = app.store.messagesForRoom(roomId, intParam(url, "limit", 100, 1, 500)).map((m) => {
-          if (m.role !== "assistant" || !m.runId || m.source === "notice") return m;
-          const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
-          return { ...m, steps };
-        });
+        const msgs = app.store
+          .messagesForRoom(roomId, intParam(url, "limit", 100, 1, 500))
+          .filter(visible)
+          .map((m) => {
+            if (m.role !== "assistant" || !m.runId || m.source === "notice") return m;
+            const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
+            return { ...m, steps };
+          });
         const session = app.store.latestSessionForRoom(roomId);
         const active = session ? app.store.activeRunForSession(session.id) : undefined;
         const activeSteps = active

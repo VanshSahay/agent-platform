@@ -51,7 +51,9 @@ export interface ToolContext {
   requesterId?: Id;
   tasks: TaskService;
   /** Which services the person whose accounts this request may use has connected. Never the secrets. */
-  vault: { services(): string[]; has(service: string): boolean };
+  vault: { services(): string[]; has(service: string): boolean; use<T>(service: string, fn: (secret: string) => T): T | undefined };
+  /** Whose accounts this request may use (the requester with consent, else the owner). */
+  accountOwnerId: Id;
   /** Hand a task to a task agent; it starts once this run has replied. */
   delegate(task: Task): void;
   /** Pass a note into a running task; false when it is not running. */
@@ -107,6 +109,16 @@ function parseOutreach(v: unknown): Outreach[] {
   return out.slice(0, 10);
 }
 const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
+/** "https://www.ubereats.com/orders" and "ubereats.com" both mean ubereats.com. */
+export function siteOf(v: string): string {
+  return v
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split(/[/?#]/)[0]!
+    .replace(/[^a-z0-9.-]/g, "");
+}
 
 // ----------------------------------------------------------------------------
 
@@ -166,6 +178,7 @@ export const TOOLS: ToolDef[] = [
       input_schema: obj(
         {
           url: str("Absolute URL."),
+          account: str("A site the person has connected (e.g. ubereats.com) to browse as them, signed in. Use connect_account first if it is not connected."),
           click: str("CSS selector or text=... selector to click after load, if needed."),
           fill: obj({ selector: str("CSS selector of the field"), value: str("Text to type") }, ["selector", "value"]),
         },
@@ -179,17 +192,69 @@ export const TOOLS: ToolDef[] = [
       const url = s(input.url);
       if (!/^https?:\/\//i.test(url)) return { ok: false, content: "url must start with http:// or https://" };
       const fill = input.fill && typeof input.fill === "object" ? (input.fill as { selector?: unknown; value?: unknown }) : undefined;
+      const site = s(input.account) ? siteOf(s(input.account)) : "";
+      if (site && !ctx.vault.has(`browser:${site}`))
+        return { ok: false, content: `${site} is not connected for ${ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "this person"}. Call connect_account first.` };
       try {
-        const r = await ctx.hands.browser.readPage({
-          url,
-          action: { click: s(input.click) || undefined, fill: fill && s(fill.selector) ? { selector: s(fill.selector), value: s(fill.value) } : undefined },
-        });
+        const action = { click: s(input.click) || undefined, fill: fill && s(fill.selector) ? { selector: s(fill.selector), value: s(fill.value) } : undefined };
+        // The context id is handed to the browser inside vault.use; it never reaches the model.
+        const r = site
+          ? await ctx.vault.use(`browser:${site}`, (contextId) => ctx.hands.browser.readPage({ url, contextId, action }))
+          : await ctx.hands.browser.readPage({ url, action });
+        if (!r) return { ok: false, content: `${site} is not connected.` };
         if (!r.text.trim())
           return { ok: true, content: { url: r.url, title: r.title, text: "", links: r.links }, evidence: r.evidence, stall: `empty page at ${url}`, approach: "browse" };
         return { ok: true, content: { url: r.url, title: r.title, text: r.text, links: r.links.slice(0, 30) }, evidence: r.evidence, approach: "browse" };
       } catch (e) {
         return { ok: false, content: `Could not load ${url}: ${String((e as Error).message).slice(0, 200)}`, stall: `page failed: ${url}`, approach: "browse" };
       }
+    },
+  },
+  {
+    spec: {
+      name: "connect_account",
+      description:
+        "Ask the person whose accounts this request uses to sign in to a website inside the chat (a real browser opens in a card; you never see the password). Then browse_page with account: <site> works as them. Use for sites that need their login: ordering, bookings, portals.",
+      input_schema: obj({ site: str("The site, e.g. ubereats.com"), why: str("One line on what you will do there.") }, ["site", "why"]),
+    },
+    family: "people",
+    labels: { running: "Opening a sign-in…", done: "Asked for a sign-in" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const site = siteOf(s(input.site));
+      if (!site) return { ok: false, content: "Give a site like ubereats.com." };
+      if (ctx.vault.has(`browser:${site}`)) return { ok: true, content: `${site} is already connected. Use browse_page with account: "${site}".` };
+      if (!ctx.hands.browser.startSignIn)
+        return { ok: false, content: "No live browser is connected on this server, so sites that need a login cannot be used yet. Tell the person." };
+      const who = ctx.store.getPerson(ctx.accountOwnerId);
+      const open = ctx.store
+        .listAttention({ roomId: ctx.room.id, status: ["open"] })
+        .find((a) => a.kind === "connect_account" && a.card?.site === site && a.assigneeId === ctx.accountOwnerId);
+      if (open) return { ok: true, content: `Already waiting for ${who?.displayName ?? "them"} to sign in to ${site}.`, waitingOn: open };
+      const live = await ctx.hands.browser.startSignIn({ site });
+      const item = ctx.attention.open({
+        agentId: ctx.agent.id,
+        roomId: ctx.room.id,
+        runId: ctx.run.id,
+        assigneeId: ctx.accountOwnerId,
+        requesterId: ctx.requesterId,
+        kind: "connect_account",
+        title: `Sign in to ${site}`,
+        detail: `${ctx.agent.name} needs your ${site} account to: ${s(input.why)}. Sign in inside the chat; ${ctx.agent.name} never sees your password, only the signed-in browser.`,
+        card: { kind: "connect_account", itemId: "", site, liveViewUrl: live.liveViewUrl, status: "open" },
+        ttlMs: 30 * 60 * 1000,
+      });
+      item.card!.itemId = item.id;
+      ctx.store.putAttention(item);
+      // The session and context ids are not for the model or the UI; the runtime reads them on Done.
+      ctx.store.setKv(`connect:${item.id}`, JSON.stringify({ sessionId: live.sessionId, contextId: live.contextId, site, personId: ctx.accountOwnerId }));
+      const notice = ctx.requesterId && ctx.requesterId !== ctx.accountOwnerId ? `I've asked ${who?.displayName ?? "the account owner"} to sign in to ${site}.` : undefined;
+      return {
+        ok: true,
+        content: `Waiting for ${who?.displayName ?? "them"} to sign in to ${site} in the chat. Nothing else happens until they press Done.`,
+        waitingOn: item,
+        roomNotice: notice,
+      };
     },
   },
   {
