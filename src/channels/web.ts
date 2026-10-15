@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deployAgent } from "../agent/deploy.ts";
 import { newAgent } from "../agent/spec.ts";
 import type { App } from "../app.ts";
 import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Profile, Room, TrustPolicy } from "../core/types.ts";
@@ -332,18 +331,6 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         });
         app.store.putAgent(a);
         return json(a);
-      },
-    },
-    // Deploying ends training: the same check the Settings page shows.
-    {
-      method: "POST",
-      re: /^\/api\/agents\/([^/]+)\/deploy$/,
-      access: "agentOwner",
-      scope: (c) => agentScope(c.params[0]),
-      handle: ({ params }) => {
-        const r = deployAgent(app.store, app.clock, params[0]!);
-        if (!r.ok) return bad(r.why, r.why === "no such agent" ? 404 : 409);
-        return json(r.agent);
       },
     },
     {

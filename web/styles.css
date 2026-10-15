@@ -217,9 +217,6 @@ form.composer.centered .disclaimer { visibility: hidden }
 .section { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin: 0 0 16px; box-shadow: 0 1px 2px oklch(0 0 0 / 3%) }
 .section h3 { margin: 0 0 3px; font-size: 15px; font-weight: 600 }
 .section > .lead { margin: 0 0 14px; color: var(--text-2); font-size: 13px }
-.deploy { display: flex; align-items: center; gap: 12px; flex-wrap: wrap }
-.deploy .state { flex: 1; min-width: 200px; font-size: 14px }
-.deploy .state .tiny { display: block; margin-top: 2px }
 .memgroup { margin: 0 0 22px }
 .memgroup h3 { font-size: 13px; font-weight: 500; color: var(--text-2); margin: 0 0 6px; display: flex; align-items: center; gap: 8px }
 .memgroup h3 .tiny { font-weight: 400 }
@@ -304,3 +301,6 @@ form.composer.centered .disclaimer { visibility: hidden }
 .acard.done { border-color: var(--accent) }
 .acard .row { display: flex; gap: 8px; flex-wrap: wrap }
 @media (max-width: 820px) { .acard iframe { height: 360px } }
+
+.whereroom { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px }
+.whereroom .headrow { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px }

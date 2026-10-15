@@ -54,12 +54,3 @@ export function newAgent(input: {
     createdAt: Date.now(),
   };
 }
-
-/**
- * An assistant can join a group as soon as it has a name. Learning is not a gate:
- * the owner's private chat keeps teaching it, and each group sets its own priorities.
- */
-export function deployable(agent: AgentSpec, _memoryCount: number): { ok: boolean; why?: string } {
-  if (!agent.name.trim()) return { ok: false, why: "needs a name" };
-  return { ok: true };
-}

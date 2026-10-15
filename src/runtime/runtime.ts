@@ -583,9 +583,6 @@ export class Runtime {
     const nameOf = (id: Id) => (id === agent.id ? agent.name : (store.getPerson(id)?.displayName ?? id));
     const accounts = run.requesterId ? rooms.accountsFor(room, run.requesterId) : { accountOwnerId: agent.ownerId, needsApproval: false };
     const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
-    // The owner's first conversations: until the assistant has learned a few durable things, it asks what to take on.
-    const learned = store.listMemories(agent.id).filter((m) => m.type !== "observation").length;
-    const mode: "training" | "normal" = room.kind === "dm" && run.requesterId === agent.ownerId && learned < 3 ? "training" : "normal";
     const hasCaredFor = rooms.members(room.id).some((m) => m.role === "cared_for");
     const maxTurns = this.d.maxTurns ?? MAX_TURNS;
     const emit = (type: RunEvent["type"], data: Record<string, unknown>) => store.appendEvent({ runId: run.id, sessionId: run.sessionId, type, at: clock.now(), data });
@@ -707,7 +704,6 @@ export class Runtime {
         plan,
         planText: plan ? planner.describe(plan) : undefined,
         accounts: { accountOwnerName: nameOf(accounts.accountOwnerId), needsApproval: accounts.needsApproval },
-        mode,
         requesterRole,
         roomFocus: room.focus,
         tasksText: tasks.describe(room.id, owner?.timezone ?? "UTC"),

@@ -24,7 +24,7 @@ export type ChannelKind = "web" | "imessage" | "sms" | "console" | "voice";
 
 /**
  * Roles inside a room.
- * owner      : the person who trained and deployed the agent; their accounts pay for everything.
+ * owner      : the person who set the agent up; their accounts pay for everything.
  * decider    : a member allowed to approve requests on the owner's behalf (a caregiver sibling, say).
  * member     : a signed-up person; served with their own consent for their own requests.
  * guest      : never signed up; served through the owner or a decider.
@@ -93,7 +93,6 @@ export interface AgentSpec {
   /** Standing rules the owner typed, verbatim, newest last. */
   rules: string[];
   createdAt: UnixMs;
-  deployedAt?: UnixMs;
 }
 
 // ---------- Memory ----------

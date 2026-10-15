@@ -792,6 +792,19 @@ function renderSettings() {
     <div class="field"><label>Instructions</label><textarea name="instructions" placeholder="Anything it should always keep in mind.">${esc(agent.instructions)}</textarea></div>
     <div class="field"><label>Effort</label><select name="effort">${EFFORTS.map((e) => `<option value="${e}" ${e === agent.effort ? "selected" : ""}>${e}</option>`).join("")}</select><div class="hint">How hard it thinks before acting. Higher is slower and more careful.</div></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
+  <div class="section" id="whereForm"><h3>Where it is</h3><p class="lead">Every chat it has been added to, and what that chat mostly needs from it. It stays a general assistant everywhere.</p>
+    ${
+      state.rooms.filter((r) => r.agentId === agent.id && r.kind === "group").length
+        ? state.rooms
+            .filter((r) => r.agentId === agent.id && r.kind === "group")
+            .map(
+              (r) =>
+                `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`,
+            )
+            .join("")
+        : `<div class="empty">Not in any group chat yet. Make one from the Rooms list and say what it should focus on there.</div>`
+    }
+  </div>
   <form class="section" id="trustForm"><h3>Trust</h3><p class="lead">Everything else that spends money or contacts someone asks you first.</p>
     <div class="field"><label>Purchases up to this amount go through without asking (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="1" value="${esc(t.autoApproveUnderUsd ?? 0)}" /><div class="hint">0 means it always asks.</div></div>
     <div class="field inline"><label>Pause all spending</label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}" data-name="spendingPaused"></button></div>
@@ -813,6 +826,18 @@ function renderSettings() {
     n.classList.add("bad");
     n.textContent = e.message;
   };
+  $$("#whereForm form.whereroom").forEach((form) => {
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api(`/api/rooms/${encodeURIComponent(form.dataset.room)}`, { focus: new FormData(form).get("focus") }, "PATCH");
+        saved(form, "Saved");
+        load();
+      } catch (err) {
+        failed(form, err);
+      }
+    };
+  });
   const about = $("#aboutForm");
   about.onsubmit = async (e) => {
     e.preventDefault();

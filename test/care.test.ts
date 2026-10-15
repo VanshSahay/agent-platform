@@ -2,29 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { callTool, reply } from "../src/model/scripted.ts";
 import { familyWorld, noticesTo } from "./helpers.ts";
 import { DAY } from "../src/core/clock.ts";
-import { deployAgent, deployCheck } from "../src/agent/deploy.ts";
 import { SuggestionService } from "../src/inbox/suggestions.ts";
 
 describe("one general assistant, priorities per chat", () => {
-  test("while it has learned little, the owner's private chat is for getting to know them, and only there", async () => {
-    const w = familyWorld(() => reply("What would you like to hand off first?"));
-    // The shared world seeds three durable notes; forget one so the assistant still knows little.
-    const mumFact = w.app.store.listMemories(w.agent.id).find((m) => m.text.includes("Mandarin"))!;
-    w.app.memory.retract(mumFact.id);
-    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("Getting to know Ellie");
-    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Getting to know");
-    const benDm = w.app.rooms.dmFor(w.agent, "ben");
-    await w.app.runtime.handleMessage({ roomId: benDm.id, personId: "ben", text: "hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Getting to know");
-    // Three durable things learned: the opening questions stop.
-    w.app.memory.write({ agentId: w.agent.id, scope: "agent", scopeId: w.agent.id, type: "fact", text: "Ellie works from home on Fridays." });
-    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "hi again" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Getting to know");
+  test("the owner's private chat is an ordinary thread: no special mode, rules and notes apply everywhere", async () => {
+    const w = familyWorld((req, i) => (i === 0 ? callTool("remember", { type: "rule", text: "Never call anyone before 9am.", scope: "agent" }) : reply("Noted.")));
+    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "rule: never call anyone before 9am" });
+    const sys = w.model.calls[0]!.system;
+    expect(sys).not.toContain("Getting to know");
+    expect(sys).not.toContain("Training");
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "@pip hi" });
+    expect(w.model.calls.at(-1)!.system).toContain("Never call anyone before 9am");
   });
 
-  test("a chat's priorities come first there, the assistant stays general, and a name is all it needs to join", async () => {
+  test("a chat's priorities come first there and the assistant stays general; it can be in several chats, each tracked", async () => {
     const w = familyWorld(() => reply("ok"));
     await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" });
     const sys = w.model.calls.at(-1)!.system;
@@ -33,11 +24,22 @@ describe("one general assistant, priorities per chat", () => {
     expect(sys).toContain("personal assistant");
     await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "hi" });
     expect(w.model.calls.at(-1)!.system).not.toContain("Priorities in this chat");
-    expect(deployCheck(w.app.store, w.agent)).toEqual({ ok: true, why: undefined });
-    expect(deployAgent(w.app.store, w.clock, w.agent.id).ok).toBe(true);
-    const nameless = { ...w.agent, id: "agt_bare", handle: "bare", name: " " };
-    w.app.store.putAgent(nameless);
-    expect(deployAgent(w.app.store, w.clock, "agt_bare")).toEqual({ ok: false, why: "needs a name" });
+    const street = w.app.rooms.createRoom({
+      agentId: w.agent.id,
+      kind: "group",
+      channel: "web",
+      name: "Maple Street",
+      focus: "Shared tools, the street party, and who is away when.",
+    });
+    w.app.rooms.addMember(street.id, "ellie", "owner", { consented: true });
+    await w.app.runtime.handleMessage({ roomId: street.id, personId: "ellie", text: "@pip hi" });
+    expect(w.model.calls.at(-1)!.system).toContain("Priorities in this chat: Shared tools");
+    expect(w.model.calls.at(-1)!.system).not.toContain("Mum's appointments");
+    const groups = w.app.store.listRooms(w.agent.id).filter((r) => r.kind === "group");
+    expect(groups.map((r) => [r.name, r.focus?.slice(0, 12)])).toEqual([
+      ["Family", "Mum's appoin"],
+      ["Maple Street", "Shared tools"],
+    ]);
   });
 
   test("the un-named request check knows the chat's priorities and that the assistant is general", async () => {

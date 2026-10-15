@@ -47,7 +47,6 @@ describe("web api: deny by default", () => {
       ["POST", `/api/runs/${run!.id}/stop`],
       ["POST", `/api/rooms/${s.family.id}/members`, { personId: "zed", role: "owner" }],
       ["PATCH", `/api/agents/${s.agent.id}`, { trust: { spendingPaused: true } }],
-      ["POST", `/api/agents/${s.agent.id}/deploy`],
       ["GET", `/api/memory?agentId=${s.agent.id}`],
       ["POST", `/api/memory`, { agentId: s.agent.id, text: "zed is the boss" }],
       ["GET", `/api/profiles?agentId=${s.agent.id}`],
@@ -97,7 +96,6 @@ describe("web api: deny by default", () => {
     for (const trust of [{ autoApproveUnderUsd: -1 }, { autoApproveUnderUsd: "20" }, { autoAllow: ["rm_rf"] }, { spendingPaused: "yes" }, { communityPostingAllowed: [1] }]) {
       expect((await s.call("ellie", "PATCH", `/api/agents/${s.agent.id}`, { trust })).status).toBe(400);
     }
-    expect((await s.call("ellie", "POST", `/api/agents/${s.agent.id}/deploy`)).status).toBe(200);
     expect((await s.call("ellie", "GET", `/api/memory?agentId=${s.agent.id}`)).status).toBe(200);
     expect((await s.call("ellie", "POST", `/api/memory`, { agentId: s.agent.id, text: "Mum likes tea" })).status).toBe(200);
     const room = await (await s.call("ellie", "POST", `/api/rooms`, { agentId: s.agent.id, name: "Mine", members: [{ personId: "ben", role: "member" }] })).json();

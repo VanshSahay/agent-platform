@@ -6,7 +6,7 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 
 ## What it does
 
-**One assistant, general by default.** It is the owner's personal assistant: finding, booking, fixing, reminding, coordinating, looking things up, device help. When a circle adds it to a chat they say what they mostly need from it there; those priorities come first in that chat and it may step in on them without being named, while everything else people ask stays its job. Its first conversations with the owner are for learning them (what to hand off, how to behave, standing rules), and nothing is gated on that.
+**One assistant, general by default.** It is the owner's personal assistant: finding, booking, fixing, reminding, coordinating, looking things up, device help. When a circle adds it to a chat they say what they mostly need from it there; those priorities come first in that chat and it may step in on them without being named, while everything else people ask stays its job. There is no training step: the owner's private chat is an ordinary thread, and whatever they tell it there (people, routines, stores, standing rules) is noted and applies everywhere. Settings shows every chat it is in with that chat's priorities.
 
 **Lives in the group.** The agent is added to an existing chat and answers when named, when a message is plainly a request within its purpose (a cheap yes/no from the small model), or when a question it asked is answered. People who never signed up are guests: they ask by name and get served; anything that needs the owner's accounts or money produces a card in the owner's own chat ("Uncle Wei asked in Family… OK to call Lee's Repairs?"), the group hears "I've asked Ellie to OK that", and the owner's yes finishes the job in the group.
 
@@ -25,7 +25,7 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 | | |
 |---|---|
 | ![Empty thread with the composer centred and one card mined from the ledger](docs/screens/empty-light.png) | ![A thread with the Why? drawer showing the plan, tool records and timeline](docs/screens/family-why.png) |
-| ![Settings with trust controls and the Deploy section](docs/screens/settings-deploy.png) | ![Memory page with derived profiles and grouped notes](docs/screens/memory.png) |
+| ![Settings with trust controls and the chats it is in](docs/screens/settings.png) | ![Memory page with derived profiles and grouped notes](docs/screens/memory.png) |
 
 ## Run it
 
@@ -118,7 +118,7 @@ self           PATCH /api/people/:id, /api/people/:id/credentials
 room member    messages, sessions (events, watch), runs (get, stop), POST /api/commitments/:id;
                /api/tasks, /api/schedules, /api/commitments lists are filtered to your rooms
 room owner     POST /api/rooms/:id/members, POST /api/schedules, /api/schedules/:id/pause
-agent owner    PATCH /api/agents/:id, deploy, POST /api/rooms, /api/memory (all), /api/profiles
+agent owner    PATCH /api/agents/:id, POST /api/rooms, /api/memory (all), /api/profiles
 agent reach    /api/inbox, /api/suggestions (owner or a member of one of its rooms; radar and activity filtered to your rooms)
 assignee       /api/attention/:id/resolve, /dismiss
 machines       POST /api/events and /api/tick: `Authorization: Bearer <EVENT_TOKEN>`, or a signed-in agent owner

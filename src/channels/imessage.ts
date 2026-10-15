@@ -28,7 +28,7 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
   const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone;
   const limiter = new HandleRateLimit();
 
-  const agentFor = () => app.store.listAgents().find((a) => a.deployedAt) ?? app.store.listAgents()[0];
+  const agentFor = () => app.store.listAgents()[0];
 
   // The owner's own phone or email wins (compared normalised, so spacing never hides them); then any
   // person record carrying the handle; then the handle's derived id; then a fresh record. An existing
@@ -54,11 +54,6 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
     if (!agent) return undefined;
     const kind = space.type === "group" ? "group" : "dm";
     const isOwner = person.id === agent.ownerId;
-    // An agent still in training stays in its owner's private chat; a group would let it loose on strangers.
-    if (kind === "group" && !agent.deployedAt) {
-      console.log(`iMessage: ignoring group ${space.id.slice(0, 6)} until ${agent.name} is deployed`);
-      return undefined;
-    }
     const room = app.rooms.createRoom({
       agentId: agent.id,
       kind,

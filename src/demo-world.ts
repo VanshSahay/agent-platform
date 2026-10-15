@@ -59,7 +59,6 @@ export function seedDemoWorld(app: App) {
     app.store.putMemory(m);
   }
   const ellieDm = app.rooms.dmFor(agent, ellie.id);
-  agent.deployedAt = app.clock.now();
   app.store.putAgent(agent);
   return { agent, family, ellieDm, ellie, ben, mum, wei };
 }
