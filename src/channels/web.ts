@@ -438,7 +438,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           .messagesForRoom(roomId, intParam(url, "limit", 100, 1, 500))
           .filter(visible)
           .map((m) => {
-            if (m.role !== "assistant" || !m.runId || m.source === "notice") return m;
+            if (m.role !== "assistant" || !m.runId || m.source === "notice" || m.source === "card") return m;
             const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
             return { ...m, steps };
           });
