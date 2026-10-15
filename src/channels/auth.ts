@@ -86,6 +86,19 @@ export class Auth {
       if (p) return p;
     }
     const info = (await this.lookup(v.sub)) ?? { displayName: v.sub };
+    // A freshly seeded demo has an owner nobody has signed in as yet: the first sign-in claims
+    // that seat, so the person testing locally sees the family instead of an empty app.
+    const claimable = this.app.store.getKv("claim-owner");
+    const owner = claimable ? this.app.store.getPerson(claimable) : undefined;
+    if (owner) {
+      owner.displayName = info.displayName;
+      owner.email = info.email ?? owner.email;
+      this.app.store.putPerson(owner);
+      this.app.store.setKv(key, owner.id);
+      this.app.store.deleteKv("claim-owner");
+      console.log(`Sign-in: ${info.displayName} is now the owner of the seeded circle`);
+      return owner;
+    }
     const person = this.app.rooms.createPerson({ id: `per_${v.sub.replace(/^user_/, "")}`, displayName: info.displayName, email: info.email, timezone: "UTC" });
     this.app.store.setKv(key, person.id);
     return person;

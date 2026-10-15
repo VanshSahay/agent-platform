@@ -36,6 +36,13 @@ SEED_DEMO=1 bun run start
 # open http://localhost:3000
 ```
 
+Testing it locally, two ways:
+
+- **Without sign-in (quickest).** Leave `CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY` empty. The server binds `127.0.0.1` and the top-right "You" picker lets you act as any seeded person: Ellie (owner), Ben (can decide), Mum (cared for), Uncle Wei (guest). Ask Pip for something in Family as Wei, then switch to Ellie to answer the card.
+- **With Clerk.** Set the Clerk keys and `MASTER_KEY`, add `http://localhost:3000` to `CLERK_AUTHORIZED_PARTIES`, start with `SEED_DEMO=1`, and sign in. The first account to sign in becomes the owner of the seeded circle (Ellie's seat), so the family is yours. Later sign-ins become new people you can add to rooms.
+
+The database is one file at `DB_PATH` (default `data/circle.sqlite`); delete it to start over.
+
 What gets wired depends on `.env`:
 
 | Setting | What it turns on |

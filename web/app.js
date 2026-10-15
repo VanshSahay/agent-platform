@@ -895,7 +895,7 @@ async function renderMemory() {
 }
 
 // ---------- Live deliveries: NDJSON stream; re-render when something lands ----------
-(async function watch() {
+async function watch() {
   for (;;) {
     try {
       const headers = authToken ? { authorization: `Bearer ${authToken}` } : {};
@@ -927,13 +927,14 @@ async function renderMemory() {
     } catch {}
     await new Promise((r) => setTimeout(r, 2000));
   }
-})();
+}
 
 ensureAuth()
   .then((ok) => {
     if (ok) {
       route();
       load();
+      watch(); // only once we can present a token; a signed-out stream would just loop on 401
     }
   })
   .catch((e) => status(`Sign-in failed to load: ${e}`, true));

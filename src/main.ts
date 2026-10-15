@@ -61,6 +61,7 @@ const app = createApp({ dbPath, model: pickModel(), hands: pickHands(), masterKe
 
 if (process.env.SEED_DEMO === "1" && app.store.listAgents().length === 0) {
   const w = seedDemoWorld(app);
+  app.store.setKv("claim-owner", w.agent.ownerId); // the first Clerk sign-in becomes this owner
   console.log(`Seeded demo world: agent ${w.agent.name} (${w.agent.id}), room ${w.family.name} (${w.family.id})`);
 }
 
