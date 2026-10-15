@@ -5,32 +5,52 @@ import { DAY } from "../src/core/clock.ts";
 import { deployAgent, deployCheck } from "../src/agent/deploy.ts";
 import { SuggestionService } from "../src/inbox/suggestions.ts";
 
-describe("training before deployment", () => {
-  test("an undeployed agent is in training mode in the owner's private chat, and only there", async () => {
+describe("one general assistant, priorities per chat", () => {
+  test("while it has learned little, the owner's private chat is for getting to know them, and only there", async () => {
     const w = familyWorld(() => reply("What would you like to hand off first?"));
-    w.agent.deployedAt = undefined;
-    w.app.store.putAgent(w.agent);
+    // The shared world seeds three durable notes; forget one so the assistant still knows little.
+    const mumFact = w.app.store.listMemories(w.agent.id).find((m) => m.text.includes("Mandarin"))!;
+    w.app.memory.retract(mumFact.id);
     await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("Training mode");
+    expect(w.model.calls.at(-1)!.system).toContain("Getting to know Ellie");
     await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Training mode");
+    expect(w.model.calls.at(-1)!.system).not.toContain("Getting to know");
     const benDm = w.app.rooms.dmFor(w.agent, "ben");
     await w.app.runtime.handleMessage({ roomId: benDm.id, personId: "ben", text: "hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Training mode");
+    expect(w.model.calls.at(-1)!.system).not.toContain("Getting to know");
+    // Three durable things learned: the opening questions stop.
+    w.app.memory.write({ agentId: w.agent.id, scope: "agent", scopeId: w.agent.id, type: "fact", text: "Ellie works from home on Fridays." });
+    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "hi again" });
+    expect(w.model.calls.at(-1)!.system).not.toContain("Getting to know");
   });
 
-  test("deploy requires a name, a purpose, and a little learning", () => {
+  test("a chat's priorities come first there, the assistant stays general, and a name is all it needs to join", async () => {
     const w = familyWorld(() => reply("ok"));
-    w.agent.deployedAt = undefined;
-    w.app.store.putAgent(w.agent);
-    // The family world seeds one rule and one preference: enough with the rule.
-    expect(deployCheck(w.app.store, w.agent).ok).toBe(true);
-    const r = deployAgent(w.app.store, w.clock, w.agent.id);
-    expect(r.ok).toBe(true);
-    expect(w.app.store.getAgent(w.agent.id)!.deployedAt).toBe(w.clock.now());
-    const bare = { ...w.agent, id: "agt_bare", handle: "bare", purpose: "", deployedAt: undefined };
-    w.app.store.putAgent(bare);
-    expect(deployAgent(w.app.store, w.clock, "agt_bare")).toEqual({ ok: false, why: "needs a purpose" });
+    await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ellie", text: "@pip hi" });
+    const sys = w.model.calls.at(-1)!.system;
+    expect(sys).toContain("Priorities in this chat: Mum's appointments");
+    expect(sys).toContain("still a general assistant");
+    expect(sys).toContain("personal assistant");
+    await w.app.runtime.handleMessage({ roomId: w.ellieDm.id, personId: "ellie", text: "hi" });
+    expect(w.model.calls.at(-1)!.system).not.toContain("Priorities in this chat");
+    expect(deployCheck(w.app.store, w.agent)).toEqual({ ok: true, why: undefined });
+    expect(deployAgent(w.app.store, w.clock, w.agent.id).ok).toBe(true);
+    const nameless = { ...w.agent, id: "agt_bare", handle: "bare", name: " " };
+    w.app.store.putAgent(nameless);
+    expect(deployAgent(w.app.store, w.clock, "agt_bare")).toEqual({ ok: false, why: "needs a name" });
+  });
+
+  test("the un-named request check knows the chat's priorities and that the assistant is general", async () => {
+    const seen: string[] = [];
+    const w = familyWorld(() => reply("Sure."), {
+      completer: (system) => {
+        if (system.includes("Answer with exactly yes or no")) seen.push(system);
+        return "yes";
+      },
+    });
+    expect(await w.app.runtime.handleMessage({ roomId: w.family.id, personId: "ben", text: "Can someone find a good tax accountant near us?" })).toBeDefined();
+    expect(seen[0]).toContain("general personal assistant");
+    expect(seen[0]).toContain("priorities are: Mum's appointments");
   });
 });
 

@@ -270,6 +270,7 @@ function roomForm() {
   el.innerHTML = `<form class="form"><h4>New room</h4>
     <div class="field"><label>Name</label><input type="text" name="name" placeholder="Family, Friends, Maple Street…" required /></div>
     <div class="field"><label>Kind</label><select name="kind"><option value="group">Group chat</option><option value="dm">Private chat</option></select></div>
+    <div class="field"><label>Priorities here (optional)</label><textarea name="focus" placeholder="What this chat mostly needs from it, e.g. Mum's appointments and rides, repairs at her place."></textarea><div class="hint">It stays a general assistant; these come first and it may step in on them without being named.</div></div>
     <div class="field"><span class="lab">Who is in it</span>${state.people
       .map(
         (p) =>
@@ -292,7 +293,7 @@ function roomForm() {
       return { personId, role, consented: role !== "guest" };
     });
     try {
-      const room = await api("/api/rooms", { agentId: agent.id, name: fd.get("name"), kind: fd.get("kind"), members });
+      const room = await api("/api/rooms", { agentId: agent.id, name: fd.get("name"), kind: fd.get("kind"), focus: fd.get("focus"), members });
       el.innerHTML = "";
       state.room = room.id;
       state.lastMsgCount = -1;
@@ -543,7 +544,7 @@ async function renderThread() {
     }
     const all = state.sugg;
     const picks = all.slice(state.suggOffset, state.suggOffset + 3);
-    el.innerHTML = `<div class="welcome"><h1>${greeting()}${state.me ? `, ${esc(firstName(state.me))}` : ""}.</h1><p>${agent ? `${esc(agent.name)} is in ${esc(room?.name ?? "this room")}. Ask for anything: something to find, book, fix, remind, or sort out.` : "No agent in this room yet."}</p><div class="slot" id="slot"></div>${picks.length ? `<div class="sugg">${picks.map((p) => `<button type="button" data-prompt="${esc(p[1])}"><span>${esc(p[0])}</span>${esc(p[2] ?? p[1])}</button>`).join("")}</div>` : ""}${all.length > 3 ? `<button class="another" id="another" type="button">Show others</button>` : ""}</div>`;
+    el.innerHTML = `<div class="welcome"><h1>${greeting()}${state.me ? `, ${esc(firstName(state.me))}` : ""}.</h1><p>${agent ? `${esc(agent.name)} is in ${esc(room?.name ?? "this room")}. Ask for anything: something to find, book, fix, remind, or sort out.${room?.focus ? ` Priorities here: ${esc(room.focus)}` : ""}` : "No agent in this room yet."}</p><div class="slot" id="slot"></div>${picks.length ? `<div class="sugg">${picks.map((p) => `<button type="button" data-prompt="${esc(p[1])}"><span>${esc(p[0])}</span>${esc(p[2] ?? p[1])}</button>`).join("")}</div>` : ""}${all.length > 3 ? `<button class="another" id="another" type="button">Show others</button>` : ""}</div>`;
     $$(".sugg button").forEach((b) => {
       b.onclick = () => send(b.dataset.prompt);
     });
@@ -734,11 +735,10 @@ function renderSettings() {
     return;
   }
   const t = agent.trust ?? {};
-  const deployed = !!agent.deployedAt;
-  el.innerHTML = `<div class="headrow"><h1>${esc(agent.name)}</h1><a class="link" href="#memory">What it remembers →</a></div><p class="lead">How your agent introduces itself, what it is for, and what it may do without asking.</p>
-  <form class="section" id="aboutForm"><h3>About</h3><p class="lead">The name people use in the chat and what it is here to do.</p>
+  el.innerHTML = `<div class="headrow"><h1>${esc(agent.name)}</h1><a class="link" href="#memory">What it remembers →</a></div><p class="lead">How your assistant introduces itself, anything it should always keep in mind, and what it may do without asking. Each chat sets its own priorities when you add it.</p>
+  <form class="section" id="aboutForm"><h3>About</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to.</p>
     <div class="field"><label>Name</label><input type="text" name="name" value="${esc(agent.name)}" required /></div>
-    <div class="field"><label>Purpose</label><textarea name="purpose">${esc(agent.purpose)}</textarea></div>
+    <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set on that chat.</div></div>
     <div class="field"><label>Instructions</label><textarea name="instructions" placeholder="Anything it should always keep in mind.">${esc(agent.instructions)}</textarea></div>
     <div class="field"><label>Effort</label><select name="effort">${EFFORTS.map((e) => `<option value="${e}" ${e === agent.effort ? "selected" : ""}>${e}</option>`).join("")}</select><div class="hint">How hard it thinks before acting. Higher is slower and more careful.</div></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
@@ -748,8 +748,6 @@ function renderSettings() {
     <div class="field"><span class="lab">Allowed without asking</span>${AUTO_ALLOW_TOOLS.map(([k, w]) => `<label class="check"><input type="checkbox" name="autoAllow" value="${k}" ${(t.autoAllow ?? []).includes(k) ? "checked" : ""} /> ${esc(w)}</label>`).join("")}<div class="hint">Only for your own requests. Outside 8am to 8pm it still waits until morning.</div></div>
     <div class="field"><span class="lab">Communities it may post to</span><div class="chips" id="communities">${(t.communityPostingAllowed ?? []).map((c) => `<span class="chip" data-c="${esc(c)}">${esc(c)}<button type="button" aria-label="Remove">×</button></span>`).join("")}</div><div class="addrow"><input type="text" id="newCommunity" placeholder="a subreddit or a Rednote group…" /><button class="btn" type="button" id="addCommunity">Add</button></div><div class="hint">Anywhere else it shows you the exact text and waits for a yes.</div></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
-  <div class="section"><h3>Deploy</h3><p class="lead">Train it in your private chat first; then let it into the group.</p>
-    <div class="deploy"><div class="state">${deployed ? `Deployed<span class="tiny">In your rooms since ${esc(fmtDay(agent.deployedAt))}.</span>` : `Not deployed yet<span class="tiny">Train it in your private chat first: tell it a few things about you and one rule.</span>`}</div>${deployed ? "" : `<button class="btn primary" id="deploy" type="button">Deploy</button>`}</div><div class="actions" style="margin-top:6px"><span class="note" id="deployNote"></span></div></div>
 `;
 
   const saved = (form, msg) => {
@@ -824,20 +822,6 @@ function renderSettings() {
       failed(trust, err);
     }
   };
-  const dep = $("#deploy");
-  if (dep)
-    dep.onclick = async () => {
-      dep.disabled = true;
-      try {
-        await api(`/api/agents/${encodeURIComponent(agent.id)}/deploy`, {});
-        load();
-      } catch (err) {
-        dep.disabled = false;
-        const n = $("#deployNote");
-        n.classList.add("bad");
-        n.textContent = err.message;
-      }
-    };
 }
 
 // ---------- Memory page ----------

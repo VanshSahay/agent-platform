@@ -47,7 +47,7 @@ Room(kind: dm | group, channel, outreachHours)
 Membership(role: owner | decider | member | guest | cared_for, consentedAt?)
 ```
 
-- **owner**: trained and deployed the agent; their accounts and money.
+- **owner**: set the assistant up; their accounts and money.
 - **decider**: may approve care decisions on the owner's behalf (a sibling). Not money.
 - **member**: signed up; after a one-time consent, their own accounts are used for their own requests.
 - **guest**: never signed up; served through the owner. A guest's request that needs accounts or money becomes a `guest_request` card in the owner's own chat, the group hears "I've asked Ellie to OK that", and the yes finishes the job in the group.
@@ -55,7 +55,7 @@ Membership(role: owner | decider | member | guest | cared_for, consentedAt?)
 
 `RoomService.accountsFor(room, requesterId)` decides whose accounts a request may use and whether approval is needed. `approversFor(room, {money, forCaredFor})` decides who gets the card: money and the owner's accounts always go to the owner; a care decision for a cared-for member (outreach on their behalf, a question about their care) goes to a decider first when the room has one. The agent is one identity across rooms (its training follows it), with a DM room per person created on demand for cards and private questions.
 
-**Training before deployment.** A new agent has no `deployedAt`. Until it does, the owner's private chat runs in training mode: the prompt tells the agent to ask what to hand off first and how to behave, to note everything as memory (rules as `rule`), and not to contact anyone outside the chat. `deployAgent` (`src/agent/deploy.ts`, `POST /api/agents/:id/deploy`) marks it deployed once it has a name, a purpose and either a rule or a few notes; the same check backs the Deploy button. Group rooms are created only for a deployed agent.
+**One general assistant; each chat sets its priorities.** The assistant is a general personal assistant for its owner (`GENERAL_PURPOSE` in `src/agent/spec.ts`; the owner may narrow it, but need not). When a circle adds it to a chat they say what they mostly need from it there (`Room.focus`, set on creation or by `PATCH /api/rooms/:id`). The prompt carries the room's priorities as what comes first and what it may step in on without being named, and says plainly that everything else people ask is still its job; the un-named-request classifier uses the same two facts. There is no deploy gate: an assistant can join a group as soon as it has a name. The owner's private chat runs in a getting-to-know-you mode while the assistant has learned fewer than three durable things (it asks what to hand off first and notes rules and people), and that mode never blocks work.
 
 **Patient mode.** When the requester's role is `cared_for` the prompt switches to one step at a time, no jargon, their words for things, "ask what they see before saying what to tap", and anything needing a password, a code, money or a care decision goes to a named family member.
 

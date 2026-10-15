@@ -335,7 +335,7 @@ export class Runtime {
     if (room.kind !== "group" || text.trim().length < 20) return false;
     try {
       const out = await this.d.model.complete({
-        system: `You decide whether a group chat message is a request the assistant "${agent.name}" should act on. Its purpose: ${agent.purpose}. Answer with exactly yes or no. Say yes only when the message asks for something within that purpose (a task, a booking, finding someone, a reminder, help with something). Chatter between people, thanks, jokes, and messages clearly aimed at a specific person are no.`,
+        system: `You decide whether a group chat message is a request the assistant "${agent.name}" should act on. It is a general personal assistant (finding, booking, fixing, reminding, coordinating, looking things up, device help).${room.focus ? ` In this chat its priorities are: ${room.focus}.` : ""} Answer with exactly yes or no. Say yes when the message asks for help with something an assistant can do, and especially when it concerns the priorities. Chatter between people, thanks, jokes, and messages clearly aimed at a specific person are no.`,
         prompt: text,
         effort: "low",
         maxTokens: 50, // a few tokens of thinking may precede the word
@@ -526,7 +526,9 @@ export class Runtime {
     const nameOf = (id: Id) => (id === agent.id ? agent.name : (store.getPerson(id)?.displayName ?? id));
     const accounts = run.requesterId ? rooms.accountsFor(room, run.requesterId) : { accountOwnerId: agent.ownerId, needsApproval: false };
     const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
-    const mode: "training" | "normal" = !agent.deployedAt && room.kind === "dm" && run.requesterId === agent.ownerId ? "training" : "normal";
+    // The owner's first conversations: until the assistant has learned a few durable things, it asks what to take on.
+    const learned = store.listMemories(agent.id).filter((m) => m.type !== "observation").length;
+    const mode: "training" | "normal" = room.kind === "dm" && run.requesterId === agent.ownerId && learned < 3 ? "training" : "normal";
     const hasCaredFor = rooms.members(room.id).some((m) => m.role === "cared_for");
     const maxTurns = this.d.maxTurns ?? MAX_TURNS;
     const emit = (type: RunEvent["type"], data: Record<string, unknown>) => store.appendEvent({ runId: run.id, sessionId: run.sessionId, type, at: clock.now(), data });
@@ -645,6 +647,7 @@ export class Runtime {
         accounts: { accountOwnerName: nameOf(accounts.accountOwnerId), needsApproval: accounts.needsApproval },
         mode,
         requesterRole,
+        roomFocus: room.focus,
         tasksText: tasks.describe(room.id, owner?.timezone ?? "UTC"),
         connectedServices: vault.services(accounts.accountOwnerId),
       });

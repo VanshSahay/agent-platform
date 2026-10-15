@@ -40,6 +40,8 @@ export interface Room {
   /** Channel-specific thread identity, e.g. the iMessage chat guid. */
   externalId?: string;
   name: string;
+  /** What this circle added the assistant for: its priorities here. It stays a general assistant for everything else. */
+  focus?: string;
   /** Working hours in the room owner's zone for third-party outreach. */
   outreachHours: { start: number; end: number }; // 24h clock, e.g. 8..20
   createdAt: UnixMs;

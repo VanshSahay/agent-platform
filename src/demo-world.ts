@@ -11,8 +11,6 @@ export function seedDemoWorld(app: App) {
   const agent = newAgent({
     ownerId: ellie.id,
     name: "Pip",
-    purpose:
-      "Keep the family organised: Mum's appointments and rides, repairs at her place, bills, and patient help with her phone. Involve the right person when a decision or approval is needed.",
     trust: { autoApproveUnderUsd: 25 },
   });
   app.store.putAgent(agent);
@@ -43,7 +41,14 @@ export function seedDemoWorld(app: App) {
     visibleToRooms: [],
   });
 
-  const family = app.rooms.createRoom({ agentId: agent.id, kind: "group", channel: "web", name: "Family", outreachHours: { start: 8, end: 20 } });
+  const family = app.rooms.createRoom({
+    agentId: agent.id,
+    kind: "group",
+    channel: "web",
+    name: "Family",
+    focus: "Mum's appointments and rides, repairs at her place, bills, and patient help with her phone.",
+    outreachHours: { start: 8, end: 20 },
+  });
   app.rooms.addMember(family.id, ellie.id, "owner", { consented: true });
   app.rooms.addMember(family.id, ben.id, "decider", { consented: true });
   app.rooms.addMember(family.id, mum.id, "cared_for");

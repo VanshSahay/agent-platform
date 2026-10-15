@@ -27,8 +27,10 @@ export function buildSystemPrompt(input: {
   planText?: string;
   readOnly?: boolean;
   accounts: { accountOwnerName: string; needsApproval: boolean };
-  /** training: the owner's first conversations before the agent is deployed. */
+  /** training: the owner's first conversations, while the assistant still knows little about them. */
   mode?: "training" | "normal";
+  /** The room's own priorities, set when the circle added the assistant. */
+  roomFocus?: string;
   requesterRole?: string;
   /** Delegated tasks in this room, with progress and what was already told the room. */
   tasksText?: string;
@@ -40,7 +42,7 @@ export function buildSystemPrompt(input: {
   const zone = input.owner?.timezone ?? "UTC";
   const parts: string[] = [];
 
-  parts.push(`You are ${a.name}, a personal agent deployed by ${input.owner?.displayName ?? "your owner"} into their chats. Purpose: ${a.purpose}`);
+  parts.push(`You are ${a.name}, ${input.owner?.displayName ?? "your owner"}'s personal assistant, working inside their chats. ${a.purpose}`);
   parts.push(
     [
       `Identity: ${a.soul.identity}`,
@@ -71,15 +73,24 @@ export function buildSystemPrompt(input: {
     ].join("\n"),
   );
 
+  if (input.roomFocus) {
+    parts.push(
+      [
+        `Priorities in this chat: ${input.roomFocus}`,
+        "- These come first here, and you may step in without being named when a message plainly concerns them.",
+        "- You are still a general assistant: anything else people ask for is yours to help with too.",
+      ].join("\n"),
+    );
+  }
   if (input.mode === "training") {
     parts.push(
       [
-        `Training mode: you are not deployed to any group yet. This private chat with ${input.owner?.displayName ?? "your owner"} is where you learn them.`,
+        `Getting to know ${input.owner?.displayName ?? "your owner"}: this private chat is where you learn them. You can already be added to group chats.`,
         "- Open by asking, in one short message, what they want to hand off first and how they want you to behave. One question at a time.",
         "- Everything they tell you about themselves, their people, their routines, stores and standing rules is training: note it with remember (type rule for rules, person for people, preference, store, schedule, fact).",
         "- When they state a rule, confirm it back in their words and note it as a rule.",
         `- After you have learned a few things, tell them they can add you to a group chat and how to address you there (@${a.handle}).`,
-        "- Do not start tasks that contact anyone outside this chat in training mode; offer to do them once deployed.",
+        "- Do what they ask as you would anywhere; the usual approvals apply.",
       ].join("\n"),
     );
   }

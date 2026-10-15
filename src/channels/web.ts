@@ -368,13 +368,13 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const agent = app.store.getAgent(str(b.agentId) ?? "");
         if (!agent) return bad("no such agent", 404);
         const kind = b.kind === "dm" ? "dm" : "group";
-        if (kind === "group" && !agent.deployedAt) return bad("deploy the agent first: train it in your private chat, then press Deploy", 409);
         const members = Array.isArray(b.members) ? (b.members as { personId?: unknown; role?: unknown; consented?: unknown }[]) : [];
         for (const m of members)
           if (typeof m.personId !== "string" || !ROLES.includes(m.role as MemberRole)) return bad(`each member needs a personId and a role in ${ROLES.join(", ")}`);
         const room = app.rooms.createRoom({
           agentId: agent.id,
           kind,
+          focus: str(b.focus)?.slice(0, 500),
           channel: b.channel === "imessage" ? "imessage" : "web",
           name: str(b.name) ?? `${agent.name}'s room`,
           externalId: str(b.externalId),
@@ -383,6 +383,25 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         // The signed-in creator is the owner member whatever the body says.
         if (me) app.rooms.addMember(room.id, me, "owner", { consented: true });
         for (const m of members) if (m.personId !== me) app.rooms.addMember(room.id, m.personId as string, m.role as MemberRole, { consented: !!m.consented });
+        return json(room);
+      },
+    },
+    {
+      // The circle's priorities for the assistant in this room (and its name, hours) belong to the room's owner.
+      method: "PATCH",
+      re: /^\/api\/rooms\/([^/]+)$/,
+      access: "roomOwner",
+      scope: (c) => roomScope(c.params[0]),
+      handle: ({ params, body: b }) => {
+        const room = app.store.getRoom(params[0]!);
+        if (!room) return bad("no such room", 404);
+        if (b.focus !== undefined) room.focus = str(b.focus)?.trim().slice(0, 500) || undefined;
+        if (str(b.name)?.trim()) room.name = str(b.name)!.trim().slice(0, 80);
+        if (b.outreachHours && typeof b.outreachHours === "object") {
+          const h = b.outreachHours as { start?: unknown; end?: unknown };
+          if (typeof h.start === "number" && typeof h.end === "number" && h.start >= 0 && h.end <= 24 && h.start < h.end) room.outreachHours = { start: h.start, end: h.end };
+        }
+        app.store.putRoom(room);
         return json(room);
       },
     },

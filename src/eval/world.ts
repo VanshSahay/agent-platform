@@ -60,14 +60,19 @@ export function evalWorld(opts: WorldOptions): EvalWorld {
   const agent = newAgent({
     ownerId: ellie.id,
     name: "Pip",
-    purpose: "Keep the family organised: Mum's appointments, rides, repairs, and help her with her phone.",
     model: opts.modelId,
   });
   app.store.putAgent(agent);
   app.memory.write({ agentId: agent.id, scope: "agent", scopeId: agent.id, type: "rule", text: "Ask before calling anyone; keep messages short." });
   app.memory.write({ agentId: agent.id, scope: "person", scopeId: ellie.id, type: "preference", text: "Ellie prefers morning appointments for Mum.", visibleToRooms: [] });
 
-  const family = app.rooms.createRoom({ agentId: agent.id, kind: "group", channel: "console", name: "Family" });
+  const family = app.rooms.createRoom({
+    agentId: agent.id,
+    kind: "group",
+    channel: "console",
+    name: "Family",
+    focus: "Mum's appointments, rides, repairs, and help her with her phone.",
+  });
   app.rooms.addMember(family.id, ellie.id, "owner", { consented: true });
   app.rooms.addMember(family.id, ben.id, "decider", { consented: true });
   app.rooms.addMember(family.id, mum.id, "cared_for");

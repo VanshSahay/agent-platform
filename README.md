@@ -6,7 +6,7 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 
 ## What it does
 
-**Starts in a private chat.** A new agent is trained in the owner's own chat first: it asks what to hand off and how to behave, notes rules and people as memory, and will not contact anyone until it is deployed. Deploying needs a name, a purpose and a little training; the same check backs the Deploy button.
+**One assistant, general by default.** It is the owner's personal assistant: finding, booking, fixing, reminding, coordinating, looking things up, device help. When a circle adds it to a chat they say what they mostly need from it there; those priorities come first in that chat and it may step in on them without being named, while everything else people ask stays its job. Its first conversations with the owner are for learning them (what to hand off, how to behave, standing rules), and nothing is gated on that.
 
 **Lives in the group.** The agent is added to an existing chat and answers when named, when a message is plainly a request within its purpose (a cheap yes/no from the small model), or when a question it asked is answered. People who never signed up are guests: they ask by name and get served; anything that needs the owner's accounts or money produces a card in the owner's own chat ("Uncle Wei asked in Family… OK to call Lee's Repairs?"), the group hears "I've asked Ellie to OK that", and the owner's yes finishes the job in the group.
 
@@ -99,7 +99,7 @@ POST /api/attention/:id/resolve     {answer}                     resumes the wai
 GET  /api/schedules | POST /api/schedules | POST /api/schedules/:id/pause
 GET  /api/commitments?roomId
 GET  /api/memory?agentId | POST /api/memory | DELETE /api/memory/:id | POST /api/memory/consolidate
-POST /api/agents/:id/deploy          ends training (409 with a reason when not ready)
+PATCH /api/rooms/:id                 {focus, name, outreachHours}  the chat's priorities for the assistant
 GET  /api/suggestions?agentId        "want me to…" cards mined from the ledger and schedules
 POST /api/commitments/:id            {status}                     mark a responsibility done, dropped, blocked
 GET  /api/profiles?agentId           derived summaries per scope
@@ -136,7 +136,7 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 ## Status
 
-Built: training before deployment; rooms with roles and guest serving; patient mode and decider-first care approvals; escalation of stuck responsibilities; proactive suggestions; the run loop with gates, steering and resume; quiet outcomes; task agents with delivery state; watches (alert rules); app events as triggers; an encrypted credential vault; session compaction; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
+Built: one general assistant with per-chat priorities; rooms with roles and guest serving; patient mode and decider-first care approvals; escalation of stuck responsibilities; proactive suggestions; the run loop with gates, steering and resume; quiet outcomes; task agents with delivery state; watches (alert rules); app events as triggers; an encrypted credential vault; session compaction; plans with the approach ladder; the responsibilities ledger with nudges; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; the owner UI with Clerk sign-in; the iMessage channel through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
 
 Internet reach: `web_search` and `browse_page` are real (Exa and Jina Reader, both keyless; Brave and Browserbase when keyed). The agent follows `skills/internet-reach.md`, adapted from Agent Reach's skill to the two tools it has; it says plainly which platforms it cannot read yet.
 

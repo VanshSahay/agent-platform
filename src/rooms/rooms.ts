@@ -19,7 +19,15 @@ export class RoomService {
     return p;
   }
 
-  createRoom(input: { agentId: Id; kind: RoomKind; channel: ChannelKind; name: string; externalId?: string; outreachHours?: { start: number; end: number } }): Room {
+  createRoom(input: {
+    agentId: Id;
+    kind: RoomKind;
+    channel: ChannelKind;
+    name: string;
+    externalId?: string;
+    focus?: string;
+    outreachHours?: { start: number; end: number };
+  }): Room {
     const r: Room = {
       id: newId("room"),
       agentId: input.agentId,
@@ -27,6 +35,7 @@ export class RoomService {
       channel: input.channel,
       externalId: input.externalId,
       name: input.name,
+      focus: input.focus?.trim() || undefined,
       outreachHours: input.outreachHours ?? { start: 8, end: 20 },
       createdAt: this.clock.now(),
     };
@@ -116,6 +125,7 @@ export class RoomService {
       if (m.role === "cared_for" && p?.techComfort) bits.push(`tech comfort ${p.techComfort}`);
       return `- ${bits.join(", ")}`;
     });
-    return `${room.kind === "dm" ? "Direct chat" : "Group chat"} "${room.name}" on ${room.channel}. Members:\n${lines.join("\n")}`;
+    const focus = room.focus ? `\nPriorities in this chat (what they added you for): ${room.focus}` : "";
+    return `${room.kind === "dm" ? "Direct chat" : "Group chat"} "${room.name}" on ${room.channel}.${focus}\nMembers:\n${lines.join("\n")}`;
   }
 }

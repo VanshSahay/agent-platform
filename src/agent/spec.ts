@@ -19,10 +19,15 @@ export const DEFAULT_SOUL: Soul = {
   proactiveBehaviors: "Nudge owners of responsibilities before they are due. Report in one line when something closes or slips.",
 };
 
+/** What every assistant is for unless the owner narrows it. Rooms add their own priorities on top. */
+export const GENERAL_PURPOSE =
+  "A personal assistant for its owner and the circles they add it to: finds things and people, books and confirms, fixes and follows up, reminds, coordinates who does what, looks things up, helps with devices, and asks the right person when a decision or approval is needed.";
+
 export function newAgent(input: {
   ownerId: Id;
   name: string;
-  purpose: string;
+  /** Optional narrowing; the assistant stays general either way. */
+  purpose?: string;
   handle?: string;
   instructions?: string;
   soul?: Partial<Soul>;
@@ -39,7 +44,7 @@ export function newAgent(input: {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, ""),
-    purpose: input.purpose,
+    purpose: input.purpose?.trim() || GENERAL_PURPOSE,
     instructions: input.instructions ?? "",
     soul: { ...DEFAULT_SOUL, ...input.soul },
     model: input.model ?? modelConfig().model,
@@ -50,10 +55,11 @@ export function newAgent(input: {
   };
 }
 
-/** An agent can be deployed into a group once it has a name and has learned a few things. */
-export function deployable(agent: AgentSpec, memoryCount: number): { ok: boolean; why?: string } {
+/**
+ * An assistant can join a group as soon as it has a name. Learning is not a gate:
+ * the owner's private chat keeps teaching it, and each group sets its own priorities.
+ */
+export function deployable(agent: AgentSpec, _memoryCount: number): { ok: boolean; why?: string } {
   if (!agent.name.trim()) return { ok: false, why: "needs a name" };
-  if (!agent.purpose.trim()) return { ok: false, why: "needs a purpose" };
-  if (memoryCount < 3 && agent.rules.length < 1) return { ok: false, why: "train it first: tell it a few things about you and one rule" };
   return { ok: true };
 }
