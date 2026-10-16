@@ -52,3 +52,16 @@ export class HandleRateLimit {
     return true;
   }
 }
+
+/** Markdown the model wrote, flattened for a text channel: bold and italics dropped, headings plain, links as their URL, bullets kept. */
+export function plainText(md: string): string {
+  return md
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1 $2")
+    .replace(/^\s*[*•]\s+/gm, "- ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

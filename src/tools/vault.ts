@@ -7,7 +7,7 @@ import type { Store } from "../store/repos.ts";
  * Credentials for members' own accounts. Secrets are encrypted at rest with
  * MASTER_KEY and only ever handed to a hand inside `use`; they never reach the
  * model, the transcript, the events or the UI. The prompt sees service names
- * only ("Ellie has connected: gmail, calendar").
+ * only ("Alex has connected: gmail, calendar").
  */
 export class Vault {
   private key: Buffer;

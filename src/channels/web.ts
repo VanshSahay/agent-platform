@@ -1,15 +1,18 @@
 import { readFileSync } from "node:fs";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newAgent } from "../agent/spec.ts";
 import type { App } from "../app.ts";
-import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Profile, Room, TrustPolicy } from "../core/types.ts";
+import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
+import { newId } from "../core/ids.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
 import { listPeople, peopleVisibleTo } from "../store/queries.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
+import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
+import { artifactPage, type DocState, emptyState, parseDocument } from "./artifacts.ts";
 
 /**
  * The web channel: a JSON API and one page for the owner. The API shape is
@@ -62,7 +65,7 @@ export interface WebOptions {
   eventToken?: string;
 }
 
-const ROLES: MemberRole[] = ["owner", "decider", "member", "guest", "cared_for"];
+const ROLES: MemberRole[] = ["owner", "member", "guest"];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const AUTO_ALLOW = ["place_call", "send_sms"];
 
@@ -105,6 +108,16 @@ function parseTrust(t: unknown): Partial<TrustPolicy> | string {
   return out;
 }
 
+/** The sentence of text around the first word of the query, trimmed to one line. */
+function snippetAround(text: string, q: string): string {
+  const flat = text.replace(/\s+/g, " ");
+  const word = q.split(/\s+/)[0] ?? "";
+  const i = flat.toLowerCase().indexOf(word.toLowerCase());
+  const start = Math.max(0, i - 40);
+  const out = flat.slice(start, start + 120);
+  return `${start > 0 ? "…" : ""}${out}${start + 120 < flat.length ? "…" : ""}`;
+}
+
 async function readBody(req: Request): Promise<Body | Response> {
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) return {};
   const text = await req.text();
@@ -117,6 +130,9 @@ async function readBody(req: Request): Promise<Body | Response> {
     return bad("invalid JSON");
   }
 }
+
+/** Changes every time the server starts; open pages reload when they see a new one. */
+const BOOT = randomBytes(6).toString("hex");
 
 export function startWebServer(app: App, opts: WebOptions = {}) {
   const suggestions = new SuggestionService(app.store, app.clock, app.commitments, app.model);
@@ -164,6 +180,14 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       }
     }
   });
+
+  const inviteFor = (token: string): { room: Room } | undefined => {
+    if (!/^[A-Za-z0-9_-]{8,}$/.test(token)) return undefined;
+    const raw = app.store.getKv(`invite:${token}`);
+    if (!raw) return undefined;
+    const room = app.store.getRoom((JSON.parse(raw) as { roomId: string }).roomId);
+    return room ? { room } : undefined;
+  };
 
   // ---- scope helpers
   const roomScope = (roomId?: string): Scope | undefined => {
@@ -256,6 +280,8 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           phoneE164: str(b.phoneE164) ?? person.phoneE164,
           email: str(b.email) ?? person.email,
           techComfort: b.techComfort ?? person.techComfort,
+          sendAsMe: typeof b.sendAsMe === "boolean" ? b.sendAsMe : person.sendAsMe,
+          addresses: Array.isArray(b.addresses) ? (b.addresses as Person["addresses"]) : person.addresses,
         });
         app.store.putPerson(person);
         return json(person);
@@ -425,7 +451,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           .messagesForRoom(roomId, intParam(url, "limit", 100, 1, 500))
           .filter(visible)
           .map((m) => {
-            if (m.role !== "assistant" || !m.runId || m.source === "notice" || m.source === "card") return m;
+            if (m.role !== "assistant" || !m.runId || m.source === "notice" || m.source === "card" || m.source === "narration") return m;
             const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
             return { ...m, steps };
           });
@@ -449,6 +475,279 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         if (!personId) return bad("personId required");
         const run = await app.runtime.handleMessage({ roomId, personId, text: str(b.text) ?? "", dedupKey: str(b.dedupKey) });
         return json({ run, session: app.store.latestSessionForRoom(roomId) });
+      },
+    },
+    // ---- connections: Google (OAuth), Slack token, MCP servers, HTTP APIs; all per person, all in the vault
+    {
+      method: "GET",
+      re: /^\/api\/connections\/info$/,
+      access: "signedIn",
+      handle: ({ url, me }) => {
+        const personId = me ?? url.searchParams.get("personId") ?? undefined;
+        const services = personId ? app.vault.services(personId) : [];
+        return json({
+          googleConfigured: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+          agentEmail: app.hands.email.address(),
+          google: services.includes("google"),
+          slack: services.includes("slack"),
+          mcp: services.filter((x) => x.startsWith("mcp:")).map((x) => x.slice(4)),
+          apis: services.filter((x) => x.startsWith("api:")).map((x) => x.slice(4)),
+          sites: services.filter((x) => x.startsWith("browser:")).map((x) => x.slice(8)),
+        });
+      },
+    },
+    {
+      method: "GET",
+      re: /^\/api\/connections\/google\/link$/,
+      access: "signedIn",
+      handle: ({ url, me, req }) => {
+        const personId = me ?? url.searchParams.get("personId");
+        if (!personId) return bad("personId required");
+        const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } = process.env;
+        if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return bad("Google is not configured on this server (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)", 503);
+        const state = randomBytes(12).toString("base64url");
+        app.store.setKv(`oauth:google:${state}`, JSON.stringify({ personId, at: app.clock.now() }));
+        const redirectUri = `${process.env.PUBLIC_URL ?? new URL(req.url).origin}/oauth/google/callback`;
+        return json({ url: googleAuthUrl({ clientId: GOOGLE_CLIENT_ID, redirectUri }, state) });
+      },
+    },
+    {
+      method: "POST",
+      re: /^\/api\/people\/([^/]+)\/connections$/,
+      access: "self",
+      scope: (c) => ({ personId: c.params[0] }),
+      handle: ({ params, body: b }) => {
+        const kind = str(b.kind);
+        const name = (str(b.name) ?? "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9._-]+/g, "-");
+        if (kind === "slack") {
+          if (!str(b.token)) return bad("token required");
+          app.vault.put(params[0]!, "slack", str(b.token)!);
+        } else if (kind === "mcp") {
+          if (!name || (!str(b.url) && !str(b.command))) return bad("name and url (or command) required");
+          app.vault.put(
+            params[0]!,
+            `mcp:${name}`,
+            JSON.stringify({ url: str(b.url) ?? "", token: str(b.token) || undefined, command: str(b.command) ? str(b.command)!.split(/\s+/) : undefined }),
+          );
+        } else if (kind === "api") {
+          if (!name || !str(b.baseUrl)) return bad("name and baseUrl required");
+          app.vault.put(
+            params[0]!,
+            `api:${name}`,
+            JSON.stringify({ baseUrl: str(b.baseUrl), openapiUrl: str(b.openapiUrl) || undefined, token: str(b.token) || undefined, header: str(b.header) || undefined }),
+          );
+        } else return bad("kind must be slack, mcp or api");
+        return json({ services: app.vault.services(params[0]!) });
+      },
+    },
+    {
+      method: "DELETE",
+      re: /^\/api\/people\/([^/]+)\/connections\/([^/]+)$/,
+      access: "self",
+      scope: (c) => ({ personId: c.params[0] }),
+      handle: ({ params }) => {
+        app.vault.remove(params[0]!, decodeURIComponent(params[1]!));
+        return json({ services: app.vault.services(params[0]!) });
+      },
+    },
+    // ---- a document's shared state: who ticked what, who brings what, what was added on the page
+    {
+      method: "GET",
+      re: /^\/api\/artifacts\/([^/]+)$/,
+      access: "public",
+      handle: ({ params, me }) => {
+        const art = app.store.getArtifact(params[0]!);
+        if (!art) return bad("not found", 404);
+        if (art.share !== "link" && auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
+        const d = art.data as { state?: DocState; markdown?: string; subtitle?: string; kpis?: unknown[] };
+        const members = art.roomId ? app.rooms.memberIds(art.roomId).map((id) => app.store.getPerson(id)?.displayName ?? id) : [];
+        const state = d.state ?? emptyState();
+        // A glance for the chat's preview card: how many items, how many done, or the first line of a note.
+        const sections = art.kind === "document" ? parseDocument(d.markdown ?? "", art.title) : [];
+        const items = sections.reduce((n, s) => n + s.items.length, 0) + Object.values(state.added).reduce((n, l) => n + l.length, 0);
+        const excerpt =
+          art.kind === "document"
+            ? sections
+                .flatMap((s) => s.notes)[0]
+                ?.replace(/[*_`#]/g, "")
+                .slice(0, 140)
+            : art.kind === "dashboard"
+              ? d.subtitle
+              : undefined;
+        return json({
+          id: art.id,
+          title: art.title,
+          kind: art.kind,
+          state,
+          members,
+          me: me ? app.store.getPerson(me)?.displayName : undefined,
+          summary: {
+            items,
+            done: Object.keys(state.checked).length,
+            excerpt,
+            sections: sections
+              .filter((s) => s.title)
+              .map((s) => s.title)
+              .slice(0, 6),
+          },
+        });
+      },
+    },
+    {
+      method: "PATCH",
+      re: /^\/api\/artifacts\/([^/]+)\/state$/,
+      access: "public",
+      handle: ({ params, me, body: b }) => {
+        const art = app.store.getArtifact(params[0]!);
+        if (art?.kind !== "document") return bad("not found", 404);
+        if (auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
+        const who = (me ? app.store.getPerson(me)?.displayName : str(b.me)) || "someone";
+        const d = art.data as { markdown?: string; state?: DocState };
+        const st = d.state ?? emptyState();
+        const checked = b.checked && typeof b.checked === "object" ? (b.checked as Record<string, string | null>) : {};
+        for (const [k, v] of Object.entries(checked)) {
+          if (v === null) delete st.checked[k];
+          else st.checked[k] = who;
+        }
+        const claimed = b.claimed && typeof b.claimed === "object" ? (b.claimed as Record<string, string | null>) : {};
+        for (const [k, v] of Object.entries(claimed)) {
+          if (v === null) delete st.claimed[k];
+          else st.claimed[k] = String(v).slice(0, 80);
+        }
+        const add = b.add && typeof b.add === "object" ? (b.add as { section?: string; text?: string }) : undefined;
+        if (add?.section && add.text) {
+          const list = st.added[add.section] ?? [];
+          if (list.length < 200) list.push({ key: `${add.section}:add-${app.clock.now().toString(36)}`, text: String(add.text).slice(0, 200), by: who });
+          st.added[add.section] = list;
+        }
+        art.data = { ...d, state: st };
+        app.store.putArtifact(art);
+        return json(st);
+      },
+    },
+    // ---- artifacts: what the agent made (documents, dashboards, images, audio, files)
+    {
+      method: "GET",
+      re: /^\/api\/artifacts$/,
+      access: "agentMember",
+      scope: (c) => agentScope(c.url.searchParams.get("agentId") ?? undefined),
+      handle: ({ url, me }) => {
+        const agentId = url.searchParams.get("agentId") ?? "";
+        const rooms = new Set(me ? app.store.roomsForPerson(me) : app.store.listRooms(agentId).map((r) => r.id));
+        return json(
+          app.store
+            .listArtifacts(agentId, { limit: 100 })
+            .filter((a) => a.share === "link" || !a.roomId || rooms.has(a.roomId))
+            .map(({ data: _d, ...rest }) => rest),
+        );
+      },
+    },
+    {
+      method: "POST",
+      re: /^\/api\/files$/,
+      access: "signedIn",
+      handle: async ({ req, url, me }) => {
+        const form = await req.formData().catch(() => undefined);
+        const file = form?.get("file");
+        if (!(file instanceof File)) return bad("multipart form with a file");
+        if (file.size > 10 * 1024 * 1024) return bad("10 MB at most", 413);
+        const agentId = str((form?.get("agentId") as string | null) ?? undefined) ?? app.store.listAgents()[0]?.id;
+        if (!agentId) return bad("no agent");
+        const roomId = str((form?.get("roomId") as string | null) ?? undefined);
+        const bytes = Buffer.from(await file.arrayBuffer());
+        const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "audio" : "file";
+        const art = {
+          id: newId("art"),
+          agentId,
+          roomId: roomId || undefined,
+          kind: kind as "image" | "audio" | "file",
+          title: file.name,
+          data: {
+            base64: bytes.toString("base64"),
+            mimeType: file.type || "application/octet-stream",
+            size: file.size,
+            uploadedBy: me ?? url.searchParams.get("personId") ?? undefined,
+          },
+          share: "room" as const,
+          createdAt: app.clock.now(),
+        };
+        app.store.putArtifact(art);
+        return json({ id: art.id, url: `/d/${art.id}` });
+      },
+    },
+    // Invites: how a group becomes multiplayer. The owner mints a link; whoever opens it joins the room as a member.
+    {
+      method: "POST",
+      re: /^\/api\/rooms\/([^/]+)\/invites$/,
+      access: "roomOwner",
+      scope: (c) => roomScope(c.params[0]),
+      handle: ({ params, req, me, body: b }) => {
+        const room = app.store.getRoom(params[0]!);
+        if (!room) return bad("no such room", 404);
+        const token = randomBytes(12).toString("base64url");
+        app.store.setKv(`invite:${token}`, JSON.stringify({ roomId: room.id, createdBy: me ?? str(b.personId) ?? room.agentId, createdAt: app.clock.now() }));
+        const base = process.env.PUBLIC_URL ?? new URL(req.url).origin;
+        return json({ token, url: `${base}/#join=${token}` });
+      },
+    },
+    {
+      method: "GET",
+      re: /^\/api\/invites\/([^/]+)$/,
+      access: "public",
+      handle: ({ params }) => {
+        const inv = inviteFor(params[0]!);
+        if (!inv) return bad("that invite link is not valid", 404);
+        return json({ roomName: inv.room.name, agentName: app.store.getAgent(inv.room.agentId)?.name ?? "the assistant", members: app.rooms.members(inv.room.id).length });
+      },
+    },
+    {
+      method: "POST",
+      re: /^\/api\/invites\/([^/]+)\/accept$/,
+      access: "signedIn",
+      handle: ({ params, me, body: b }) => {
+        const inv = inviteFor(params[0]!);
+        if (!inv) return bad("that invite link is not valid", 404);
+        // Signed in: the caller joins. Local dev: an existing person by id, or a new one by name.
+        let personId = me ?? str(b.personId);
+        if (!personId) {
+          const name = str(b.displayName)?.trim();
+          if (!name) return bad("displayName required");
+          personId = app.rooms.createPerson({ displayName: name.slice(0, 80), timezone: str(b.timezone) ?? "UTC" }).id;
+        }
+        if (!app.store.getPerson(personId)) return bad("no such person", 404);
+        if (!app.store.getMembership(inv.room.id, personId)) app.rooms.addMember(inv.room.id, personId, "member");
+        return json({ room: inv.room, personId });
+      },
+    },
+    // Chat search, as Fo does it: a room-name match plus message hits with a snippet, one row per room, newest first.
+    {
+      method: "GET",
+      re: /^\/api\/search$/,
+      access: "signedIn",
+      handle: ({ url, me }) => {
+        const viewer = me ?? url.searchParams.get("personId") ?? undefined;
+        const q = (url.searchParams.get("q") ?? "").trim().slice(0, 256);
+        if (!viewer) return bad("personId required");
+        if (q.length < 3) return json({ results: [] });
+        const rooms = app.store.roomsForPerson(viewer);
+        const seen = new Set<string>();
+        const results: { roomId: string; roomName: string; snippet: string; who?: string; at: number }[] = [];
+        for (const m of app.store.searchMessages(rooms, q, 80)) {
+          if (seen.has(m.roomId) || (m.visibleTo.length && !m.visibleTo.includes(viewer))) continue;
+          const room = app.store.getRoom(m.roomId);
+          if (!room) continue;
+          seen.add(m.roomId);
+          const who = m.role === "assistant" ? app.store.getAgent(m.authorId)?.name : app.store.getPerson(m.authorId)?.displayName;
+          results.push({ roomId: room.id, roomName: room.name, snippet: snippetAround(m.text, q), who, at: m.at });
+        }
+        for (const id of rooms) {
+          const room = app.store.getRoom(id);
+          if (room && !seen.has(id) && room.name.toLowerCase().includes(q.toLowerCase())) results.push({ roomId: id, roomName: room.name, snippet: "", at: 0 });
+        }
+        return json({ results: results.slice(0, 10) });
       },
     },
     {
@@ -499,8 +798,9 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           new ReadableStream<string>({
             start(c) {
               sockets.set(c, me);
-              // A first line, so the client sees the stream open before anything is delivered.
-              c.enqueue(`${JSON.stringify({ ping: 0 })}\n`);
+              // A first line, so the client sees the stream open before anything is delivered. It carries this
+              // server's boot id: a page that sees a new one reloads itself, so nobody runs a stale script.
+              c.enqueue(`${JSON.stringify({ ping: 0, boot: BOOT })}\n`);
             },
             cancel() {
               /* removed on next failed enqueue */
@@ -769,8 +1069,36 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
     try {
       if (p === "/" || p === "/index.html") return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": csp } });
       if (p === "/app.js") return asset("app.js", "text/javascript; charset=utf-8");
+      if (p === "/welcome") return asset("landing.html", "text/html; charset=utf-8");
+      if (p === "/landing.css") return asset("landing.css", "text/css; charset=utf-8");
       if (p === "/styles.css") return asset("styles.css", "text/css; charset=utf-8");
       if (p === "/health") return json({ ok: true, now: app.clock.now(), auth: !!auth });
+      if (p === "/oauth/google/callback") {
+        const state = url.searchParams.get("state") ?? "";
+        const code = url.searchParams.get("code") ?? "";
+        const raw = app.store.getKv(`oauth:google:${state}`);
+        if (!raw || !code) return bad("that sign-in link is not valid any more", 400);
+        app.store.deleteKv(`oauth:google:${state}`);
+        const { personId } = JSON.parse(raw) as { personId: string };
+        const redirectUri = `${process.env.PUBLIC_URL ?? url.origin}/oauth/google/callback`;
+        const tok = await googleExchange({ clientId: process.env.GOOGLE_CLIENT_ID ?? "", clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "", redirectUri }, code);
+        app.vault.put(personId, "google", JSON.stringify({ refresh_token: tok.refresh_token, email: tok.email }));
+        const person = app.store.getPerson(personId);
+        if (person && tok.email && !person.email) {
+          person.email = tok.email;
+          app.store.putPerson(person);
+        }
+        return new Response(null, { status: 302, headers: { location: "/#settings" } });
+      }
+      if (p.startsWith("/d/")) {
+        const art = app.store.getArtifact(p.slice(3).split("/")[0] ?? "");
+        if (!art) return bad("not found", 404);
+        if (art.share !== "link" && auth && art.roomId) {
+          const me = (await auth.personFor(req))?.id;
+          if (!me || !app.store.getMembership(art.roomId, me)) return bad("sign in as a member of that chat to open this", 403);
+        }
+        return artifactPage(art, url.searchParams.has("raw"));
+      }
       if (!p.startsWith("/api/")) return bad("not found", 404);
 
       const hit = routes.flatMap((x) => (x.method === req.method ? [[x, p.match(x.re)] as const] : [])).find(([, m]) => m);

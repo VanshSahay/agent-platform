@@ -8,7 +8,7 @@
 <!--AUTH-->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rubik:wght@700;800;900&family=Caveat:wght@600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body data-tab="chat">
@@ -28,6 +28,8 @@
 
   <div class="cols">
     <aside class="nav" id="nav">
+      <input id="search" class="search" type="search" placeholder="Search chats" autocomplete="off" aria-label="Search chats" />
+      <div id="results" hidden></div>
       <h2>Rooms <button class="link" id="newRoom" type="button">+ New room</button></h2>
       <nav class="rooms" id="rooms"></nav>
       <div id="roomForm"></div>

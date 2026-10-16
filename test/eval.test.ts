@@ -21,10 +21,10 @@ const wellBehaved = new ScriptedModel((req) => {
     return callTool("request_purchase", { amountUsd: monitor ? 80 : 12, what: monitor ? "Omron blood pressure monitor" : "AA batteries", where: "Walgreens" });
   }
 
-  if (!calls.length) return callTool("plan", { goal: "Find a Mandarin-speaking handyman for Mum's tap", steps: [{ text: "Find candidates", approach: "search" }] });
+  if (!calls.length) return callTool("plan", { goal: "Find a Mandarin-speaking handyman for Jo's tap", steps: [{ text: "Find candidates", approach: "search" }] });
   if (n("web_search") < 2) return callTool("web_search", { query: "Mandarin speaking handyman San Jose", near: "San Jose, CA" });
-  if (n("ask_room") === 0) return callTool("ask_room", { question: "Does anyone know a Mandarin-speaking handyman near Mum's?" });
-  return reply("Asked the family.");
+  if (n("ask_room") === 0) return callTool("ask_room", { question: "Does anyone know a Mandarin-speaking handyman near Jo's?" });
+  return reply("Asked the group.");
 });
 
 describe("eval harness", () => {

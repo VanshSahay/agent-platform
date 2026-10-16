@@ -1,10 +1,11 @@
+import { plainText } from "../src/channels/handles.ts";
 import { describe, expect, test } from "bun:test";
 import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, roleForNewcomer } from "../src/channels/handles.ts";
 
 describe("imessage handles", () => {
   test("a handle normalises to one spelling: phones lose punctuation, emails lose case", () => {
     expect(normaliseHandle(" +1 (408) 555-0100 ")).toBe("+14085550100");
-    expect(normaliseHandle("Ellie@Example.com")).toBe("ellie@example.com");
+    expect(normaliseHandle("Alex@Example.com")).toBe("alex@example.com");
   });
 
   test("distinct handles never share a person id, and the same handle always gets the same one", () => {
@@ -17,10 +18,10 @@ describe("imessage handles", () => {
   });
 
   test("the owner is recognised by phone or by email, however it is spaced or cased", () => {
-    const ellie = { phoneE164: "+1 408 555 0100", email: "Ellie@Example.com" };
-    expect(handleMatches(ellie, "+14085550100")).toBe(true);
-    expect(handleMatches(ellie, "ellie@example.com")).toBe(true);
-    expect(handleMatches(ellie, "+14085550101")).toBe(false);
+    const alex = { phoneE164: "+1 408 555 0100", email: "Alex@Example.com" };
+    expect(handleMatches(alex, "+14085550100")).toBe(true);
+    expect(handleMatches(alex, "alex@example.com")).toBe(true);
+    expect(handleMatches(alex, "+14085550101")).toBe(false);
     expect(handleMatches({}, "")).toBe(false);
   });
 
@@ -38,5 +39,13 @@ describe("imessage handles", () => {
     expect(limit.allow("+1 408 555 0100", t0 + 22)).toBe(false);
     expect(limit.allow("+14085550199", t0 + 22)).toBe(true);
     expect(limit.allow("+14085550100", t0 + 10 * 60 * 1000 + 1)).toBe(true);
+  });
+});
+
+describe("text channels get plain text", () => {
+  test("markdown is flattened before it goes out to iMessage or WhatsApp", () => {
+    expect(plainText("**Classics:**\n- **Loop** — 3.8 mi, *hard*.\n\n\n## Easy\nSee [the map](https://example.com/map.pdf) or `signage`.")).toBe(
+      "Classics:\n- Loop — 3.8 mi, hard.\n\nEasy\nSee the map https://example.com/map.pdf or signage.",
+    );
   });
 });

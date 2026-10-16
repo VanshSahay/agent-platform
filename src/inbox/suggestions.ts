@@ -15,7 +15,7 @@ export interface Suggestion {
 /**
  * "Want me to…" cards for the home page and the empty thread. Mined from
  * what the circle already has (the ledger, the schedules), not from the
- * person's inbox: a family's open threads are the honest source. A few
+ * person's inbox: the group's open threads are the honest source. A few
  * extra ideas come from the small model when there is enough context.
  */
 export class SuggestionService {
@@ -93,9 +93,9 @@ export class SuggestionService {
     try {
       const raw = await this.model.complete({
         system:
-          `You suggest things a family's helper "${agent.name}" could do next for ${person.displayName}. Purpose: ${agent.purpose}. ` +
+          `You suggest things the assistant "${agent.name}" could do next for ${person.displayName}. Purpose: ${agent.purpose}. ` +
           'Return only JSON: an array of up to 3 objects {"title": "<four to six words, imperative>", "prompt": "<one sentence the person could type to ask for it>"}. ' +
-          "Base them on open threads and what the family has mentioned. No made-up names, no medical or financial advice, nothing that contacts strangers without asking.",
+          "Base them on open threads and what the group has mentioned. No made-up names, no medical or financial advice, nothing that contacts strangers without asking.",
         prompt: `Recent messages:\n${recent || "(none)"}\n\nOpen responsibilities:\n${ledger}\n\nNotes about this room:\n${memories || "(none)"}`,
         effort: "low",
         maxTokens: 800,

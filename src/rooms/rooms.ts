@@ -79,25 +79,19 @@ export class RoomService {
     return m ? this.store.getPerson(m.personId) : undefined;
   }
 
-  /**
-   * Who may say yes for a request in this room. The owner always can.
-   * Deciders can approve anything that is not the owner's money.
-   */
-  approversFor(room: Room, opts: { money?: boolean; forCaredFor?: boolean } = {}): Person[] {
-    const ms = this.members(room.id).filter((m) => m.role === "owner" || (m.role === "decider" && !opts.money));
-    // Decisions about the cared-for person's care go to a decider first when one exists; money stays with the owner.
-    const ordered =
-      opts.forCaredFor && !opts.money
-        ? [...ms.filter((m) => m.role === "decider"), ...ms.filter((m) => m.role === "owner")]
-        : [...ms.filter((m) => m.role === "owner"), ...ms.filter((m) => m.role === "decider")];
-    return ordered.map((m) => this.store.getPerson(m.personId)).filter((p): p is Person => !!p);
+  /** Who may say yes for a request in this room: the owner, whose accounts and money are at stake. */
+  approversFor(room: Room): Person[] {
+    return this.members(room.id)
+      .filter((m) => m.role === "owner")
+      .map((m) => this.store.getPerson(m.personId))
+      .filter((p): p is Person => !!p);
   }
 
   /**
    * Whose accounts may be used for a request from `requesterId`:
    *  - a member with consent: their own accounts, for their own request;
-   *  - anyone else (guest, cared_for, member without consent): the owner's,
-   *    which means the owner (or a decider) must OK anything that uses them.
+   *  - anyone else (a guest, a member without consent): the owner's,
+   *    which means the owner must OK anything that uses them.
    */
   accountsFor(room: Room, requesterId: Id): { accountOwnerId: Id; needsApproval: boolean } {
     const owner = this.owner(room);
@@ -122,7 +116,7 @@ export class RoomService {
       const p = this.store.getPerson(m.personId);
       const bits = [p?.displayName ?? m.personId, m.role];
       if (p?.pronouns) bits.push(p.pronouns);
-      if (m.role === "cared_for" && p?.techComfort) bits.push(`tech comfort ${p.techComfort}`);
+      if (p?.techComfort === "low") bits.push("low tech comfort");
       return `- ${bits.join(", ")}`;
     });
     const focus = room.focus ? `\nPriorities in this chat (what they added you for): ${room.focus}` : "";

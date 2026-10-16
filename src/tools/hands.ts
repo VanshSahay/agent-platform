@@ -51,11 +51,58 @@ export interface CommunityProvider {
   replies(postId: string): Promise<CommunityReply[]>;
 }
 
+/** Google Workspace for one person: a REST passthrough; the credential blob is whatever the OAuth flow stored. */
+export interface GoogleProvider {
+  request(
+    credential: string,
+    req: { method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; url: string; body?: unknown; query?: Record<string, string | undefined>; raw?: boolean },
+  ): Promise<unknown>;
+}
+/** The agent's own mailbox (Fo's fo@wajo.ai): it sends from here, and inbound mail arrives here. */
+export interface EmailMessage {
+  id: string;
+  threadId: string;
+  from: string;
+  to: string[];
+  subject: string;
+  text: string;
+  at: number;
+}
+export interface EmailProvider {
+  address(): string;
+  send(input: { to: string[]; cc?: string[]; subject: string; text: string; replyToMessageId?: string }): Promise<{ messageId: string; evidence: string }>;
+  /** Inbound messages not yet handed to the agent. */
+  unprocessed(): Promise<EmailMessage[]>;
+  thread(threadId: string): Promise<EmailMessage[]>;
+  markProcessed(ids: string[]): Promise<void>;
+}
+/** Slack Web API passthrough with the workspace's bot token. */
+export interface SlackProvider {
+  call(token: string, method: string, params: Record<string, unknown>): Promise<unknown>;
+}
+export interface SpeechProvider {
+  speak(input: { text: string; voiceId?: string; pronunciations?: Record<string, string> }): Promise<{ audioBase64: string; mimeType: string; evidence: string }>;
+}
+export interface ImageProvider {
+  generate(input: { prompt: string; size?: string }): Promise<{ imageBase64: string; mimeType: string; evidence: string }>;
+}
+/** Money: a single-use card for one purchase (Fo mints one per checkout). The details go to the vault, never to the model. */
+export interface PaymentProvider {
+  issueCard(input: { amountUsd: number; merchant: string; personId: string }): Promise<{ cardId: string; last4: string; details: string; evidence: string }>;
+  cancelCard(cardId: string): Promise<void>;
+}
+
 export interface Hands {
   search: SearchProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
   browser: BrowserProvider;
+  google: GoogleProvider;
+  email: EmailProvider;
+  slack: SlackProvider;
+  speech: SpeechProvider;
+  images: ImageProvider;
+  payments: PaymentProvider;
 }
 
 // ---------- Fakes ----------
@@ -109,16 +156,105 @@ export class FakeCommunity implements CommunityProvider {
   }
 }
 
-export function fakeHands(opts: { search?: FakeSearch; phone?: FakePhone; community?: FakeCommunity; browser?: FakeBrowser } = {}): Hands & {
+export class FakeGoogle implements GoogleProvider {
+  public requests: { method: string; url: string; body?: unknown; query?: Record<string, string | undefined> }[] = [];
+  constructor(private answer: (req: { method: string; url: string; body?: unknown; query?: Record<string, string | undefined> }) => unknown = () => ({})) {}
+  async request(_credential: string, req: { method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; url: string; body?: unknown; query?: Record<string, string | undefined> }) {
+    this.requests.push(req);
+    return this.answer(req);
+  }
+}
+
+export class FakeEmail implements EmailProvider {
+  public sent: { to: string[]; cc?: string[]; subject: string; text: string; replyToMessageId?: string }[] = [];
+  public inbox: EmailMessage[] = [];
+  public processed = new Set<string>();
+  address() {
+    return "pip@example.test";
+  }
+  async send(input: { to: string[]; cc?: string[]; subject: string; text: string; replyToMessageId?: string }) {
+    this.sent.push(input);
+    const id = `mail_${this.sent.length}`;
+    return { messageId: id, evidence: `fake-email:${id}` };
+  }
+  async unprocessed() {
+    return this.inbox.filter((m) => !this.processed.has(m.id));
+  }
+  async thread(threadId: string) {
+    return this.inbox.filter((m) => m.threadId === threadId);
+  }
+  async markProcessed(ids: string[]) {
+    for (const id of ids) this.processed.add(id);
+  }
+}
+
+export class FakeSlack implements SlackProvider {
+  public calls: { method: string; params: Record<string, unknown> }[] = [];
+  constructor(private answer: (method: string, params: Record<string, unknown>) => unknown = () => ({ ok: true, messages: [] })) {}
+  async call(_token: string, method: string, params: Record<string, unknown>) {
+    this.calls.push({ method, params });
+    return this.answer(method, params);
+  }
+}
+
+export class FakeSpeech implements SpeechProvider {
+  public spoken: string[] = [];
+  async speak(input: { text: string }) {
+    this.spoken.push(input.text);
+    return { audioBase64: Buffer.from(`audio:${input.text}`).toString("base64"), mimeType: "audio/mpeg", evidence: `fake-tts:${this.spoken.length}` };
+  }
+}
+
+export class FakeImages implements ImageProvider {
+  public prompts: string[] = [];
+  async generate(input: { prompt: string }) {
+    this.prompts.push(input.prompt);
+    // A 1x1 transparent PNG.
+    return {
+      imageBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+      mimeType: "image/png",
+      evidence: `fake-image:${this.prompts.length}`,
+    };
+  }
+}
+
+export class FakePayments implements PaymentProvider {
+  public cards: { amountUsd: number; merchant: string; personId: string }[] = [];
+  public cancelled: string[] = [];
+  async issueCard(input: { amountUsd: number; merchant: string; personId: string }) {
+    this.cards.push(input);
+    const id = `card_${this.cards.length}`;
+    return { cardId: id, last4: "4242", details: JSON.stringify({ number: "4242424242424242", exp: "12/30", cvc: "123" }), evidence: `fake-card:${id}` };
+  }
+  async cancelCard(cardId: string) {
+    this.cancelled.push(cardId);
+  }
+}
+
+export interface FakeHands extends Hands {
   search: FakeSearch;
   phone: FakePhone;
   community: FakeCommunity;
   browser: FakeBrowser;
-} {
+  google: FakeGoogle;
+  email: FakeEmail;
+  slack: FakeSlack;
+  speech: FakeSpeech;
+  images: FakeImages;
+  payments: FakePayments;
+}
+
+export function fakeHands(opts: Partial<FakeHands> = {}): FakeHands {
   return {
     search: opts.search ?? new FakeSearch(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
     browser: opts.browser ?? new FakeBrowser(),
+    google: opts.google ?? new FakeGoogle(),
+    email: opts.email ?? new FakeEmail(),
+    slack: opts.slack ?? new FakeSlack(),
+    speech: opts.speech ?? new FakeSpeech(),
+    images: opts.images ?? new FakeImages(),
+    payments: opts.payments ?? new FakePayments(),
   };
 }

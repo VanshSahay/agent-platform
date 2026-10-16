@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Effort } from "../core/types.ts";
-import type { ModelClient, ModelRequest, ModelTurn } from "./types.ts";
+import type { ModelClient, ModelImage, ModelRequest, ModelTurn } from "./types.ts";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
 /** Cheap model for labels, premise checks and the nightly memory pass. */
@@ -48,13 +48,17 @@ export class AnthropicModel implements ModelClient {
     };
   }
 
-  async complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string }): Promise<string> {
+  async complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string; images?: ModelImage[] }): Promise<string> {
+    const content: Anthropic.ContentBlockParam[] = (opts.images ?? []).map((im) =>
+      "url" in im ? { type: "image", source: { type: "url", url: im.url } } : { type: "image", source: { type: "base64", media_type: im.mediaType, data: im.base64 } },
+    );
+    content.push({ type: "text", text: opts.prompt });
     const res = await this.client.messages.create({
       model: this.mapModel(opts.model ?? this.smallModel),
       max_tokens: opts.maxTokens ?? 4000,
       output_config: { effort: opts.effort ?? "low" },
       system: opts.system,
-      messages: [{ role: "user", content: opts.prompt }],
+      messages: [{ role: "user", content }],
     });
     if (res.stop_reason === "refusal") return "";
     return res.content

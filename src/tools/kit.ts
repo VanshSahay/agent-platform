@@ -1,0 +1,145 @@
+import type { Clock } from "../core/clock.ts";
+import type { AgentSpec, ApproachKind, AttentionItem, AttentionKind, Authorization, Id, Room, Run, Session, Task } from "../core/types.ts";
+import type { TaskService } from "../tasks/tasks.ts";
+import type { ToolSpec } from "../model/types.ts";
+import type { Store } from "../store/repos.ts";
+import type { MemoryService } from "../memory/memory.ts";
+import type { RoomService } from "../rooms/rooms.ts";
+import type { AttentionService } from "../inbox/attention.ts";
+import type { CommitmentService } from "../care/commitments.ts";
+import type { Planner } from "../planning/planner.ts";
+import type { Hands } from "./hands.ts";
+import type { ModelClient } from "../model/types.ts";
+
+export type ToolFamily =
+  | "plan"
+  | "search"
+  | "people"
+  | "calls"
+  | "community"
+  | "memory"
+  | "schedule"
+  | "ledger"
+  | "money"
+  | "google"
+  | "knowledge"
+  | "operator"
+  | "shopping"
+  | "voice"
+  | "contacts"
+  | "email"
+  | "mcp";
+
+/** What a tool hands back to the runtime. */
+export interface ToolResult {
+  ok: boolean;
+  /** What the model sees. Objects are JSON-encoded. */
+  content: unknown;
+  /** Provider evidence that the effect happened. */
+  evidence?: string;
+  /** The run must pause until this attention item is answered. */
+  waitingOn?: AttentionItem;
+  /** The approach stalled (no results, no answer); the planner should count it. */
+  stall?: string;
+  /** Message the agent should relay to the room verbatim (e.g. "I've asked Alex to OK that"). */
+  roomNotice?: string;
+  /** Plan progress signal when the tool embodies an approach. */
+  approach?: ApproachKind;
+  /** The run should end without saying anything; the reason goes in the record. */
+  quiet?: string;
+  /** The action was held (working hours, a decline): nothing happened, the plan step is not done. */
+  held?: boolean;
+  /** A done label for this call, replacing the registry's generic one (Fo: "Handyman listings searched"). */
+  label?: string;
+}
+
+export type GateDecision = { granted: true; reason: string } | { granted: false; item: AttentionItem; notice?: string } | { granted: false; held: string };
+
+export interface ToolContext {
+  store: Store;
+  clock: Clock;
+  memory: MemoryService;
+  rooms: RoomService;
+  attention: AttentionService;
+  commitments: CommitmentService;
+  planner: Planner;
+  hands: Hands;
+  agent: AgentSpec;
+  room: Room;
+  session: Session;
+  run: Run;
+  requesterId?: Id;
+  tasks: TaskService;
+  /** Which services the person whose accounts this request may use has connected. Never the secrets. */
+  vault: { services(): string[]; has(service: string): boolean; use<T>(service: string, fn: (secret: string) => T): T | undefined; put(service: string, secret: string): void };
+  /** The model, for the few tools that read an image or write prose on their own. */
+  model: ModelClient;
+  /** Where links to artifacts, dashboards and settings pages point. */
+  publicUrl: string;
+  /** Whose accounts this request may use (the requester with consent, else the owner). */
+  accountOwnerId: Id;
+  /** Hand a task to a task agent; it starts once this run has replied. */
+  delegate(task: Task): void;
+  /** Pass a note into a running task; false when it is not running. */
+  steerTask(taskId: Id, text: string): boolean;
+  /** Ask for a yes before an effect, or learn it was pre-authorised. */
+  gate(input: {
+    kind: AttentionKind;
+    title: string;
+    detail: string;
+    money?: number;
+    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" };
+    /** What a yes permits: the tool and the payload that matters (number, text, amount, merchant). An approval covers exactly this. */
+    key: unknown[];
+  }): GateDecision;
+  /** Stop a run (a task's run) from a tool. */
+  stopRun(runId: Id): void;
+  /** Send a message to a person's private chat with the agent (cards, questions). */
+  dm(personId: Id, text: string): void;
+  /** Resolve a member by name or id inside this room. */
+  findMember(nameOrId: string): { id: Id; name: string } | undefined;
+  progress(text: string): void;
+}
+
+export interface ToolDef {
+  spec: ToolSpec;
+  family: ToolFamily;
+  labels: { running: string; done: string; failed?: string };
+  /** Writes or contacts someone. Side-effect tools ask first unless trusted. */
+  sideEffect: boolean;
+  run(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
+}
+
+export const obj = (properties: Record<string, unknown>, required: string[] = []): ToolSpec["input_schema"] =>
+  ({ type: "object", properties, required, additionalProperties: false }) as ToolSpec["input_schema"];
+export const str = (description: string) => ({ type: "string", description });
+export const num = (description: string) => ({ type: "number", description });
+
+export const s = (v: unknown) => (typeof v === "string" ? v : "");
+export const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+export type Outreach = Authorization["disclosedOutreach"][number];
+export const HOWS = new Set(["phone", "email", "sms", "community_post"]);
+/** Only well-formed entries become pre-approved outreach; anything else is dropped. */
+export function parseOutreach(v: unknown): Outreach[] {
+  if (!Array.isArray(v)) return [];
+  const out: Outreach[] = [];
+  for (const x of v) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as Record<string, unknown>;
+    if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how))
+      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
+  }
+  return out.slice(0, 10);
+}
+export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
+/** "https://www.ubereats.com/orders" and "ubereats.com" both mean ubereats.com. */
+export function siteOf(v: string): string {
+  return v
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split(/[/?#]/)[0]!
+    .replace(/[^a-z0-9.-]/g, "");
+}

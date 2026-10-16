@@ -7,9 +7,9 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "dev": "bun --watch run src/main.ts",
+    "local": "LOCAL=1 SEED_DEMO=1 bun run src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
-    "demo": "bun run src/demo.ts",
     "eval": "bun run src/eval/run.ts",
     "lint": "biome check src test web/app.js",
     "format": "biome format --write src test web/app.js"

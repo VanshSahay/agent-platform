@@ -16,4 +16,3 @@ jobs:
       - run: bun run typecheck
       - run: bun run lint
       - run: bun test
-      - run: bun run demo

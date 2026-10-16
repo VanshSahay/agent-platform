@@ -1,128 +1,14 @@
-import type { Clock } from "../core/clock.ts";
-import type { AgentSpec, ApproachKind, AttentionItem, AttentionKind, Authorization, Id, Room, Run, Session, Task } from "../core/types.ts";
-import type { TaskService } from "../tasks/tasks.ts";
+import type { ApproachKind, AttentionKind, Id, Task } from "../core/types.ts";
 import type { ToolSpec } from "../model/types.ts";
-import type { Store } from "../store/repos.ts";
-import type { MemoryService } from "../memory/memory.ts";
-import type { RoomService } from "../rooms/rooms.ts";
-import type { AttentionService } from "../inbox/attention.ts";
-import type { CommitmentService } from "../care/commitments.ts";
-import type { Planner } from "../planning/planner.ts";
-import type { Hands } from "./hands.ts";
+import { describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
+import { CATALOG_TOOLS } from "./catalog/index.ts";
 
-export type ToolFamily = "plan" | "search" | "people" | "calls" | "community" | "memory" | "schedule" | "care" | "money";
-
-/** What a tool hands back to the runtime. */
-export interface ToolResult {
-  ok: boolean;
-  /** What the model sees. Objects are JSON-encoded. */
-  content: unknown;
-  /** Provider evidence that the effect happened. */
-  evidence?: string;
-  /** The run must pause until this attention item is answered. */
-  waitingOn?: AttentionItem;
-  /** The approach stalled (no results, no answer); the planner should count it. */
-  stall?: string;
-  /** Message the agent should relay to the room verbatim (e.g. "I've asked Ellie to OK that"). */
-  roomNotice?: string;
-  /** Plan progress signal when the tool embodies an approach. */
-  approach?: ApproachKind;
-  /** The run should end without saying anything; the reason goes in the record. */
-  quiet?: string;
-  /** The action was held (working hours, a decline): nothing happened, the plan step is not done. */
-  held?: boolean;
-}
-
-export type GateDecision = { granted: true; reason: string } | { granted: false; item: AttentionItem; notice?: string } | { granted: false; held: string };
-
-export interface ToolContext {
-  store: Store;
-  clock: Clock;
-  memory: MemoryService;
-  rooms: RoomService;
-  attention: AttentionService;
-  commitments: CommitmentService;
-  planner: Planner;
-  hands: Hands;
-  agent: AgentSpec;
-  room: Room;
-  session: Session;
-  run: Run;
-  requesterId?: Id;
-  tasks: TaskService;
-  /** Which services the person whose accounts this request may use has connected. Never the secrets. */
-  vault: { services(): string[]; has(service: string): boolean; use<T>(service: string, fn: (secret: string) => T): T | undefined };
-  /** Whose accounts this request may use (the requester with consent, else the owner). */
-  accountOwnerId: Id;
-  /** Hand a task to a task agent; it starts once this run has replied. */
-  delegate(task: Task): void;
-  /** Pass a note into a running task; false when it is not running. */
-  steerTask(taskId: Id, text: string): boolean;
-  /** Ask for a yes before an effect, or learn it was pre-authorised. */
-  gate(input: {
-    kind: AttentionKind;
-    title: string;
-    detail: string;
-    money?: number;
-    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" };
-    /** What a yes permits: the tool and the payload that matters (number, text, amount, merchant). An approval covers exactly this. */
-    key: unknown[];
-  }): GateDecision;
-  /** Stop a run (a task's run) from a tool. */
-  stopRun(runId: Id): void;
-  /** Send a message to a person's private chat with the agent (cards, questions). */
-  dm(personId: Id, text: string): void;
-  /** Resolve a member by name or id inside this room. */
-  findMember(nameOrId: string): { id: Id; name: string } | undefined;
-  progress(text: string): void;
-}
-
-export interface ToolDef {
-  spec: ToolSpec;
-  family: ToolFamily;
-  labels: { running: string; done: string; failed?: string };
-  /** Writes or contacts someone. Side-effect tools ask first unless trusted. */
-  sideEffect: boolean;
-  run(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
-}
-
-const obj = (properties: Record<string, unknown>, required: string[] = []): ToolSpec["input_schema"] =>
-  ({ type: "object", properties, required, additionalProperties: false }) as ToolSpec["input_schema"];
-const str = (description: string) => ({ type: "string", description });
-const num = (description: string) => ({ type: "number", description });
-
-const s = (v: unknown) => (typeof v === "string" ? v : "");
-const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-
-type Outreach = Authorization["disclosedOutreach"][number];
-const HOWS = new Set(["phone", "email", "sms", "community_post"]);
-/** Only well-formed entries become pre-approved outreach; anything else is dropped. */
-function parseOutreach(v: unknown): Outreach[] {
-  if (!Array.isArray(v)) return [];
-  const out: Outreach[] = [];
-  for (const x of v) {
-    if (!x || typeof x !== "object") continue;
-    const o = x as Record<string, unknown>;
-    if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how))
-      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
-  }
-  return out.slice(0, 10);
-}
-const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
-/** "https://www.ubereats.com/orders" and "ubereats.com" both mean ubereats.com. */
-export function siteOf(v: string): string {
-  return v
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .split(/[/?#]/)[0]!
-    .replace(/[^a-z0-9.-]/g, "");
-}
+export type { GateDecision, ToolContext, ToolDef, ToolFamily, ToolResult } from "./kit.ts";
+export { siteOf } from "./kit.ts";
 
 // ----------------------------------------------------------------------------
 
-export const TOOLS: ToolDef[] = [
+export const CORE_TOOLS: ToolDef[] = [
   {
     spec: {
       name: "plan",
@@ -166,8 +52,9 @@ export const TOOLS: ToolDef[] = [
     sideEffect: false,
     async run(input, ctx) {
       const r = await ctx.hands.search.search(s(input.query), { near: s(input.near) || undefined, limit: 8 });
-      if (!r.results.length) return { ok: true, content: "No results.", evidence: r.evidence, stall: `no results for "${s(input.query)}"`, approach: "search" };
-      return { ok: true, content: r.results, evidence: r.evidence, approach: "search" };
+      const label = `Searched: ${s(input.query).slice(0, 60)}`;
+      if (!r.results.length) return { ok: true, content: "No results.", evidence: r.evidence, stall: `no results for "${s(input.query)}"`, approach: "search", label };
+      return { ok: true, content: r.results, evidence: r.evidence, approach: "search", label };
     },
   },
   {
@@ -204,7 +91,13 @@ export const TOOLS: ToolDef[] = [
         if (!r) return { ok: false, content: `${site} is not connected.` };
         if (!r.text.trim())
           return { ok: true, content: { url: r.url, title: r.title, text: "", links: r.links }, evidence: r.evidence, stall: `empty page at ${url}`, approach: "browse" };
-        return { ok: true, content: { url: r.url, title: r.title, text: r.text, links: r.links.slice(0, 30) }, evidence: r.evidence, approach: "browse" };
+        return {
+          ok: true,
+          content: { url: r.url, title: r.title, text: r.text, links: r.links.slice(0, 30) },
+          evidence: r.evidence,
+          approach: "browse",
+          label: `Read ${siteOf(url)}`,
+        };
       } catch (e) {
         return { ok: false, content: `Could not load ${url}: ${String((e as Error).message).slice(0, 200)}`, stall: `page failed: ${url}`, approach: "browse" };
       }
@@ -255,6 +148,43 @@ export const TOOLS: ToolDef[] = [
         waitingOn: item,
         roomNotice: notice,
       };
+    },
+  },
+  {
+    spec: {
+      name: "find_person",
+      description:
+        "Look up someone the assistant knows: a member of any chat it is in. Matches on name, email or phone. Returns who they are and which chats you share; a phone number only when the request is from them or from the owner.",
+      input_schema: obj({ query: str("A name, part of a name, an email or a phone number.") }, ["query"]),
+    },
+    family: "people",
+    labels: { running: "Looking up people…", done: "Looked up people" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const q = s(input.query).trim().toLowerCase();
+      if (q.length < 2) return { ok: false, content: "Give at least two characters." };
+      const rooms = ctx.store.listRooms(ctx.agent.id);
+      const seen = new Map<Id, { id: Id; name: string; rooms: string[]; phone?: string; email?: string }>();
+      for (const room of rooms) {
+        for (const id of ctx.rooms.memberIds(room.id)) {
+          const p = ctx.store.getPerson(id);
+          if (!p) continue;
+          const hay = [p.displayName, p.email ?? "", p.phoneE164 ?? ""].join(" ").toLowerCase();
+          if (!hay.includes(q)) continue;
+          const hit = seen.get(id) ?? { id, name: p.displayName, rooms: [] };
+          if (room.kind === "group") hit.rooms.push(room.name);
+          const mayContact = ctx.requesterId === id || ctx.requesterId === ctx.agent.ownerId;
+          if (mayContact) {
+            hit.phone = p.phoneE164;
+            hit.email = p.email;
+          }
+          seen.set(id, hit);
+        }
+      }
+      const out = [...seen.values()].slice(0, 10);
+      if (!out.length)
+        return { ok: true, content: `Nobody matching "${s(input.query)}" in the chats I'm in. Ask the room, or ask the owner to add them.`, label: `Looked up: ${s(input.query)}` };
+      return { ok: true, content: out, label: `Looked up: ${s(input.query)}` };
     },
   },
   {
@@ -599,9 +529,9 @@ export const TOOLS: ToolDef[] = [
       if (runAt !== undefined && !Number.isFinite(runAt)) return { ok: false, content: "runAt is not a valid ISO instant." };
       const outreach = parseOutreach(input.disclosedOutreach);
       // Only the owner may put the agent on a schedule without asking; disclosed outreach is an
-      // approval in advance, so anyone else (deciders included) needs the owner's yes for it.
+      // approval in advance, so anyone else needs the owner's yes for it.
       const role = ctx.requesterId ? ctx.rooms.role(ctx.room.id, ctx.requesterId) : undefined;
-      if (role !== "owner" && (role !== "decider" || outreach.length)) {
+      if (role !== "owner") {
         const gate = ctx.gate({
           kind: outreach.length ? "outreach_approval" : "decision",
           title: `OK to schedule "${s(input.title)}"?`,
@@ -659,7 +589,7 @@ export const TOOLS: ToolDef[] = [
         ["title", "owner"],
       ),
     },
-    family: "care",
+    family: "ledger",
     labels: { running: "Writing it down…", done: "Tracking a responsibility" },
     sideEffect: false,
     async run(input, ctx) {
@@ -700,7 +630,7 @@ export const TOOLS: ToolDef[] = [
         ["commitmentId"],
       ),
     },
-    family: "care",
+    family: "ledger",
     labels: { running: "Updating…", done: "Updated a responsibility" },
     sideEffect: false,
     async run(input, ctx) {
@@ -870,7 +800,7 @@ export const TOOLS: ToolDef[] = [
       const every = Math.min(24, Math.max(1, n(input.everyHours) ?? 6));
       const outreach = parseOutreach(input.disclosedOutreach);
       const role = ctx.requesterId ? ctx.rooms.role(ctx.room.id, ctx.requesterId) : undefined;
-      if (role !== "owner" && (role !== "decider" || outreach.length)) {
+      if (role !== "owner") {
         const gate = ctx.gate({
           kind: outreach.length ? "outreach_approval" : "decision",
           title: `OK to watch for "${s(input.title)}"?`,
@@ -907,6 +837,8 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
+/** Every tool the model may call: the core set plus the catalogue (Google, operator, knowledge, shopping, voice, contacts, email, MCP). */
+export const TOOLS: ToolDef[] = [...CORE_TOOLS, ...CATALOG_TOOLS];
 export const TOOL_INDEX = new Map(TOOLS.map((t) => [t.spec.name, t]));
 
 export function toolSpecs(): ToolSpec[] {

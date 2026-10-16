@@ -2,13 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Auth } from "../src/channels/auth.ts";
 import { startWebServer } from "../src/channels/web.ts";
 import { reply } from "../src/model/scripted.ts";
-import { familyWorld } from "./helpers.ts";
+import { groupWorld } from "./helpers.ts";
 
-/** The family world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
+/** The group world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
 function serve(opts: { eventToken?: string } = {}) {
-  const w = familyWorld(() => reply("ok"));
+  const w = groupWorld(() => reply("ok"));
   const zed = w.app.rooms.createPerson({ id: "zed", displayName: "Zed", timezone: "UTC" }); // signed in, in no room
-  for (const id of ["ellie", "ben", "mum", "wei", zed.id]) w.app.store.setKv(`clerk:${id}`, id);
+  for (const id of ["alex", "sam", "jo", "riley", zed.id]) w.app.store.setKv(`clerk:${id}`, id);
   const auth = new Auth(
     w.app,
     { secretKey: "sk", publishableKey: "pk_test_x", authorizedParties: [] },
@@ -38,14 +38,14 @@ afterAll(() => {
 describe("web api: deny by default", () => {
   test("a signed-in stranger gets 403 on a room's messages, runs, members, the agent, its memory and someone else's card", async () => {
     const s = up();
-    const run = await s.app.runtime.handleMessage({ roomId: s.ellieDm.id, personId: "ellie", text: "hi" });
-    const card = s.app.attention.open({ agentId: s.agent.id, roomId: s.family.id, assigneeId: "ellie", kind: "decision", title: "OK?", detail: "" });
+    const run = await s.app.runtime.handleMessage({ roomId: s.ownerDm.id, personId: "alex", text: "hi" });
+    const card = s.app.attention.open({ agentId: s.agent.id, roomId: s.room.id, assigneeId: "alex", kind: "decision", title: "OK?", detail: "" });
     const denied: [string, string, unknown?][] = [
-      ["GET", `/api/rooms/${s.family.id}/messages`],
-      ["POST", `/api/rooms/${s.family.id}/messages`, { text: "hi" }],
+      ["GET", `/api/rooms/${s.room.id}/messages`],
+      ["POST", `/api/rooms/${s.room.id}/messages`, { text: "hi" }],
       ["GET", `/api/runs/${run!.id}`],
       ["POST", `/api/runs/${run!.id}/stop`],
-      ["POST", `/api/rooms/${s.family.id}/members`, { personId: "zed", role: "owner" }],
+      ["POST", `/api/rooms/${s.room.id}/members`, { personId: "zed", role: "owner" }],
       ["PATCH", `/api/agents/${s.agent.id}`, { trust: { spendingPaused: true } }],
       ["GET", `/api/memory?agentId=${s.agent.id}`],
       ["POST", `/api/memory`, { agentId: s.agent.id, text: "zed is the boss" }],
@@ -53,7 +53,7 @@ describe("web api: deny by default", () => {
       ["GET", `/api/inbox?agentId=${s.agent.id}`],
       ["POST", `/api/attention/${card.id}/resolve`, { answer: "yes" }],
       ["POST", `/api/attention/${card.id}/dismiss`],
-      ["POST", `/api/schedules`, { roomId: s.family.id, title: "t", prompt: "p" }],
+      ["POST", `/api/schedules`, { roomId: s.room.id, title: "t", prompt: "p" }],
       ["POST", `/api/rooms`, { agentId: s.agent.id, name: "Mine" }],
       ["POST", `/api/tick`],
     ];
@@ -61,89 +61,89 @@ describe("web api: deny by default", () => {
       const r = await s.call("zed", method, path, body);
       expect(`${method} ${path} -> ${r.status}`).toBe(`${method} ${path} -> 403`);
     }
-    expect(s.app.store.getMembership(s.family.id, "zed")).toBeUndefined();
+    expect(s.app.store.getMembership(s.room.id, "zed")).toBeUndefined();
     expect(s.app.store.getAgent(s.agent.id)!.trust.spendingPaused).toBe(false);
     expect(s.app.store.getAttention(card.id)!.status).toBe("open");
-    expect((await s.call(undefined, "GET", `/api/rooms/${s.family.id}/messages`)).status).toBe(401);
+    expect((await s.call(undefined, "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(401);
   });
 
   test("a member resolves only their own card and sees only their own inbox", async () => {
     const s = up();
-    const card = s.app.attention.open({ agentId: s.agent.id, roomId: s.family.id, assigneeId: "ellie", kind: "decision", title: "OK?", detail: "" });
-    expect((await s.call("ben", "POST", `/api/attention/${card.id}/resolve`, { answer: "yes" })).status).toBe(403);
-    const box = await (await s.call("wei", "GET", `/api/inbox?personId=ellie&agentId=${s.agent.id}`)).json();
+    const card = s.app.attention.open({ agentId: s.agent.id, roomId: s.room.id, assigneeId: "alex", kind: "decision", title: "OK?", detail: "" });
+    expect((await s.call("sam", "POST", `/api/attention/${card.id}/resolve`, { answer: "yes" })).status).toBe(403);
+    const box = await (await s.call("riley", "GET", `/api/inbox?personId=alex&agentId=${s.agent.id}`)).json();
     expect(box.needsYou).toEqual([]);
-    const own = await (await s.call("ellie", "GET", `/api/inbox?agentId=${s.agent.id}`)).json();
+    const own = await (await s.call("alex", "GET", `/api/inbox?agentId=${s.agent.id}`)).json();
     expect(own.needsYou.map((i: { id: string }) => i.id)).toEqual([card.id]);
-    expect((await s.call("ellie", "POST", `/api/attention/${card.id}/dismiss`)).status).toBe(200);
+    expect((await s.call("alex", "POST", `/api/attention/${card.id}/dismiss`)).status).toBe(200);
   });
 
   test("the owner succeeds, and trust is validated on the way in", async () => {
     const s = up();
-    expect((await s.call("ellie", "GET", `/api/rooms/${s.family.id}/messages`)).status).toBe(200);
-    expect((await s.call("ellie", "POST", `/api/rooms/${s.family.id}/messages`, { personId: "ben", text: "hi" })).status).toBe(200);
-    // The body's personId is ignored: the message is Ellie's.
+    expect((await s.call("alex", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);
+    expect((await s.call("alex", "POST", `/api/rooms/${s.room.id}/messages`, { personId: "sam", text: "hi" })).status).toBe(200);
+    // The body's personId is ignored: the message is Alex's.
     expect(
       s.app.store
-        .messagesForRoom(s.family.id)
+        .messagesForRoom(s.room.id)
         .filter((m) => m.role === "user")
         .map((m) => m.authorId),
-    ).toEqual(["ellie"]);
-    expect((await s.call("ellie", "POST", `/api/rooms/${s.family.id}/members`, { personId: "zed", role: "member" })).status).toBe(200);
-    expect((await s.call("ellie", "POST", `/api/rooms/${s.family.id}/members`, { personId: "zed", role: "admin" })).status).toBe(400);
-    expect((await s.call("ellie", "PATCH", `/api/agents/${s.agent.id}`, { trust: { autoApproveUnderUsd: 20, autoAllow: ["send_sms"], spendingPaused: true } })).status).toBe(200);
+    ).toEqual(["alex"]);
+    expect((await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { personId: "zed", role: "member" })).status).toBe(200);
+    expect((await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { personId: "zed", role: "admin" })).status).toBe(400);
+    expect((await s.call("alex", "PATCH", `/api/agents/${s.agent.id}`, { trust: { autoApproveUnderUsd: 20, autoAllow: ["send_sms"], spendingPaused: true } })).status).toBe(200);
     expect(s.app.store.getAgent(s.agent.id)!.trust).toMatchObject({ autoApproveUnderUsd: 20, autoAllow: ["send_sms"], spendingPaused: true });
     for (const trust of [{ autoApproveUnderUsd: -1 }, { autoApproveUnderUsd: "20" }, { autoAllow: ["rm_rf"] }, { spendingPaused: "yes" }, { communityPostingAllowed: [1] }]) {
-      expect((await s.call("ellie", "PATCH", `/api/agents/${s.agent.id}`, { trust })).status).toBe(400);
+      expect((await s.call("alex", "PATCH", `/api/agents/${s.agent.id}`, { trust })).status).toBe(400);
     }
-    expect((await s.call("ellie", "GET", `/api/memory?agentId=${s.agent.id}`)).status).toBe(200);
-    expect((await s.call("ellie", "POST", `/api/memory`, { agentId: s.agent.id, text: "Mum likes tea" })).status).toBe(200);
-    const room = await (await s.call("ellie", "POST", `/api/rooms`, { agentId: s.agent.id, name: "Mine", members: [{ personId: "ben", role: "member" }] })).json();
-    expect(s.app.rooms.role(room.id, "ellie")).toBe("owner");
-    expect(s.app.rooms.role(room.id, "ben")).toBe("member");
+    expect((await s.call("alex", "GET", `/api/memory?agentId=${s.agent.id}`)).status).toBe(200);
+    expect((await s.call("alex", "POST", `/api/memory`, { agentId: s.agent.id, text: "Jo likes tea" })).status).toBe(200);
+    const room = await (await s.call("alex", "POST", `/api/rooms`, { agentId: s.agent.id, name: "Mine", members: [{ personId: "sam", role: "member" }] })).json();
+    expect(s.app.rooms.role(room.id, "alex")).toBe("owner");
+    expect(s.app.rooms.role(room.id, "sam")).toBe("member");
     s.app.rooms.createPerson({ id: "nobody", displayName: "Nobody", timezone: "UTC" });
-    const state = await (await s.call("wei", "GET", `/api/state`)).json();
-    expect(state.rooms.map((r: { id: string }) => r.id)).toEqual([s.family.id]);
-    expect(state.people.map((p: { id: string }) => p.id)).toContain("zed"); // just added to Family above
+    const state = await (await s.call("riley", "GET", `/api/state`)).json();
+    expect(state.rooms.map((r: { id: string }) => r.id)).toEqual([s.room.id]);
+    expect(state.people.map((p: { id: string }) => p.id)).toContain("zed"); // just added to Tahoe trip above
     expect(state.people.map((p: { id: string }) => p.id)).not.toContain("nobody");
   });
 
   test("POST /api/people ignores a client-chosen id", async () => {
     const s = up();
-    const p = await (await s.call("wei", "POST", `/api/people`, { id: "ellie", displayName: "Impostor" })).json();
-    expect(p.id).not.toBe("ellie");
+    const p = await (await s.call("riley", "POST", `/api/people`, { id: "alex", displayName: "Impostor" })).json();
+    expect(p.id).not.toBe("alex");
     expect(p.id.startsWith("per_")).toBe(true);
-    expect(s.app.store.getPerson("ellie")!.displayName).toBe("Ellie");
-    expect((await s.call("ben", "PATCH", `/api/people/ellie`, { displayName: "x" })).status).toBe(403);
-    expect((await s.call("ben", "GET", `/api/people/ellie/credentials`)).status).toBe(403);
+    expect(s.app.store.getPerson("alex")!.displayName).toBe("Alex");
+    expect((await s.call("sam", "PATCH", `/api/people/alex`, { displayName: "x" })).status).toBe(403);
+    expect((await s.call("sam", "GET", `/api/people/alex/credentials`)).status).toBe(403);
   });
 
   test("POST /api/schedules records the schedule as user-requested with no disclosed outreach, whatever the body says", async () => {
     const s = up();
     const body = {
-      roomId: s.family.id,
+      roomId: s.room.id,
       agentId: "other",
       title: "Call the plumber",
       prompt: "call",
       authorization: { basis: "standing_rule", disclosedOutreach: [{ who: "anyone", how: "phone", why: "because" }], premise: "x" },
     };
-    expect((await s.call("ben", "POST", `/api/schedules`, body)).status).toBe(403);
-    const sch = await (await s.call("ellie", "POST", `/api/schedules`, body)).json();
+    expect((await s.call("sam", "POST", `/api/schedules`, body)).status).toBe(403);
+    const sch = await (await s.call("alex", "POST", `/api/schedules`, body)).json();
     expect(sch.authorization).toEqual({ basis: "user_requested", disclosedOutreach: [], premise: "always" });
     expect(sch.agentId).toBe(s.agent.id);
-    const mine = await (await s.call("ben", "GET", `/api/schedules`)).json();
+    const mine = await (await s.call("sam", "GET", `/api/schedules`)).json();
     expect(mine.map((x: { id: string }) => x.id)).toEqual([sch.id]);
     expect(await (await s.call("zed", "GET", `/api/schedules`)).json()).toEqual([]);
   });
 
   test("POST /api/events needs the event token or the agent owner", async () => {
     const s = up({ eventToken: "hook-secret" });
-    const ev = { agentId: s.agent.id, source: "calendar", summary: "Mum's appointment moved" };
+    const ev = { agentId: s.agent.id, source: "calendar", summary: "Jo's appointment moved" };
     expect((await s.call(undefined, "POST", `/api/events`, ev)).status).toBe(401);
     expect((await s.call(undefined, "POST", `/api/events`, ev, { authorization: "Bearer wrong" })).status).toBe(401);
-    expect((await s.call("wei", "POST", `/api/events`, ev)).status).toBe(403);
+    expect((await s.call("riley", "POST", `/api/events`, ev)).status).toBe(403);
     expect((await s.call(undefined, "POST", `/api/events`, ev, { authorization: "Bearer hook-secret" })).status).toBe(200);
-    expect((await s.call("ellie", "POST", `/api/events`, { ...ev, dedupKey: "e2" })).status).toBe(200);
+    expect((await s.call("alex", "POST", `/api/events`, { ...ev, dedupKey: "e2" })).status).toBe(200);
     expect((await s.call(undefined, "POST", `/api/tick`, undefined, { authorization: "Bearer hook-secret" })).status).toBe(200);
     const unset = up();
     expect((await unset.call(undefined, "POST", `/api/events`, ev)).status).toBe(503);
@@ -151,11 +151,11 @@ describe("web api: deny by default", () => {
 
   test("the deliveries stream shows a member only their rooms", async () => {
     const s = up();
-    const res = await s.call("wei", "GET", `/api/deliveries/watch`);
+    const res = await s.call("riley", "GET", `/api/deliveries/watch`);
     const reader = res.body!.getReader();
-    await s.app.runtime.handleMessage({ roomId: s.ellieDm.id, personId: "ellie", text: "private" });
-    await s.app.runtime.handleMessage({ roomId: s.family.id, personId: "ellie", text: "@pip hi" });
-    expect(s.deliveries.some((d) => d.roomId === s.ellieDm.id)).toBe(true);
+    await s.app.runtime.handleMessage({ roomId: s.ownerDm.id, personId: "alex", text: "private" });
+    await s.app.runtime.handleMessage({ roomId: s.room.id, personId: "alex", text: "@pip hi" });
+    expect(s.deliveries.some((d) => d.roomId === s.ownerDm.id)).toBe(true);
     // Read until the first delivery line arrives; a leak would have put the private one first.
     const seen: { type?: string; roomId?: string }[] = [];
     const deadline = Date.now() + 2000;
@@ -170,20 +170,90 @@ describe("web api: deny by default", () => {
     }
     const got = seen.filter((d) => d.type === "delivery");
     expect(got.length).toBeGreaterThan(0);
-    for (const d of got) expect(d.roomId).toBe(s.family.id);
+    for (const d of got) expect(d.roomId).toBe(s.room.id);
     await reader.cancel();
   });
 
   test("bad bodies are 400 or 415, and a bad limit is clamped", async () => {
     const s = up();
     const raw = (ct: string, body: string) =>
-      fetch(`${s.base}/api/rooms/${s.family.id}/messages`, { method: "POST", headers: { authorization: "Bearer as:ellie", "content-type": ct }, body });
+      fetch(`${s.base}/api/rooms/${s.room.id}/messages`, { method: "POST", headers: { authorization: "Bearer as:alex", "content-type": ct }, body });
     expect((await raw("application/json", "{not json")).status).toBe(400);
     expect((await raw("application/json", "[1]")).status).toBe(400);
     expect((await raw("text/plain", '{"text":"hi"}')).status).toBe(415);
-    expect((await s.call("ellie", "GET", `/api/rooms/${s.family.id}/messages?limit=abc`)).status).toBe(200);
-    const page = await s.call("ellie", "GET", "/");
+    expect((await s.call("alex", "GET", `/api/rooms/${s.room.id}/messages?limit=abc`)).status).toBe(200);
+    const page = await s.call("alex", "GET", "/");
     expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+});
+
+describe("chat search", () => {
+  test("finds the rooms a person is in by message text or room name, with a snippet, and never another room", async () => {
+    const s = up();
+    await s.app.runtime.handleMessage({ roomId: s.room.id, personId: "riley", text: "@pip can you find a plumber for Jo's leaking kitchen tap?" });
+    const r = await (await s.call("sam", "GET", "/api/search?q=leaking%20tap")).json();
+    expect(r.results).toHaveLength(1);
+    expect(r.results[0].roomName).toBe("Tahoe trip");
+    expect(r.results[0].who).toBe("Riley");
+    expect(r.results[0].snippet).toContain("leaking kitchen tap");
+    expect((await (await s.call("zed", "GET", "/api/search?q=leaking%20tap")).json()).results).toEqual([]);
+    expect((await (await s.call("sam", "GET", "/api/search?q=tah")).json()).results[0].roomName).toBe("Tahoe trip");
+    expect((await (await s.call("sam", "GET", "/api/search?q=ta")).json()).results).toEqual([]);
+  });
+});
+
+describe("invites", () => {
+  test("the owner mints a link, a signed-in stranger joins through it as a member, and nobody else can mint one", async () => {
+    const s = up();
+    expect((await s.call("sam", "POST", `/api/rooms/${s.room.id}/invites`, {})).status).toBe(403);
+    const { token, url } = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/invites`, {})).json();
+    expect(url).toContain(`/#join=${token}`);
+    expect((await (await s.call(undefined, "GET", `/api/invites/${token}`)).json()).roomName).toBe("Tahoe trip");
+    expect((await s.call("zed", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(403);
+    const joined = await (await s.call("zed", "POST", `/api/invites/${token}/accept`, {})).json();
+    expect(joined.room.id).toBe(s.room.id);
+    expect(s.app.rooms.role(s.room.id, "zed")).toBe("member");
+    expect((await s.call("zed", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);
+    expect((await s.call("zed", "POST", "/api/invites/nope-nope-nope/accept", {})).status).toBe(404);
+  });
+});
+
+describe("document pages", () => {
+  test("a document the assistant wrote is a shared checklist: ticks, claims and added items are kept per document and visible to members", async () => {
+    const s = up();
+    const { newId } = await import("../src/core/ids.ts");
+    const id = newId("art");
+    s.app.store.putArtifact({
+      id,
+      agentId: s.agent.id,
+      roomId: s.room.id,
+      kind: "document",
+      title: "Packing list",
+      data: { markdown: "# Packing list\n## Clothes\n- Boots\n- Hat\n## Food\n- Coffee" },
+      share: "room",
+      createdAt: s.clock.now(),
+    });
+    const page = await (await s.call("sam", "GET", `/d/${id}`)).text();
+    expect(page).toContain("Packing list");
+    expect(page).toContain('"key":"0-clothes:0-boots"');
+    expect((await s.call("zed", "GET", `/api/artifacts/${id}`)).status).toBe(403);
+    const first = await (await s.call("sam", "GET", `/api/artifacts/${id}`)).json();
+    expect([...first.members].sort()).toEqual(["Alex", "Jo", "Riley", "Sam"]);
+    expect(first.me).toBe("Sam");
+    const st = await (
+      await s.call("sam", "PATCH", `/api/artifacts/${id}/state`, {
+        checked: { "0-clothes:0-boots": true },
+        claimed: { "0-clothes:1-hat": "Jo" },
+        add: { section: "1-food", text: "Marshmallows" },
+      })
+    ).json();
+    expect(st.checked["0-clothes:0-boots"]).toBe("Sam");
+    expect(st.claimed["0-clothes:1-hat"]).toBe("Jo");
+    expect(st.added["1-food"][0].text).toBe("Marshmallows");
+    const again = await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json();
+    expect(again.state.checked["0-clothes:0-boots"]).toBe("Sam");
+    await s.call("alex", "PATCH", `/api/artifacts/${id}/state`, { checked: { "0-clothes:0-boots": null } });
+    expect((await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json()).state.checked).toEqual({});
   });
 });

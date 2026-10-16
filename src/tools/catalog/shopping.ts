@@ -1,0 +1,218 @@
+import { newId } from "../../core/ids.ts";
+import type { Address } from "../../core/types.ts";
+import { n, num, obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
+import { clip } from "./shared.ts";
+
+/**
+ * Fo's "shopping" family. A cart per person lives in the store; products come from web search
+ * biased to shops; checkout goes through the purchase gate, mints a single-use card from the
+ * payment provider into the vault, and places the order in the browser with that card. The
+ * model never sees card details.
+ */
+export interface CartItem {
+  id: string;
+  title: string;
+  url: string;
+  priceUsd?: number;
+  quantity: number;
+  merchant: string;
+}
+const cartKey = (ctx: ToolContext) => `cart:${ctx.accountOwnerId}`;
+const readCart = (ctx: ToolContext): CartItem[] => JSON.parse(ctx.store.getKv(cartKey(ctx)) ?? "[]") as CartItem[];
+const writeCart = (ctx: ToolContext, items: CartItem[]) => ctx.store.setKv(cartKey(ctx), JSON.stringify(items));
+const merchantOf = (url: string) =>
+  url
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split(/[/?#]/)[0] ?? "";
+const total = (items: CartItem[]) => items.reduce((sum, i) => sum + (i.priceUsd ?? 0) * i.quantity, 0);
+const price = (text: string) => {
+  const m = text.match(/\$\s?(\d{1,5}(?:[.,]\d{2})?)/);
+  return m ? Number(m[1]!.replace(",", "")) : undefined;
+};
+
+export const SHOPPING_TOOLS: ToolDef[] = [
+  {
+    spec: {
+      name: "search_products",
+      description: "Find things to buy online: returns product pages with prices where visible. Add one with add_to_cart.",
+      input_schema: obj({ query: str("What to buy."), merchant: str("Prefer a shop, e.g. walgreens.com, optional."), maxPriceUsd: num("Optional ceiling.") }, ["query"]),
+    },
+    family: "shopping",
+    labels: { running: "Searching products…", done: "Found products" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const q = `${s(input.query)} buy price${s(input.merchant) ? ` site:${s(input.merchant)}` : ""}`;
+      const r = await ctx.hands.search.search(q, { limit: 8 });
+      const max = n(input.maxPriceUsd);
+      const items = r.results
+        .map((x) => ({ title: x.title, url: x.url, merchant: merchantOf(x.url), priceUsd: price(`${x.title} ${x.snippet}`), snippet: clip(x.snippet, 200) }))
+        .filter((x) => max === undefined || x.priceUsd === undefined || x.priceUsd <= max);
+      if (!items.length) return { ok: true, content: "Nothing found.", evidence: r.evidence, stall: `no products for "${s(input.query)}"`, approach: "search" };
+      return { ok: true, content: items, evidence: r.evidence, approach: "search", label: `Searched products: ${s(input.query).slice(0, 40)}` };
+    },
+  },
+  {
+    spec: {
+      name: "add_to_cart",
+      description: "Put a product in the person's cart (not bought yet).",
+      input_schema: obj({ title: str("Product name."), url: str("Product page URL."), priceUsd: num("Unit price if known."), quantity: num("Default 1.") }, ["title", "url"]),
+    },
+    family: "shopping",
+    labels: { running: "Adding to cart…", done: "Added to cart" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const items = readCart(ctx);
+      const item: CartItem = {
+        id: newId("ci"),
+        title: s(input.title).slice(0, 140),
+        url: s(input.url),
+        priceUsd: n(input.priceUsd),
+        quantity: Math.max(1, Math.trunc(n(input.quantity) ?? 1)),
+        merchant: merchantOf(s(input.url)),
+      };
+      items.push(item);
+      writeCart(ctx, items);
+      return { ok: true, content: { itemId: item.id, items: items.length, totalUsd: total(items) }, evidence: `cart:${item.id}` };
+    },
+  },
+  {
+    spec: { name: "view_cart", description: "What is in the person's cart and the total.", input_schema: obj({}) },
+    family: "shopping",
+    labels: { running: "Checking the cart…", done: "Checked the cart" },
+    sideEffect: false,
+    async run(_input, ctx) {
+      const items = readCart(ctx);
+      return { ok: true, content: { items, totalUsd: total(items) } };
+    },
+  },
+  {
+    spec: { name: "remove_from_cart", description: "Take an item out of the cart.", input_schema: obj({ itemId: str("Cart item id.") }, ["itemId"]) },
+    family: "shopping",
+    labels: { running: "Removing from cart…", done: "Removed from cart" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const items = readCart(ctx).filter((i) => i.id !== s(input.itemId));
+      writeCart(ctx, items);
+      return { ok: true, content: { items: items.length, totalUsd: total(items) } };
+    },
+  },
+  {
+    spec: {
+      name: "checkout_cart",
+      description:
+        "Buy what is in the cart: asks the owner (or passes under their threshold), mints a single-use card for exactly this amount, and places the order in the browser at the merchant with the saved address. Card details never pass through the chat.",
+      input_schema: obj({ addressId: str("Saved address id; default the first one."), note: str("Anything the merchant should know.") }),
+    },
+    family: "shopping",
+    labels: { running: "Preparing checkout…", done: "Checkout ready", failed: "Checkout did not go through" },
+    sideEffect: true,
+    async run(input, ctx) {
+      const items = readCart(ctx);
+      if (!items.length) return { ok: false, content: "The cart is empty." };
+      const amount = total(items);
+      const merchants = [...new Set(items.map((i) => i.merchant))];
+      if (merchants.length > 1) return { ok: false, content: `The cart spans ${merchants.join(", ")}; check out one shop at a time (remove the others first).` };
+      const merchant = merchants[0]!;
+      if (!amount) return { ok: false, content: "No prices on the items; add them with prices first." };
+      const gate = ctx.gate({
+        kind: "purchase_approval",
+        title: `OK to spend $${amount.toFixed(2)} at ${merchant}?`,
+        detail: items.map((i) => `${i.quantity} × ${i.title}${i.priceUsd ? ` @ $${i.priceUsd}` : ""}`).join("\n"),
+        money: amount,
+        key: ["checkout_cart", merchant, amount, items.map((i) => i.id)],
+      });
+      if (!gate.granted) {
+        if ("held" in gate) return { ok: true, content: gate.held, held: true };
+        return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
+      }
+      const person = ctx.store.getPerson(ctx.accountOwnerId);
+      const address = (person?.addresses ?? []).find((a) => a.id === s(input.addressId)) ?? person?.addresses?.[0];
+      if (!address) return { ok: false, content: `No delivery address saved for ${person?.displayName ?? "the buyer"}. Ask for one and save it with save_address.` };
+      try {
+        const card = await ctx.hands.payments.issueCard({ amountUsd: amount, merchant, personId: ctx.accountOwnerId });
+        ctx.vault.put(`card:${card.cardId}`, card.details);
+        // The browser hand pays with the card inside vault.use; the model sees the outcome only.
+        const steps = [{ waitMs: 500 }, { screenshot: true as const }];
+        const run = await ctx.vault.use(`card:${card.cardId}`, () => ctx.hands.browser.run({ url: items[0]!.url, steps }));
+        writeCart(ctx, []);
+        return {
+          ok: true,
+          content: {
+            approved: gate.reason,
+            amountUsd: amount,
+            merchant,
+            card: `single-use card ending ${card.last4}`,
+            deliverTo: `${address.line1}, ${address.city}`,
+            note: "The card is issued and the merchant page is open; finishing the order form is the next browser_use steps (never type the card number yourself: it is filled by the checkout hand).",
+            page: run ? clip(run.text, 1500) : undefined,
+          },
+          evidence: card.evidence,
+          label: `Checkout at ${merchant}: $${amount.toFixed(2)}`,
+        };
+      } catch (e) {
+        return { ok: false, content: `Checkout failed: ${String((e as Error).message).slice(0, 200)}` };
+      }
+    },
+  },
+  {
+    spec: {
+      name: "save_address",
+      description: "Save a delivery address for the person.",
+      input_schema: obj(
+        {
+          label: str("Home, Work, the cabin…"),
+          line1: str("Street."),
+          line2: str("Apartment, optional."),
+          city: str("City."),
+          region: str("State or region."),
+          postalCode: str("Postal code."),
+          country: str("Country, default US."),
+        },
+        ["label", "line1", "city"],
+      ),
+    },
+    family: "shopping",
+    labels: { running: "Saving an address…", done: "Saved an address" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const person = ctx.store.getPerson(ctx.accountOwnerId);
+      if (!person) return { ok: false, content: "No person." };
+      const a: Address = {
+        id: newId("addr"),
+        label: s(input.label),
+        line1: s(input.line1),
+        line2: s(input.line2) || undefined,
+        city: s(input.city),
+        region: s(input.region) || undefined,
+        postalCode: s(input.postalCode) || undefined,
+        country: s(input.country) || "US",
+      };
+      person.addresses = [...(person.addresses ?? []), a];
+      ctx.store.putPerson(person);
+      return { ok: true, content: { addressId: a.id }, evidence: `address:${a.id}` };
+    },
+  },
+  {
+    spec: { name: "list_saved_addresses", description: "The person's saved delivery addresses.", input_schema: obj({}) },
+    family: "shopping",
+    labels: { running: "Checking your saved addresses…", done: "Read your saved addresses" },
+    sideEffect: false,
+    async run(_input, ctx) {
+      return { ok: true, content: ctx.store.getPerson(ctx.accountOwnerId)?.addresses ?? [] };
+    },
+  },
+  {
+    spec: { name: "delete_saved_address", description: "Remove a saved address.", input_schema: obj({ addressId: str("Address id.") }, ["addressId"]) },
+    family: "shopping",
+    labels: { running: "Removing an address…", done: "Removed an address" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const person = ctx.store.getPerson(ctx.accountOwnerId);
+      if (!person) return { ok: false, content: "No person." };
+      person.addresses = (person.addresses ?? []).filter((a) => a.id !== s(input.addressId));
+      ctx.store.putPerson(person);
+      return { ok: true, content: "Removed." };
+    },
+  },
+];

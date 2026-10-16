@@ -7,12 +7,16 @@ import { reply, ScriptedModel } from "./model/scripted.ts";
 import { createModel, modelConfig } from "./model/config.ts";
 import { authConfig } from "./channels/auth.ts";
 import { startWebServer } from "./channels/web.ts";
-import { startIMessage } from "./channels/imessage.ts";
-import { seedDemoWorld } from "./demo-world.ts";
+import { SPECTRUM_CHANNELS, type SpectrumChannel, startChannel } from "./channels/imessage.ts";
+import { newAgent } from "./agent/spec.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
 import { BrowserbaseBrowser } from "./tools/browser.ts";
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
+import { GoogleApi } from "./tools/providers/google.ts";
+import { AgentMail, ResendMail } from "./tools/providers/email.ts";
+import { ElevenLabsSpeech, OpenRouterImages, SlackApi, SmsOnlyPhone, StripeIssuing, TwilioSms, VapiPhone } from "./tools/providers/misc.ts";
+import { FakeEmail } from "./tools/hands.ts";
 
 /**
  * Boot. What is wired depends on what is configured:
@@ -23,6 +27,12 @@ import { JinaReader } from "./tools/reach.ts";
  *  - listening: HOST and PORT; without Clerk the server binds to loopback only
  * Search, phone and community posting are still fakes; see src/tools/hands.ts.
  */
+// LOCAL=1: a safe local run whatever else .env holds. Sign-in and iMessage off, loopback only, the "You" picker on.
+if (process.env.LOCAL === "1") {
+  for (const k of ["CLERK_SECRET_KEY", "CLERK_PUBLISHABLE_KEY", "PROJECT_ID", "PROJECT_SECRET", "HOST", "PUBLIC_URL"]) delete process.env[k];
+  console.log("LOCAL=1: sign-in and iMessage off, listening on loopback with the You picker");
+}
+
 function pickModel(): ModelClient {
   const env = { ...process.env, ANTHROPIC_PROFILE_PRESENT: existsSync(join(homedir(), ".config", "anthropic")) ? "1" : "" };
   const cfg = modelConfig(env);
@@ -40,6 +50,33 @@ function pickModel(): ModelClient {
 
 function pickHands(): Hands {
   const hands: Hands = fakeHands();
+  const env = process.env;
+  // Google Workspace: one OAuth app; each person connects their own account in Settings.
+  if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+    hands.google = new GoogleApi({ clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET });
+    console.log("Google: OAuth app configured (people connect under Settings)");
+  } else console.log("Google: off (set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)");
+  // The assistant's own mailbox.
+  if (env.AGENTMAIL_API_KEY && env.AGENTMAIL_INBOX) {
+    hands.email = new AgentMail(env.AGENTMAIL_API_KEY, env.AGENTMAIL_INBOX);
+    console.log(`Email: AgentMail inbox ${env.AGENTMAIL_INBOX} (send and receive)`);
+  } else if (env.RESEND_API_KEY && env.EMAIL_FROM) {
+    hands.email = new ResendMail(env.RESEND_API_KEY, env.EMAIL_FROM);
+    console.log(`Email: Resend from ${env.EMAIL_FROM} (send only)`);
+  } else console.log("Email: fake (set AGENTMAIL_API_KEY + AGENTMAIL_INBOX, or RESEND_API_KEY + EMAIL_FROM)");
+  hands.slack = new SlackApi(); // tokens are per person, in the vault
+  if (env.ELEVENLABS_API_KEY) hands.speech = new ElevenLabsSpeech(env.ELEVENLABS_API_KEY, env.ELEVENLABS_VOICE_ID);
+  if (env.OPENROUTER_API_KEY) hands.images = new OpenRouterImages(env.OPENROUTER_API_KEY, env.IMAGE_MODEL);
+  if (env.STRIPE_SECRET_KEY) hands.payments = new StripeIssuing(env.STRIPE_SECRET_KEY, env.STRIPE_CARDHOLDER_ID);
+  const twilio =
+    env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM
+      ? new TwilioSms({ accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN, from: env.TWILIO_FROM })
+      : undefined;
+  if (env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID) hands.phone = new VapiPhone({ apiKey: env.VAPI_API_KEY, phoneNumberId: env.VAPI_PHONE_NUMBER_ID }, twilio);
+  else if (twilio) hands.phone = new SmsOnlyPhone(twilio);
+  console.log(
+    `Phone: ${env.VAPI_API_KEY ? "Vapi calls" : "no calls"}, ${twilio ? "Twilio SMS" : "no SMS"}; speech: ${env.ELEVENLABS_API_KEY ? "ElevenLabs" : "fake"}; images: ${env.OPENROUTER_API_KEY ? "OpenRouter" : "fake"}; cards: ${env.STRIPE_SECRET_KEY ? "Stripe Issuing" : "fake"}`,
+  );
   if (process.env.BROWSERBASE_API_KEY) {
     hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
     console.log("Browser: Browserbase");
@@ -50,19 +87,30 @@ function pickHands(): Hands {
   const search = createSearch(process.env);
   hands.search = search;
   console.log(`Search: ${search.name === "brave" ? "Brave" : search.name === "exa" ? "Exa (keyless, via the Agent Reach channel)" : "DuckDuckGo (keyless)"}`);
-  console.log("Phone, community: fakes (adapters in src/tools/hands.ts)");
+  console.log("Community posting: fake (adapter in src/tools/hands.ts)");
   return hands;
 }
 
 const dbPath = process.env.DB_PATH ?? "data/circle.sqlite";
 if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
 if (!process.env.MASTER_KEY) console.log("Vault: MASTER_KEY not set; members' credentials are encrypted with a dev key (set MASTER_KEY in production)");
-const app = createApp({ dbPath, model: pickModel(), hands: pickHands(), masterKey: process.env.MASTER_KEY });
+const app = createApp({
+  dbPath,
+  model: pickModel(),
+  hands: pickHands(),
+  masterKey: process.env.MASTER_KEY,
+  publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`,
+});
 
-if (process.env.SEED_DEMO === "1" && app.store.listAgents().length === 0) {
-  const w = seedDemoWorld(app);
-  app.store.setKv("claim-owner", w.agent.ownerId); // the first Clerk sign-in becomes this owner
-  console.log(`Seeded demo world: agent ${w.agent.name} (${w.agent.id}), room ${w.family.name} (${w.family.id})`);
+// First run: one assistant and the seat of its owner. With sign-in on, the first person to sign in takes the seat;
+// without it, the seat is "You" in the picker. Everyone else arrives through an invite link or "+ Add".
+if (app.store.listAgents().length === 0) {
+  const you = app.rooms.createPerson({ displayName: "You", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" });
+  const agent = newAgent({ ownerId: you.id, name: process.env.ASSISTANT_NAME ?? "Pip" });
+  app.store.putAgent(agent);
+  app.rooms.dmFor(agent, you.id);
+  app.store.setKv("claim-owner", you.id);
+  console.log(`First run: created ${agent.name} and its owner's seat. Make a room, add people, or share an invite link.`);
 }
 
 // Without sign-in the API trusts whoever it is talking to, so it may only talk to this machine.
@@ -86,15 +134,39 @@ if (!process.env.EVENT_TOKEN)
 const server = startWebServer(app, { hostname: host, port: Number(process.env.PORT ?? 3000) });
 console.log(`Circle listening on http://${host}:${server.port}${clerk ? " (Clerk sign-in on)" : ""}`);
 
+// Chat channels through Photon Spectrum: CHANNELS lists which (default imessage); all share PROJECT_ID and PROJECT_SECRET.
 if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
-  startIMessage(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET })
-    .then((im) => console.log(`iMessage: connected${im.phone ? ` as ${im.phone}` : ""}`))
-    .catch((e) => console.error("iMessage: failed to start", e));
-} else console.log("iMessage: off (set PROJECT_ID and PROJECT_SECRET)");
+  const wanted = (process.env.CHANNELS ?? "imessage")
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x): x is SpectrumChannel => x in SPECTRUM_CHANNELS);
+  for (const channel of wanted)
+    startChannel(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET, channel })
+      .then((h) => console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : ""}`))
+      .catch((e) => console.error(`${channel}: failed to start`, e));
+} else console.log("Channels: off (set PROJECT_ID and PROJECT_SECRET, and CHANNELS=imessage,whatsapp,telegram,slack)");
 
 setInterval(
   () => {
     app.scheduler.tick().catch((e) => console.error("tick failed", e));
+    // Mail that arrived in the assistant's own inbox enters like an app event, into the owner's chat.
+    if (!(app.hands.email instanceof FakeEmail))
+      app.hands.email
+        .unprocessed()
+        .then(async (msgs) => {
+          for (const m of msgs.slice(0, 10)) {
+            for (const agent of app.store.listAgents())
+              await app.runtime.handleEvent({
+                agentId: agent.id,
+                source: "inbound_email",
+                summary: `Email from ${m.from}: ${m.subject}`,
+                detail: m.text,
+                dedupKey: `email:${m.id}`,
+              });
+          }
+          if (msgs.length) await app.hands.email.markProcessed(msgs.map((m) => m.id));
+        })
+        .catch((e) => console.error("inbound email failed", (e as Error).message));
   },
   Number(process.env.TICK_MS ?? 30_000),
 );

@@ -1,10 +1,23 @@
 import { Spectrum } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
+import { slack } from "spectrum-ts/providers/slack";
+import { telegram } from "spectrum-ts/providers/telegram";
+import { whatsappBusiness } from "spectrum-ts/providers/whatsapp-business";
+import type { ChannelKind } from "../core/types.ts";
+
+/** The channels Photon Spectrum can carry. Each one is the same loop: a space is a room, a sender is a person. */
+export const SPECTRUM_CHANNELS = {
+  imessage: imessage,
+  whatsapp: whatsappBusiness,
+  telegram: telegram,
+  slack: slack,
+} as const;
+export type SpectrumChannel = keyof typeof SPECTRUM_CHANNELS;
 import type { App } from "../app.ts";
 import type { Person, Room } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { findPersonByEmail } from "../store/queries.ts";
-import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, roleForNewcomer } from "./handles.ts";
+import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
 
 /**
  * iMessage through Photon Spectrum. Each iMessage chat (a DM or a group)
@@ -23,8 +36,15 @@ export interface IMessageHandle {
 }
 
 export async function startIMessage(app: App, cfg: { projectId: string; projectSecret: string }): Promise<IMessageHandle> {
-  const spectrum = await Spectrum({ projectId: cfg.projectId, projectSecret: cfg.projectSecret, providers: [imessage.config()] });
-  const im = imessage(spectrum);
+  return startChannel(app, { ...cfg, channel: "imessage" });
+}
+
+/** One Spectrum provider as a channel: iMessage, WhatsApp Business, Telegram or Slack. */
+export async function startChannel(app: App, cfg: { projectId: string; projectSecret: string; channel: SpectrumChannel }): Promise<IMessageHandle> {
+  const provider = SPECTRUM_CHANNELS[cfg.channel] as unknown as typeof imessage;
+  const channel: ChannelKind = cfg.channel;
+  const spectrum = await Spectrum({ projectId: cfg.projectId, projectSecret: cfg.projectSecret, providers: [provider.config()] });
+  const im = provider(spectrum);
   const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone;
   const limiter = new HandleRateLimit();
 
@@ -48,7 +68,7 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
   };
 
   const roomFor = (space: { id: string; type?: "dm" | "group" }, person: Person): Room | undefined => {
-    const existing = app.store.findRoomByExternal("imessage", space.id);
+    const existing = app.store.findRoomByExternal(channel, space.id);
     if (existing) return existing;
     const agent = agentFor();
     if (!agent) return undefined;
@@ -57,9 +77,9 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
     const room = app.rooms.createRoom({
       agentId: agent.id,
       kind,
-      channel: "imessage",
+      channel,
       externalId: space.id,
-      name: kind === "dm" ? `${agent.name} & ${person.displayName}` : `iMessage group ${space.id.slice(0, 6)}`,
+      name: kind === "dm" ? `${agent.name} & ${person.displayName}` : `${channel} group ${space.id.slice(0, 6)}`,
     });
     app.rooms.addMember(room.id, person.id, roleForNewcomer({ isOwner, kind }), { consented: isOwner });
     return room;
@@ -69,12 +89,12 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
   const unsubscribe = app.onDeliver(async (d: Delivery) => {
     if (d.kind === "progress") return;
     const room = app.store.getRoom(d.roomId);
-    if (room?.channel !== "imessage" || !room.externalId) return;
+    if (room?.channel !== channel || !room.externalId) return;
     try {
       const space = await im.space.get(room.externalId);
-      await spectrum.send(space, d.text);
+      await spectrum.send(space, plainText(d.text));
     } catch (e) {
-      console.error("iMessage send failed", (e as Error).message);
+      console.error(`${channel} send failed`, (e as Error).message);
     }
   });
 
@@ -89,19 +109,19 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
         const senderId = message.sender?.id;
         if (!senderId) continue;
         if (!limiter.allow(senderId)) {
-          console.warn(`iMessage: rate limit for ${normaliseHandle(senderId).slice(0, 4)}…, dropping a message`);
+          console.warn(`${channel}: rate limit for ${normaliseHandle(senderId).slice(0, 4)}…, dropping a message`);
           continue;
         }
         const person = personFor(senderId);
         const room = roomFor(space as { id: string; type?: "dm" | "group" }, person);
         if (!room) continue;
         if (!app.store.getMembership(room.id, person.id)) app.rooms.addMember(room.id, person.id, "guest");
-        await spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `imessage:${message.id}` }));
+        await spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }));
       } catch (e) {
-        console.error("iMessage inbound failed", (e as Error).message);
+        console.error(`${channel} inbound failed`, (e as Error).message);
       }
     }
-  })().catch((e) => console.error("iMessage stream ended", (e as Error).message));
+  })().catch((e) => console.error(`${channel} stream ended`, (e as Error).message));
 
   return {
     phone,

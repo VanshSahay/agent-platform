@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { newId, sha256 } from "../core/ids.ts";
-import { hourIn, type Clock } from "../core/clock.ts";
+import type { Clock } from "../core/clock.ts";
 import type { AgentSpec, AgentState, Approval, AttentionItem, Id, Message, Person, Room, Run, RunEvent, RunTrigger, Session, Task, ToolCallRecord } from "../core/types.ts";
 import type { ModelClient } from "../model/types.ts";
 import type { Store } from "../store/repos.ts";
@@ -10,11 +10,12 @@ import type { AttentionService } from "../inbox/attention.ts";
 import type { CommitmentService } from "../care/commitments.ts";
 import type { Planner } from "../planning/planner.ts";
 import type { Hands } from "../tools/hands.ts";
-import { TOOL_INDEX, toolSpecs, type GateDecision, type ToolContext, type ToolResult } from "../tools/registry.ts";
+import { TOOL_INDEX, toolSpecs, type ToolContext, type ToolResult } from "../tools/registry.ts";
 import { matchSkills, type Skill } from "../skills/skills.ts";
 import type { TaskService } from "../tasks/tasks.ts";
 import type { Vault } from "../tools/vault.ts";
 import { answers, isYes } from "./decide.ts";
+import { decideGate } from "./gate.ts";
 import { privateProfileId } from "../memory/consolidate.ts";
 import { buildSystemPrompt } from "../agent/prompt.ts";
 import { KIND_LABEL } from "../inbox/attention.ts";
@@ -45,9 +46,12 @@ export interface RuntimeDeps {
   maxTurns?: number;
   /** Compaction: fold older messages into a summary once a session holds this many. */
   compactAfter?: number;
+  /** Where links the agent hands out point (documents, dashboards, settings). */
+  publicUrl?: string;
 }
 
 const MAX_TURNS = 24;
+const IMPLIED_PER_MINUTE = 6; // ponytail: a busier chat says the agent's name; raise or make per-agent if that pinches
 const COMPACT_AFTER = 30;
 const KEEP_RECENT = 12;
 const NOTHING = /^\(?\s*nothing (to report|new)\s*\)?\.?$/i;
@@ -69,6 +73,7 @@ export class Runtime {
   private cancelled = new Set<Id>();
   private pendingTasks = new Map<Id, Task[]>();
   private inFlight = new Set<Promise<void>>();
+  private impliedChecks = new Map<Id, number[]>();
 
   /** At boot: a run left "running" by a crash would swallow every later message as a steer. */
   private reconcile() {
@@ -343,7 +348,7 @@ export class Runtime {
   /**
    * Which open question does this message answer? In order: one assigned to
    * this person (here or in their DM with the agent); a question to the whole
-   * group; and, for an owner or decider, any open question in this room,
+   * group; and, for the owner, any open question in this room,
    * since they may answer on a guest's or the cared-for person's behalf.
    */
   private pendingItemFor(room: Room, session: Session, personId: Id, agent: AgentSpec, text: string): AttentionItem | undefined {
@@ -352,11 +357,11 @@ export class Runtime {
     const inRoom = this.d.store.listAttention({ roomId: room.id, status: ["open"] }).filter((a) => a.runId && this.d.store.getRun(a.runId)?.sessionId === session.id);
     const groupQ = inRoom.find((a) => a.title === "Question for the group");
     if (groupQ) return groupQ;
-    // An owner or decider may answer on someone else's behalf, but only when the message
+    // The owner may answer on someone else's behalf, but only when the message
     // reads as an answer: it picks one of the options or starts with a plain yes or no.
     // Anything else, even if it names the agent, is conversation and starts its own run.
     const role = this.d.rooms.role(room.id, personId);
-    if (role !== "owner" && role !== "decider") return undefined;
+    if (role !== "owner") return undefined;
     const item = inRoom[0];
     if (!item) return undefined;
     void agent;
@@ -369,6 +374,11 @@ export class Runtime {
    */
   private async impliedRequest(room: Room, agent: AgentSpec, text: string): Promise<boolean> {
     if (room.kind !== "group" || text.trim().length < 20) return false;
+    const now = this.d.clock.now();
+    const recent = (this.impliedChecks.get(room.id) ?? []).filter((t) => now - t < 60_000);
+    if (recent.length >= IMPLIED_PER_MINUTE) return false;
+    recent.push(now);
+    this.impliedChecks.set(room.id, recent);
     try {
       const out = await this.d.model.complete({
         system: `You decide whether a group chat message is a request the assistant "${agent.name}" should act on. It is a general personal assistant (finding, booking, fixing, reminding, coordinating, looking things up, device help).${room.focus ? ` In this chat its priorities are: ${room.focus}.` : ""} Answer with exactly yes or no. Say yes when the message asks for help with something an assistant can do, and especially when it concerns the priorities. Chatter between people, thanks, jokes, and messages clearly aimed at a specific person are no.`,
@@ -384,6 +394,7 @@ export class Runtime {
 
   private addressed(room: Room, agent: AgentSpec, text: string): boolean {
     if (room.kind === "dm") return true;
+    if (this.d.rooms.memberIds(room.id).length <= 1) return true; // a group with one person in it is a conversation with the agent
     const t = text.toLowerCase();
     return t.includes(`@${agent.handle}`) || t.includes(`@${agent.name.toLowerCase()}`) || new RegExp(`\\b${escapeRe(agent.name.toLowerCase())}\\b`).test(t);
   }
@@ -417,6 +428,7 @@ export class Runtime {
       startedAt: clock.now(),
     };
     store.putRun(run);
+    this.live.add(run.id); // from creation, so a message arriving during compaction steers this run instead of failing it
     if (input.taskId) this.d.tasks.update(input.taskId, { runId: run.id, status: "running" });
     store.appendEvent({
       runId: run.id,
@@ -583,7 +595,6 @@ export class Runtime {
     const nameOf = (id: Id) => (id === agent.id ? agent.name : (store.getPerson(id)?.displayName ?? id));
     const accounts = run.requesterId ? rooms.accountsFor(room, run.requesterId) : { accountOwnerId: agent.ownerId, needsApproval: false };
     const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
-    const hasCaredFor = rooms.members(room.id).some((m) => m.role === "cared_for");
     const maxTurns = this.d.maxTurns ?? MAX_TURNS;
     const emit = (type: RunEvent["type"], data: Record<string, unknown>) => store.appendEvent({ runId: run.id, sessionId: run.sessionId, type, at: clock.now(), data });
     const setState = (state: AgentState) => emit("agent_state", { state });
@@ -607,12 +618,15 @@ export class Runtime {
         services: () => vault.services(accounts.accountOwnerId),
         has: (svc) => vault.has(accounts.accountOwnerId, svc),
         use: (svc, fn) => vault.use(accounts.accountOwnerId, svc, fn),
+        put: (svc, secret) => vault.put(accounts.accountOwnerId, svc, secret),
       },
+      model,
+      publicUrl: this.d.publicUrl ?? "http://localhost:3000",
       accountOwnerId: accounts.accountOwnerId,
       delegate: (task) => this.pendingTasks.set(run.id, (this.pendingTasks.get(run.id) ?? []).concat(task)),
       steerTask: (taskId, text) => this.steerTask(taskId, text, run.requesterId),
       stopRun: (runId) => void this.stop(runId),
-      gate: (g) => this.gate(run, room, agent, accounts, g),
+      gate: (g) => decideGate(this.d, run, room, agent, accounts, g),
       dm: (personId, text) => {
         const dm = rooms.dmFor(agent, personId);
         const m: Message = {
@@ -642,7 +656,7 @@ export class Runtime {
 
     const lastUser = [...transcript].reverse().find((m) => m.role === "user");
     const requestText = typeof lastUser?.content === "string" ? lastUser.content : "";
-    const matched = matchSkills(this.d.skills, requestText, { group: room.kind === "group", caredFor: hasCaredFor });
+    const matched = matchSkills(this.d.skills, requestText, { group: room.kind === "group" });
     const recalled = memory.recall(agent.id, room, memberIds, requestText, 20, { requesterId: run.requesterId });
     const visible = memory.visibleIn(agent.id, room, memberIds, { requesterId: run.requesterId });
     const memories = dedupeById(recalled.concat(visible.filter((m) => m.type !== "rule"))).slice(0, 40);
@@ -725,6 +739,23 @@ export class Runtime {
       if (turn.text) {
         lastText = turn.text;
         emit("delta", { text: turn.text });
+        // Narration, as Fo does it: what the model says while it also calls tools stays in the thread
+        // ("Yelp blocked me, so I'm checking the Chinese directory"), delivered as progress so channels may skip it.
+        if (turn.toolUses.length && run.trigger === "message") {
+          store.putMessage({
+            id: newId("msg"),
+            sessionId: run.sessionId,
+            roomId: room.id,
+            runId: run.id,
+            role: "assistant",
+            authorId: agent.id,
+            text: turn.text.trim(),
+            source: "narration",
+            visibleTo: [],
+            at: clock.now(),
+          });
+          void this.d.deliver({ roomId: room.id, text: turn.text.trim(), kind: "progress" });
+        }
       }
       if (stopped()) {
         this.saveTranscript(run, transcript);
@@ -791,7 +822,8 @@ export class Runtime {
         rec.evidence = result.evidence;
         rec.endedAt = result.waitingOn ? undefined : clock.now();
         rec.fingerprint = sha256([use.name, input, result.content]);
-        if (result.stall && def) rec.labelDone = def.labels.failed ?? `${def.labels.done} (nothing yet)`;
+        if (result.label) rec.labelDone = result.label;
+        if (result.stall && def) rec.labelDone = def.labels.failed ?? `${result.label ?? def.labels.done} (nothing yet)`;
         store.putToolCall(rec);
         emit("tool_end", { id: rec.id, tool: use.name, status: rec.status, label: rec.labelDone, evidence: result.evidence ?? null, fingerprint: rec.fingerprint });
 
@@ -900,92 +932,6 @@ export class Runtime {
 
     this.saveTranscript(run, transcript);
     this.sendReply(run, room, agent, lastText.trim() || "I ran out of steps on this one. Tell me what matters most and I'll pick it up from there.");
-  }
-
-  /** Approval policy. Pre-authorised: owner asking within trust; disclosed outreach on a schedule; small purchases. Otherwise open an item for the right approver. */
-  private gate(run: Run, room: Room, agent: AgentSpec, accounts: { accountOwnerId: Id; needsApproval: boolean }, g: Parameters<ToolContext["gate"]>[0]): GateDecision {
-    const { store, rooms, attention, clock } = this.d;
-    const owner = store.getPerson(agent.ownerId);
-    const zone = owner?.timezone ?? "UTC";
-
-    // Working hours for outreach; held items are delivered by the scheduler sweep.
-    if (g.outreach && g.outreach.how !== "community_post") {
-      const h = hourIn(zone, clock.now());
-      if (h < room.outreachHours.start || h >= room.outreachHours.end) {
-        return {
-          granted: false,
-          held: `It is outside working hours (${room.outreachHours.start}:00 to ${room.outreachHours.end}:00 ${zone}). Contacting ${g.outreach.who} will wait until the morning; tell the room that and schedule it with schedule_action for the next morning, naming ${g.outreach.who} as disclosed outreach.`,
-        };
-      }
-    }
-
-    // Scheduled runs carry their own authorisation.
-    if (run.scheduleId && g.outreach) {
-      const sched = store.getSchedule(run.scheduleId);
-      const disclosed = sched?.authorization.disclosedOutreach.find((d) => d.who.toLowerCase() === g.outreach!.who.toLowerCase() && d.how === g.outreach!.how);
-      if (disclosed) return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
-    }
-
-    // An approval is a record bound to this run and to exactly this action (the gate key).
-    // A yes is consumed by the first action it lets through; a no sticks for the run.
-    const gateKey = sha256(g.key);
-    const approval = store.approvalsFor(room.id, gateKey).find((a) => a.runId === run.id && (a.decision === "no" || !a.consumedAt));
-    if (approval) {
-      const who = store.getPerson(approval.decidedBy)?.displayName ?? "the approver";
-      if (approval.decision === "yes") {
-        approval.consumedAt = clock.now();
-        store.putApproval(approval);
-        return { granted: true, reason: `approved by ${who}` };
-      }
-      return { granted: false, held: `${who} declined this. Do not retry it; tell the room and try another approach or stop.` };
-    }
-
-    const requesterIsOwner = run.requesterId === agent.ownerId;
-    const money = g.money ?? 0;
-    if (g.kind === "purchase_approval" && agent.trust.spendingPaused) return { granted: false, held: "Spending is paused by the owner. Do not buy; tell them." };
-    if (g.kind === "purchase_approval" && requesterIsOwner && money > 0 && money <= agent.trust.autoApproveUnderUsd) {
-      return { granted: true, reason: `under the $${agent.trust.autoApproveUnderUsd} threshold` };
-    }
-    if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.includes(g.outreach.who)) {
-      return { granted: true, reason: "community pre-approved by the owner" };
-    }
-    if (g.kind === "outreach_approval" && requesterIsOwner && (agent.trust.autoAllow.includes("place_call") || agent.trust.autoAllow.includes("send_sms"))) {
-      const tool = g.outreach?.how === "phone" ? "place_call" : "send_sms";
-      if (agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
-    }
-
-    // Who answers: money and the owner's accounts belong to the owner. Outreach on behalf of
-    // someone the circle looks after (a call or text from the agent's own line) is a care
-    // decision, which a decider takes first when there is one.
-    const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
-    const careDecision = requesterRole === "cared_for" && (g.kind === "outreach_approval" || g.kind === "decision");
-    const approvers = rooms.approversFor(room, { money: !careDecision && (g.kind === "purchase_approval" || accounts.needsApproval), forCaredFor: requesterRole === "cared_for" });
-    const assignee = approvers[0] ?? owner;
-    if (!assignee) throw new Error("no approver");
-    const kind = run.requesterId && run.requesterId !== assignee.id && accounts.needsApproval ? "guest_request" : g.kind;
-    const requesterName = run.requesterId ? (store.getPerson(run.requesterId)?.displayName ?? "someone") : agent.name;
-    const twin = store.listAttention({ roomId: room.id, status: ["open"] }).find((a) => a.gateKey === gateKey && a.assigneeId === assignee.id);
-    if (twin)
-      return {
-        granted: false,
-        item: twin,
-        notice: run.requesterId === assignee.id ? undefined : `${assignee.displayName} has already been asked about that; I'll continue once they answer.`,
-      };
-    const item = attention.open({
-      agentId: agent.id,
-      roomId: room.id,
-      runId: run.id,
-      assigneeId: assignee.id,
-      requesterId: run.requesterId,
-      kind,
-      gateKey,
-      title: g.title,
-      detail: kind === "guest_request" ? `${requesterName} asked in "${room.name}". ${g.detail}` : g.detail,
-      options: ["Yes", "No"],
-      ttlMs: 3 * 24 * 60 * 60 * 1000,
-    });
-    const notice = run.requesterId === assignee.id ? undefined : `I've asked ${assignee.displayName} to OK that.`;
-    return { granted: false, item, notice };
   }
 
   private sendReply(run: Run, room: Room, agent: AgentSpec, text: string) {

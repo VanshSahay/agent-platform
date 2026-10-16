@@ -7,7 +7,6 @@ import { Database } from "bun:sqlite";
 export function openDb(path = ":memory:"): Database {
   const db = new Database(path, { create: true });
   db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA foreign_keys = ON");
   migrate(db);
   return db;
 }
@@ -96,6 +95,10 @@ CREATE INDEX IF NOT EXISTS tasks_room ON tasks(room_id, status, created_at);
 CREATE TABLE IF NOT EXISTS credentials (
   person_id TEXT NOT NULL, service TEXT NOT NULL, ciphertext TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (person_id, service)
 );
+CREATE TABLE IF NOT EXISTS artifacts (
+  id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, room_id TEXT, kind TEXT NOT NULL, created_at INTEGER NOT NULL, data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS artifacts_agent ON artifacts(agent_id, created_at);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY, v TEXT NOT NULL
 );

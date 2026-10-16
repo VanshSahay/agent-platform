@@ -142,14 +142,11 @@ export class Scheduler {
       const owner = this.store.getPerson(c.ownerId);
       const ben = c.beneficiaryId ? this.store.getPerson(c.beneficiaryId) : undefined;
       if (c.status === "blocked") {
-        // Nudging stopped working: a person must decide. Deciders first for someone cared for, else the owner.
+        // Nudging stopped working: the owner must decide.
         const room = this.store.getRoom(c.roomId);
         const agent = room ? this.store.getAgent(room.agentId) : undefined;
         if (room && agent) {
-          const members = this.store.listMembers(room.id);
-          const forCaredFor = !!c.beneficiaryId && members.some((m) => m.personId === c.beneficiaryId && m.role === "cared_for");
-          const deciders = members.filter((m) => m.role === "decider").map((m) => m.personId);
-          const assignee = (forCaredFor && deciders[0]) || agent.ownerId;
+          const assignee = agent.ownerId;
           const already = this.store.listAttention({ roomId: room.id, status: ["open"] }).some((a) => a.title === `"${c.title}" is stuck`);
           if (!already) {
             this.attention.open({
@@ -248,14 +245,15 @@ export class Scheduler {
         effort: "low",
         maxTokens: 300,
       });
-    } catch {
+    } catch (e) {
+      console.warn(`premise check for ${s.id} failed open:`, (e as Error).message);
       return { holds: true, note: "not verified (model unavailable); verify before acting" };
     }
     try {
       const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
       if (typeof j.holds === "boolean") return { holds: j.holds, note: String(j.note ?? "") };
     } catch {
-      /* fall through */
+      console.warn(`premise check for ${s.id} returned no JSON; failing open`);
     }
     return { holds: true, note: "not verified automatically; verify before acting" };
   }

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type {
   AgentSpec,
+  Artifact,
   AttentionItem,
   AttentionStatus,
   Commitment,
@@ -39,8 +40,8 @@ export class Store {
     return parse<Person>(this.db.query("SELECT data FROM persons WHERE id = ?").get(id) as Row | null);
   }
   findPersonByPhone(phone: string) {
-    const rows = this.db.query("SELECT data FROM persons").all() as Row[];
-    return parseAll<Person>(rows).find((p) => p.phoneE164 === phone);
+    // ponytail: a json_extract scan; add a phone column and index if the people table ever gets big
+    return parse<Person>(this.db.query("SELECT data FROM persons WHERE json_extract(data, '$.phoneE164') = ?").get(phone) as Row | null);
   }
 
   // ----- agents -----
@@ -218,6 +219,16 @@ export class Store {
   messagesForSession(sessionId: string, limit = 200): Message[] {
     const rows = this.db.query("SELECT data FROM messages WHERE session_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(sessionId, Math.min(Math.max(1, limit), 500)) as Row[];
     return parseAll<Message>(rows).reverse();
+  }
+  /** Chat search: newest messages in the given rooms whose text contains the words, one SQL LIKE per word. */
+  // ponytail: LIKE over json_extract; move messages into an FTS5 table if a circle's history ever makes this slow
+  searchMessages(roomIds: string[], query: string, limit = 50): Message[] {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6);
+    if (!roomIds.length || !words.length) return [];
+    const like = words.map(() => "lower(json_extract(data, '$.text')) LIKE ? ESCAPE '\\'").join(" AND ");
+    const args = [...roomIds, ...words.map((w) => `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`), Math.min(Math.max(1, limit), 200)];
+    const rows = this.db.query(`SELECT data FROM messages WHERE room_id IN (${roomIds.map(() => "?").join(",")}) AND ${like} ORDER BY at DESC LIMIT ?`).all(...args) as Row[];
+    return parseAll<Message>(rows);
   }
   messagesForRoom(roomId: string, limit = 200): Message[] {
     const rows = this.db.query("SELECT data FROM messages WHERE room_id = ? ORDER BY at DESC, rowid DESC LIMIT ?").all(roomId, Math.min(Math.max(1, limit), 500)) as Row[];
@@ -467,6 +478,27 @@ export class Store {
   }
   deleteCredential(personId: string, service: string) {
     this.db.run("DELETE FROM credentials WHERE person_id = ? AND service = ?", [personId, service]);
+  }
+
+  // ----- artifacts -----
+  putArtifact(a: Artifact) {
+    this.db.run("INSERT OR REPLACE INTO artifacts(id, agent_id, room_id, kind, created_at, data) VALUES (?, ?, ?, ?, ?, ?)", [
+      a.id,
+      a.agentId,
+      a.roomId ?? null,
+      a.kind,
+      a.createdAt,
+      JSON.stringify(a),
+    ]);
+  }
+  getArtifact(id: string) {
+    return parse<Artifact>(this.db.query("SELECT data FROM artifacts WHERE id = ?").get(id) as Row | null);
+  }
+  listArtifacts(agentId: string, opts: { roomId?: string; limit?: number } = {}): Artifact[] {
+    const rows = opts.roomId
+      ? (this.db.query("SELECT data FROM artifacts WHERE agent_id = ? AND room_id = ? ORDER BY created_at DESC LIMIT ?").all(agentId, opts.roomId, opts.limit ?? 50) as Row[])
+      : (this.db.query("SELECT data FROM artifacts WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?").all(agentId, opts.limit ?? 50) as Row[]);
+    return parseAll<Artifact>(rows);
   }
 
   // ----- kv -----

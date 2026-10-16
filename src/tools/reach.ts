@@ -99,6 +99,13 @@ export function parseExa(text: string): SearchResult[] {
 
 /** Any public page as text, through Jina Reader. No scripts run, so no clicks or forms. */
 export class JinaReader implements BrowserProvider {
+  /** Jina reads pages as text; there is nothing to click, so a run is a read of the final URL (the last goto, or the start). */
+  async run(input: { url: string; steps: import("./browser.ts").BrowserStep[] }): Promise<import("./browser.ts").BrowserRun> {
+    const last = [...input.steps].reverse().find((st) => "goto" in st) as { goto: string } | undefined;
+    const page = await this.readPage({ url: last?.goto ?? input.url });
+    return { url: page.url, title: page.title, text: page.text, screenshots: [], evidence: page.evidence };
+  }
+
   private calls = 0;
   constructor(
     private fetchImpl: Fetch = fetch,

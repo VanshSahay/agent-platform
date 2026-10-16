@@ -16,21 +16,49 @@ export interface Person {
   email?: string;
   /** How patient and detailed the agent should be with this person. */
   techComfort?: "low" | "medium" | "high";
+  /** Saved delivery addresses, for checkout and forms. */
+  addresses?: Address[];
+  /** May the agent send email from this person's own Gmail? Off until they turn it on; each send still asks. */
+  sendAsMe?: boolean;
+  createdAt: UnixMs;
+}
+
+export interface Address {
+  id: Id;
+  label: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  region?: string;
+  postalCode?: string;
+  country: string;
+}
+
+/** Something the agent made that people can open: a document, a dashboard, a file, an image, audio, a call recording. */
+export interface Artifact {
+  id: Id;
+  agentId: Id;
+  roomId?: Id;
+  runId?: Id;
+  kind: "document" | "dashboard" | "file" | "image" | "audio";
+  title: string;
+  /** Markdown for documents, a dashboard spec, or a file's metadata (name, mime, size, path). */
+  data: unknown;
+  /** Anyone with the link, or members of the room only. */
+  share: "room" | "link";
   createdAt: UnixMs;
 }
 
 export type RoomKind = "dm" | "group";
-export type ChannelKind = "web" | "imessage" | "sms" | "console" | "voice";
+export type ChannelKind = "web" | "imessage" | "sms" | "whatsapp" | "telegram" | "slack" | "console" | "voice";
 
 /**
  * Roles inside a room.
- * owner      : the person who set the agent up; their accounts pay for everything.
- * decider    : a member allowed to approve requests on the owner's behalf (a caregiver sibling, say).
- * member     : a signed-up person; served with their own consent for their own requests.
- * guest      : never signed up; served through the owner or a decider.
- * cared_for  : the person the circle looks after (an aging parent); gets patient mode and extra privacy.
+ * owner  : the person who set the agent up; their accounts and money, and the approvals that go with them.
+ * member : a signed-up person; once they consent, their own accounts serve their own requests.
+ * guest  : never signed up; served through the owner, who OKs anything that uses accounts or money.
  */
-export type MemberRole = "owner" | "decider" | "member" | "guest" | "cared_for";
+export type MemberRole = "owner" | "member" | "guest";
 
 export interface Room {
   id: Id;

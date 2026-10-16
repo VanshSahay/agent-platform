@@ -48,6 +48,7 @@ export function createApp(opts: {
   maxTurns?: number;
   compactAfter?: number;
   masterKey?: string;
+  publicUrl?: string;
 }): App {
   const clock = opts.clock ?? systemClock;
   const store = new Store(openDb(opts.dbPath ?? ":memory:"));
@@ -81,6 +82,7 @@ export function createApp(opts: {
     deliver,
     maxTurns: opts.maxTurns,
     compactAfter: opts.compactAfter,
+    publicUrl: opts.publicUrl,
   });
   const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
   const consolidator = new Consolidator(store, clock, opts.model, memory);

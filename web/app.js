@@ -63,6 +63,11 @@ async function ensureAuth() {
   });
   await window.Clerk.load();
   if (!window.Clerk.user) {
+    // Signed out: the landing page, unless they came from its button or an invite link.
+    if (location.hash !== "#signin" && !location.hash.startsWith("#join=")) {
+      location.replace("/welcome");
+      return false;
+    }
     $("#app").innerHTML = '<div id="signin" style="padding:40px;display:grid;place-items:center"></div>';
     window.Clerk.mountSignIn(document.getElementById("signin"));
     window.Clerk.addListener(({ user }) => {
@@ -96,7 +101,7 @@ const greeting = () => {
   const h = new Date().getHours();
   return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 };
-const ROLE_WORDS = { owner: "owner", decider: "can decide", member: "member", guest: "guest", cared_for: "cared for" };
+const ROLE_WORDS = { owner: "owner", member: "member", guest: "guest" };
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const TECH = ["low", "medium", "high"];
 const AUTO_ALLOW_TOOLS = [
@@ -149,6 +154,10 @@ async function load() {
 
 function route() {
   const h = location.hash.replace("#", "");
+  if (h.startsWith("join=")) {
+    acceptInvite(h.slice(5)).then(load);
+    return;
+  }
   state.page = h === "settings" || h === "memory" ? h : "chat";
   $("#pageChat").hidden = state.page !== "chat";
   $("#pageSettings").hidden = state.page !== "settings";
@@ -228,6 +237,11 @@ function renderNav() {
         })
         .join("")
     : `<div class="empty">No rooms yet. Make one and add the people in it.</div>`;
+  const open = roomOf(state.room);
+  if (open && open.kind === "group" && _roleIn(open.id) === "owner")
+    $("#rooms").insertAdjacentHTML("beforeend", `<button class="link invite" type="button" id="inviteLink">+ Invite people to ${esc(open.name)}</button>`);
+  const inv = $("#inviteLink");
+  if (inv) inv.onclick = () => copyInvite(open.id);
   $$("#rooms a").forEach((a) => {
     a.onclick = (e) => {
       e.preventDefault();
@@ -254,6 +268,46 @@ function renderNav() {
   });
 }
 $("#newRoom").onclick = () => roomForm();
+
+// Chat search (after Fo's /search): 300 ms debounce, three characters or more, one row per room with a snippet.
+let searchTimer;
+$("#search").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(renderSearch, 300);
+};
+async function renderSearch() {
+  const q = $("#search").value.trim();
+  const box = $("#results");
+  if (q.length < 3) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const { results } = await api(`/api/search?q=${encodeURIComponent(q)}${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
+  box.hidden = false;
+  box.innerHTML = `<h2>Results</h2>${
+    results.length
+      ? results
+          .map(
+            (r) =>
+              `<a href="#chat" class="hit" data-room="${esc(r.roomId)}"><span class="name">${esc(r.roomName)}</span>${r.snippet ? `<span class="snip">${r.who ? `${esc(r.who)}: ` : ""}${esc(r.snippet)}</span>` : ""}</a>`,
+          )
+          .join("")
+      : `<div class="empty">No chats match ${esc(q)}.</div>`
+  }`;
+  $$("#results .hit").forEach((a) => {
+    a.onclick = (e) => {
+      e.preventDefault();
+      state.room = a.dataset.room;
+      state.lastMsgCount = -1;
+      $("#search").value = "";
+      box.hidden = true;
+      if (state.page !== "chat") location.hash = "chat";
+      else setPhoneTab("chat");
+      load();
+    };
+  });
+}
 $("#newPerson").onclick = () => personForm();
 
 function roomForm() {
@@ -268,9 +322,9 @@ function roomForm() {
     return;
   }
   el.innerHTML = `<form class="form"><h4>New room</h4>
-    <div class="field"><label>Name</label><input type="text" name="name" placeholder="Family, Friends, Maple Street…" required /></div>
+    <div class="field"><label>Name</label><input type="text" name="name" placeholder="Tahoe trip, Flat 4B, Sunday dinner…" required /></div>
     <div class="field"><label>Kind</label><select name="kind"><option value="group">Group chat</option><option value="dm">Private chat</option></select></div>
-    <div class="field"><label>Priorities here (optional)</label><textarea name="focus" placeholder="What this chat mostly needs from it, e.g. Mum's appointments and rides, repairs at her place."></textarea><div class="hint">It stays a general assistant; these come first and it may step in on them without being named.</div></div>
+    <div class="field"><label>Priorities here (optional)</label><textarea name="focus" placeholder="What this chat mostly needs from it, e.g. the trip: cabin, carpool, splitting costs."></textarea><div class="hint">It stays a general assistant; these come first and it may step in on them without being named.</div></div>
     <div class="field"><span class="lab">Who is in it</span>${state.people
       .map(
         (p) =>
@@ -531,6 +585,10 @@ function dropComposer() {
     composer.animate([{ transform: `translateY(${before - after}px)` }, { transform: "translateY(0)" }], { duration: 320, easing: "cubic-bezier(0.32, 0.72, 0, 1)" });
 }
 
+// Cards refresh their numbers with the thread.
+setInterval(() => {
+  docCards.clear();
+}, 8000);
 async function renderThread() {
   const el = $("#inner");
   const thread = $("#thread");
@@ -541,7 +599,8 @@ async function renderThread() {
     return;
   }
   const data = await api(`/api/rooms/${encodeURIComponent(state.room)}/messages?limit=100${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
-  const msgs = data.messages ?? data;
+  // Timer and answer prompts are the agent's own notes; the Why? drawer shows them, the thread does not.
+  const msgs = (data.messages ?? data).filter((m) => m.role !== "system");
   const active = data.activeRun;
   if (!msgs.length) {
     // "Want me to…" cards: what the circle actually has open first, the stock ideas after.
@@ -575,20 +634,28 @@ async function renderThread() {
     return;
   }
   dropComposer();
-  $("#text").placeholder = agent ? `Message ${agent.name}…` : "Message…";
+  const here = roomOf(state.room);
+  $("#text").placeholder = !agent
+    ? "Message…"
+    : here?.kind === "group" && here.members.length > 1
+      ? `Message ${here.name}… say ${agent.name} to get its attention`
+      : `Message ${agent.name}…`;
   let html = msgs
     .map((m) => {
       const who = m.role === "assistant" ? (agent?.name ?? "Agent") : m.role === "system" ? `${agent?.name ?? "Agent"} · ${m.source ?? "note"}` : nameOf(m.authorId);
-      const cls = m.role === "user" && m.authorId === state.me ? "me" : m.role === "system" ? "system" : m.source === "notice" ? "notice" : "";
+      const cls = m.role === "user" && m.authorId === state.me ? "me" : m.role === "system" ? "system" : m.source === "notice" || m.source === "narration" ? "notice" : "";
       let body = esc(m.text),
         footer = "";
       const fi = m.role === "assistant" ? m.text.lastIndexOf("\n— ") : -1;
       if (fi > 0) {
-        body = esc(m.text.slice(0, fi));
+        body = m.text.slice(0, fi);
         footer = m.text.slice(fi + 1);
-      }
+      } else if (m.role === "assistant") body = m.text;
+      // The assistant writes light Markdown; people's own messages stay as typed.
+      const rich = m.role === "assistant";
+      body = rich ? md(body) : linkify(esc(m.text));
       const card = m.card ? cardHtml(m.card) : "";
-      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div></div>`;
+      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div></div>`;
     })
     .join("");
   if (active && active.status === "running") {
@@ -616,6 +683,7 @@ async function renderThread() {
       }
     };
   });
+  decorateDocLinks();
   $$("#inner .why").forEach((a) => {
     a.onclick = (e) => {
       e.preventDefault();
@@ -627,6 +695,95 @@ async function renderThread() {
     thread.scrollTop = thread.scrollHeight;
     state.lastMsgCount = msgs.length;
   }
+}
+
+// A link to something the assistant made becomes a preview card under the message: title, kind, live progress.
+const docCards = new Map();
+const KIND_WORDS = { document: "Note", dashboard: "Dashboard", image: "Image", audio: "Voice note", file: "File" };
+function docCardHtml(a) {
+  const isList = a.kind === "document" && a.summary.items > 0;
+  const pct = isList ? Math.round((a.summary.done / a.summary.items) * 100) : 0;
+  const kind = isList ? "List" : (KIND_WORDS[a.kind] ?? "Page");
+  const meta = isList
+    ? `${a.summary.done} of ${a.summary.items} done`
+    : a.summary.excerpt
+      ? esc(a.summary.excerpt)
+      : a.summary.sections?.length
+        ? esc(a.summary.sections.join(" · "))
+        : "";
+  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
+}
+async function decorateDocLinks() {
+  for (const link of $$("#inner .body a[href*='/d/']")) {
+    const id = (link.getAttribute("href").match(/\/d\/([A-Za-z0-9_-]+)/) || [])[1];
+    if (!id || link.closest(".body").querySelector(`.doccard[href="/d/${CSS.escape(id)}"]`)) continue;
+    link.classList.add("doclink");
+    let info = docCards.get(id);
+    if (!info) {
+      try {
+        info = await api(`/api/artifacts/${encodeURIComponent(id)}${state.me ? `?personId=${encodeURIComponent(state.me)}` : ""}`);
+        docCards.set(id, info);
+      } catch {
+        continue;
+      }
+    }
+    const body = link.closest(".body");
+    if (body && !body.querySelector(`.doccard[href="/d/${CSS.escape(id)}"]`)) {
+      const anchor = body.querySelector(".steps, .footer");
+      if (anchor) anchor.insertAdjacentHTML("beforebegin", docCardHtml(info));
+      else body.insertAdjacentHTML("beforeend", docCardHtml(info));
+    }
+  }
+}
+const linkify = (escaped) => escaped.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+/** Light Markdown for the assistant's replies: bold, italics, code, links, bullets, numbered lists, headings. Escaped first. */
+function md(text) {
+  const inline = (t) =>
+    esc(t)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  const out = [];
+  let list = null;
+  let para = [];
+  const flush = () => {
+    if (para.length) out.push(`<p>${inline(para.join("\n")).replace(/\n/g, "<br>")}</p>`);
+    para = [];
+  };
+  const closeList = () => {
+    if (list) out.push(`</${list}>`);
+    list = null;
+  };
+  for (const line of text.split("\n")) {
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    const li = line.match(/^\s*[-*•]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (h) {
+      flush();
+      closeList();
+      out.push(`<h4>${inline(h[2])}</h4>`);
+    } else if (li || ol) {
+      flush();
+      const kind = li ? "ul" : "ol";
+      if (list !== kind) {
+        closeList();
+        list = kind;
+        out.push(`<${kind}>`);
+      }
+      out.push(`<li>${inline((li ?? ol)[1])}</li>`);
+    } else if (!line.trim()) {
+      flush();
+      closeList();
+    } else {
+      closeList();
+      para.push(line);
+    }
+  }
+  flush();
+  closeList();
+  return out.join("");
 }
 
 // An embedded sign-in card: a real browser in the chat, for the person it is addressed to.
@@ -799,12 +956,13 @@ function renderSettings() {
             .filter((r) => r.agentId === agent.id && r.kind === "group")
             .map(
               (r) =>
-                `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`,
+                `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><button class="btn" type="button" data-invite="${esc(r.id)}">Copy invite link</button><span class="note"></span></div></form>`,
             )
             .join("")
-        : `<div class="empty">Not in any group chat yet. Make one from the Rooms list and say what it should focus on there.</div>`
+        : `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then copy its invite link for the others.</div>`
     }
   </div>
+  <div class="section" id="connForm"><h3>Connections</h3><p class="lead">Your own accounts and the services the assistant may reach for your requests. It sees names only; secrets stay in the vault.</p><div id="connections">Loading…</div></div>
   <form class="section" id="trustForm"><h3>Trust</h3><p class="lead">Everything else that spends money or contacts someone asks you first.</p>
     <div class="field"><label>Purchases up to this amount go through without asking (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="1" value="${esc(t.autoApproveUnderUsd ?? 0)}" /><div class="hint">0 means it always asks.</div></div>
     <div class="field inline"><label>Pause all spending</label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}" data-name="spendingPaused"></button></div>
@@ -813,6 +971,7 @@ function renderSettings() {
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
 `;
 
+  renderConnections();
   const saved = (form, msg) => {
     const n = form.querySelector(".note");
     n.classList.remove("bad");
@@ -826,6 +985,9 @@ function renderSettings() {
     n.classList.add("bad");
     n.textContent = e.message;
   };
+  $$("#whereForm [data-invite]").forEach((b) => {
+    b.onclick = () => copyInvite(b.dataset.invite, b.closest(".actions").querySelector(".note"));
+  });
   $$("#whereForm form.whereroom").forEach((form) => {
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -897,6 +1059,89 @@ function renderSettings() {
       failed(trust, err);
     }
   };
+}
+
+// ---------- Connections (Google, Slack, MCP servers, APIs, addresses, the assistant's email) ----------
+async function renderConnections() {
+  const box = $("#connections");
+  if (!box || !state.me) return;
+  let info;
+  try {
+    info = await api(`/api/connections/info?personId=${encodeURIComponent(state.me)}`);
+  } catch (e) {
+    box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  const me = personOf(state.me) ?? {};
+  const row = (label, sub, action) => `<div class="connrow"><div><strong>${esc(label)}</strong><div class="tiny">${esc(sub)}</div></div>${action}</div>`;
+  box.innerHTML = `
+    ${row("Assistant's email", info.agentEmail, `<span class="mut">it sends from here</span>`)}
+    ${row("Google", info.google ? "Connected: Gmail, Calendar, Drive, Sheets, Forms, Slides" : info.googleConfigured ? "Not connected" : "Not set up on this server (GOOGLE_CLIENT_ID)", info.google ? `<button class="btn small" type="button" data-disconnect="google">Disconnect</button>` : info.googleConfigured ? `<button class="btn small primary" type="button" id="connectGoogle">Connect</button>` : "")}
+    ${info.google ? `<label class="check"><input type="checkbox" id="sendAsMe" ${me.sendAsMe ? "checked" : ""} /> Send email as me <span class="tiny">· off until you turn it on; each send still asks you first. When off, it writes from its own address with you in cc.</span></label>` : ""}
+    ${row("Slack", info.slack ? "Token saved" : "Not connected", info.slack ? `<button class="btn small" type="button" data-disconnect="slack">Disconnect</button>` : `<form class="addrow" data-kind="slack"><input type="password" name="token" placeholder="xoxb-… or xoxp-…" /><button class="btn small" type="submit">Save</button></form>`)}
+    <h4 class="tiny" style="margin:14px 0 4px">MCP servers</h4>
+    ${info.mcp.map((n) => row(n, "MCP", `<button class="btn small" type="button" data-disconnect="mcp:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. Any app with an MCP endpoint: paste its URL (and a token if it needs one).</div>`}
+    <form class="addrow wrap" data-kind="mcp"><input type="text" name="name" placeholder="name, e.g. notion" required /><input type="url" name="url" placeholder="https://…/mcp" /><input type="password" name="token" placeholder="token (optional)" /><button class="btn small" type="submit">Add MCP</button></form>
+    <h4 class="tiny" style="margin:14px 0 4px">APIs</h4>
+    ${info.apis.map((n) => row(n, "HTTP API", `<button class="btn small" type="button" data-disconnect="api:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. A base URL, an OpenAPI document if there is one, and a token.</div>`}
+    <form class="addrow wrap" data-kind="api"><input type="text" name="name" placeholder="name, e.g. luma" required /><input type="url" name="baseUrl" placeholder="https://api.example.com" required /><input type="url" name="openapiUrl" placeholder="OpenAPI JSON URL (optional)" /><input type="password" name="token" placeholder="token (optional)" /><button class="btn small" type="submit">Add API</button></form>
+    <h4 class="tiny" style="margin:14px 0 4px">Site logins</h4>
+    <div class="tiny">${info.sites.length ? `Signed in to: ${info.sites.map(esc).join(", ")}. ` : ""}Sign in to a site inside the chat when the assistant asks (connect_account); passwords never pass through here.</div>
+    <h4 class="tiny" style="margin:14px 0 4px">Addresses</h4>
+    ${(me.addresses ?? []).map((a) => row(a.label, `${a.line1}${a.line2 ? `, ${a.line2}` : ""}, ${a.city}${a.region ? ` ${a.region}` : ""} ${a.postalCode ?? ""}`, `<button class="btn small" type="button" data-addr="${esc(a.id)}">Remove</button>`)).join("") || `<div class="tiny">None yet; for deliveries and forms.</div>`}
+    <form class="addrow wrap" id="addrForm"><input type="text" name="label" placeholder="Home" required /><input type="text" name="line1" placeholder="Street" required /><input type="text" name="city" placeholder="City" required /><input type="text" name="region" placeholder="State" /><input type="text" name="postalCode" placeholder="Postal code" /><button class="btn small" type="submit">Save address</button></form>`;
+  const g = $("#connectGoogle");
+  if (g)
+    g.onclick = async () => {
+      try {
+        const r = await api(`/api/connections/google/link?personId=${encodeURIComponent(state.me)}`);
+        location.href = r.url;
+      } catch (e) {
+        status(e.message, true);
+      }
+    };
+  const sam = $("#sendAsMe");
+  if (sam)
+    sam.onchange = async () => {
+      await api(`/api/people/${encodeURIComponent(state.me)}`, { sendAsMe: sam.checked }, "PATCH");
+      load();
+    };
+  $$("#connections [data-disconnect]").forEach((b) => {
+    b.onclick = async () => {
+      await api(`/api/people/${encodeURIComponent(state.me)}/connections/${encodeURIComponent(b.dataset.disconnect)}`, undefined, "DELETE");
+      renderConnections();
+    };
+  });
+  $$("#connections form[data-kind]").forEach((f) => {
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(f).entries());
+      try {
+        await api(`/api/people/${encodeURIComponent(state.me)}/connections`, { kind: f.dataset.kind, ...body });
+        renderConnections();
+      } catch (err) {
+        status(err.message, true);
+      }
+    };
+  });
+  $$("#connections [data-addr]").forEach((b) => {
+    b.onclick = async () => {
+      const addresses = (me.addresses ?? []).filter((a) => a.id !== b.dataset.addr);
+      await api(`/api/people/${encodeURIComponent(state.me)}`, { addresses }, "PATCH");
+      await load();
+      renderConnections();
+    };
+  });
+  const af = $("#addrForm");
+  if (af)
+    af.onsubmit = async (e) => {
+      e.preventDefault();
+      const a = Object.fromEntries(new FormData(af).entries());
+      const addresses = [...(me.addresses ?? []), { id: `addr_${Date.now().toString(36)}`, country: "US", ...a }];
+      await api(`/api/people/${encodeURIComponent(state.me)}`, { addresses }, "PATCH");
+      await load();
+      renderConnections();
+    };
 }
 
 // ---------- Memory page ----------
@@ -975,6 +1220,11 @@ async function watch() {
           if (!line) continue;
           try {
             const d = JSON.parse(line);
+            if (d.boot) {
+              // The server restarted since this page loaded: get the current page, scripts and styles.
+              if (state.boot && state.boot !== d.boot) location.reload();
+              state.boot = d.boot;
+            }
             if (d.type === "delivery") {
               if (d.roomId === state.room) renderThread();
               renderInbox();
@@ -988,9 +1238,50 @@ async function watch() {
   }
 }
 
+// An invite link (#join=token): join the room as the signed-in person, or, without sign-in, by name.
+async function acceptInvite(token) {
+  try {
+    const info = await api(`/api/invites/${encodeURIComponent(token)}`);
+    const body = {};
+    if (!window.__CLERK_PK) {
+      // Local dev: you are whoever the "You" picker says; with nobody picked, give a name.
+      if (state.me) body.personId = state.me;
+      else {
+        const name = window.prompt(`Join "${info.roomName}" with ${info.agentName}. Your name?`);
+        if (!name) return;
+        body.displayName = name;
+        body.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      }
+    }
+    const r = await api(`/api/invites/${encodeURIComponent(token)}/accept`, body);
+    state.me = r.personId;
+    state.room = r.room.id;
+    try {
+      localStorage.setItem("circle.me", state.me);
+      localStorage.setItem("circle.room", state.room);
+    } catch {}
+    status(`You're in ${r.room.name}.`);
+  } catch (e) {
+    status(e.message, true);
+  }
+  location.hash = "chat";
+}
+async function copyInvite(roomId, note) {
+  try {
+    const r = await api(`/api/rooms/${encodeURIComponent(roomId)}/invites`, { personId: state.me });
+    await navigator.clipboard.writeText(r.url);
+    if (note) note.textContent = "Invite link copied.";
+    else status("Invite link copied.");
+  } catch (e) {
+    if (note) note.textContent = e.message;
+    else status(e.message, true);
+  }
+}
+
 ensureAuth()
-  .then((ok) => {
+  .then(async (ok) => {
     if (ok) {
+      if (location.hash.startsWith("#join=")) await acceptInvite(location.hash.slice(6));
       route();
       load();
       watch(); // only once we can present a token; a signed-out stream would just loop on 401

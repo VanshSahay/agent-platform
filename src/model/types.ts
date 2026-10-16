@@ -27,8 +27,11 @@ export interface ModelTurn {
   usage?: { input: number; output: number };
 }
 
+/** An image for the model: a URL, or base64 bytes with their media type. */
+export type ModelImage = { url: string } | { base64: string; mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" };
+
 export interface ModelClient {
   turn(req: ModelRequest): Promise<ModelTurn>;
-  /** Small structured call used by consolidation, premise checks and labels. */
-  complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string }): Promise<string>;
+  /** Small structured call used by consolidation, premise checks and labels. With `images`, the model looks at them too. */
+  complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string; images?: ModelImage[] }): Promise<string>;
 }

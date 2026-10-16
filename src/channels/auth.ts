@@ -86,8 +86,7 @@ export class Auth {
       if (p) return p;
     }
     const info = (await this.lookup(v.sub)) ?? { displayName: v.sub };
-    // A freshly seeded demo has an owner nobody has signed in as yet: the first sign-in claims
-    // that seat, so the person testing locally sees the family instead of an empty app.
+    // A fresh install has an owner's seat nobody has signed in as yet: the first sign-in claims it.
     const claimable = this.app.store.getKv("claim-owner");
     const owner = claimable ? this.app.store.getPerson(claimable) : undefined;
     if (owner) {

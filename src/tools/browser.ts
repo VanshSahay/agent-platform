@@ -22,9 +22,31 @@ export interface SignInSession {
   contextId: string;
 }
 
+/** One step of a browser_use run. Selectors are CSS or Playwright text= selectors. */
+export type BrowserStep =
+  | { goto: string }
+  | { click: string }
+  | { fill: { selector: string; value: string } }
+  | { press: string }
+  | { scroll: "down" | "up" }
+  | { waitMs: number }
+  | { extract?: true }
+  | { screenshot?: true };
+
+export interface BrowserRun {
+  url: string;
+  title: string;
+  text: string;
+  /** PNG, base64, when a step asked for one. */
+  screenshots: string[];
+  evidence: string;
+}
+
 export interface BrowserProvider {
   /** Open a URL, optionally run one simple action, and return the page as text. With `contextId`, browse as that signed-in person. */
   readPage(input: { url: string; contextId?: string; action?: { click?: string; fill?: { selector: string; value: string }; waitMs?: number } }): Promise<PageRead>;
+  /** Several steps in one session (navigate, click, type, scroll, screenshot), ending with the page as text. */
+  run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun>;
   /** Open a live browser on a site for a person to sign in; the agent never touches the password. */
   startSignIn?(input: { site: string }): Promise<SignInSession>;
   /** End the sign-in session; with `keep`, the context keeps the cookies for later reads. */
@@ -33,6 +55,13 @@ export interface BrowserProvider {
 
 export class FakeBrowser implements BrowserProvider {
   public visited: string[] = [];
+  public runs: { url: string; steps: BrowserStep[] }[] = [];
+  async run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun> {
+    this.runs.push({ url: input.url, steps: input.steps });
+    const page = await this.readPage({ url: input.url, contextId: input.contextId });
+    const shots = input.steps.filter((st) => "screenshot" in st).length;
+    return { url: page.url, title: page.title, text: page.text, screenshots: Array.from({ length: shots }, () => FAKE_PNG), evidence: `fake-browser-run:${this.runs.length}` };
+  }
   public visitedWith: { url: string; contextId?: string }[] = [];
   public signIns: { site: string; sessionId: string; finished?: boolean; kept?: boolean }[] = [];
   constructor(private pages: (url: string) => Partial<PageRead> = () => ({})) {}
@@ -58,7 +87,39 @@ export class FakeBrowser implements BrowserProvider {
 
 const MAX_TEXT = 12_000;
 
+/** A 1x1 transparent PNG, for fakes. */
+export const FAKE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
 export class BrowserbaseBrowser implements BrowserProvider {
+  async run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun> {
+    const projectId = await this.project();
+    const session = await this.createSession(projectId, input.contextId ? { browserSettings: { context: { id: input.contextId, persist: true } } } : {});
+    let browser: Browser | undefined;
+    const screenshots: string[] = [];
+    try {
+      browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
+      const ctx = browser.contexts()[0] ?? (await browser.newContext());
+      const page: Page = ctx.pages()[0] ?? (await ctx.newPage());
+      await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      for (const st of input.steps.slice(0, 20)) {
+        if ("goto" in st) await page.goto(st.goto, { waitUntil: "domcontentloaded", timeout: 45_000 });
+        else if ("click" in st) await page.click(st.click, { timeout: 10_000 });
+        else if ("fill" in st) await page.fill(st.fill.selector, st.fill.value, { timeout: 10_000 });
+        else if ("press" in st) await page.keyboard.press(st.press);
+        else if ("scroll" in st) await page.mouse.wheel(0, st.scroll === "down" ? 800 : -800);
+        else if ("waitMs" in st) await page.waitForTimeout(Math.min(st.waitMs, 10_000));
+        else if ("screenshot" in st) screenshots.push((await page.screenshot({ type: "png" })).toString("base64"));
+        await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
+      }
+      const title = await page.title();
+      const text = (await page.evaluate(() => document.body?.innerText ?? "")).replace(/\n{3,}/g, "\n\n").slice(0, MAX_TEXT);
+      return { url: page.url(), title, text, screenshots, evidence: `browserbase:${session.id}` };
+    } finally {
+      await browser?.close().catch(() => undefined);
+      await this.release(projectId, session.id);
+    }
+  }
+
   private projectId?: string;
   /** Sign-in sessions stay open (CDP connection held) until the person presses Done or Cancel. */
   private live = new Map<string, { browser: Browser; projectId: string }>();
