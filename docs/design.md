@@ -129,3 +129,5 @@ Fo's 80 tools, by family, live in `src/tools/catalog/` behind the same `ToolDef`
 ## 10. Evidence this works
 
 `bun test`: offline tests covering the run loop, footer and integrity note, steering, dedup, guest serving with the owner's card and resume on yes, declines, purchase thresholds, working-hours holds, group questions, the planner's approach switch, parallel tool results, memory privacy, rules versus observations, consolidation (promote, correct, retract, profile), schedules with disclosed outreach, premise failure pausing a schedule, calendar computation in the owner's zone, nudge cadence, heartbeat cadence, attention expiry, the search and reach adapters, and the eval harness grading the store (order judged by event `seq`, never by clock time). `bun run eval` plays the same scenarios against a real model. CI (`.github/workflows/ci.yml`) runs typecheck, Biome lint and the tests on every push and pull request.
+
+The group model (roles, joining, gates across people, memory visibility, coordination primitives) is specified in more depth in [multiplayer-spec.md](multiplayer-spec.md).
