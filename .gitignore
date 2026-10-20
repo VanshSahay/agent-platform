@@ -7,3 +7,4 @@ node_modules
 data/
 .DS_Store
 .claude/skills/
+CONTRACT-RULES.md
