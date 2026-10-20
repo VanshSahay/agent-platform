@@ -264,6 +264,7 @@ export type RunEventType =
   | "steer_applied"
   | "gate_opened"
   | "gate_resolved"
+  | "resumed"
   | "reply"
   | "error"
   | "done";

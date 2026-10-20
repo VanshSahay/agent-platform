@@ -77,12 +77,50 @@ export class Runtime {
   private inFlight = new Set<Promise<void>>();
   private impliedChecks = new Map<Id, number[]>();
 
-  /** At boot: a run left "running" by a crash would swallow every later message as a steer. */
+  /**
+   * At boot: a run left "running" by a crash resumes from its saved transcript
+   * when it has one (durable execution: pick up where it stopped, never repeat
+   * a completed side effect); without a transcript there is nothing to resume
+   * and it fails honestly.
+   */
   private reconcile() {
     for (const run of this.d.store.unfinishedRuns()) {
       if (run.status !== "running") continue;
-      this.finish(run, "failed", "Interrupted by a restart.");
+      const transcript = this.loadTranscript(run);
+      if (!transcript.length) {
+        this.finish(run, "failed", "Interrupted by a restart.");
+        continue;
+      }
+      const p: Promise<void> = this.bootResume(run, transcript).finally(() => this.inFlight.delete(p));
+      this.inFlight.add(p);
     }
+  }
+
+  /** Continue a run the process died inside: close the interrupted tool calls, tell the model what happened, loop on. */
+  private async bootResume(run: Run, transcript: Anthropic.MessageParam[]) {
+    const { store, clock } = this.d;
+    for (const c of store.toolCallsForRun(run.id)) {
+      if (c.status !== "running") continue;
+      c.status = "stopped";
+      c.endedAt = clock.now();
+      store.putToolCall(c);
+    }
+    const unanswered = unansweredToolUses(transcript);
+    if (unanswered.length)
+      transcript.push({
+        role: "user",
+        content: unanswered.map((id) => ({
+          type: "tool_result",
+          tool_use_id: id,
+          is_error: true,
+          content:
+            "The process restarted before this finished; whether it happened is unknown. Do not repeat it blindly: check for its effect first (a reply, a listing, the records). An exact repeat of an action that did complete is refused by the runtime.",
+        })),
+      });
+    store.appendEvent({ runId: run.id, sessionId: run.sessionId, type: "resumed", at: clock.now(), data: { reason: "boot", interrupted: unanswered.length } });
+    this.live.add(run.id);
+    await this.loop(run, transcript);
+    this.launchPending(run.id);
   }
 
   /** Dismissed or expired: the run that waited on it ends, so the room is not stuck. */
@@ -741,6 +779,7 @@ export class Runtime {
       }
 
       transcript.push({ role: "assistant", content: turn.content });
+      this.saveTranscript(run, transcript); // the resume point if the process dies before the next one
       if (turn.text) {
         lastText = turn.text;
         emit("delta", { text: turn.text });
@@ -815,10 +854,21 @@ export class Runtime {
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
         else if (stopped()) result = { ok: false, content: "Skipped: the run was stopped." };
         else {
-          try {
-            result = await def.run(input, ctx);
-          } catch (e) {
-            result = { ok: false, content: `Tool error: ${String((e as Error).message)}` };
+          // A side effect must not happen twice in one run: the same tool with the same input returns
+          // the first result instead of acting again (a resumed run re-issues its last action).
+          const prior = def.sideEffect
+            ? store
+                .toolCallsForRun(run.id)
+                .find((c) => c.name === use.name && c.status === "done" && c.evidence && sha256([c.name, c.input]) === sha256([use.name, input]))
+            : undefined;
+          if (prior) {
+            result = { ok: true, content: prior.result, evidence: prior.evidence, label: `${prior.labelDone} (already done)` };
+          } else {
+            try {
+              result = await def.run(input, ctx);
+            } catch (e) {
+              result = { ok: false, content: `Tool error: ${String((e as Error).message)}` };
+            }
           }
         }
 
@@ -869,6 +919,7 @@ export class Runtime {
         results.push({ type: "tool_result", tool_use_id: use.id, content, is_error: !result.ok });
       }
       transcript.push({ role: "user", content: results });
+      this.saveTranscript(run, transcript); // tool results are the expensive part to lose; never lose them
       if (quiet && drainSteers()) {
         quiet = undefined; // someone spoke: not quiet after all
         continue;
@@ -1067,6 +1118,20 @@ function dedupeById<T extends { id: string }>(xs: T[]): T[] {
     seen.add(x.id);
     return true;
   });
+}
+
+/** Tool_use blocks in the transcript with no tool_result after them, in order: what a resumed run must answer first. */
+function unansweredToolUses(transcript: Anthropic.MessageParam[]): string[] {
+  const asked: string[] = [];
+  const answered = new Set<string>();
+  for (const m of transcript) {
+    if (typeof m.content === "string") continue;
+    for (const b of m.content) {
+      if (b.type === "tool_use") asked.push(b.id);
+      else if (b.type === "tool_result" && typeof b.tool_use_id === "string") answered.add(b.tool_use_id);
+    }
+  }
+  return asked.filter((id) => !answered.has(id));
 }
 
 /** The API requires alternating roles; merge consecutive same-role text turns and drop a leading assistant turn. */

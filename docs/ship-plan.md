@@ -23,6 +23,8 @@ Not doing: Temporal (the loop is nearly activity-shaped; resume-in-place gives t
 
 Plus, already started: `revise_plan` (the model re-plans from what it learned; the ladder stays as the floor). The working rule from here on: **every bug becomes an eval**; the contract's §6.1 reliability matrix (restarts, duplicates, concurrency, cancellation, expired access) becomes offline tests and eval scenarios.
 
+Shipped so far: items 1–2 (two-block cache + per-run tools; boot resume + side-effect idempotency). Next: item 3.
+
 ## The order, mapped to dates
 
 **Now → Nov 2 (Milestone 1).** Items 1–3, which are the M1 reliability story: context economics, resume-in-place, message rules. Alongside: deploy the current build to Company hosting (see [provisioning.md](provisioning.md)), test iMessage end to end in real groups, complete the admin configuration surface, write the runbook.

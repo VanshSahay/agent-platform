@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { callTool, callTools, lastToolResult, reply, toolCallsSoFar } from "../src/model/scripted.ts";
+import { join } from "node:path";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { callTool, callTools, lastToolResult, reply, toolCallsSoFar, ScriptedModel } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
 import { TOOLS, toolsForRun } from "../src/tools/registry.ts";
+import { createApp } from "../src/app.ts";
+import { newAgent } from "../src/agent/spec.ts";
+import { newId } from "../src/core/ids.ts";
+import type { Run, ToolCallRecord } from "../src/core/types.ts";
+import type { Delivery } from "../src/runtime/runtime.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
 
 describe("run loop", () => {
@@ -300,6 +308,95 @@ describe("context economics", () => {
     expect(none).toContainEqual(expect.objectContaining({ name: "web_search" }));
     expect(none.find((t) => t.name === "text_to_speech")).toBeUndefined();
     expect(all.map((t) => t.name)).toEqual(TOOLS.map((t) => t.spec.name));
+  });
+});
+
+describe("durable execution", () => {
+  test("a run interrupted mid-action resumes at boot, is told the restart happened, and does not lose the run", async () => {
+    const db = join(tmpdir(), `circle-resume-${Math.random().toString(36).slice(2)}.sqlite`);
+    try {
+      // First process: a run whose place_call never finished (the process died inside it).
+      const a1 = createApp({ dbPath: db, model: new ScriptedModel(() => reply("unreachable")) });
+      const alex = a1.rooms.createPerson({ displayName: "Alex", timezone: "UTC" });
+      const agent = newAgent({ ownerId: alex.id, name: "Pip" });
+      a1.store.putAgent(agent);
+      const room = a1.rooms.dmFor(agent, alex.id);
+      const session = { id: newId("ses"), roomId: room.id, agentId: agent.id, kind: "room" as const, createdAt: a1.clock.now(), lastActivityAt: a1.clock.now() };
+      a1.store.putSession(session);
+      const run: Run = {
+        id: newId("run"),
+        sessionId: session.id,
+        roomId: room.id,
+        agentId: agent.id,
+        trigger: "message",
+        requesterId: alex.id,
+        status: "running",
+        startedAt: a1.clock.now(),
+      };
+      a1.store.putRun(run);
+      const rec: ToolCallRecord = {
+        id: newId("tc"),
+        runId: run.id,
+        name: "place_call",
+        family: "calls",
+        status: "running",
+        input: { to: "+14085550100", who: "Lee's Repairs", objective: "book Thursday" },
+        labelRunning: "On a call…",
+        labelDone: "Made a call",
+        fingerprint: "",
+        startedAt: a1.clock.now(),
+      };
+      a1.store.putToolCall(rec);
+      a1.store.setKv(
+        `transcript:${run.id}`,
+        JSON.stringify([
+          { role: "user", content: "Alex: @pip call Lee's Repairs and book Thursday" },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_crash", name: "place_call", input: rec.input }] },
+        ]),
+      );
+
+      // Second process, same database: the boot resume continues the run.
+      let saw: string | undefined;
+      const a2 = createApp({ dbPath: db, model: new ScriptedModel((req) => { saw = JSON.stringify(req.messages); return reply("Lee's can do Thursday 2pm, about $120."); }) });
+      const deliveries: Delivery[] = [];
+      a2.onDeliver((d) => deliveries.push(d));
+      await a2.runtime.settle();
+
+      const after = a2.store.getRun(run.id)!;
+      expect(after.status).toBe("done");
+      expect(saw).toContain("restarted"); // the model is told the effect is unknown
+      expect(a2.store.toolCallsForRun(run.id).filter((c) => c.name === "place_call")).toHaveLength(1); // nothing re-dialled
+      expect(a2.store.eventsForRun(run.id).some((e) => e.type === "resumed")).toBe(true);
+      expect(deliveries.some((d) => d.roomId === room.id && d.text.includes("Thursday 2pm"))).toBe(true);
+    } finally {
+      rmSync(db, { force: true });
+      rmSync(`${db}-wal`, { force: true });
+      rmSync(`${db}-shm`, { force: true });
+    }
+  });
+
+  test("an exact repeat of a completed side effect returns the first result instead of acting twice", async () => {
+    const phone = new FakePhone(() => ({ status: "completed", summary: "Thursday 2pm works, about $120." }));
+    const w = groupWorld(
+      (req, i) => {
+        if (i === 0) return callTool("place_call", { to: "+14085550100", who: "Lee's Repairs", objective: "book Thursday" });
+        if (i === 1) {
+          // A resumed run re-issues its last action; the runtime must not dial twice.
+          expect(JSON.stringify(req.messages)).not.toContain("restarted");
+          return callTool("place_call", { to: "+14085550100", who: "Lee's Repairs", objective: "book Thursday" });
+        }
+        return reply("Booked: Thursday 2pm, about $120.");
+      },
+      { phone },
+    );
+    w.agent.trust.autoAllow = ["place_call"];
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip call Lee's Repairs and book Thursday" });
+    expect(w.hands.phone.calls).toHaveLength(1); // dialled once
+    const calls = w.app.store.toolCallsForRun(run!.id).filter((c) => c.name === "place_call");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.labelDone).toContain("already done");
+    expect(calls[1]!.evidence).toBe(calls[0]!.evidence);
   });
 });
 
