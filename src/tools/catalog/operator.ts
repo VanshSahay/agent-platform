@@ -171,7 +171,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     family: "operator",
     labels: { running: "Finding the right tools…", done: "Found the right tools" },
     sideEffect: false,
-    async run(input) {
+    async run(input, ctx) {
       const { TOOLS } = await import("../registry.ts");
       const words = s(input.query)
         .toLowerCase()
@@ -181,7 +181,16 @@ export const OPERATOR_TOOLS: ToolDef[] = [
         (x) => x.score > 0,
       );
       scored.sort((a, b) => b.score - a.score);
-      return { ok: true, content: scored.slice(0, 12).map((x) => ({ name: x.t.spec.name, family: x.t.family, description: x.t.spec.description })) };
+      return {
+        ok: true,
+        content: scored.slice(0, 12).map((x) => ({
+          name: x.t.spec.name,
+          family: x.t.family,
+          description: x.t.spec.description,
+          // Not on this run's list because the server lacks the provider: say so instead of letting the model try.
+          ...(x.t.needs && !ctx.providers.has(x.t.needs) ? { note: `unavailable on this server: needs the ${x.t.needs} provider` } : {}),
+        })),
+      };
     },
   },
   {
@@ -320,6 +329,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       input_schema: obj({ prompt: str("What the image should show."), title: str("A short title.") }, ["prompt"]),
     },
     family: "operator",
+    needs: "images",
     labels: { running: "Making an image…", done: "Made an image" },
     sideEffect: false,
     async run(input, ctx) {
@@ -390,6 +400,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       ),
     },
     family: "operator",
+    needs: "browser",
     labels: { running: "Operating the browser…", done: "Operated the browser", failed: "The browser hit a wall" },
     sideEffect: false,
     async run(input, ctx) {

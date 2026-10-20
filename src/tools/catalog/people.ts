@@ -62,6 +62,7 @@ export const PEOPLE_TOOLS: ToolDef[] = [
       input_schema: obj({ text: str("What to say."), voiceId: str("Optional voice id.") }, ["text"]),
     },
     family: "voice",
+    needs: "speech",
     labels: { running: "Recording…", done: "Recorded a voice note" },
     sideEffect: false,
     async run(input, ctx) {
@@ -89,6 +90,7 @@ export const PEOPLE_TOOLS: ToolDef[] = [
       ),
     },
     family: "voice",
+    needs: "speech",
     labels: { running: "Saving pronunciations…", done: "Saved pronunciations" },
     sideEffect: false,
     async run(input, ctx) {
@@ -129,6 +131,7 @@ export const PEOPLE_TOOLS: ToolDef[] = [
       ),
     },
     family: "calls",
+    needs: "phone",
     labels: { running: "Calling the business…", done: "Called the business", failed: "The call did not get through" },
     sideEffect: true,
     async run(input, ctx) {
@@ -187,6 +190,7 @@ export const PEOPLE_TOOLS: ToolDef[] = [
       ),
     },
     family: "email",
+    needs: "email",
     labels: { running: "Sending mail…", done: "Sent mail" },
     sideEffect: true,
     async run(input, ctx) {

@@ -11,7 +11,12 @@ export interface ToolSpec {
 export interface ModelRequest {
   model: string;
   effort: Effort;
-  system: string;
+  /**
+   * The system prompt in two blocks: `stable` repeats on every turn and run
+   * (identity, soul, rules, skills index) and is cached; `volatile` changes
+   * (room, memories, ledger, plan, situation). A cache miss here is a bug.
+   */
+  system: { stable: string; volatile: string };
   messages: Anthropic.MessageParam[];
   tools: ToolSpec[];
   maxTokens?: number;

@@ -10,7 +10,7 @@ import type { AttentionService } from "../inbox/attention.ts";
 import type { CommitmentService } from "../care/commitments.ts";
 import type { Planner } from "../planning/planner.ts";
 import type { Hands } from "../tools/hands.ts";
-import { TOOL_INDEX, toolSpecs, type ToolContext, type ToolResult } from "../tools/registry.ts";
+import { TOOL_INDEX, toolsForRun, type Providers, type ToolContext, type ToolResult } from "../tools/registry.ts";
 import { matchSkills, type Skill } from "../skills/skills.ts";
 import type { TaskService } from "../tasks/tasks.ts";
 import type { Vault } from "../tools/vault.ts";
@@ -48,6 +48,8 @@ export interface RuntimeDeps {
   compactAfter?: number;
   /** Where links the agent hands out point (documents, dashboards, settings). */
   publicUrl?: string;
+  /** Boot-level providers wired on this server (google, email, speech, payments, phone, browser, images). Tool selection per run follows it. */
+  providers: Providers;
 }
 
 const MAX_TURNS = 24;
@@ -608,6 +610,7 @@ export class Runtime {
       commitments,
       planner,
       hands,
+      providers: this.d.providers,
       agent,
       room,
       session,
@@ -692,6 +695,8 @@ export class Runtime {
     };
     const stopped = () => this.cancelled.has(run.id) || store.getRun(run.id)?.status === "stopped";
 
+    // The tool list is chosen once per run and never changes mid-run, so the prompt prefix caches.
+    const tools = toolsForRun(this.d.providers);
     while (turns < maxTurns) {
       turns += 1;
       drainSteers();
@@ -726,7 +731,7 @@ export class Runtime {
 
       let turn: Awaited<ReturnType<ModelClient["turn"]>>;
       try {
-        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools: toolSpecs() });
+        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools });
       } catch (e) {
         emit("error", { message: String((e as Error).message) });
         this.saveTranscript(run, transcript);

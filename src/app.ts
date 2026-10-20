@@ -49,6 +49,8 @@ export function createApp(opts: {
   compactAfter?: number;
   masterKey?: string;
   publicUrl?: string;
+  /** Boot-level providers wired on this server. Default: every hand (tests and offline runs; the fakes are all "wired"). */
+  providers?: string[];
 }): App {
   const clock = opts.clock ?? systemClock;
   const store = new Store(openDb(opts.dbPath ?? ":memory:"));
@@ -83,6 +85,7 @@ export function createApp(opts: {
     maxTurns: opts.maxTurns,
     compactAfter: opts.compactAfter,
     publicUrl: opts.publicUrl,
+    providers: new Set(opts.providers ?? ["google", "email", "slack", "speech", "images", "payments", "phone", "browser"]),
   });
   const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
   const consolidator = new Consolidator(store, clock, opts.model, memory);

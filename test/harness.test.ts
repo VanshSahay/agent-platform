@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, lastUserText, reply, toolCallsSoFar, transcriptHas } from "../src/model/scripted.ts";
-import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
+import { groupWorld, noticesTo, repliesTo, sysText } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
 import { Vault } from "../src/tools/vault.ts";
 import { parseDecision } from "../src/runtime/decide.ts";
@@ -189,16 +189,16 @@ describe("credential vault", () => {
     const other = new Vault(w.app.store, w.clock, "another-key");
     expect(() => other.use("alex", "gmail", (s) => s)).toThrow();
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hi" });
-    const sys = w.model.calls.at(-1)!.system;
+    const sys = sysText(w.model.calls.at(-1)!);
     expect(sys).toContain("Connected accounts for Alex: gmail");
     expect(JSON.stringify(w.model.calls)).not.toContain("secret-token");
     // A guest's request uses the owner's accounts, so the owner's services are listed; a member with none sees nothing.
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("Connected accounts for Alex: gmail");
+    expect(sysText(w.model.calls.at(-1)!)).toContain("Connected accounts for Alex: gmail");
     w.app.rooms.createPerson({ id: "jo", displayName: "Jo", timezone: "UTC" });
     w.app.rooms.addMember(w.room.id, "jo", "member", { consented: true });
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "jo", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Connected accounts");
+    expect(sysText(w.model.calls.at(-1)!)).not.toContain("Connected accounts");
   });
 });
 
@@ -405,11 +405,11 @@ describe("private notes stay private", () => {
     w.app.store.putProfile({ agentId: w.agent.id, scope: "person", scopeId: "sam", text: "Sam can drive Thursdays.", derivedAt: w.clock.now() });
     w.app.store.putProfile({ agentId: w.agent.id, scope: "person", scopeId: privateProfileId("sam"), text: "Sam is between jobs and money is tight.", derivedAt: w.clock.now() });
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("drive Thursdays");
-    expect(w.model.calls.at(-1)!.system).not.toContain("money is tight");
+    expect(sysText(w.model.calls.at(-1)!)).toContain("drive Thursdays");
+    expect(sysText(w.model.calls.at(-1)!)).not.toContain("money is tight");
     const dm = w.app.rooms.dmFor(w.agent, "sam");
     await w.app.runtime.handleMessage({ roomId: dm.id, personId: "sam", text: "hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("money is tight");
+    expect(sysText(w.model.calls.at(-1)!)).toContain("money is tight");
   });
 
   test("the consolidator ignores memory ids outside the scope it is working on", async () => {

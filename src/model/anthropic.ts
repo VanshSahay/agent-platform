@@ -8,8 +8,9 @@ export const SMALL_MODEL = "claude-haiku-5-5";
 
 /**
  * Anthropic-backed model. Thinking is adaptive (the default on Opus 5.5);
- * depth is controlled with `output_config.effort`. The system prompt is cached
- * because the stable part (identity, soul, profile) repeats on every turn.
+ * depth is controlled with `output_config.effort`. The system prompt arrives
+ * in two blocks: the stable one (identity, soul, rules, skills index) is
+ * cached so it is read once across turns and runs; the volatile one is not.
  */
 export class AnthropicModel implements ModelClient {
   private client: Anthropic;
@@ -22,11 +23,13 @@ export class AnthropicModel implements ModelClient {
   }
 
   async turn(req: ModelRequest): Promise<ModelTurn> {
+    const system: Anthropic.TextBlockParam[] = [{ type: "text", text: req.system.stable, cache_control: { type: "ephemeral" } }];
+    if (req.system.volatile) system.push({ type: "text", text: req.system.volatile });
     const stream = this.client.messages.stream({
       model: this.mapModel(req.model),
       max_tokens: req.maxTokens ?? 16000,
       output_config: { effort: req.effort },
-      system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
+      system,
       tools: req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
       messages: req.messages,
     });

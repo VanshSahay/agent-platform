@@ -74,6 +74,8 @@ export interface ToolContext {
   vault: { services(): string[]; has(service: string): boolean; use<T>(service: string, fn: (secret: string) => T): T | undefined; put(service: string, secret: string): void };
   /** The model, for the few tools that read an image or write prose on their own. */
   model: ModelClient;
+  /** The boot-level providers this server has wired (what a `needs` on a tool means). */
+  providers: ReadonlySet<string>;
   /** Where links to artifacts, dashboards and settings pages point. */
   publicUrl: string;
   /** Whose accounts this request may use (the requester with consent, else the owner). */
@@ -107,7 +109,19 @@ export interface ToolDef {
   labels: { running: string; done: string; failed?: string };
   /** Writes or contacts someone. Side-effect tools ask first unless trusted. */
   sideEffect: boolean;
+  /**
+   * The boot-level provider this tool needs (google, email, speech, payments,
+   * phone, browser, images). A tool without `needs` is always offered. This is
+   * about what the server wired, not who connected what: per-person connection
+   * stays inside the tool, which reports notConnected.
+   */
+  needs?: string;
   run(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
+}
+
+/** Mark a whole family as needing one provider (e.g. all of Google needs the OAuth app). */
+export function withNeeds<T extends ToolDef>(defs: T[], needs: string): T[] {
+  return defs.map((t) => ({ ...t, needs }));
 }
 
 export const obj = (properties: Record<string, unknown>, required: string[] = []): ToolSpec["input_schema"] =>

@@ -3,6 +3,7 @@ import { callTool, callTools, lastToolResult, reply, toolCallsSoFar } from "../s
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
+import { TOOLS, toolsForRun } from "../src/tools/registry.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
 
 describe("run loop", () => {
@@ -261,6 +262,44 @@ describe("chatter is not an answer", () => {
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip first" });
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip second" });
     expect(w.app.store.messagesForRoom(w.room.id).map((m) => m.text.split("\n")[0])).toEqual(["@pip first", "ok", "@pip second", "ok"]);
+  });
+});
+
+describe("context economics", () => {
+  test("the system prompt arrives in two blocks: identity and priorities stable, the room and ledger volatile", async () => {
+    const w = groupWorld(() => reply("ok"));
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hi" });
+    const call = w.model.calls[0]!;
+    expect(call.system.stable).toContain("How you work");
+    expect(call.system.stable).toContain("Priorities in this chat: The Tahoe trip");
+    expect(call.system.stable).not.toContain("Where you are");
+    expect(call.system.volatile).toContain("Where you are");
+    expect(call.system.volatile).toContain("Responsibilities ledger for this room");
+    expect(call.system.volatile).toContain("Now:");
+  });
+
+  test("the run's tool list follows the wired providers and is fixed across turns", async () => {
+    const seen: string[][] = [];
+    const w = groupWorld(
+      (req) => {
+        seen.push(req.tools.map((t) => t.name));
+        return reply("ok");
+      },
+      { providers: [] },
+    );
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hi" });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hi again" });
+    expect(seen[0]).toContain("web_search");
+    expect(seen[0]).not.toContain("text_to_speech"); // needs the speech provider, which is not wired
+    expect(seen[0]).toEqual(seen[1]); // stable so the prefix caches
+  });
+
+  test("with every provider wired the whole catalogue is offered; with none, only ungated tools", () => {
+    const none = toolsForRun(new Set());
+    const all = toolsForRun(new Set(["google", "email", "slack", "speech", "images", "payments", "phone", "browser"]));
+    expect(none).toContainEqual(expect.objectContaining({ name: "web_search" }));
+    expect(none.find((t) => t.name === "text_to_speech")).toBeUndefined();
+    expect(all.map((t) => t.name)).toEqual(TOOLS.map((t) => t.spec.name));
   });
 });
 

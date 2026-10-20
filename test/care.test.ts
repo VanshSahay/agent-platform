@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, reply } from "../src/model/scripted.ts";
-import { groupWorld } from "./helpers.ts";
+import { groupWorld, sysText } from "./helpers.ts";
 import { DAY } from "../src/core/clock.ts";
 import { SuggestionService } from "../src/inbox/suggestions.ts";
 
@@ -8,22 +8,22 @@ describe("one general assistant, priorities per chat", () => {
   test("the owner's private chat is an ordinary thread: no special mode, rules and notes apply everywhere", async () => {
     const w = groupWorld((_req, i) => (i === 0 ? callTool("remember", { type: "rule", text: "Never call anyone before 9am.", scope: "agent" }) : reply("Noted.")));
     await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "rule: never call anyone before 9am" });
-    const sys = w.model.calls[0]!.system;
+    const sys = sysText(w.model.calls[0]!);
     expect(sys).not.toContain("Getting to know");
     expect(sys).not.toContain("Training");
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("Never call anyone before 9am");
+    expect(sysText(w.model.calls.at(-1)!)).toContain("Never call anyone before 9am");
   });
 
   test("a chat's priorities come first there and the assistant stays general; it can be in several chats, each tracked", async () => {
     const w = groupWorld(() => reply("ok"));
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hi" });
-    const sys = w.model.calls.at(-1)!.system;
+    const sys = sysText(w.model.calls.at(-1)!);
     expect(sys).toContain("Priorities in this chat: The Tahoe trip");
     expect(sys).toContain("still a general assistant");
     expect(sys).toContain("personal assistant");
     await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("Priorities in this chat");
+    expect(sysText(w.model.calls.at(-1)!)).not.toContain("Priorities in this chat");
     const street = w.app.rooms.createRoom({
       agentId: w.agent.id,
       kind: "group",
@@ -33,8 +33,8 @@ describe("one general assistant, priorities per chat", () => {
     });
     w.app.rooms.addMember(street.id, "alex", "owner", { consented: true });
     await w.app.runtime.handleMessage({ roomId: street.id, personId: "alex", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).toContain("Priorities in this chat: Shared tools");
-    expect(w.model.calls.at(-1)!.system).not.toContain("The Tahoe trip in November");
+    expect(sysText(w.model.calls.at(-1)!)).toContain("Priorities in this chat: Shared tools");
+    expect(sysText(w.model.calls.at(-1)!)).not.toContain("The Tahoe trip in November");
     const groups = w.app.store.listRooms(w.agent.id).filter((r) => r.kind === "group");
     expect(groups.map((r) => [r.name, r.focus?.slice(0, 12)])).toEqual([
       ["Tahoe trip", "The Tahoe tr"],

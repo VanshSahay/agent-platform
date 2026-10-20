@@ -870,10 +870,19 @@ export const CORE_TOOLS: ToolDef[] = [
   },
 ];
 
-/** Every tool the model may call: the core set plus the catalogue (Google, operator, knowledge, shopping, voice, contacts, email, MCP). */
+/** Every tool that exists: the core set plus the catalogue (Google, operator, knowledge, shopping, voice, contacts, email, MCP). */
 export const TOOLS: ToolDef[] = [...CORE_TOOLS, ...CATALOG_TOOLS];
 export const TOOL_INDEX = new Map(TOOLS.map((t) => [t.spec.name, t]));
 
-export function toolSpecs(): ToolSpec[] {
-  return TOOLS.map((t) => t.spec);
+/** The boot-level providers wired in src/main.ts. A tool with `needs` is only offered when its provider is here. */
+export type Providers = ReadonlySet<string>;
+
+/**
+ * The tools one run may call: the core set, plus catalogue tools whose provider
+ * is wired. The list is chosen once per run and never changes mid-run, so the
+ * prompt prefix caches; discovery of more happens through search_tools for the
+ * next run.
+ */
+export function toolsForRun(providers: Providers): ToolSpec[] {
+  return TOOLS.filter((t) => !t.needs || providers.has(t.needs)).map((t) => t.spec);
 }

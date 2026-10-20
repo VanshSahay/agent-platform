@@ -83,6 +83,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
   {
     spec: { name: "email_load_unprocessed", description: "New email in the assistant's own inbox that it has not dealt with yet.", input_schema: obj({}) },
     family: "knowledge",
+    needs: "email",
     labels: { running: "Loading new email…", done: "Loaded new email" },
     sideEffect: false,
     async run(_input, ctx) {
@@ -95,6 +96,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
   {
     spec: { name: "email_load_thread", description: "A whole email thread in the assistant's own inbox.", input_schema: obj({ threadId: str("The thread id.") }, ["threadId"]) },
     family: "knowledge",
+    needs: "email",
     labels: { running: "Loading email thread…", done: "Loaded email thread" },
     sideEffect: false,
     async run(input, ctx) {
@@ -110,6 +112,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
       input_schema: obj({ channel: str("Channel id or #name."), limit: num("Messages, default 30.") }, ["channel"]),
     },
     family: "knowledge",
+    needs: "slack",
     labels: { running: "Reading Slack…", done: "Read Slack" },
     sideEffect: false,
     async run(input, ctx) {
@@ -130,6 +133,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
   {
     spec: { name: "slack_load_aggregates", description: "The Slack channels the workspace connected, with member counts and purposes.", input_schema: obj({}) },
     family: "knowledge",
+    needs: "slack",
     labels: { running: "Reading Slack…", done: "Read Slack" },
     sideEffect: false,
     async run(_input, ctx) {
@@ -148,6 +152,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
       input_schema: obj({ query: str("Search words."), limit: num("Results, default 20.") }, ["query"]),
     },
     family: "knowledge",
+    needs: "slack",
     labels: { running: "Searching Slack…", done: "Searched Slack" },
     sideEffect: false,
     async run(input, ctx) {

@@ -48,37 +48,56 @@ function pickModel(): ModelClient {
   );
 }
 
-function pickHands(): Hands {
+function pickHands(): { hands: Hands; providers: string[] } {
   const hands: Hands = fakeHands();
+  const providers: string[] = [];
   const env = process.env;
   // Google Workspace: one OAuth app; each person connects their own account in Settings.
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     hands.google = new GoogleApi({ clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET });
+    providers.push("google");
     console.log("Google: OAuth app configured (people connect under Settings)");
   } else console.log("Google: off (set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)");
   // The assistant's own mailbox.
   if (env.AGENTMAIL_API_KEY && env.AGENTMAIL_INBOX) {
     hands.email = new AgentMail(env.AGENTMAIL_API_KEY, env.AGENTMAIL_INBOX);
+    providers.push("email");
     console.log(`Email: AgentMail inbox ${env.AGENTMAIL_INBOX} (send and receive)`);
   } else if (env.RESEND_API_KEY && env.EMAIL_FROM) {
     hands.email = new ResendMail(env.RESEND_API_KEY, env.EMAIL_FROM);
+    providers.push("email");
     console.log(`Email: Resend from ${env.EMAIL_FROM} (send only)`);
   } else console.log("Email: fake (set AGENTMAIL_API_KEY + AGENTMAIL_INBOX, or RESEND_API_KEY + EMAIL_FROM)");
   hands.slack = new SlackApi(); // tokens are per person, in the vault
-  if (env.ELEVENLABS_API_KEY) hands.speech = new ElevenLabsSpeech(env.ELEVENLABS_API_KEY, env.ELEVENLABS_VOICE_ID);
-  if (env.OPENROUTER_API_KEY) hands.images = new OpenRouterImages(env.OPENROUTER_API_KEY, env.IMAGE_MODEL);
-  if (env.STRIPE_SECRET_KEY) hands.payments = new StripeIssuing(env.STRIPE_SECRET_KEY, env.STRIPE_CARDHOLDER_ID);
+  if (env.ELEVENLABS_API_KEY) {
+    hands.speech = new ElevenLabsSpeech(env.ELEVENLABS_API_KEY, env.ELEVENLABS_VOICE_ID);
+    providers.push("speech");
+  }
+  if (env.OPENROUTER_API_KEY) {
+    hands.images = new OpenRouterImages(env.OPENROUTER_API_KEY, env.IMAGE_MODEL);
+    providers.push("images");
+  }
+  if (env.STRIPE_SECRET_KEY) {
+    hands.payments = new StripeIssuing(env.STRIPE_SECRET_KEY, env.STRIPE_CARDHOLDER_ID);
+    providers.push("payments");
+  }
   const twilio =
     env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM
       ? new TwilioSms({ accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN, from: env.TWILIO_FROM })
       : undefined;
-  if (env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID) hands.phone = new VapiPhone({ apiKey: env.VAPI_API_KEY, phoneNumberId: env.VAPI_PHONE_NUMBER_ID }, twilio);
-  else if (twilio) hands.phone = new SmsOnlyPhone(twilio);
+  if (env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID) {
+    hands.phone = new VapiPhone({ apiKey: env.VAPI_API_KEY, phoneNumberId: env.VAPI_PHONE_NUMBER_ID }, twilio);
+    providers.push("phone");
+  } else if (twilio) {
+    hands.phone = new SmsOnlyPhone(twilio);
+    providers.push("phone");
+  }
   console.log(
     `Phone: ${env.VAPI_API_KEY ? "Vapi calls" : "no calls"}, ${twilio ? "Twilio SMS" : "no SMS"}; speech: ${env.ELEVENLABS_API_KEY ? "ElevenLabs" : "fake"}; images: ${env.OPENROUTER_API_KEY ? "OpenRouter" : "fake"}; cards: ${env.STRIPE_SECRET_KEY ? "Stripe Issuing" : "fake"}`,
   );
   if (process.env.BROWSERBASE_API_KEY) {
     hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
+    providers.push("browser");
     console.log("Browser: Browserbase");
   } else {
     hands.browser = new JinaReader();
@@ -88,16 +107,19 @@ function pickHands(): Hands {
   hands.search = search;
   console.log(`Search: ${search.name === "brave" ? "Brave" : search.name === "exa" ? "Exa (keyless, via the Agent Reach channel)" : "DuckDuckGo (keyless)"}`);
   console.log("Community posting: fake (adapter in src/tools/hands.ts)");
-  return hands;
+  console.log(`Tool catalogue: ${providers.length ? `offering families for ${providers.join(", ")}` : "core set only (no providers wired)"}`);
+  return { hands, providers };
 }
 
 const dbPath = process.env.DB_PATH ?? "data/circle.sqlite";
 if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
 if (!process.env.MASTER_KEY) console.log("Vault: MASTER_KEY not set; members' credentials are encrypted with a dev key (set MASTER_KEY in production)");
+const wired = pickHands();
 const app = createApp({
   dbPath,
   model: pickModel(),
-  hands: pickHands(),
+  hands: wired.hands,
+  providers: wired.providers,
   masterKey: process.env.MASTER_KEY,
   publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`,
 });
