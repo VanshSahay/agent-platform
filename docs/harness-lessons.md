@@ -1,0 +1,16 @@
+# Harness lessons
+
+The improvement library, after Harness² (google-research/harness2): when the brain underperforms, edit the harness around the model — never the model — and only keep changes that an execution contrast supports. A change lands here only when a run of the eval scenarios (or the offline suite) shows it fixed the named deficiency; a good-looking edit alone does not qualify.
+
+How to work, per the Harness² method, scaled to this repo:
+
+1. **Scope the edit**: an *invariant* edit targets an agentic deficiency that recurs across errands (planning, tool use, context management, delegation — `src/runtime`, `src/planning`, `src/agent`, `src/tools/registry.ts`); a *domain-specific* edit targets one errand family's knowledge and procedure (`skills/*.md`, tool descriptions).
+2. **Probe on the same ground**: run the failing scenarios before and after the edit, with the same model and world (`bun run eval`, or the scripted suite for deterministic behaviour). The contrast — what the records show changing, not a score — is the evidence.
+3. **Compose selectively**: merge what the contrast supports, revise conflicts, keep the current harness otherwise. Every adopted change names the observation behind it.
+4. **Log the lesson** here: situation, lesson, evidence. No entry without evidence.
+
+Entries:
+
+- **Situation**: the model repeats a failing approach instead of changing course; the mechanical two-stall ladder shifts too late and without judgement. **Lesson**: the model must rewrite the remaining plan itself, from evidence, with the ladder as a floor. **Evidence**: the Mandarin-handyman trace in [research/wajo-fo-search.md](research/wajo-fo-search.md) (Fo narrates a diagnosis and switches sources); `stall-revise-course` scenario added; scripted tests pin the flow. **Change**: `revise_plan` (runtime.test.ts, planner.ts).
+- **Situation**: every turn paid for all 99 tool schemas (~11.9k tokens) and re-read the whole system prompt; attention and cost leaked on every call. **Lesson**: the tool list is chosen once per run from what the server wired, and the system prompt splits into a cached stable block and a volatile block. **Evidence**: measured payload (47,433 bytes); cache-path review in [research/always-on-agents-talk.md](research/always-on-agents-talk.md) §5; tests pin the split and the selection. **Change**: `toolsForRun` + two-block system prompt (registry.ts, prompt.ts, anthropic.ts).
+- **Situation**: a crash mid-run lost the work (boot failed the run) and a resumed run could repeat a side effect. **Lesson**: the transcript is the resume point; save it every step; completed side effects are refused on exact repeat. **Evidence**: the durability analysis in [research/always-on-agents-talk.md](research/always-on-agents-talk.md) §3; a two-process restart test and a repeat-refusal test. **Change**: boot resume + idempotency guard (runtime.ts).
