@@ -354,6 +354,49 @@ export const SCENARIOS: Scenario[] = [
       },
     ],
   },
+  {
+    name: "stall-revise-course",
+    description:
+      "The open web returns paid directories that do not confirm Mandarin speakers; the agent changes course on what it learned (revises the plan or moves to another approach) instead of repeating the same search.",
+    setup(_app, w) {
+      w.hands.search = new FakeSearch(() => [
+        { title: "Top 10 handyman websites", url: "https://directories.example/", snippet: "Compare handyman services anywhere." },
+      ]);
+    },
+    turns: [{ room: "room", personId: "alex", text: "@pip find a Mandarin-speaking handyman near Jo's in San Jose to fix her dripping kitchen tap this week." }],
+    checks: [
+      {
+        name: "searched the open web first",
+        detail: "At least one web_search ran before anything else was tried.",
+        pass: (app, w) => toolCalls(app, w, "web_search").length >= 1,
+      },
+      {
+        name: "changed course on the evidence",
+        detail:
+          "After the last search ended, a revise_plan call, a browse_page, an ask or a community post started: the course moved on what the results were, not a shrug and not a repeat.",
+        pass: (app, w) => {
+          const lastSearch = toolEvents(app, w, "tool_end", "web_search").at(-1);
+          if (!lastSearch) return false;
+          const changed = ["revise_plan", "browse_page", "ask_room", "ask_person", "post_community"].flatMap((t) => toolEvents(app, w, "tool_start", t));
+          return changed.some((e) => after(e, lastSearch));
+        },
+      },
+      {
+        name: "a revision names what was learned",
+        detail: "If the agent revised the plan, the revise_plan input carries the evidence it acted on.",
+        pass: (app, w) =>
+          toolCalls(app, w, "revise_plan").every((c) => {
+            const evidence = (c.input as { evidence?: unknown } | null)?.evidence;
+            return typeof evidence === "string" && evidence.trim().length > 8;
+          }),
+      },
+      {
+        name: "never repeats the identical search",
+        detail: "Every web_search query is distinct: reformulating is right, repeating is not.",
+        pass: (_app, w) => new Set(w.hands.search.queries).size === w.hands.search.queries.length,
+      },
+    ],
+  },
 ];
 
 export function findScenarios(only?: string): Scenario[] {

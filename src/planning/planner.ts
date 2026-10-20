@@ -80,7 +80,8 @@ export class Planner {
    * Record that the active step's approach did not work. After
    * MAX_ATTEMPTS_PER_STEP the next alternative approach becomes the step's
    * approach; when alternatives run out the step fails and the plan moves on.
-   * Returns what changed so the runtime can tell the model.
+   * Returns what changed so the runtime can tell the model. This is the floor:
+   * the model can rewrite the course sooner through revise().
    */
   stall(runId: Id, reason: string): { plan: Plan; switchedTo?: ApproachKind; exhausted?: boolean } | undefined {
     const plan = this.get(runId);
@@ -110,9 +111,41 @@ export class Planner {
     return { plan, switchedTo, exhausted };
   }
 
+  /**
+   * The model rewrites the remaining course from what it learned (the
+   * revise_plan tool). Finished steps stay as history; the active step is
+   * marked skipped with the reason, and the pending ones are replaced by what
+   * the model now knows. Without a plan there is nothing to revise.
+   */
+  revise(runId: Id, evidence: string, steps: { text: string; approach: ApproachKind; alternatives?: ApproachKind[] }[]): Plan | undefined {
+    const plan = this.get(runId);
+    if (!plan) return undefined;
+    const n = (plan.revisions ?? 0) + 1;
+    const history = plan.steps.slice(0, plan.cursor);
+    const active = plan.steps[plan.cursor];
+    if (active) {
+      active.status = "skipped";
+      active.evidence = evidence;
+    }
+    const fresh = steps.map((s, i) => ({
+      id: `r${n}s${i + 1}`,
+      text: s.text,
+      approach: s.approach,
+      status: i === 0 ? ("active" as const) : ("pending" as const),
+      alternatives: s.alternatives ?? ladderAfter(s.approach),
+      attempts: 0,
+    }));
+    plan.steps = [...history, ...(active ? [active] : []), ...fresh];
+    plan.cursor = plan.steps.indexOf(fresh[0]!);
+    plan.revisions = n;
+    plan.updatedAt = this.clock.now();
+    this.store.putPlan(plan);
+    return plan;
+  }
+
   describe(plan: Plan): string {
     const lines = plan.steps.map((s) => {
-      const mark = s.status === "done" ? "x" : s.status === "active" ? ">" : s.status === "failed" ? "!" : " ";
+      const mark = s.status === "done" ? "x" : s.status === "active" ? ">" : s.status === "failed" ? "!" : s.status === "skipped" ? "-" : " ";
       const alt = s.alternatives.length ? ` (then: ${s.alternatives.map((a) => APPROACH_LABEL[a]).join(", ")})` : "";
       return `[${mark}] ${s.id} ${s.text} via ${APPROACH_LABEL[s.approach]}${alt}${s.attempts ? ` attempts=${s.attempts}` : ""}`;
     });

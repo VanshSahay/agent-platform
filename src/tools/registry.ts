@@ -43,6 +43,39 @@ export const CORE_TOOLS: ToolDef[] = [
   },
   {
     spec: {
+      name: "revise_plan",
+      description:
+        "Rewrite the plan from what you have learned: a step stalled, a source was a dead end, or the evidence points somewhere better. Say in one line what you learned, then give the remaining steps. Finished steps are kept; the rest is replaced. Do this instead of repeating a failing approach.",
+      input_schema: obj(
+        {
+          evidence: str("What you learned that changes the course, one line."),
+          steps: {
+            type: "array",
+            items: obj(
+              {
+                text: str("The step."),
+                approach: { type: "string", enum: ["search", "ask_room", "ask_person", "call", "community_post", "browse", "wait"] },
+              },
+              ["text", "approach"],
+            ),
+          },
+        },
+        ["evidence", "steps"],
+      ),
+    },
+    family: "plan",
+    labels: { running: "Re-planning…", done: "Revised the plan" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const steps = Array.isArray(input.steps) ? (input.steps as { text: string; approach: ApproachKind }[]) : [];
+      if (!steps.length) return { ok: false, content: "A revision needs at least one step." };
+      const revised = ctx.planner.revise(ctx.run.id, s(input.evidence), steps);
+      if (!revised) return { ok: false, content: "There is no plan to revise yet; call plan first." };
+      return { ok: true, content: ctx.planner.describe(revised) };
+    },
+  },
+  {
+    spec: {
       name: "web_search",
       description: "Search the web. Use for businesses, hours, prices, how-tos and anything public. Returns titles, URLs and snippets.",
       input_schema: obj({ query: str("Search query."), near: str("Optional place to bias results, e.g. a city.") }, ["query"]),

@@ -289,6 +289,50 @@ describe("planner", () => {
     ).toBe(true);
   });
 
+  test("the model revises the plan from what it learned; done steps stay, the rest is replaced", async () => {
+    const search = new FakeSearch(() => []);
+    const w = groupWorld(
+      (req, i) => {
+        if (i === 0)
+          return callTool("plan", {
+            goal: "Find a Mandarin-speaking handyman",
+            steps: [
+              { text: "Find candidates", approach: "search" },
+              { text: "Pick one and book", approach: "call" },
+            ],
+          });
+        if (i === 1) return callTool("web_search", { query: "handyman mandarin" });
+        if (i === 2) {
+          expect(JSON.stringify(req.messages)).toContain("revise_plan");
+          return callTool("revise_plan", {
+            evidence: "search returns only paid directories, none confirm Mandarin; the Chinese community forum is the reliable source",
+            steps: [{ text: "Ask the Chinese community for confirmed Mandarin-speaking handymen", approach: "community_post" }],
+          });
+        }
+        expect(JSON.stringify(req.messages)).toContain("Ask the Chinese community");
+        return reply("On it — the community forum is the better source.");
+      },
+      { search },
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a mandarin handyman" });
+    const plan = w.app.planner.get(run!.id)!;
+    expect(plan.revisions).toBe(1);
+    expect(plan.steps.map((s) => s.status)).toEqual(["skipped", "active"]);
+    expect(plan.steps[0]!.evidence).toContain("directories");
+    expect(plan.steps[1]!.approach).toBe("community_post");
+    expect(plan.steps[1]!.alternatives).toEqual(["ask_person"]); // the ladder still backs the new step up
+  });
+
+  test("revise_plan with no plan says so instead of failing the run", async () => {
+    const w = groupWorld((req, i) => {
+      if (i === 0) return callTool("revise_plan", { evidence: "nothing yet", steps: [{ text: "Ask the group", approach: "ask_room" }] });
+      expect(lastToolResult(req)).toContain("no plan to revise");
+      return reply("ok");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find someone" });
+    expect(run?.status).toBe("done");
+  });
+
   test("parallel tool calls are all answered in one user message", async () => {
     const w = groupWorld((req, i) => {
       if (i === 0)

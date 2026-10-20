@@ -505,4 +505,6 @@ export interface Plan {
   cursor: number;
   createdAt: UnixMs;
   updatedAt: UnixMs;
+  /** How many times the model rewrote the remaining course (revise_plan). */
+  revisions?: number;
 }

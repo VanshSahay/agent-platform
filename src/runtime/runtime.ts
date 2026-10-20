@@ -831,10 +831,10 @@ export class Runtime {
         if (result.approach && plan) {
           if (result.stall) {
             const st = planner.stall(run.id, result.stall);
-            if (st?.switchedTo) notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that.`);
+            if (st?.switchedTo) notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that, or call revise_plan if you know a better course.`);
             else if (st?.exhausted)
               notes.push(`All approaches for that step failed; the plan moved to the next step. If nothing is left, tell the room what you tried and what you need.`);
-            else notes.push(`That approach stalled (${result.stall}). You may try once more or switch.`);
+            else notes.push(`That approach stalled (${result.stall}). Try once more, or call revise_plan with what you learned and a better approach.`);
           } else if (result.ok && !result.waitingOn && !result.held && result.approach !== "wait") {
             planner.complete(run.id, result.evidence ?? "result");
           }

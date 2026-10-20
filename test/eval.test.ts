@@ -29,7 +29,7 @@ const wellBehaved = new ScriptedModel((req) => {
 
 describe("eval harness", () => {
   test("grades the store after playing two scenarios through the real runtime", async () => {
-    const results = await runScenarios(findScenarios("purchase").concat(findScenarios("stall")), { model: wellBehaved, timeoutMs: 5000 });
+    const results = await runScenarios(findScenarios("purchase").concat(findScenarios("stall-ladder")), { model: wellBehaved, timeoutMs: 5000 });
     expect(results.map((r) => r.name)).toEqual(["purchase-threshold", "search-stall-ladder"]);
     for (const r of results) {
       expect(r.error).toBeUndefined();
