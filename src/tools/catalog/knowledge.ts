@@ -114,7 +114,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
           roomId: r.id,
           name: r.name,
           messages: ctx.store
-            .messagesForRoom(r.id, n(input.limit) ?? 20)
+            .messagesForRoom(r.id, Math.min(100, Math.max(1, n(input.limit) ?? 20)))
             .filter((m) => m.role !== "system")
             .map((m) => ({ at: new Date(m.at).toISOString(), who: ctx.store.getPerson(m.authorId)?.displayName ?? ctx.agent.name, text: clip(m.text, 400) })),
         })),
@@ -136,7 +136,7 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
       return {
         ok: true,
         content: ctx.store
-          .messagesForRoom(room.id, n(input.limit) ?? 100)
+          .messagesForRoom(room.id, Math.min(300, Math.max(1, n(input.limit) ?? 100)))
           .filter((m) => m.role !== "system")
           .map((m) => ({ at: new Date(m.at).toISOString(), who: ctx.store.getPerson(m.authorId)?.displayName ?? ctx.agent.name, text: clip(m.text, 800) })),
       };

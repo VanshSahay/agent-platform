@@ -1,6 +1,6 @@
 import type { ApproachKind, AttentionKind, Id, Task } from "../core/types.ts";
 import type { ToolSpec } from "../model/types.ts";
-import { describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
+import { askFirst, describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
 import { CATALOG_TOOLS } from "./catalog/index.ts";
 
 export type { GateDecision, ToolContext, ToolDef, ToolFamily, ToolResult } from "./kit.ts";
@@ -365,10 +365,8 @@ export const CORE_TOOLS: ToolDef[] = [
         outreach: { who: s(input.who), how: "phone", contact: to },
         key: ["place_call", to],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "call", held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing has been dialed.", waitingOn: gate.item, roomNotice: gate.notice, approach: "call" };
-      }
+      const held = askFirst(gate, "Waiting for the owner's go-ahead. Nothing has been dialed.", { approach: "call" });
+      if (held) return held;
       ctx.progress(`Calling ${s(input.who)}…`);
       const r = await ctx.hands.phone.call({ to, objective: s(input.objective), callerName: ctx.agent.name, language: s(input.language) || undefined });
       const stalled = r.status !== "completed";
@@ -398,10 +396,8 @@ export const CORE_TOOLS: ToolDef[] = [
         outreach: { who: s(input.who), how: "sms", contact: s(input.to) },
         key: ["send_sms", s(input.to), s(input.text)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for the owner's go-ahead. Nothing was sent.");
+      if (held) return held;
       const r = await ctx.hands.phone.sendSms({ to: s(input.to), text: s(input.text), from: ctx.agent.name });
       return { ok: true, content: { sent: true, messageId: r.messageId }, evidence: r.evidence };
     },
@@ -432,10 +428,8 @@ export const CORE_TOOLS: ToolDef[] = [
         outreach: { who: s(input.community), how: "community_post" },
         key: ["post_community", s(input.community), s(input.title), s(input.body)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "community_post", held: true };
-        return { ok: true, content: "Waiting for the owner's OK before posting anything public.", waitingOn: gate.item, roomNotice: gate.notice, approach: "community_post" };
-      }
+      const held = askFirst(gate, "Waiting for the owner's OK before posting anything public.", { approach: "community_post" });
+      if (held) return held;
       const r = await ctx.hands.community.post({ community: s(input.community), title: s(input.title), body: s(input.body), language: s(input.language) || undefined });
       return {
         ok: true,
@@ -597,10 +591,8 @@ export const CORE_TOOLS: ToolDef[] = [
           detail: `${s(input.prompt)}\nPremise: ${s(input.premise)}${outreach.length ? `\nIt may contact: ${describeOutreach(outreach)}` : ""}`,
           key: ["schedule_action", s(input.title), s(input.prompt), outreach],
         });
-        if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held, held: true };
-          return { ok: true, content: "Asked the owner before scheduling.", waitingOn: gate.item, roomNotice: gate.notice };
-        }
+        const held = askFirst(gate, "Asked the owner before scheduling.");
+        if (held) return held;
       }
       if (outreach.length && ctx.requesterId === ctx.agent.ownerId)
         ctx.dm(ctx.agent.ownerId, `Scheduled "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
@@ -730,13 +722,11 @@ export const CORE_TOOLS: ToolDef[] = [
         // re-issue that says "$79.99" or paraphrases "what" after the yes does not open a second card.
         key: ["request_purchase", Math.ceil(amount / 10) * 10, s(input.where).toLowerCase()],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for approval before paying.");
+      if (held) return held;
       return {
         ok: true,
-        content: `Approved: ${gate.reason}. The budget is cleared for $${amount.toFixed(2)} at ${s(input.where)}. Now place it: search_products, add_to_cart, then checkout_cart (it mints a single-use card for the exact amount; you never see card numbers). If the shop needs the person's login, connect_account first.`,
+        content: `Approved: ${gate.granted ? gate.reason : ""}. The budget is cleared for $${amount.toFixed(2)} at ${s(input.where)}. Next: search_products and add_to_cart, then checkout_cart, which confirms the budget against the cart but does not place the order: hand the person the item links, the amount and the address to finish, and never say it was ordered.`,
         evidence: `purchase-approved:${amount}`,
       };
     },
@@ -876,10 +866,8 @@ export const CORE_TOOLS: ToolDef[] = [
           detail: `Every ${every}h: ${s(input.condition)} → ${s(input.action)}${outreach.length ? `\nIt may contact: ${describeOutreach(outreach)}` : ""}`,
           key: ["watch_for", s(input.title), s(input.condition), s(input.action), outreach],
         });
-        if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held, held: true };
-          return { ok: true, content: "Asked the owner before setting the watch.", waitingOn: gate.item, roomNotice: gate.notice };
-        }
+        const held = askFirst(gate, "Asked the owner before setting the watch.");
+        if (held) return held;
       }
       if (outreach.length && ctx.requesterId === ctx.agent.ownerId)
         ctx.dm(ctx.agent.ownerId, `Watch "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);

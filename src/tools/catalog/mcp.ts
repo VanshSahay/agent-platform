@@ -1,4 +1,4 @@
-import { obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
+import { askFirst, obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
 import { clip, notConnected } from "./shared.ts";
 
 /**
@@ -168,41 +168,41 @@ export const MCP_TOOLS: ToolDef[] = [
       if (!s(input.server)) return { ok: true, content: servers.length ? { servers } : "No MCP servers connected. Settings → Connections → Add MCP." };
       const key = service("mcp", s(input.server));
       if (!ctx.vault.has(key)) return notConnected(ctx, `MCP server "${s(input.server)}"`);
-      const rec = ctx.vault.use(key, (raw) => JSON.parse(raw) as McpServerRecord);
-      if (!rec) return notConnected(ctx, `MCP server "${s(input.server)}"`);
-      const client = new McpClient(rec);
-      try {
-        if (!s(input.tool))
+      // The record (URL and token) lives only inside this callback; the model sees names and results.
+      const out = await ctx.vault.use(key, async (raw) => {
+        const client = new McpClient(JSON.parse(raw) as McpServerRecord);
+        try {
+          if (!s(input.tool))
+            return {
+              ok: true,
+              content: (await client.listTools()).map((t) => ({ name: t.name, description: clip(t.description ?? "", 300), inputSchema: t.inputSchema })),
+              evidence: `mcp:${s(input.server)}:list`,
+            };
+          // A write on someone else's connection asks them; the person's own connection is theirs to use.
+          if (ctx.requesterId !== ctx.accountOwnerId) {
+            const gate = ctx.gate({
+              kind: "action",
+              title: `OK to use ${s(input.server)}: ${s(input.tool)}?`,
+              detail: clip(JSON.stringify(input.args ?? {}), 600),
+              key: ["mcp_call", s(input.server), s(input.tool), input.args],
+            });
+            const held = askFirst(gate, "Asked the connection's owner first.");
+            if (held) return held;
+          }
+          const r = await client.callTool(s(input.tool), (input.args && typeof input.args === "object" ? input.args : {}) as Record<string, unknown>);
+          const content = (r as { content?: { type: string; text?: string }[] })?.content;
+          const text = Array.isArray(content) ? content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n") : JSON.stringify(r);
           return {
             ok: true,
-            content: (await client.listTools()).map((t) => ({ name: t.name, description: clip(t.description ?? "", 300), inputSchema: t.inputSchema })),
-            evidence: `mcp:${s(input.server)}:list`,
+            content: clip(text, 12_000),
+            evidence: `mcp:${s(input.server)}:${s(input.tool)}`,
+            label: `${s(input.server)} · ${s(input.tool).replace(/[_-]+/g, " ")}`,
           };
-        // A write on someone else's connection asks them; the person's own connection is theirs to use.
-        if (ctx.requesterId !== ctx.accountOwnerId) {
-          const gate = ctx.gate({
-            kind: "action",
-            title: `OK to use ${s(input.server)}: ${s(input.tool)}?`,
-            detail: clip(JSON.stringify(input.args ?? {}), 600),
-            key: ["mcp_call", s(input.server), s(input.tool), input.args],
-          });
-          if (!gate.granted) {
-            if ("held" in gate) return { ok: true, content: gate.held, held: true };
-            return { ok: true, content: "Asked the connection's owner first.", waitingOn: gate.item, roomNotice: gate.notice };
-          }
+        } catch (e) {
+          return { ok: false, content: `${s(input.server)} said: ${String((e as Error).message).slice(0, 300)}` };
         }
-        const r = await client.callTool(s(input.tool), (input.args && typeof input.args === "object" ? input.args : {}) as Record<string, unknown>);
-        const content = (r as { content?: { type: string; text?: string }[] })?.content;
-        const text = Array.isArray(content) ? content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n") : JSON.stringify(r);
-        return {
-          ok: true,
-          content: clip(text, 12_000),
-          evidence: `mcp:${s(input.server)}:${s(input.tool)}`,
-          label: `${s(input.server)} · ${s(input.tool).replace(/[_-]+/g, " ")}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `${s(input.server)} said: ${String((e as Error).message).slice(0, 300)}` };
-      }
+      });
+      return out ?? notConnected(ctx, `MCP server "${s(input.server)}"`);
     },
   },
   {
@@ -227,41 +227,40 @@ export const MCP_TOOLS: ToolDef[] = [
       if (!s(input.connector)) return { ok: true, content: apis.length ? { connectors: apis } : "No APIs connected. Settings → Connections → Add API." };
       const key = service("api", s(input.connector));
       if (!ctx.vault.has(key)) return notConnected(ctx, `API "${s(input.connector)}"`);
-      const rec = ctx.vault.use(key, (raw) => JSON.parse(raw) as ApiRecord);
-      if (!rec) return notConnected(ctx, `API "${s(input.connector)}"`);
-      const api = new OpenApiConnector(rec);
-      try {
-        if (!s(input.operationId) && !s(input.path)) return { ok: true, content: (await api.operations()).slice(0, 100), evidence: `api:${s(input.connector)}:ops` };
-        // Gate on what will actually be sent: an operationId's method comes from the document, not the model.
-        const { method, path } = await api.resolve({ operationId: s(input.operationId) || undefined, method: s(input.method) || undefined, path: s(input.path) || undefined });
-        if (ctx.requesterId !== ctx.accountOwnerId && method !== "GET") {
-          const gate = ctx.gate({
-            kind: "action",
-            title: `OK to call ${s(input.connector)}?`,
-            detail: clip(`${method} ${path} ${JSON.stringify(input.body ?? input.params ?? {})}`, 600),
-            key: ["connector_call", s(input.connector), method, path, input.params, input.body],
-          });
-          if (!gate.granted) {
-            if ("held" in gate) return { ok: true, content: gate.held, held: true };
-            return { ok: true, content: "Asked the connection's owner first.", waitingOn: gate.item, roomNotice: gate.notice };
+      const out = await ctx.vault.use(key, async (raw) => {
+        const api = new OpenApiConnector(JSON.parse(raw) as ApiRecord);
+        try {
+          if (!s(input.operationId) && !s(input.path)) return { ok: true, content: (await api.operations()).slice(0, 100), evidence: `api:${s(input.connector)}:ops` };
+          // Gate on what will actually be sent: an operationId's method comes from the document, not the model.
+          const { method, path } = await api.resolve({ operationId: s(input.operationId) || undefined, method: s(input.method) || undefined, path: s(input.path) || undefined });
+          if (ctx.requesterId !== ctx.accountOwnerId && method !== "GET") {
+            const gate = ctx.gate({
+              kind: "action",
+              title: `OK to call ${s(input.connector)}?`,
+              detail: clip(`${method} ${path} ${JSON.stringify(input.body ?? input.params ?? {})}`, 600),
+              key: ["connector_call", s(input.connector), method, path, input.params, input.body],
+            });
+            const held = askFirst(gate, "Asked the connection's owner first.");
+            if (held) return held;
           }
+          const r = await api.call({
+            operationId: s(input.operationId) || undefined,
+            method: s(input.method) || undefined,
+            path: s(input.path) || undefined,
+            params: (input.params ?? {}) as Record<string, unknown>,
+            body: input.body,
+          });
+          return {
+            ok: true,
+            content: typeof r === "string" ? r : clip(JSON.stringify(r), 12_000),
+            evidence: `api:${s(input.connector)}:${s(input.operationId) || s(input.path)}`,
+            label: `${s(input.connector)} · ${(s(input.operationId) || s(input.path)).replace(/[_-]+/g, " ").slice(0, 40)}`,
+          };
+        } catch (e) {
+          return { ok: false, content: `${s(input.connector)} said: ${String((e as Error).message).slice(0, 300)}` };
         }
-        const r = await api.call({
-          operationId: s(input.operationId) || undefined,
-          method: s(input.method) || undefined,
-          path: s(input.path) || undefined,
-          params: (input.params ?? {}) as Record<string, unknown>,
-          body: input.body,
-        });
-        return {
-          ok: true,
-          content: typeof r === "string" ? r : clip(JSON.stringify(r), 12_000),
-          evidence: `api:${s(input.connector)}:${s(input.operationId) || s(input.path)}`,
-          label: `${s(input.connector)} · ${(s(input.operationId) || s(input.path)).replace(/[_-]+/g, " ").slice(0, 40)}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `${s(input.connector)} said: ${String((e as Error).message).slice(0, 300)}` };
-      }
+      });
+      return out ?? notConnected(ctx, `API "${s(input.connector)}"`);
     },
   },
 ];

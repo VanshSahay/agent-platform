@@ -134,6 +134,16 @@ export function parseOutreach(v: unknown): Outreach[] {
 }
 export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who}${d.contact ? ` <${d.contact}>` : ""} by ${d.how} (${d.why})`).join("; ");
 
+/**
+ * The one way a tool answers a gate that did not open: a working-hours hold is reported as held, a pending
+ * card pauses the run with the waiting text. Returns undefined when the gate is granted.
+ */
+export function askFirst(gate: GateDecision, waiting: string, extra: Partial<ToolResult> = {}): ToolResult | undefined {
+  if (gate.granted) return undefined;
+  if ("held" in gate) return { ok: true, content: gate.held, held: true, ...extra };
+  return { ok: true, content: waiting, waitingOn: gate.item, roomNotice: gate.notice, ...extra };
+}
+
 /** A phone number or address in one comparable form: digits with the plus, or a lowercased email. */
 export const contactKey = (v: string) => {
   const t = v.trim().toLowerCase();

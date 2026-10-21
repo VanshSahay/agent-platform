@@ -1,7 +1,7 @@
 import { fmtWhen } from "../../core/clock.ts";
 import type { ModelImage } from "../../model/types.ts";
 import type { BrowserStep } from "../browser.ts";
-import { n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
+import { askFirst, n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
 import { clip, readableRooms, saveArtifact } from "./shared.ts";
 
 const list = (description: string) => ({ type: "array", items: { type: "string" }, description });
@@ -123,7 +123,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     labels: { running: "Listing chats…", done: "Listed chats" },
     sideEffect: false,
     async run(input, ctx) {
-      const rooms = readableRooms(ctx).slice(0, n(input.limit) ?? 20);
+      const rooms = readableRooms(ctx).slice(0, Math.min(100, Math.max(1, n(input.limit) ?? 20)));
       return {
         ok: true,
         content: rooms.map((r) => {
@@ -147,7 +147,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       const room = readableRooms(ctx).find((r) => r.id === s(input.roomId));
       if (!room) return { ok: false, content: "Not a chat you can read." };
       const msgs = ctx.store
-        .messagesForRoom(room.id, n(input.limit) ?? 60)
+        .messagesForRoom(room.id, Math.min(300, Math.max(1, n(input.limit) ?? 60)))
         .filter((m) => m.role !== "system" && (m.visibleTo.length === 0 || (ctx.requesterId !== undefined && m.visibleTo.includes(ctx.requesterId))));
       return {
         ok: true,
@@ -390,10 +390,8 @@ export const OPERATOR_TOOLS: ToolDef[] = [
             .slice(0, 800)}`,
           key: ["browser_use", url, site, steps],
         });
-        if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held, held: true };
-          return { ok: true, content: "Asked first. Nothing was clicked.", waitingOn: gate.item, roomNotice: gate.notice };
-        }
+        const held = askFirst(gate, "Asked first. Nothing was clicked.");
+        if (held) return held;
       }
       try {
         const r = site ? await ctx.vault.use(`browser:${site}`, (contextId) => ctx.hands.browser.run({ url, contextId, steps })) : await ctx.hands.browser.run({ url, steps });

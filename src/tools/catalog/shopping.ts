@@ -1,6 +1,6 @@
 import { newId } from "../../core/ids.ts";
 import type { Address } from "../../core/types.ts";
-import { n, num, obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
+import { askFirst, n, num, obj, s, str, type ToolContext, type ToolDef, type ToolResult } from "../kit.ts";
 import { clip } from "./shared.ts";
 
 /**
@@ -18,6 +18,12 @@ export interface CartItem {
   merchant: string;
 }
 const cartKey = (ctx: ToolContext) => `cart:${ctx.accountOwnerId}`;
+/** Changing someone else's cart or saved addresses asks them first; your own is yours. */
+function foreignWrite(ctx: ToolContext, title: string, detail: string, key: unknown[]): ToolResult | undefined {
+  if (ctx.requesterId === ctx.accountOwnerId) return undefined;
+  const owner = ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "the account owner";
+  return askFirst(ctx.gate({ kind: "action", title, detail, key }), `Asked ${owner} before changing their ${title.includes("address") ? "addresses" : "cart"}.`);
+}
 const readCart = (ctx: ToolContext): CartItem[] => JSON.parse(ctx.store.getKv(cartKey(ctx)) ?? "[]") as CartItem[];
 const writeCart = (ctx: ToolContext, items: CartItem[]) => ctx.store.setKv(cartKey(ctx), JSON.stringify(items));
 const merchantOf = (url: string) =>
@@ -62,6 +68,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Adding to cart…", done: "Added to cart" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to add to your cart?", JSON.stringify(input).slice(0, 300), ["add_to_cart", input]);
+      if (asked) return asked;
       if (!/^https:\/\//i.test(s(input.url))) return { ok: false, content: "url must be the product page (https://…)." };
       if (n(input.priceUsd) !== undefined && n(input.priceUsd)! < 0) return { ok: false, content: "priceUsd cannot be negative." };
       const items = readCart(ctx);
@@ -94,6 +102,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Removing from cart…", done: "Removed from cart" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to change your cart?", JSON.stringify(input).slice(0, 300), ["remove_from_cart", input]);
+      if (asked) return asked;
       const items = readCart(ctx).filter((i) => i.id !== s(input.itemId));
       writeCart(ctx, items);
       return { ok: true, content: { items: items.length, totalUsd: total(items) } };
@@ -124,10 +134,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
         money: amount,
         key: ["checkout_cart", merchant, amount, items.map((i) => i.id)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for approval before paying.");
+      if (held) return held;
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       const address = (person?.addresses ?? []).find((a) => a.id === s(input.addressId)) ?? person?.addresses?.[0];
       if (!address) return { ok: false, content: `No delivery address saved for ${person?.displayName ?? "the buyer"}. Ask for one and save it with save_address.` };
@@ -136,7 +144,7 @@ export const SHOPPING_TOOLS: ToolDef[] = [
       return {
         ok: true,
         content: {
-          approved: gate.reason,
+          approved: gate.granted ? gate.reason : "",
           amountUsd: amount,
           merchant,
           deliverTo: `${address.line1}, ${address.city}`,
@@ -168,6 +176,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Saving an address…", done: "Saved an address" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to save an address on your account?", JSON.stringify(input).slice(0, 300), ["save_address", input]);
+      if (asked) return asked;
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       if (!person) return { ok: false, content: "No person." };
       const a: Address = {
@@ -200,6 +210,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Removing an address…", done: "Removed an address" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to remove a saved address?", JSON.stringify(input).slice(0, 300), ["delete_saved_address", input]);
+      if (asked) return asked;
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       if (!person) return { ok: false, content: "No person." };
       person.addresses = (person.addresses ?? []).filter((a) => a.id !== s(input.addressId));

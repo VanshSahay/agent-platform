@@ -1,4 +1,4 @@
-import { n, num, obj, s, str, type ToolContext, type ToolDef, type ToolResult } from "../kit.ts";
+import { askFirst, n, num, obj, s, str, type ToolContext, type ToolDef, type ToolResult } from "../kit.ts";
 import { clip, notConnected } from "./shared.ts";
 
 /**
@@ -284,10 +284,8 @@ export const GOOGLE_TOOLS: ToolDef[] = [
           outreach: { who: attendees.join(", "), how: "email", contact: attendees.join(",") },
           key: ["create_event", s(input.title), s(input.start), attendees],
         });
-        if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held, held: true };
-          return { ok: true, content: "Waiting for the OK before inviting anyone.", waitingOn: gate.item, roomNotice: gate.notice };
-        }
+        const held = askFirst(gate, "Waiting for the OK before inviting anyone.");
+        if (held) return held;
       } else {
         const held = guard(ctx, `OK to add "${s(input.title)}" to your calendar?`, `${s(input.start)} to ${s(input.end)}.`, ["create_event", s(input.title), s(input.start)]);
         if (held) return held;
@@ -428,7 +426,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
         const r = await g<{ messages?: { id: string; threadId: string }[] }>(ctx, {
           method: "GET",
           url: `${GMAIL}/messages`,
-          query: { q: s(input.query), maxResults: String(n(input.limit) ?? 10) },
+          query: { q: s(input.query), maxResults: String(Math.min(50, Math.max(1, n(input.limit) ?? 10))) },
         });
         const out = [];
         for (const m of (r.messages ?? []).slice(0, 20)) {
@@ -586,10 +584,8 @@ export const GOOGLE_TOOLS: ToolDef[] = [
         outreach: { who: everyone.join(", "), how: "email", contact: everyone.join(",") },
         key: ["send_email_as_user", to, cc, s(input.subject), s(input.text)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for the go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for the go-ahead. Nothing was sent.");
+      if (held) return held;
       // Headers, one blank line, then the body as given: a body that starts with "Bcc:" stays body.
       const headers = [
         `To: ${to.join(", ")}`,
@@ -629,7 +625,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
           url: `${DRIVE}/files`,
           query: {
             q: `(name contains '${q}' or fullText contains '${q}') and trashed = false`,
-            pageSize: String(n(input.limit) ?? 10),
+            pageSize: String(Math.min(100, Math.max(1, n(input.limit) ?? 10))),
             fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
           },
         });
@@ -656,7 +652,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
           url: `${DRIVE}/files`,
           query: {
             q: `'${s(input.folderId).replace(/'/g, "")}' in parents and trashed = false`,
-            pageSize: String(n(input.limit) ?? 50),
+            pageSize: String(Math.min(200, Math.max(1, n(input.limit) ?? 50))),
             fields: "files(id,name,mimeType,modifiedTime,webViewLink,size)",
           },
         });
@@ -715,10 +711,8 @@ export const GOOGLE_TOOLS: ToolDef[] = [
         outreach: { who: s(input.email), how: "email", contact: s(input.email) },
         key: ["share", s(input.fileId), s(input.email), s(input.role)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for the OK before sharing.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for the OK before sharing.");
+      if (held) return held;
       try {
         await g(ctx, {
           method: "POST",

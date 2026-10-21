@@ -1,4 +1,4 @@
-import { obj, s, str, type ToolDef } from "../kit.ts";
+import { askFirst, obj, s, str, type ToolDef } from "../kit.ts";
 import { saveArtifact } from "./shared.ts";
 
 /** Fo's "contacts", "voice" and "wajo" (own email) families. Its vendor call and contact search were twins of place_call and find_person. */
@@ -128,10 +128,8 @@ export const PEOPLE_TOOLS: ToolDef[] = [
         outreach: { who: everyone.join(", "), how: "email", contact: everyone.join(",") },
         key: ["send_agent_email", to, cc, s(input.subject), s(input.text), s(input.replyToMessageId)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for the owner's go-ahead. Nothing was sent.");
+      if (held) return held;
       try {
         const r = await ctx.hands.email.send({
           to,

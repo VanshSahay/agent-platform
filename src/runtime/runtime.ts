@@ -643,7 +643,7 @@ export class Runtime {
       requesterId: run.requesterId,
       tasks,
       vault: {
-        services: () => vault.services(accounts.accountOwnerId),
+        services: () => vault.services(accounts.accountOwnerId).filter((x) => !x.startsWith("card:") && !x.startsWith("browser:")),
         has: (svc) => vault.has(accounts.accountOwnerId, svc),
         use: (svc, fn) => vault.use(accounts.accountOwnerId, svc, fn),
         put: (svc, secret) => vault.put(accounts.accountOwnerId, svc, secret),
