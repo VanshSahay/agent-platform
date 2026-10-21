@@ -136,8 +136,8 @@ describe("timers", () => {
     const phone = new FakePhone(() => ({ summary: "ok" }));
     const dialed = () => phone.calls.map((c) => c.to);
     const w = groupWorld(
-      (req, i) => (i % 2 === 0 ? callTool("place_call", { to: i === 0 ? "+14085550100" : "+14085559999", who: "Graciela", objective: "retry" }) : reply("done")),
-      { phone },
+      (_req, i) => (i % 2 === 0 ? callTool("place_call", { to: i === 0 ? "+14085550100" : "+14085559999", who: "Graciela", objective: "retry" }) : reply("done")),
+      { phone, completer: () => '{"holds": true}' },
     );
     const sched = Scheduler.createSchedule(w.app.store, w.clock, {
       agentId: w.agent.id,
