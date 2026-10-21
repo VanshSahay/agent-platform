@@ -6,6 +6,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const state = {
   people: [],
   watchConnections: 0,
+  drawerOpener: null,
   rooms: [],
   agents: [],
   me: null,
@@ -193,6 +194,8 @@ function route() {
   $("#pageMemory").hidden = state.page !== "memory";
   $$("#pages a").forEach((a) => {
     a.classList.toggle("on", a.dataset.page === state.page);
+    if (a.dataset.page === state.page) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
   });
   if (state.page === "chat") {
     state.phoneTab = "chat";
@@ -228,7 +231,10 @@ $$("#tabbar button").forEach((b) => {
     setPhoneTab(tab);
   };
 });
-$("#homeToggle").onclick = () => $("#app").classList.toggle("home-open");
+$("#homeToggle").onclick = () => {
+  const open = $("#app").classList.toggle("home-open");
+  $("#homeToggle").setAttribute("aria-expanded", open ? "true" : "false");
+};
 if ($("#me"))
   $("#me").onchange = (e) => {
     state.me = e.target.value;
@@ -622,9 +628,11 @@ async function renderLedger() {
     el.innerHTML = "";
     return;
   }
-  const cs = (await api(`/api/commitments?roomId=${encodeURIComponent(state.room)}`)).sort(
+  const roomId = state.room;
+  const cs = (await api(`/api/commitments?roomId=${encodeURIComponent(roomId)}`)).sort(
     (a, b) => (a.status === "open" || a.status === "blocked" ? 0 : 1) - (b.status === "open" || b.status === "blocked" ? 0 : 1) || (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity),
   );
+  if (state.room !== roomId) return;
   el.innerHTML = cs.length
     ? cs
         .map(
@@ -698,7 +706,9 @@ async function renderThread() {
     el.innerHTML = `<div class="welcome"><h1>${greeting()}.</h1><p>You are not in any room yet. Make one from the Rooms list.</p></div>`;
     return;
   }
-  const data = await api(`/api/rooms/${encodeURIComponent(state.room)}/messages?limit=100${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
+  const roomId = state.room;
+  const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/messages?limit=100${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
+  if (state.room !== roomId) return; // the person moved on while this loaded; never paint one room under another
   // Timer and answer prompts are the agent's own notes; the Why? drawer shows them, the thread does not.
   const msgs = (data.messages ?? data).filter((m) => m.role !== "system");
   const active = data.activeRun;
@@ -752,16 +762,16 @@ async function renderThread() {
       const att = rich ? { text: m.text, atts: [] } : splitAttachments(m.text);
       body = rich ? md(body) : linkify(esc(att.text));
       const card = m.card ? cardHtml(m.card) : "";
-      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div>${attachmentsHtml(att.atts)}${att.text || card || rich ? `<div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : ""}</div>` : ""}</div>`;
+      return `<div class="msg ${cls}" data-id="${esc(m.id)}"><div class="who">${esc(who)} · ${fmt(m.at)}</div>${attachmentsHtml(att.atts)}${att.text || card || rich ? `<div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : ""}</div>` : ""}</div>`;
     })
     .join("");
   if (active && active.status === "running") {
     const running = active.steps.find((s) => s.status === "running");
-    html += `<div class="working"><span class="dot"></span><span class="shimmer">${esc(running ? running.label : `${agent?.name ?? "Agent"} is working…`)}</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
+    html += `<div class="working" data-id="working"><span class="dot"></span><span class="shimmer">${esc(running ? running.label : `${agent?.name ?? "Agent"} is working…`)}</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
   } else if (active && active.status === "waiting") {
-    html += `<div class="working"><span class="dot hold"></span><span>${esc(agent?.name ?? "Agent")} is waiting on someone.</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
+    html += `<div class="working" data-id="working"><span class="dot hold"></span><span>${esc(agent?.name ?? "Agent")} is waiting on someone.</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
   }
-  el.innerHTML = html;
+  patchThread(el, html);
   $$("#inner [data-connect]").forEach((b) => {
     b.onclick = async () => {
       const card = b.closest(".acard");
@@ -792,6 +802,26 @@ async function renderThread() {
     thread.scrollTop = thread.scrollHeight;
     state.lastMsgCount = msgs.length;
   }
+}
+
+/**
+ * Replace only what changed: messages already on screen keep their nodes (a sign-in iframe mid-typing
+ * survives a delivery), new ones are appended, and the "working" line at the end is always redrawn.
+ * Anything else (an edit, a removal, a different room) falls back to a full repaint.
+ */
+function patchThread(el, html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const next = [...tpl.content.children];
+  const have = [...el.children].filter((c) => c.dataset.id && c.dataset.id !== "working");
+  const want = next.filter((c) => c.dataset.id !== "working");
+  const prefix = have.length && have.length <= want.length && have.every((c, i) => c.dataset.id === want[i].dataset.id);
+  if (!prefix) {
+    el.replaceChildren(...next);
+    return;
+  }
+  el.querySelector('[data-id="working"]')?.remove();
+  for (const c of next.slice(have.length)) el.appendChild(c);
 }
 
 // A link to something the assistant made becomes a preview card under the message: title, kind, live progress.
@@ -939,11 +969,11 @@ $("#thread").addEventListener("drop", (e) => {
   e.preventDefault();
   addFiles(e.dataTransfer?.files ?? []);
 });
-async function uploadFile(f) {
+async function uploadFile(f, roomId = state.room) {
   const fd = new FormData();
   fd.append("file", f);
-  fd.append("roomId", state.room);
-  fd.append("agentId", agentFor(state.room)?.id ?? "");
+  fd.append("roomId", roomId);
+  fd.append("agentId", agentFor(roomId)?.id ?? "");
   const headers = authToken ? { authorization: `Bearer ${authToken}` } : {};
   const res = await fetch(`/api/files${state.me ? `?personId=${encodeURIComponent(state.me)}` : ""}`, { method: "POST", body: fd, headers });
   const data = await res.json().catch(() => ({}));
@@ -976,6 +1006,7 @@ function attachmentsHtml(atts) {
 
 async function send(text) {
   if ((!text && !pendingFiles.length) || !state.room || !state.me) return;
+  const roomId = state.room;
   $("#text").value = "";
   status("");
   if (pendingFiles.length) {
@@ -984,7 +1015,7 @@ async function send(text) {
     try {
       const lines = [];
       for (const f of files) {
-        const { url } = await uploadFile(f);
+        const { url } = await uploadFile(f, roomId);
         lines.push(`${f.type.startsWith("image/") ? "Photo" : "File"} ${f.name}: ${location.origin}${url}`);
       }
       text = [text, ...lines].filter(Boolean).join("\n");
@@ -1003,7 +1034,7 @@ async function send(text) {
   dropComposer();
   $("#thread").scrollTop = $("#thread").scrollHeight;
   try {
-    await api(`/api/rooms/${encodeURIComponent(state.room)}/messages`, { personId: state.me, text, dedupKey: `${state.me}:${Date.now()}` });
+    await api(`/api/rooms/${encodeURIComponent(roomId)}/messages`, { personId: state.me, text, dedupKey: `${state.me}:${Date.now()}` });
   } catch (e) {
     status(e.message);
   }
@@ -1069,6 +1100,8 @@ async function openDrawer(runId) {
     body = $("#drawerBody");
   drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
+  state.drawerOpener = document.activeElement;
+  $("#drawerClose").focus();
   $("#drawerTitle").textContent = "Why";
   body.innerHTML = `<div class="mut">Loading…</div>`;
   let d;
@@ -1109,6 +1142,8 @@ function closeDrawer() {
   const d = $("#drawer");
   d.classList.remove("open");
   d.setAttribute("aria-hidden", "true");
+  state.drawerOpener?.focus?.();
+  state.drawerOpener = null;
 }
 $("#drawerClose").onclick = closeDrawer;
 addEventListener("keydown", (e) => {
@@ -1155,6 +1190,22 @@ const failed = (form, e) => {
 };
 const patchMe = (body) => api(`/api/people/${encodeURIComponent(state.me)}`, body, "PATCH");
 
+/** Every field's label points at its control, and every switch says what it switches, without touching the markup each form writes. */
+function labelFields(root) {
+  let k = 0;
+  for (const field of root.querySelectorAll(".field")) {
+    const label = field.querySelector("label");
+    const control = field.querySelector("input, select, textarea, button.switch");
+    if (!label || !control) continue;
+    if (control.classList.contains("switch")) {
+      control.setAttribute("aria-label", label.firstChild?.textContent?.trim() || label.textContent.trim());
+      continue;
+    }
+    if (!control.id) control.id = `f_${root.id || "x"}_${k++}`;
+    label.htmlFor = control.id;
+  }
+}
+
 function renderSettings() {
   const el = $("#settings");
   const active = document.activeElement;
@@ -1188,6 +1239,7 @@ function renderSettings() {
     return;
   }
   render(box, agent, me);
+  labelFields(box);
 }
 
 function settingsGeneral(box, _agent, me) {
