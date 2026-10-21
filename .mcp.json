@@ -2,7 +2,7 @@
   "mcpServers": {
     "rea": {
       "type": "stdio",
-      "command": "/Users/ellieli/.nvm/versions/node/v22.22.0/bin/npx",
+      "command": "npx",
       "args": [
         "-y",
         "rea-agents@6.7.0",
