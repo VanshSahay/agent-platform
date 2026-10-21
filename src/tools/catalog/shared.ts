@@ -12,7 +12,8 @@ export function saveArtifact(ctx: ToolContext, a: { kind: Artifact["kind"]; titl
     kind: a.kind,
     title: a.title,
     data: a.data,
-    share: a.share ?? "room",
+    // A page posted into Messages is opened by tapping its link, with no sign-in: anyone with the link may read it there.
+    share: a.share ?? (ctx.room.channel !== "web" ? "link" : "room"),
     createdAt: ctx.clock.now(),
   };
   ctx.store.putArtifact(art);

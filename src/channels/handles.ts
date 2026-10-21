@@ -97,3 +97,12 @@ export function claimLinkCode(store: Store, text: string, handle: string, now: n
   store.putPerson(person);
   return person;
 }
+
+/** "iMessage · Sam, Riley & Jo": a group room named by who is in it, until the owner names it. */
+export function groupRoomName(channel: string, names: string[]): string {
+  const label = channel === "imessage" ? "iMessage" : channel;
+  const shown = names.slice(0, 3).join(", ");
+  const more = names.length - 3;
+  return `${label} · ${shown}${more > 0 ? ` & ${more} more` : ""}`;
+}
+export const isDefaultRoomName = (name: string) => /^(imessage|whatsapp|telegram|slack) (group|·)/i.test(name);

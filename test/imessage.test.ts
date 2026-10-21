@@ -1,6 +1,17 @@
 import { plainText } from "../src/channels/handles.ts";
 import { describe, expect, test } from "bun:test";
-import { claimLinkCode, HandleRateLimit, handleMatches, LINK_CODE_TTL_MS, mintLinkCode, normaliseHandle, personIdForHandle, roleForNewcomer } from "../src/channels/handles.ts";
+import {
+  claimLinkCode,
+  groupRoomName,
+  HandleRateLimit,
+  handleMatches,
+  isDefaultRoomName,
+  LINK_CODE_TTL_MS,
+  mintLinkCode,
+  normaliseHandle,
+  personIdForHandle,
+  roleForNewcomer,
+} from "../src/channels/handles.ts";
 import { reply } from "../src/model/scripted.ts";
 import { groupWorld } from "./helpers.ts";
 
@@ -66,5 +77,24 @@ describe("linking a phone by code", () => {
     expect(claimLinkCode(w.app.store, code, "+14085550199", w.clock.now())).toBeUndefined(); // consumed
     const stale = mintLinkCode(w.app.store, "sam", w.clock.now());
     expect(claimLinkCode(w.app.store, stale, "sam@example.com", w.clock.now() + LINK_CODE_TTL_MS + 1)).toBeUndefined();
+  });
+});
+
+describe("where people are", () => {
+  test("a group on a text channel is named by who is in it until the owner names it", () => {
+    expect(groupRoomName("imessage", ["Sam"])).toBe("iMessage · Sam");
+    expect(groupRoomName("imessage", ["Sam", "Riley", "Jo", "Mia", "Lee"])).toBe("iMessage · Sam, Riley, Jo & 2 more");
+    expect(isDefaultRoomName("iMessage · Sam")).toBe(true);
+    expect(isDefaultRoomName("imessage group ab12cd")).toBe(true);
+    expect(isDefaultRoomName("Tahoe trip")).toBe(false);
+  });
+
+  test("cards for someone who texts the line go to their Messages thread, not a web-only chat", () => {
+    const w = groupWorld(() => reply("ok"));
+    const web = w.app.rooms.dmFor(w.agent, "sam"); // created on demand, web
+    expect(web.channel).toBe("web");
+    const im = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "dm", channel: "imessage", externalId: "space-1", name: "Pip & Sam" });
+    w.app.rooms.addMember(im.id, "sam", "member");
+    expect(w.app.rooms.dmFor(w.agent, "sam").id).toBe(im.id);
   });
 });

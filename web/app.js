@@ -169,6 +169,15 @@ function route() {
     acceptInvite(h.slice(5)).then(load);
     return;
   }
+  if (h.startsWith("room=")) {
+    state.room = decodeURIComponent(h.slice(5));
+    try {
+      localStorage.setItem("circle.room", state.room);
+    } catch {}
+    state.lastMsgCount = -1;
+    location.replace("#chat");
+    return;
+  }
   const [page, sub] = h.split("/");
   state.page = page === "settings" || page === "memory" ? page : "chat";
   state.settingsSection = sub;
@@ -297,7 +306,7 @@ function renderMembers(room) {
     .join("");
   $("#rooms").insertAdjacentHTML(
     "beforeend",
-    `<div class="members" id="members"><h2>In ${esc(room.name)}</h2>${rows}${
+    `<div class="members" id="members"><h2>In ${esc(room.name)}${owner ? ` <button class="link" id="renameRoom" type="button">rename</button>` : ""}</h2>${rows}${
       owner
         ? `<form class="addrow wrap" id="addMember"><input type="text" name="displayName" placeholder="Name" required /><input type="text" name="contact" placeholder="phone or email" /><button class="btn small" type="submit">Add</button></form>
       <button class="link invite" type="button" id="inviteLink">+ Invite people to ${esc(room.name)}</button>`
@@ -306,6 +315,15 @@ function renderMembers(room) {
   );
   const inv = $("#inviteLink");
   if (inv) inv.onclick = () => copyInvite(room.id);
+  const rn = $("#renameRoom");
+  if (rn)
+    rn.onclick = () => {
+      const name = window.prompt("Name this chat", room.name);
+      if (!name || name.trim() === room.name) return;
+      api(`/api/rooms/${encodeURIComponent(room.id)}`, { name: name.trim() }, "PATCH")
+        .then(load)
+        .catch((e) => status(e.message, true));
+    };
   const member = (id) => `/api/rooms/${encodeURIComponent(room.id)}/members/${encodeURIComponent(id)}`;
   $$("#members [data-remove]").forEach((b) => {
     b.onclick = async () => {

@@ -134,7 +134,9 @@ export class RoomService {
 
   /** The DM room between the agent and a person, created on demand so cards can go there. */
   dmFor(agent: AgentSpec, personId: Id): Room {
-    const existing = this.store.listRooms(agent.id).find((r) => r.kind === "dm" && this.memberIds(r.id).includes(personId) && this.memberIds(r.id).length === 1);
+    // Someone who texts the line lives in Messages: their cards go to that chat, not to a web-only one.
+    const dms = this.store.listRooms(agent.id).filter((r) => r.kind === "dm" && this.memberIds(r.id).includes(personId) && this.memberIds(r.id).length === 1);
+    const existing = dms.find((r) => r.channel !== "web") ?? dms[0];
     if (existing) return existing;
     const person = this.store.getPerson(personId);
     const room = this.createRoom({ agentId: agent.id, kind: "dm", channel: "web", name: `${agent.name} & ${person?.displayName ?? personId}` });

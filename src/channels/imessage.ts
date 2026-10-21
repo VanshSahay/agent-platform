@@ -17,7 +17,7 @@ import type { App } from "../app.ts";
 import type { Person, Room } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { findPersonByEmail } from "../store/queries.ts";
-import { claimLinkCode, HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
+import { claimLinkCode, groupRoomName, HandleRateLimit, handleMatches, isDefaultRoomName, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
 
 /**
  * iMessage through Photon Spectrum. Each iMessage chat (a DM or a group)
@@ -80,7 +80,7 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
       kind,
       channel,
       externalId: space.id,
-      name: kind === "dm" ? `${agent.name} & ${person.displayName}` : `${channel} group ${space.id.slice(0, 6)}`,
+      name: kind === "dm" ? `${agent.name} & ${person.displayName}` : groupRoomName(channel, [person.displayName]),
     });
     app.rooms.addMember(room.id, person.id, roleForNewcomer({ isOwner, kind }), { consented: isOwner });
     return room;
@@ -93,7 +93,9 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
     if (room?.channel !== channel || !room.externalId) return;
     try {
       const space = await im.space.get(room.externalId);
-      await spectrum.send(space, plainText(d.text));
+      // A card in Messages is plain text; the app has the buttons and the sign-in browser, so link it.
+      const link = d.kind === "card" && process.env.PUBLIC_URL ? `\n\nOr open it in the app: ${process.env.PUBLIC_URL}/#room=${room.id}` : "";
+      await spectrum.send(space, plainText(d.text) + link);
     } catch (e) {
       console.error(`${channel} send failed`, (e as Error).message);
     }
@@ -124,7 +126,17 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
         const person = personFor(senderId);
         const room = roomFor(space as { id: string; type?: "dm" | "group" }, person);
         if (!room) continue;
-        if (!app.store.getMembership(room.id, person.id)) app.rooms.addMember(room.id, person.id, "guest");
+        if (!app.store.getMembership(room.id, person.id)) {
+          app.rooms.addMember(room.id, person.id, "guest");
+          // Until the owner names the group, its name is who is in it.
+          if (room.kind === "group" && isDefaultRoomName(room.name)) {
+            room.name = groupRoomName(
+              channel,
+              app.rooms.memberIds(room.id).map((id) => app.store.getPerson(id)?.displayName ?? id),
+            );
+            app.store.putRoom(room);
+          }
+        }
         await spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }));
       } catch (e) {
         console.error(`${channel} inbound failed`, (e as Error).message);

@@ -84,6 +84,16 @@ bun run eval    # sixteen errands played against the configured model, graded on
 bun run typecheck
 ```
 
+## On iMessage
+
+Most people meet Circle in Messages, not in the web app: they add the line's number to a group the way they would add a friend. What differs there:
+
+- **Joining** is adding the number. The group appears in the owner's Rooms as "iMessage · Sam, Riley & 2 more" until the owner names it; each person who writes gets a seat (as a guest until the owner adds them, then a member).
+- **Approvals are text.** "OK to spend $80?" arrives in the person's own thread with the line; "yes" or "no" is the answer. Anything that needs buttons or a browser (signing in to a site, an embedded page) comes with a link into the app that opens that chat.
+- **Pages open from their link** with no sign-in, since the link was posted in that chat.
+- **Everything is mirrored.** The web app shows the same chats, members and cards; replies sent from either side land in both.
+- **The owner's phone** is linked once: Settings → Channels → Link my phone (a code texted to the line), or the phone field under General.
+
 ## Deploy
 
 Production runs on Railway as one always-on container with SQLite on a volume. `Dockerfile`, `railway.json` and `.railwayignore` are checked in; nothing else is needed on the host.
