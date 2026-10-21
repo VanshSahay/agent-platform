@@ -76,6 +76,7 @@ export class Runtime {
   private pendingTasks = new Map<Id, Task[]>();
   private inFlight = new Set<Promise<void>>();
   private impliedChecks = new Map<Id, number[]>();
+  private sameErrandChecks = new Map<Id, number[]>();
 
   /**
    * At boot: a run left "running" by a crash resumes from its saved transcript
@@ -183,9 +184,10 @@ export class Runtime {
     if (!this.addressed(room, agent, input.text) && !(await this.impliedRequest(room, agent, input.text))) return undefined;
 
     // 3. A run is in flight in this session. The requester's own message steers it; another
-    //    member's ask is queued to run on its own once this one ends — never folded into
-    //    someone else's run (multiplayer-spec §8.2). Only a run this process is really
-    //    executing takes messages; a timer or event run that will stay quiet is not one.
+    //    member's contribution to the same errand joins it (attributed in the record), and a
+    //    separate ask is queued to run on its own — never folded into someone else's run
+    //    (multiplayer-spec §8.2). Only a run this process is really executing takes messages;
+    //    a timer or event run that will stay quiet is not one.
     const active = store.activeRunForSession(session.id);
     if (active && active.status === "running") {
       if (!this.live.has(active.id)) this.finish(active, "failed", "Interrupted by a restart.");
@@ -194,8 +196,20 @@ export class Runtime {
           store.appendEvent({ runId: active.id, sessionId: session.id, type: "steer_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text } });
           return active;
         }
-        store.appendEvent({ runId: active.id, sessionId: session.id, type: "run_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text, messageId: msg.id } });
-        return undefined;
+        // Authority stays with the requester: a change or cancel from someone else is
+        // confirmed with them first (the prompt rule), and the gate re-asks on any
+        // material change regardless of who contributed it.
+        const joins = await this.sameErrand(active, input.text);
+        const fresh = store.getRun(active.id);
+        if (fresh?.status === "running" && this.live.has(fresh.id)) {
+          if (joins) {
+            store.appendEvent({ runId: active.id, sessionId: session.id, type: "steer_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text } });
+            return active;
+          }
+          store.appendEvent({ runId: active.id, sessionId: session.id, type: "run_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text, messageId: msg.id } });
+          return undefined;
+        }
+        // The live run ended while we classified: this message starts its own run below.
       }
     }
     // Waiting on someone else, or a timer run: a new ask from this person starts its own run.
@@ -438,6 +452,34 @@ export class Runtime {
     }
   }
 
+  /**
+   * Does this message add to the errand the live run is already working on (a
+   * contribution, delivered as an attributed steer), or is it a separate ask
+   * (queued as its own run)? Authority over the errand stays with the requester
+   * either way: changes and cancels are confirmed with them by the prompt rule,
+   * and the gate re-asks on any material change. Fails to "separate" — a busy
+   * room or an unavailable model fragments into own runs, which is safe.
+   */
+  private async sameErrand(run: Run, text: string): Promise<boolean> {
+    if (!run.requestText) return false;
+    const now = this.d.clock.now();
+    const recent = (this.sameErrandChecks.get(run.roomId) ?? []).filter((t) => now - t < 60_000);
+    if (recent.length >= IMPLIED_PER_MINUTE) return false;
+    recent.push(now);
+    this.sameErrandChecks.set(run.roomId, recent);
+    try {
+      const out = await this.d.model.complete({
+        system: `You decide whether a group-chat message adds to the errand an assistant is already working on, or is a separate request. Errand so far: "${run.requestText}". Answer with exactly yes or no. Say yes when the message adds detail, answers something, or contributes to that errand. Say no when it asks for something else entirely, or is chatter.`,
+        prompt: text,
+        effort: "low",
+        maxTokens: 50,
+      });
+      return /^\s*yes\b/i.test(out);
+    } catch {
+      return false;
+    }
+  }
+
   private addressed(room: Room, agent: AgentSpec, text: string): boolean {
     if (room.kind === "dm") return true;
     if (this.d.rooms.memberIds(room.id).length <= 1) return true; // a group with one person in it is a conversation with the agent
@@ -467,6 +509,7 @@ export class Runtime {
       agentId: input.agent.id,
       trigger: input.trigger,
       requesterId: input.requesterId,
+      requestText: input.trigger === "message" || input.trigger === "task" ? input.text : undefined,
       status: "running",
       dedupKey: input.dedupKey,
       scheduleId: input.scheduleId,

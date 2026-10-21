@@ -225,6 +225,8 @@ export interface Task {
 }
 
 export interface Run {
+  /** What was asked, for message and task runs: the ground the same-errand check compares against. */
+  requestText?: string;
   id: Id;
   sessionId: Id;
   roomId: Id;

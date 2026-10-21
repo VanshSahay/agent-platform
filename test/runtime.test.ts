@@ -522,17 +522,37 @@ describe("hands", () => {
 });
 
 describe("messages that arrive together", () => {
-  test("a member's message during another person's run queues its own run instead of steering theirs", async () => {
+  test("a member's contribution to a live errand joins the run, attributed", async () => {
     const seen: string[] = [];
     const w = groupWorld(
-      (req) => {
+      (req, i) => {
         seen.push(JSON.stringify(req.messages));
-        return reply("On it.");
+        return i === 0 ? callTool("search_memory", { query: "plumber" }) : reply("Plumber found; I'll ask about the fan too.");
       },
       { completer: () => "yes" },
     );
     const a = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "Can someone find a plumber for Jo's leaking tap this week?" });
-    const b = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "Also ask them about the bathroom fan while they're there." });
+    const b = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "Also ask them about the bathroom fan while they're there." });
+    const done = await a;
+    expect(b?.id).toBe(done!.id); // Sam joined Riley's run; no second run
+    expect(w.app.store.listRuns({ roomId: w.room.id })).toHaveLength(1);
+    expect(repliesTo(w.deliveries, w.room.id)).toHaveLength(1);
+    expect(seen.some((s) => s.includes("[while you were working] Sam"))).toBe(true);
+    expect(seen.some((s) => s.includes("bathroom fan"))).toBe(true);
+    expect(done!.requesterId).toBe("riley"); // the errand is still Riley's
+  });
+
+  test("a member's separate ask during another person's run queues its own run instead of steering theirs", async () => {
+    const seen: string[] = [];
+    const w = groupWorld(
+      (req, i) => {
+        seen.push(JSON.stringify(req.messages));
+        return i === 0 ? callTool("search_memory", { query: "plumber" }) : reply("On it.");
+      },
+      { completer: (system) => (/errand so far/i.test(system) ? "no" : "yes") },
+    );
+    const a = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "Can someone find a plumber for Jo's leaking tap this week?" });
+    const b = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "Also order Jo's AA batteries from Walgreens." });
     expect(await b).toBeUndefined(); // queued behind Riley's run, not folded into it
     await a;
     await w.app.runtime.settle();
@@ -546,12 +566,12 @@ describe("messages that arrive together", () => {
 
   test("rapid messages from one person during a run coalesce into one queued run", async () => {
     const seen: string[] = [];
-    const w = groupWorld((req) => {
+    const w = groupWorld((req, i) => {
       seen.push(lastUserText(req));
-      return reply("On it.");
+      return i < 2 ? callTool("search_memory", { query: `plumber ${i}` }) : reply("On it.");
     });
     const a = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a plumber" });
-    // Jo queues two quick messages while Alex's run is live; both are named, so no classifier call.
+    // Jo queues two quick messages while Alex's run is live; both are named, so no implied-request call.
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "jo", text: "@pip also ask about rates" });
     w.clock.advance(1000);
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "jo", text: "@pip prefer someone who speaks Mandarin" });
