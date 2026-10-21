@@ -52,4 +52,28 @@ describe("restart", () => {
     expect(delivered[0]).toContain("Shortlist");
     expect(b.store.getRun(after.runId!)?.status).toBe("done");
   });
+
+  test("a task an earlier boot already failed as interrupted gets one more run", async () => {
+    const dbPath = join(tmpdir(), `circle-restart2-${Date.now()}.sqlite`);
+    const model = new ScriptedModel((req) => (transcriptHas(req, "interrupted by a restart") ? reply("Done: three glasses priced.") : callTool("web_search", { query: "x" })));
+    const clock = new FakeClock(Date.UTC(2026, 9, 20, 12));
+    const a = createApp({ dbPath, clock, model, hands: fakeHands() });
+    const alex = a.rooms.createPerson({ id: "alex", displayName: "Alex", timezone: "UTC" });
+    const agent = newAgent({ ownerId: alex.id, name: "Pip" });
+    a.store.putAgent(agent);
+    const room = a.rooms.createRoom({ agentId: agent.id, kind: "dm", channel: "web", name: "Pip & Alex" });
+    a.rooms.addMember(room.id, alex.id, "owner", { consented: true });
+    a.store.putSession({ id: "ses_2", roomId: room.id, agentId: agent.id, kind: "room", createdAt: clock.now(), lastActivityAt: clock.now() });
+    const task = a.tasks.create({ agentId: agent.id, roomId: room.id, requesterId: alex.id, title: "Price", instructions: "Price them." });
+    a.tasks.update(task.id, { status: "failed", progress: "Interrupted by a restart." });
+    const b = createApp({ dbPath, clock, model, hands: fakeHands() });
+    await new Promise((r) => setTimeout(r, 100));
+    const after = b.store.getTask(task.id)!;
+    expect(after.status).toBe("done");
+    expect(after.delivered.map((d) => d.text)).toEqual(["Done: three glasses priced."]);
+    // Once finished for real, another boot leaves it alone.
+    const c = createApp({ dbPath, clock, model, hands: fakeHands() });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(c.store.getTask(task.id)!.delivered).toHaveLength(1);
+  });
 });

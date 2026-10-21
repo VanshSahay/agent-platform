@@ -90,6 +90,11 @@ export class Runtime {
       this.finish(run, "failed", "Interrupted by a restart.");
       if (task && task.status === "running") resume.push({ ...this.d.tasks.update(task.id, { status: "running", progress })!, progress });
     }
+    // Tasks an earlier boot failed with this note were never retried; one more chance each.
+    for (const task of this.d.store.listTasks({ status: ["failed"] })) {
+      if (task.progress !== "Interrupted by a restart." || resume.some((t) => t.id === task.id)) continue;
+      resume.push(this.d.tasks.update(task.id, { status: "running", progress: "" })!);
+    }
     if (resume.length)
       setTimeout(() => {
         for (const task of resume) {
