@@ -908,7 +908,8 @@ function md(text) {
       flush();
       closeList();
       if (row.every((c) => /^:?-{2,}:?$/.test(c))) continue;
-      (table ??= []).push(row);
+      if (!table) table = [];
+      table.push(row);
       continue;
     }
     closeTable();
