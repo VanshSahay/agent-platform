@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, lastToolResult, lastUserText, reply, ScriptedModel, toolCallsSoFar, transcriptHas } from "../src/model/scripted.ts";
-import { runScenario, runScenarios } from "../src/eval/harness.ts";
-import { findScenarios } from "../src/eval/scenarios.ts";
+import { coverage, runScenario, runScenarios } from "../src/eval/harness.ts";
+import { findScenarios, SCENARIOS } from "../src/eval/scenarios.ts";
 
 /** A model that behaves: pays under the threshold, asks over it, re-issues after a yes; searches twice then asks the group. */
 const wellBehaved = new ScriptedModel((req) => {
@@ -27,6 +27,10 @@ const wellBehaved = new ScriptedModel((req) => {
   return reply("Asked the group.");
 });
 
+/** The scheduler's premise re-check asks the small model; a fired reminder is still wanted. */
+const premiseHolds = (system: string) => (system.includes("holds") ? '{"holds": true, "note": "still wanted"}' : "");
+const doNothing = () => new ScriptedModel(() => reply("Sure, I'll look into it."), premiseHolds);
+
 describe("eval harness", () => {
   test("grades the store after playing two scenarios through the real runtime", async () => {
     const results = await runScenarios(findScenarios("purchase").concat(findScenarios("stall")), { model: wellBehaved, timeoutMs: 5000 });
@@ -46,6 +50,39 @@ describe("eval harness", () => {
     expect(stall.toolCalls).toBe(4); // plan, two searches, ask_room
   });
 
+  test("every scenario passes all its checks under its own well-behaved script", async () => {
+    const scripted = SCENARIOS.filter((s) => s.script);
+    expect(scripted.length).toBe(SCENARIOS.length);
+    for (const s of scripted) {
+      const model = new ScriptedModel(s.script!, premiseHolds);
+      const r = await runScenario(s, { model, timeoutMs: 5000 });
+      model.rethrow();
+      expect(r.error, s.name).toBeUndefined();
+      expect(r.checks.filter((c) => !c.pass).map((c) => `${s.name}: ${c.name} — ${c.detail}${c.error ? ` (${c.error})` : ""}`)).toEqual([]);
+    }
+  });
+
+  test("the do-nothing model fails every scenario, and each check's noOpPasses label is right", async () => {
+    for (const s of SCENARIOS) {
+      const r = await runScenario(s, { model: doNothing(), timeoutMs: 5000 });
+      expect(r.passed, s.name).toBeLessThan(r.total);
+      expect(r.checks.filter((c) => c.pass !== !!c.noOpPasses).map((c) => `${s.name}: ${c.name} ${c.pass ? "passed" : "failed"} under the do-nothing model`)).toEqual([]);
+    }
+  });
+
+  test("tick and event turns record the runs they fire, without the one-second step message turns get", async () => {
+    const watch = findScenarios("pharmacy")[0]!;
+    const r = await runScenario(watch, { model: new ScriptedModel(watch.script!, premiseHolds), timeoutMs: 5000 });
+    expect(r.error).toBeUndefined();
+    const kinds = r.turns.map((t) => `${t.kind}:${t.trigger ?? "-"}:${t.tools.join("+")}`);
+    expect(kinds[0]).toBe("message:message:watch_for+");
+    expect(kinds.filter((k) => k.startsWith("tick:"))).toContain("tick:scheduled_action:stay_quiet");
+    expect(kinds.at(-1)).toBe("event:event:");
+    const bins = findScenarios("bins")[0]!;
+    const b = await runScenario(bins, { model: new ScriptedModel(bins.script!, premiseHolds), timeoutMs: 5000 });
+    expect(b.turns.filter((t) => t.kind === "tick" && t.trigger === "scheduled_action")).toHaveLength(1);
+  });
+
   test("a model that just chats fails the checks instead of passing by accident", async () => {
     const chatty = new ScriptedModel(() => reply("Sure, I'll look into it."));
     const r = await runScenario(findScenarios("stall")[0]!, { model: chatty, timeoutMs: 5000 });
@@ -61,7 +98,7 @@ describe("eval harness", () => {
     const r = await runScenario(findScenarios("purchase")[0]!, { model: broken, timeoutMs: 5000 });
     expect(r.error).toContain("failed");
     expect(r.total).toBeGreaterThan(0);
-    expect(r.passed).toBe(0);
+    expect(r.checks.filter((c) => c.name !== "nothing else changed").every((c) => !c.pass)).toBe(true);
   });
 
   test("an assertion inside a script surfaces through rethrow(), even though the runtime swallows model errors", async () => {
@@ -85,5 +122,15 @@ describe("eval harness", () => {
     expect(seen).toBe("eval/test-model");
     expect(r.tokens).toEqual({ input: 200, output: 14 });
     expect(r.modelTurns).toBe(2);
+  });
+
+  test("coverage counts every category and shape, zeros included, and the use-case rows covered", () => {
+    const c = coverage(SCENARIOS);
+    expect(Object.keys(c.categories)).toHaveLength(22);
+    expect(c.categories.booking).toBe(0);
+    expect(c.categories["home-services"]).toBe(3);
+    expect(Object.values(c.shapes).every((n) => n > 0)).toBe(true);
+    expect(c.cases).toContain(72);
+    expect(findScenarios(undefined, { shape: "couple" }).map((s) => s.name)).toEqual(["meal-plan-claims"]);
   });
 });

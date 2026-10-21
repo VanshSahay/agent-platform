@@ -26,8 +26,12 @@ export interface EvalWorld {
   riley: Person;
   hands: FakeHands;
   deliveries: Delivery[];
-  /** Resolve a scenario's room key to a room id. */
+  /** Resolve a scenario's room key to a room id; an unknown key is taken as a raw id. */
   roomId(key: RoomKey): string;
+  /** Name a room a scenario created in setup, so its turns can use the name as a key. */
+  alias(key: string, roomId: string): void;
+  /** The key a room id was registered under, for readable turn records. */
+  keyOf(roomId: string): string;
 }
 
 export type RoomKey = "room" | "ownerDm" | "samDm" | (string & {});
@@ -86,5 +90,23 @@ export function evalWorld(opts: WorldOptions): EvalWorld {
   const samDm = app.rooms.dmFor(agent, sam.id);
   const rooms: Record<string, string> = { room: room.id, ownerDm: ownerDm.id, samDm: samDm.id };
 
-  return { app, clock, agent, room, ownerDm, samDm, alex, sam, jo, riley, hands, deliveries, roomId: (key) => rooms[key] ?? key };
+  return {
+    app,
+    clock,
+    agent,
+    room,
+    ownerDm,
+    samDm,
+    alex,
+    sam,
+    jo,
+    riley,
+    hands,
+    deliveries,
+    roomId: (key) => rooms[key] ?? key,
+    alias: (key, roomId) => {
+      rooms[key] = roomId;
+    },
+    keyOf: (roomId) => Object.keys(rooms).find((k) => rooms[k] === roomId) ?? roomId,
+  };
 }
