@@ -1,20 +1,20 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Auth } from "../src/channels/auth.ts";
-import { startWebServer } from "../src/channels/web.ts";
+import { type ChannelInfo, startWebServer } from "../src/channels/web.ts";
 import { reply } from "../src/model/scripted.ts";
 import { groupWorld } from "./helpers.ts";
 
 /** The group world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
-function serve(opts: { eventToken?: string } = {}) {
+function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: ChannelInfo[] } = {}) {
   const w = groupWorld(() => reply("ok"));
   const zed = w.app.rooms.createPerson({ id: "zed", displayName: "Zed", timezone: "UTC" }); // signed in, in no room
   for (const id of ["alex", "sam", "jo", "riley", zed.id]) w.app.store.setKv(`clerk:${id}`, id);
   const auth = new Auth(
     w.app,
     { secretKey: "sk", publishableKey: "pk_test_x", authorizedParties: [] },
-    { verifier: async (t) => (t.startsWith("as:") ? { sub: t.slice(3) } : undefined), lookup: async (sub) => ({ displayName: sub }) },
+    { verifier: async (t) => (t.startsWith("as:") ? { sub: t.slice(3) } : undefined), lookup: async (sub) => ({ displayName: sub, email: opts.lookupEmail?.[sub] }) },
   );
-  const server = startWebServer(w.app, { port: 0, auth, eventToken: opts.eventToken });
+  const server = startWebServer(w.app, { port: 0, auth, eventToken: opts.eventToken, channels: opts.channels });
   const base = `http://127.0.0.1:${server.port}`;
   const call = (who: string | undefined, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
     fetch(base + path, {
@@ -26,7 +26,7 @@ function serve(opts: { eventToken?: string } = {}) {
 }
 
 const servers: { stop(): void }[] = [];
-const up = (opts?: { eventToken?: string }) => {
+const up = (opts?: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: ChannelInfo[] }) => {
   const s = serve(opts);
   servers.push(s.server);
   return s;
@@ -78,6 +78,76 @@ describe("web api: deny by default", () => {
     expect((await s.call("alex", "POST", `/api/attention/${card.id}/dismiss`)).status).toBe(200);
   });
 
+  test("a co-member sees names, not addresses or phone numbers, and only labels of another person's run", async () => {
+    const s = up();
+    s.app.store.putPerson({
+      ...s.app.store.getPerson("alex")!,
+      phoneE164: "+14085550100",
+      addresses: [{ id: "a1", label: "Home", line1: "1 Main St", city: "San Jose", country: "US" }],
+    });
+    const run = await s.app.runtime.handleMessage({ roomId: s.room.id, personId: "alex", text: "@pip hi" });
+    const state = await (await s.call("riley", "GET", `/api/state`)).json();
+    const alex = state.people.find((p: { id: string }) => p.id === "alex");
+    expect(alex.displayName).toBe("Alex");
+    expect(alex.phoneE164).toBeUndefined();
+    expect(alex.addresses).toBeUndefined();
+    expect(state.rooms[0].members.find((m: { personId: string }) => m.personId === "alex").person.phoneE164).toBeUndefined();
+    const self = (await (await s.call("riley", "GET", `/api/people`)).json()).find((p: { id: string }) => p.id === "riley");
+    expect(self.timezone).toBe("America/Los_Angeles");
+    // The owner still sees everyone's details: they add and edit people.
+    expect((await (await s.call("alex", "GET", `/api/people`)).json()).find((p: { id: string }) => p.id === "alex").phoneE164).toBe("+14085550100");
+    const detail = await (await s.call("riley", "GET", `/api/runs/${run!.id}`)).json();
+    expect(detail.toolCalls.every((c: { input: unknown; result: unknown }) => c.result === undefined)).toBe(true);
+    expect((await s.call("riley", "POST", `/api/runs/${run!.id}/stop`)).status).toBe(403);
+    const c = s.app.commitments.track({ agentId: s.agent.id, roomId: s.room.id, ownerId: "alex", title: "Pay Jo's rent" });
+    expect((await s.call("riley", "POST", `/api/commitments/${c.id}`, { status: "done" })).status).toBe(403);
+    expect((await s.call("alex", "POST", `/api/commitments/${c.id}`, { ownerId: "nobody" })).status).toBe(400);
+    expect((await s.call("alex", "POST", `/api/commitments/${c.id}`, { status: "done" })).status).toBe(200);
+  });
+
+  test("on the shared pool a person registers their own handle, is texted first, and sees the number assigned to them", async () => {
+    const registered = new Map<string, string>();
+    const texts: [string, string][] = [];
+    const handle: ChannelInfo["handle"] = {
+      async register(phone) {
+        registered.set(phone, "+17735550100");
+        return { assignedPhone: "+17735550100" };
+      },
+      async assigned(phone) {
+        return registered.get(phone);
+      },
+      async textFirst(phone, text) {
+        texts.push([phone, text]);
+      },
+    };
+    const s = up({ channels: [{ channel: "imessage", mode: "shared", handle }] });
+    const before = await (await s.call("sam", "GET", `/api/channels`)).json();
+    expect(before.channels[0]).toEqual({ channel: "imessage", phone: null, mode: "shared" });
+    expect(before.mine.phone).toBeNull();
+    expect((await s.call("sam", "POST", `/api/channels/register`, { phone: "408 555" })).status).toBe(400);
+    const r = await (await s.call("sam", "POST", `/api/channels/register`, { phone: "+1 (408) 555-0100" })).json();
+    expect(r.assignedPhone).toBe("+17735550100");
+    expect(texts).toEqual([["+14085550100", expect.stringContaining("it's Pip")]]);
+    expect(s.app.store.getPerson("sam")!.phoneE164).toBe("+14085550100");
+    const after = await (await s.call("sam", "GET", `/api/channels`)).json();
+    expect(after.mine.phone).toBe("+17735550100");
+    expect((await s.call("sam", "GET", `/api/channels/vcard`)).status).toBe(200);
+  });
+
+  test("the owner's Memory tab shows group and own notes, never what another member told the assistant privately", async () => {
+    const s = up();
+    const samDm = s.app.rooms.dmFor(s.agent, "sam");
+    s.app.memory.write({ agentId: s.agent.id, scope: "person", scopeId: "sam", type: "fact", text: "Sam is between jobs.", visibleToRooms: [samDm.id] });
+    s.app.memory.write({ agentId: s.agent.id, scope: "person", scopeId: "sam", type: "preference", text: "Sam drives Thursdays.", visibleToRooms: [s.room.id] });
+    s.app.memory.write({ agentId: s.agent.id, scope: "person", scopeId: "alex", type: "fact", text: "Alex prefers mornings.", visibleToRooms: [s.ownerDm.id] });
+    s.app.memory.write({ agentId: s.agent.id, scope: "room", scopeId: samDm.id, type: "fact", text: "In Sam's chat.", visibleToRooms: [samDm.id] });
+    const texts = (await (await s.call("alex", "GET", `/api/memory?agentId=${s.agent.id}`)).json()).memories.map((m: { text: string }) => m.text);
+    expect(texts).toContain("Sam drives Thursdays.");
+    expect(texts).toContain("Alex prefers mornings.");
+    expect(texts).not.toContain("Sam is between jobs.");
+    expect(texts).not.toContain("In Sam's chat.");
+  });
+
   test("the owner succeeds, and trust is validated on the way in", async () => {
     const s = up();
     expect((await s.call("alex", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);
@@ -125,8 +195,11 @@ describe("web api: deny by default", () => {
       agentId: "other",
       title: "Call the plumber",
       prompt: "call",
+      runAt: new Date(Date.now() + 3_600_000).toISOString(),
       authorization: { basis: "standing_rule", disclosedOutreach: [{ who: "anyone", how: "phone", why: "because" }], premise: "x" },
     };
+    expect((await s.call("alex", "POST", `/api/schedules`, { roomId: s.room.id, title: "t", prompt: "p" })).status).toBe(400); // neither runAt nor calendar
+    expect((await s.call("alex", "POST", `/api/schedules`, { roomId: s.room.id, title: "t", prompt: "p", calendar: { timeZone: "Mars/Olympus" } })).status).toBe(400);
     expect((await s.call("sam", "POST", `/api/schedules`, body)).status).toBe(403);
     const sch = await (await s.call("alex", "POST", `/api/schedules`, body)).json();
     expect(sch.authorization).toEqual({ basis: "user_requested", disclosedOutreach: [], premise: "always" });
@@ -255,5 +328,65 @@ describe("document pages", () => {
     expect(again.state.checked["0-clothes:0-boots"]).toBe("Sam");
     await s.call("alex", "PATCH", `/api/artifacts/${id}/state`, { checked: { "0-clothes:0-boots": null } });
     expect((await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json()).state.checked).toEqual({});
+  });
+});
+
+describe("web api: attachments", () => {
+  test("a photo a member attaches becomes an image artifact of the room, served raw to members and refused to a stranger", async () => {
+    const s = up();
+    const fd = new FormData();
+    fd.append("file", new File([Buffer.from("89504e470d0a1a0a", "hex")], "receipt.png", { type: "image/png" }));
+    fd.append("roomId", s.room.id);
+    fd.append("agentId", s.agent.id);
+    const r = await fetch(`${s.base}/api/files`, { method: "POST", body: fd, headers: { authorization: "Bearer as:sam" } });
+    expect(r.status).toBe(200);
+    const { id, url } = (await r.json()) as { id: string; url: string };
+    const art = s.app.store.getArtifact(id)!;
+    expect(art.kind).toBe("image");
+    expect(art.roomId).toBe(s.room.id);
+    expect((art.data as { uploadedBy?: string }).uploadedBy).toBe("sam");
+    const raw = await fetch(`${s.base}${url}?raw=1`, { headers: { authorization: "Bearer as:alex" } });
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get("content-type")).toBe("image/png");
+    expect((await fetch(`${s.base}${url}`, { headers: { authorization: "Bearer as:zed" } })).status).toBe(403);
+  });
+});
+
+describe("web api: members", () => {
+  test("the owner adds someone by email, changes their role, removes them; a member cannot; the owner cannot be removed", async () => {
+    const s = up();
+    const added = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com", role: "guest" })).json();
+    expect(added.person.email).toBe("mia@example.com");
+    expect(s.app.rooms.role(s.room.id, added.person.id)).toBe("guest");
+    // Adding the same person again, now by phone, promotes the guest rather than creating a second record.
+    const again = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com" })).json();
+    expect(again.person.id).toBe(added.person.id);
+    expect(s.app.rooms.role(s.room.id, added.person.id)).toBe("member");
+    expect((await s.call("sam", "DELETE", `/api/rooms/${s.room.id}/members/${added.person.id}`)).status).toBe(403);
+    expect((await s.call("alex", "DELETE", `/api/rooms/${s.room.id}/members/alex`)).status).toBe(404);
+    expect((await s.call("alex", "DELETE", `/api/rooms/${s.room.id}/members/${added.person.id}`)).status).toBe(200);
+    expect(s.app.rooms.role(s.room.id, added.person.id)).toBeUndefined();
+  });
+
+  test("someone added by email before signing in gets that same seat on first sign-in", async () => {
+    const s = up({ lookupEmail: { newbie: "mia@example.com" } });
+    const added = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com" })).json();
+    const me = await (await s.call("newbie", "GET", "/api/me")).json();
+    expect(me.id).toBe(added.person.id);
+    expect((await s.call("newbie", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);
+  });
+});
+
+describe("web api: channels", () => {
+  test("a signed-in person gets a link code with the number to text and a QR; the list shows what is up", async () => {
+    const s = up({ channels: [{ channel: "imessage", phone: "+14155550123" }] });
+    const list = await (await s.call("alex", "GET", "/api/channels")).json();
+    expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123", mode: "dedicated" }]);
+    expect(list.mine.phone).toBe("+14155550123");
+    const r = await (await s.call("alex", "POST", "/api/channels/link-code", {})).json();
+    expect(r.code).toMatch(/^\d{6}$/);
+    expect(r.sms).toBe(`sms:+14155550123?&body=${r.code}`);
+    expect(r.qr).toContain("<svg");
+    expect((await s.call(undefined, "POST", "/api/channels/link-code", {})).status).toBe(401);
   });
 });

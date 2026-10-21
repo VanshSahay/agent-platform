@@ -2,6 +2,7 @@ import { newId } from "../core/ids.ts";
 import type { Clock } from "../core/clock.ts";
 import type { AgentSpec, ChannelKind, Id, Membership, MemberRole, Person, Room, RoomKind } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
+import { findPersonByEmail } from "../store/queries.ts";
 
 /**
  * Rooms are the chats the agent is deployed into. The agent is one identity
@@ -55,6 +56,36 @@ export class RoomService {
     return m;
   }
 
+  /** The owner stays; anyone else can be taken out of a room. Their notes and messages remain where they were. */
+  removeMember(roomId: Id, personId: Id): boolean {
+    const m = this.store.getMembership(roomId, personId);
+    if (!m || m.role === "owner") return false;
+    this.store.deleteMembership(roomId, personId);
+    return true;
+  }
+
+  setRole(roomId: Id, personId: Id, role: MemberRole): Membership | undefined {
+    const m = this.store.getMembership(roomId, personId);
+    if (!m || m.role === "owner" || role === "owner") return undefined;
+    m.role = role;
+    this.store.putMembership(m);
+    return m;
+  }
+
+  /**
+   * Someone named by a person in the circle: an existing record by phone or email, or a new one.
+   * A phone or email is what lets a text or a sign-in later land on the same person.
+   */
+  findOrCreatePerson(input: { displayName?: string; email?: string; phoneE164?: string; timezone?: string }): Person | undefined {
+    const email = input.email?.trim().toLowerCase() || undefined;
+    const phone = input.phoneE164?.replace(/[\s()-]/g, "") || undefined;
+    const existing = (phone && this.store.findPersonByPhone(phone)) || (email && findPersonByEmail(this.store, email)) || undefined;
+    if (existing) return existing;
+    const displayName = input.displayName?.trim() || email?.split("@")[0] || phone;
+    if (!displayName) return undefined;
+    return this.createPerson({ displayName: displayName.slice(0, 80), email, phoneE164: phone, timezone: input.timezone ?? "UTC" });
+  }
+
   consent(roomId: Id, personId: Id) {
     const m = this.store.getMembership(roomId, personId);
     if (!m) throw new Error("not a member");
@@ -103,7 +134,9 @@ export class RoomService {
 
   /** The DM room between the agent and a person, created on demand so cards can go there. */
   dmFor(agent: AgentSpec, personId: Id): Room {
-    const existing = this.store.listRooms(agent.id).find((r) => r.kind === "dm" && this.memberIds(r.id).includes(personId) && this.memberIds(r.id).length === 1);
+    // Someone who texts the line lives in Messages: their cards go to that chat, not to a web-only one.
+    const dms = this.store.listRooms(agent.id).filter((r) => r.kind === "dm" && this.memberIds(r.id).includes(personId) && this.memberIds(r.id).length === 1);
+    const existing = dms.find((r) => r.channel !== "web") ?? dms[0];
     if (existing) return existing;
     const person = this.store.getPerson(personId);
     const room = this.createRoom({ agentId: agent.id, kind: "dm", channel: "web", name: `${agent.name} & ${person?.displayName ?? personId}` });

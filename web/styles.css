@@ -264,7 +264,9 @@ form.composer.centered .disclaimer { visibility: hidden }
 @media (max-width: 820px) {
   header { padding: 0 16px; gap: 12px }
   header .pages { display: none }
-  header .status { display: none }
+  /* On a phone the header has no room: a send failure or "sign in required" shows as a toast above the tab bar. */
+  header .status { position: fixed; left: 16px; right: 16px; bottom: calc(var(--tabbar) + 12px); z-index: 30; max-width: none; white-space: normal; background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.18) }
+  header .status:empty { display: none }
   .cols { display: block; position: relative }
   aside.nav, aside.home, section.center { display: none; height: calc(100dvh - var(--chrome) - var(--tabbar)); border: 0 }
   aside.nav { padding: 16px 16px 28px }
@@ -297,98 +299,154 @@ form.composer.centered .disclaimer { visibility: hidden }
 .whereroom { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px }
 .whereroom .headrow { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px }
 
-/* ---------- The skin: the app wears the landing page's pen-and-paper look (ink borders, lime, hard shadows, Rubik). ---------- */
-:root { --ink: #111; --lime: #c6f432; --sun: #ffe14d; --tang: #ff7a45; --mint: #9be7c4;
-  --bg: #fbfbf8; --bg-2: #f3f3ee; --paper: #fff; --text: #111; --text-2: #55554f; --text-3: #8a8a83; --line: #e2e2dc; --line-2: #111;
-  --accent: #111; --accent-fg: #fff; --attn: #ff7a45; --radius: 16px; --radius-sm: 10px;
-  --display: "Rubik", "Inter", sans-serif; --hand: "Caveat", cursive; --sh-1: 3px 3px 0 var(--ink); --sh-2: 5px 5px 0 var(--ink); }
-:root[data-theme="dark"] { --ink: #f2f2ec; --bg: #101012; --bg-2: #1f1f23; --paper: #17171a; --text: #f2f2ec; --text-2: #b0b0a8; --text-3: #77776f; --line: #2c2c31; --line-2: #f2f2ec; --accent: #f2f2ec; --accent-fg: #111; --attn: #ff7a45; }
-::selection { background: var(--lime); color: #111 }
-header { border-bottom: 2px solid var(--ink); background: var(--paper) }
-header .wordmark { font: 600 28px/1 var(--hand); letter-spacing: -0.01em }
-header .pages a { font-weight: 600; border: 2px solid transparent; border-radius: 10px }
-header .pages a.on { background: var(--lime); color: #111; border-color: var(--ink); box-shadow: 2px 2px 0 var(--ink) }
-header .ghost, header select { border: 2px solid var(--ink); box-shadow: 0 2px 0 var(--ink); font-weight: 600; border-radius: 10px }
-aside.nav { background: var(--paper); border-right: 2px solid var(--ink) }
-aside.home { border-left: 2px solid var(--ink) }
-h2 { font-weight: 700; color: var(--text); letter-spacing: 0.06em; text-transform: uppercase; font-size: 12px }
-.page.doc h1, .welcome h1, .drawer .head h3, .section h3, .card h4, .acard h4 { font-family: var(--display); font-weight: 800; letter-spacing: -0.03em }
-.page.doc h1 { font-size: 30px } .welcome h1 { font-size: 34px }
-.rooms a { font-weight: 520; border: 2px solid transparent; border-radius: 10px }
-.rooms a.on { background: var(--lime); color: #111; border-color: var(--ink); box-shadow: 2px 2px 0 var(--ink) }
-.rooms a.on .sub { color: #111; opacity: 0.6 }
-.dot.needs { background: var(--tang); box-shadow: 0 0 0 1.5px var(--ink) } .dot.busy { background: var(--lime); box-shadow: 0 0 0 1.5px var(--ink) }
-.card, .section, .form, .acard, .profile, .sugg button { background: var(--paper); border: 2px solid var(--ink); border-radius: 16px; box-shadow: var(--sh-1) }
-.sugg button:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-2); border-color: var(--ink) }
-.card { background: var(--paper) }
-.btn { border: 2px solid var(--ink); border-radius: 12px; background: var(--paper); color: var(--ink); font-weight: 650; box-shadow: 0 3px 0 var(--ink); transition: transform 120ms, box-shadow 120ms }
-.btn:hover { background: var(--paper); transform: translateY(-1px); box-shadow: 0 4px 0 var(--ink) } .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink) }
-.btn.primary { background: var(--ink); color: var(--paper); box-shadow: inset 0 0 0 2px var(--paper), 0 3px 0 var(--ink) }
-.btn.primary:hover { filter: none; box-shadow: inset 0 0 0 2px var(--paper), 0 4px 0 var(--ink) }
-.btn:disabled { box-shadow: none; transform: none }
-.link:hover { color: var(--ink); text-decoration: underline wavy var(--lime) 2px; text-underline-offset: 4px }
-.tabs { border-bottom: 2px solid var(--ink) }
-.tabs button { font-weight: 600 } .tabs button.on::after { background: var(--lime); height: 4px; bottom: -2px; border-radius: 2px 2px 0 0 }
-.count { background: var(--tang); color: #111; border: 1.5px solid var(--ink) }
-.field input[type="text"], .field input[type="number"], .field input[type="tel"], .field textarea, .field select, .card .reply input, .memberrow select { border: 2px solid var(--ink); border-radius: 12px }
-.field input:focus, .field textarea:focus, .field select:focus, .card .reply input:focus { border-color: var(--ink); box-shadow: 0 0 0 3px var(--lime) }
-.switch { background: var(--paper); border: 2px solid var(--ink); width: 38px; height: 22px } .switch::after { top: 1px; left: 1px; background: var(--ink); box-shadow: none }
-.switch[aria-checked="true"] { background: var(--lime) } .switch[aria-checked="true"]::after { transform: translateX(16px) }
-.chip, .scope, .status-chip { border: 1.5px solid var(--ink); color: var(--text) } .chip { box-shadow: 2px 2px 0 var(--ink) }
-.status-chip.done { background: var(--lime); color: #111; border-color: var(--ink) } .status-chip.blocked { background: var(--sun); color: #111; border-color: var(--ink) }
-.msg .body { border: 2px solid var(--ink); box-shadow: 2px 2px 0 var(--ink); border-radius: 16px }
-.msg.me .body { background: var(--ink); color: var(--paper); border-color: var(--ink); box-shadow: 2px 2px 0 var(--lime) }
-.msg.system .body { box-shadow: none; border: 2px dashed var(--text-3) } .msg.notice .body { box-shadow: none; border-color: transparent }
-.ok { color: #16865a; font-weight: 700 } .x { color: var(--tang); font-weight: 700 }
-.working .dot { background: var(--lime); box-shadow: 0 0 0 1.5px var(--ink) } .working .dot.hold { background: var(--sun) }
-.shimmer { background: none; -webkit-text-fill-color: initial; color: var(--text-2); animation: none }
-form.composer { border-top: 2px solid var(--ink); background: var(--paper) }
-form.composer .box { border: 2px solid var(--ink); box-shadow: var(--sh-1); border-radius: 16px }
-form.composer .box:focus-within { border-color: var(--ink); box-shadow: 0 0 0 3px var(--lime), var(--sh-1) }
-form.composer button { background: var(--ink); color: var(--paper); border: 2px solid var(--ink); box-shadow: inset 0 0 0 2px var(--paper) }
-form.composer.centered { background: transparent; border: 0 }
-.welcome p { font-size: 15.5px }
-.drawer { border-left: 2px solid var(--ink); box-shadow: none } .drawer .head { border-bottom: 2px solid var(--ink) }
-.drawer h4 { color: var(--text); font-weight: 700; letter-spacing: 0.06em }
-.calls li .top .ev.yes { color: #16865a; font-weight: 700 }
-.mem, .mem:last-child { border-color: var(--line) }
-.tabbar { border-top: 2px solid var(--ink); background: var(--paper) } .tabbar button.on { color: var(--ink) }
-.empty { border: 2px dashed var(--text-3); border-radius: 14px; padding: 14px }
-
 .rooms .invite { display: block; padding: 7px 10px; margin-top: 2px; text-align: left; width: 100% }
 /* ---------- Chat search ---------- */
-aside.nav .search { width: 100%; margin: 0 0 14px; padding: 7px 10px; border: 2px solid var(--ink); border-radius: 12px; background: var(--paper); color: var(--text); outline: 0 }
-aside.nav .search:focus { box-shadow: 0 0 0 3px var(--lime) }
+aside.nav .search { width: 100%; margin: 0 0 14px; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--paper); color: var(--text); outline: 0; font-size: 13px }
+aside.nav .search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(from var(--accent) l c h / 15%) }
 #results { margin-bottom: 18px }
-#results .hit { display: flex; flex-direction: column; gap: 2px; padding: 7px 10px; border-radius: 10px; text-decoration: none; color: var(--text); border: 2px solid transparent }
-#results .hit:hover { background: var(--bg-2); border-color: var(--ink) }
+#results .hit { display: flex; flex-direction: column; gap: 2px; padding: 7px 10px; border-radius: 10px; text-decoration: none; color: var(--text); border: 1px solid transparent }
+#results .hit:hover { background: var(--bg-2) }
 #results .hit .snip { color: var(--text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 
 /* ---------- Connections ---------- */
 .connrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line) }
 .connrow:first-child { border-top: 0 }
 .addrow.wrap { flex-wrap: wrap; margin: 6px 0 2px }
-.addrow.wrap input { flex: 1 1 160px; min-width: 0; border: 2px solid var(--ink); border-radius: 10px; padding: 6px 9px; background: var(--paper) }
+.addrow.wrap input { flex: 1 1 160px; min-width: 0; border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 6px 9px; background: var(--paper) }
 
 /* ---------- Preview cards for things the assistant made ---------- */
-.doccard { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; margin: 10px 0 2px; padding: 12px 14px; border: 2px solid var(--ink); border-radius: 14px; background: var(--paper); color: var(--text); text-decoration: none !important; box-shadow: 4px 4px 0 var(--lime); transition: transform 150ms, box-shadow 150ms; max-width: 420px }
-.doccard:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--lime) }
-.doccard.dashboard { box-shadow: 4px 4px 0 var(--sun) } .doccard.image { box-shadow: 4px 4px 0 var(--mint) } .doccard.audio { box-shadow: 4px 4px 0 var(--tang) }
-.doccard .kind { grid-column: 1; font: 700 11px var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3) }
-.doccard strong { grid-column: 1; font: 800 16px var(--display); letter-spacing: -0.02em; line-height: 1.2 }
+.doccard { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; margin: 10px 0 2px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--paper); color: var(--text); text-decoration: none !important; box-shadow: 0 1px 2px oklch(0 0 0 / 4%); transition: transform 150ms var(--ease), box-shadow 150ms var(--ease); max-width: 420px }
+.doccard:hover { transform: translateY(-1px); box-shadow: 0 6px 18px oklch(0 0 0 / 6%) }
+.doccard .kind { grid-column: 1; font: 500 11px var(--sans); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3) }
+.doccard strong { grid-column: 1; font: 600 14px var(--sans); letter-spacing: -0.01em; line-height: 1.25 }
 .doccard .meta { grid-column: 1; font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.doccard .bar { grid-column: 1; display: block; height: 10px; border: 1.5px solid var(--ink); border-radius: 999px; overflow: hidden; margin-top: 4px; background: var(--paper) }
-.doccard .bar i { display: block; height: 100%; background: var(--lime); transition: width 400ms }
-.doccard .open { grid-column: 2; grid-row: 1 / span 4; align-self: center; font: 700 13px var(--sans); border: 2px solid var(--ink); border-radius: 10px; padding: 6px 10px; box-shadow: 0 2px 0 var(--ink); white-space: nowrap }
+.doccard .bar { grid-column: 1; display: block; height: 6px; border-radius: 999px; overflow: hidden; margin-top: 6px; background: var(--bg-2) }
+.doccard .bar i { display: block; height: 100%; background: var(--accent); transition: width 400ms var(--ease) }
+.doccard .open { grid-column: 2; grid-row: 1 / span 4; align-self: center; font: 500 12px var(--sans); border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 10px; white-space: nowrap }
 .msg.me .doccard { color: var(--text) }
 /* ---------- Rich replies ---------- */
 .msg .body.rich { white-space: normal }
 .msg .body.rich p { margin: 0 0 8px } .msg .body.rich p:last-child { margin-bottom: 0 }
 .msg .body.rich ul, .msg .body.rich ol { margin: 0 0 8px; padding-left: 20px; display: flex; flex-direction: column; gap: 3px }
 .msg .body.rich li::marker { color: var(--text-3) }
-.msg .body.rich h4 { margin: 10px 0 4px; font: 800 15px var(--display); letter-spacing: -0.01em }
+.msg .body.rich h4 { margin: 10px 0 4px; font: 600 14px var(--sans) }
 .msg .body.rich h4:first-child { margin-top: 0 }
 .msg .body.rich code { font: 12.5px var(--mono); background: var(--bg-2); padding: 1px 5px; border-radius: 5px }
-.msg .body a { color: var(--text); text-decoration: underline wavy var(--lime) 2px; text-underline-offset: 3px; overflow-wrap: anywhere }
-.msg.me .body a { color: var(--paper); text-decoration-color: var(--lime) }
+.msg .body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere }
+.msg.me .body a { color: var(--accent-fg) }
 .msg .body.rich .footer, .msg .body.rich .steps { margin-top: 8px }
+
+/* Settings: a section list beside the form, like a phone settings app */
+#pageSettings .inner { max-width: 860px }
+.settings { display: flex; gap: 22px; align-items: flex-start }
+.subnav { flex: none; width: 150px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0 }
+.subnav a { padding: 6px 10px; border-radius: var(--radius-sm); color: var(--text-2); text-decoration: none; font-size: 13px }
+.subnav a:hover { background: var(--bg-2); color: var(--text) }
+.subnav a.on { background: var(--paper); color: var(--text); font-weight: 500; box-shadow: 0 1px 2px oklch(0 0 0 / 4%) }
+.settings > .grow { flex: 1; min-width: 0 }
+.field.inline > label .hint { font-weight: 400 }
+@media (max-width: 820px) { .settings { flex-direction: column } .subnav { width: auto; flex-direction: row; overflow-x: auto; position: static; max-width: 100% } .subnav a { white-space: nowrap } }
+
+/* ---------- Polish: one size down, quieter type, no decoration. ---------- */
+body { font-size: 14px }
+header .wordmark { font-size: 15px }
+.page.doc h1 { font-size: 20px; font-weight: 600 }
+.welcome h1 { font-size: 24px; font-weight: 600 }
+.welcome p { font-size: 14px }
+.section h3 { font-size: 14px }
+.msg .body { font-size: 14px }
+.btn.primary:hover { filter: brightness(1.12) }
+/* Starting a chat: one field, then a link to send. */
+.starters { margin: 8px 0 6px } .starters .chip { cursor: pointer; color: var(--text-2) } .starters .chip:hover { border-color: var(--accent); color: var(--text) }
+.form .hint { font-size: 12px; color: var(--text-3); line-height: 1.45 }
+.invitebox { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 0 auto 18px; max-width: 520px; font-size: 13px; color: var(--text-2); box-shadow: 0 1px 2px oklch(0 0 0 / 3%) }
+.invitebox strong { display: block; color: var(--text); font-weight: 500; margin-bottom: 2px; font-size: 14px }
+.invitebox .row { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; justify-content: center; align-items: center }
+.invitebox .row .note { color: var(--text-3); font-size: 12px }
+
+/* Attachments in the composer and image previews on cards. */
+form.composer .attach { width: 30px; height: 30px; background: transparent; color: var(--text-3); margin-left: -8px }
+form.composer .attach:hover { color: var(--text); filter: none }
+form.composer .attach svg { width: 18px; height: 18px }
+form.composer .pending { max-width: 720px; margin: 0 auto 8px; display: flex; gap: 6px; flex-wrap: wrap }
+.pend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); background: var(--paper); border: 1px solid var(--line-2); border-radius: 999px; padding: 3px 6px 3px 4px; max-width: 240px }
+.pend img { width: 22px; height: 22px; border-radius: 6px; object-fit: cover }
+.pend .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 4px }
+.pend button { background: none; border: 0; color: var(--text-3); padding: 0 3px; font-size: 14px; line-height: 1 }
+.pend button:hover { color: var(--text) }
+.doccard .thumb { grid-column: 1 / span 2; width: 100%; max-height: 220px; object-fit: cover; border-radius: 8px; margin-bottom: 6px }
+.doccard.image .open { grid-row: 2 / span 3 }
+
+/* ---------- Character: the pen-and-paper palette on the quiet structure. Ink, one lime, one tangerine; hard shadows only on things you press. ---------- */
+:root { --ink: #111; --lime: #c6f432; --lime-2: #e4f9a2; --tang: #ff7a45; --accent: #111; --accent-fg: #fff; --attn: #ff7a45; --display: "Rubik", "Inter", sans-serif; --hand: "Caveat", cursive }
+:root[data-theme="dark"] { --ink: #f2f2ec; --accent: #f2f2ec; --accent-fg: #111; --lime-2: #3a4a12 }
+::selection { background: var(--lime); color: #111 }
+header .wordmark { font: 600 26px/1 var(--hand); letter-spacing: 0 }
+.page.doc h1, .welcome h1, .drawer .head h3 { font-family: var(--display); font-weight: 700; letter-spacing: -0.02em }
+.section h3, .card h4, .acard h4 { font-family: var(--display); font-weight: 600; letter-spacing: -0.01em }
+header .pages a.on, .rooms a.on, .subnav a.on, .tabs button.on::after { background: var(--lime); color: #111; box-shadow: none }
+.rooms a.on .sub { color: #111; opacity: 0.6 }
+.dot.needs { background: var(--tang) } .dot.busy, .working .dot { background: var(--ink) }
+.btn { border-color: var(--ink); color: var(--ink); box-shadow: 0 2px 0 var(--ink); transition: transform 120ms var(--ease), box-shadow 120ms var(--ease) }
+.btn:hover { background: var(--paper); transform: translateY(-1px); box-shadow: 0 3px 0 var(--ink) } .btn:active { transform: translateY(1px); box-shadow: 0 1px 0 var(--ink) }
+.btn.primary { background: var(--ink); color: var(--paper); box-shadow: 0 2px 0 var(--lime) } .btn.primary:hover { filter: none; box-shadow: 0 3px 0 var(--lime) }
+.btn:disabled { box-shadow: none; transform: none }
+.btn.small { box-shadow: 0 1.5px 0 var(--ink) } .btn.small.primary { box-shadow: 0 1.5px 0 var(--lime) }
+.count { background: var(--tang); color: #111 }
+.field input:focus, .field textarea:focus, .field select:focus, .card .reply input:focus, aside.nav .search:focus, form.composer .box:focus-within { border-color: var(--ink); box-shadow: 0 0 0 3px var(--lime-2) }
+.switch[aria-checked="true"] { background: var(--lime) } .switch[aria-checked="true"]::after { background: var(--ink); box-shadow: none }
+.status-chip.done { background: var(--lime); color: #111; border-color: transparent } .status-chip.blocked { background: #ffe14d; color: #111; border-color: transparent }
+form.composer .box { border: 1.5px solid var(--ink); box-shadow: 0 2px 0 var(--ink) }
+form.composer .box:focus-within { box-shadow: 0 0 0 3px var(--lime-2), 0 2px 0 var(--ink) }
+form.composer button[type="submit"] { background: var(--ink); color: var(--paper) }
+.msg.me .body { background: var(--ink); color: var(--paper); border-color: var(--ink); box-shadow: 2px 2px 0 var(--lime) }
+.msg.me .body a { color: var(--lime) }
+.sugg button:hover { border-color: var(--ink); box-shadow: 2px 2px 0 var(--lime); transform: translate(-1px, -1px) }
+.doccard { box-shadow: 2px 2px 0 var(--lime-2) } .doccard:hover { box-shadow: 3px 3px 0 var(--lime); transform: translate(-1px, -1px) }
+.doccard .bar i { background: var(--lime) } .doccard .open { border-color: var(--ink) }
+.invitebox .btn.primary, .starters .chip:hover { border-color: var(--ink) }
+.ok { color: #16865a } .calls li .top .ev.yes { color: #16865a }
+.tabbar button.on { color: var(--ink) }
+h2 { font-weight: 600; color: var(--text-2); letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px }
+.msg.me .body a.doccard, .msg.me .doccard strong, .msg.me .doccard .open { color: var(--text) }
+
+/* Attachments on a person's message: the picture itself above the words, a small chip for other files. */
+.atts { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px }
+.msg.me .atts { justify-content: flex-end }
+.att.img img { display: block; max-width: 260px; max-height: 220px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--paper) }
+.att.file { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); text-decoration: none; background: var(--paper); border: 1px solid var(--line-2); border-radius: 10px; padding: 7px 10px; max-width: 260px }
+.att.file svg { width: 16px; height: 16px; flex: none; color: var(--text-3) }
+.att.file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+
+/* Members of the open chat, under the rooms list. */
+.members { margin: 6px 0 14px; padding: 8px 10px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius) }
+.members h2 { margin: 0 0 4px }
+.memrow { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 13px }
+.memrow .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.memrow .sub { color: var(--text-3); font-size: 12px }
+.memrow select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--paper) }
+.members .addrow { margin: 6px 0 2px } .members .addrow input { flex: 1 1 90px; font-size: 12px; padding: 5px 8px }
+
+/* Channels: the number to text, and the one-text phone link. */
+.phonebig { font: 600 20px var(--display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; flex-wrap: wrap }
+.linkcode { margin-top: 10px; padding: 12px 14px; background: var(--bg-2); border-radius: var(--radius) }
+.linkcode .code { font: 700 32px var(--display); letter-spacing: 0.12em }
+.linkcode p { margin: 6px 0 8px; font-size: 13px; color: var(--text-2) }
+.linkcode .qr svg { width: 180px; height: 180px; display: block; background: #fff; border-radius: 8px }
+.howto { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; list-style: decimal }
+.howto li { line-height: 1.5; display: list-item } .howto .btn { margin-left: 4px }
+
+/* The assistant's own email and number, in the header like Fo. */
+header .reach { color: var(--text-3); font-size: 12px; margin-left: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px }
+header .reach a { color: var(--text-2); text-decoration: none } header .reach a:hover { color: var(--text) }
+@media (max-width: 820px) { header .reach { display: none } }
+/* Getting started: the owner's first steps, under the greeting of their private chat. */
+.gettingstarted { text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 16px; display: flex; flex-direction: column; gap: 4px }
+.gettingstarted strong { font-size: 13px } .gettingstarted .tiny { margin-bottom: 4px }
+.gettingstarted a { display: flex; gap: 8px; align-items: baseline; color: var(--text); text-decoration: none; font-size: 13px; padding: 3px 0 }
+.gettingstarted a .mark { width: 14px; color: var(--text-3) } .gettingstarted a.done { color: var(--text-3) } .gettingstarted a.done .mark { color: #16865a }
+
+/* Tables the assistant writes (comparisons, options): tight, readable, scroll on phones. */
+.rich table { border-collapse: collapse; margin: 8px 0; font-size: 13px; display: block; max-width: 100%; overflow-x: auto }
+.rich th, .rich td { border: 1px solid var(--line-2); padding: 4px 8px; text-align: left; vertical-align: top; white-space: nowrap }
+.rich th { background: var(--bg-2); font-weight: 600 }

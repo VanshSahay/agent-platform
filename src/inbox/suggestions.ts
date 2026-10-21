@@ -68,6 +68,56 @@ export class SuggestionService {
     return out.slice(0, 6);
   }
 
+  /**
+   * Names for a chat this person might start next, from what the assistant knows about
+   * them: their notes, their chats so far. Nothing known means no suggestions, not stock
+   * ones. Cached for a day per person.
+   */
+  async roomStarters(person: Person, agent: AgentSpec): Promise<string[]> {
+    const key = `starters:${agent.id}:${person.id}`;
+    const cached = this.store.getKv(key);
+    if (cached) {
+      try {
+        const c = JSON.parse(cached) as { at: number; names: string[] };
+        if (this.clock.now() - c.at < DAY) return c.names;
+      } catch {
+        /* stale shape; recompute */
+      }
+    }
+    const rooms = this.store.listRooms(agent.id).filter((r) => r.kind === "group" && this.store.getMembership(r.id, person.id));
+    const notes = [
+      ...this.store.listMemories(agent.id, { scope: "person", scopeId: person.id }),
+      ...this.store.listMemories(agent.id, { scope: "agent", scopeId: agent.id }),
+      ...rooms.flatMap((r) => this.store.listMemories(agent.id, { scope: "room", scopeId: r.id })),
+    ]
+      .filter((m) => m.type !== "observation" && m.type !== "rule")
+      .slice(0, 40);
+    if (!notes.length && !rooms.length) return [];
+    let names: string[] = [];
+    try {
+      const raw = await this.model.complete({
+        system:
+          `Propose names for group chats ${person.displayName} might start next with the people around them, from what the assistant "${agent.name}" knows. ` +
+          "Return only JSON: an array of up to 5 strings, two to four words each, concrete (a trip, a home, a family, a care circle, an event, a project), " +
+          "none that repeat a chat they already have, no personal details in a name. Return [] when nothing fits.",
+        prompt: `Their chats: ${rooms.map((r) => r.name).join(", ") || "(none)"}
+Notes:
+${notes.map((m) => `- ${m.text}`).join("\n") || "(none)"}`,
+        effort: "low",
+        maxTokens: 200,
+      });
+      const start = raw.indexOf("[");
+      const end = raw.lastIndexOf("]");
+      const parsed = start >= 0 && end > start ? (JSON.parse(raw.slice(start, end + 1)) as unknown[]) : [];
+      const have = new Set(rooms.map((r) => r.name.toLowerCase()));
+      names = [...new Set(parsed.filter((x): x is string => typeof x === "string").map((x) => x.trim().slice(0, 40)))].filter((x) => x && !have.has(x.toLowerCase())).slice(0, 5);
+    } catch {
+      names = [];
+    }
+    this.store.setKv(key, JSON.stringify({ at: this.clock.now(), names }));
+    return names;
+  }
+
   /** Mined cards plus up to three ideas from the small model, de-duplicated, at most six. */
   async forHome(person: Person, agent: AgentSpec): Promise<Suggestion[]> {
     const mined = this.mined(person, agent);

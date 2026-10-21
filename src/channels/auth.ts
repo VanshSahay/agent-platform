@@ -1,5 +1,6 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
 import type { App } from "../app.ts";
+import { findPersonByEmail } from "../store/queries.ts";
 import type { Person } from "../core/types.ts";
 
 /**
@@ -75,7 +76,10 @@ export class Auth {
   /** Resolve the bearer token to a Person, creating one on first sign-in. */
   async personFor(req: Request): Promise<Person | undefined> {
     const h = req.headers.get("authorization") ?? "";
-    const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+    let token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+    // <img src="/d/…"> and "Open →" links cannot send a header; Clerk keeps the same JWT in a
+    // same-origin cookie, accepted for reads only so a cross-site form cannot change anything.
+    if (!token && req.method === "GET") token = /(?:^|;\s*)__session=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1]?.trim() ?? "";
     if (!token) return undefined;
     const v = await this.verifier(token);
     if (!v) return undefined;
@@ -89,7 +93,9 @@ export class Auth {
     // A fresh install has an owner's seat nobody has signed in as yet: the first sign-in claims it.
     const claimable = this.app.store.getKv("claim-owner");
     const owner = claimable ? this.app.store.getPerson(claimable) : undefined;
-    if (owner) {
+    // With OWNER_EMAIL set, only that address may take the seat; otherwise the first sign-in does.
+    const wanted = (process.env.OWNER_EMAIL ?? "").trim().toLowerCase();
+    if (owner && (!wanted || (info.email ?? "").toLowerCase() === wanted)) {
       owner.displayName = info.displayName;
       owner.email = info.email ?? owner.email;
       this.app.store.putPerson(owner);
@@ -97,6 +103,14 @@ export class Auth {
       this.app.store.deleteKv("claim-owner");
       console.log(`Sign-in: ${info.displayName} is now the owner of the seeded circle`);
       return owner;
+    }
+    // Someone added to a chat by email before they ever signed in: that record is theirs.
+    const invited = info.email ? findPersonByEmail(this.app.store, info.email) : undefined;
+    if (invited) {
+      invited.displayName = info.displayName;
+      this.app.store.putPerson(invited);
+      this.app.store.setKv(key, invited.id);
+      return invited;
     }
     const person = this.app.rooms.createPerson({ id: `per_${v.sub.replace(/^user_/, "")}`, displayName: info.displayName, email: info.email, timezone: "UTC" });
     this.app.store.setKv(key, person.id);

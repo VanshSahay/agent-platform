@@ -1,4 +1,5 @@
 import { sha256 } from "../core/ids.ts";
+import { contactKey } from "../tools/kit.ts";
 import { hourIn, type Clock } from "../core/clock.ts";
 import type { AgentSpec, Id, Room, Run } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
@@ -25,7 +26,7 @@ export function decideGate(
   const owner = store.getPerson(agent.ownerId);
   const zone = owner?.timezone ?? "UTC";
 
-  // Working hours for outreach; held items are delivered by the scheduler sweep.
+  // Working hours for outreach: a held item is not queued anywhere; the model is told to schedule it for the morning.
   if (g.outreach && g.outreach.how !== "community_post") {
     const h = hourIn(zone, clock.now());
     if (h < room.outreachHours.start || h >= room.outreachHours.end) {
@@ -39,8 +40,19 @@ export function decideGate(
   // Scheduled runs carry their own authorisation.
   if (run.scheduleId && g.outreach) {
     const sched = store.getSchedule(run.scheduleId);
-    const disclosed = sched?.authorization.disclosedOutreach.find((d) => d.who.toLowerCase() === g.outreach!.who.toLowerCase() && d.how === g.outreach!.how);
-    if (disclosed) return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
+    const contact = contactKey(g.outreach.contact ?? "");
+    // Name and channel must match, and so must the number or address once one is known: a disclosure
+    // made without one binds to the first contact used, so "Dr. Lee's office" cannot become any number.
+    const disclosed = sched?.authorization.disclosedOutreach.find(
+      (d) => d.who.toLowerCase() === g.outreach!.who.toLowerCase() && d.how === g.outreach!.how && (!d.contact || !contact || d.contact === contact),
+    );
+    if (disclosed && sched) {
+      if (!disclosed.contact && contact) {
+        disclosed.contact = contact;
+        store.putSchedule(sched);
+      }
+      return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
+    }
   }
 
   // An approval is a record bound to this run and to exactly this action (the gate key).
@@ -63,13 +75,12 @@ export function decideGate(
   if (g.kind === "purchase_approval" && requesterIsOwner && money > 0 && money <= agent.trust.autoApproveUnderUsd) {
     return { granted: true, reason: `under the $${agent.trust.autoApproveUnderUsd} threshold` };
   }
-  if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.includes(g.outreach.who)) {
+  if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.some((c) => c.toLowerCase() === g.outreach!.who.toLowerCase())) {
     return { granted: true, reason: "community pre-approved by the owner" };
   }
-  if (g.kind === "outreach_approval" && requesterIsOwner && (agent.trust.autoAllow.includes("place_call") || agent.trust.autoAllow.includes("send_sms"))) {
-    const tool = g.outreach?.how === "phone" ? "place_call" : "send_sms";
-    if (agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
-  }
+  // The owner's trust list names tools that may run for the owner without asking; the key's first part is the tool.
+  const tool = Array.isArray(g.key) ? String(g.key[0] ?? "") : "";
+  if (requesterIsOwner && tool && agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
 
   // Who answers: the owner, whose money and accounts are at stake.
   const assignee = rooms.approversFor(room)[0] ?? owner;

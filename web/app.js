@@ -5,6 +5,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 const state = {
   people: [],
+  watchConnections: 0,
+  drawerOpener: null,
   rooms: [],
   agents: [],
   me: null,
@@ -19,6 +21,8 @@ const state = {
 let authToken = null;
 
 // ---------- API ----------
+// A click handler that forgot its catch still tells the person what went wrong.
+addEventListener("unhandledrejection", (e) => status(e.reason?.message ?? "Something went wrong.", true));
 const api = async (path, body, method) => {
   const headers = body ? { "content-type": "application/json" } : {};
   if (authToken) headers.authorization = `Bearer ${authToken}`;
@@ -64,12 +68,24 @@ async function ensureAuth() {
   await window.Clerk.load();
   if (!window.Clerk.user) {
     // Signed out: the landing page, unless they came from its button or an invite link.
-    if (location.hash !== "#signin" && !location.hash.startsWith("#join=")) {
+    if (!/^#sign(in|up)\/?$/.test(location.hash) && !location.hash.startsWith("#join=")) {
       location.replace("/welcome");
       return false;
     }
-    $("#app").innerHTML = '<div id="signin" style="padding:40px;display:grid;place-items:center"></div>';
-    window.Clerk.mountSignIn(document.getElementById("signin"));
+    // Sign-in and sign-up both live on this page, in the app's own light look, never on Clerk's hosted portal.
+    $("#app").innerHTML = '<div id="signin" style="min-height:100dvh;padding:40px;display:grid;place-items:center"></div>';
+    const opts = {
+      signInUrl: `${location.origin}/#signin`,
+      signUpUrl: `${location.origin}/#signup`,
+      afterSignInUrl: `${location.origin}/`,
+      afterSignUpUrl: `${location.origin}/`,
+      appearance: { variables: { colorPrimary: "#111", colorText: "#111", colorBackground: "#fff", borderRadius: "12px", fontFamily: "Inter, system-ui, sans-serif" } },
+    };
+    if (/^#signup\/?$/.test(location.hash)) window.Clerk.mountSignUp(document.getElementById("signin"), opts);
+    else window.Clerk.mountSignIn(document.getElementById("signin"), opts);
+    addEventListener("hashchange", () => {
+      if (/^#sign(in|up)\/?$/.test(location.hash)) location.reload();
+    });
     window.Clerk.addListener(({ user }) => {
       if (user) location.reload();
     });
@@ -101,7 +117,6 @@ const greeting = () => {
   const h = new Date().getHours();
   return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 };
-const ROLE_WORDS = { owner: "owner", member: "member", guest: "guest" };
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const TECH = ["low", "medium", "high"];
 const AUTO_ALLOW_TOOLS = [
@@ -146,7 +161,7 @@ async function load() {
   const agent = agentFor(state.room);
   $("#disclaimer").textContent = agent ? `${agent.name} can make mistakes, so double-check.` : "";
   if (!state.agents.length) status("No agent yet. Start with SEED_DEMO=1 or POST /api/agents.", true);
-  await Promise.all([renderInbox(), renderThread(), renderLedger()]);
+  await Promise.all([renderInbox(), renderThread(), renderLedger(), loadReach()]);
   renderNav();
   if (state.page === "settings") renderSettings();
   if (state.page === "memory") renderMemory();
@@ -158,12 +173,29 @@ function route() {
     acceptInvite(h.slice(5)).then(load);
     return;
   }
-  state.page = h === "settings" || h === "memory" ? h : "chat";
+  if (h.startsWith("room=")) {
+    state.room = decodeURIComponent(h.slice(5));
+    try {
+      localStorage.setItem("circle.room", state.room);
+    } catch {}
+    state.lastMsgCount = -1;
+    location.replace("#chat");
+    return;
+  }
+  if (!$("#pageChat")) {
+    location.reload(); // signed out: the page holds only the sign-in form, and #signup needs the other one
+    return;
+  }
+  const [page, sub] = h.split("/");
+  state.page = page === "settings" || page === "memory" ? page : "chat";
+  state.settingsSection = sub;
   $("#pageChat").hidden = state.page !== "chat";
   $("#pageSettings").hidden = state.page !== "settings";
   $("#pageMemory").hidden = state.page !== "memory";
   $$("#pages a").forEach((a) => {
     a.classList.toggle("on", a.dataset.page === state.page);
+    if (a.dataset.page === state.page) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
   });
   if (state.page === "chat") {
     state.phoneTab = "chat";
@@ -199,7 +231,10 @@ $$("#tabbar button").forEach((b) => {
     setPhoneTab(tab);
   };
 });
-$("#homeToggle").onclick = () => $("#app").classList.toggle("home-open");
+$("#homeToggle").onclick = () => {
+  const open = $("#app").classList.toggle("home-open");
+  $("#homeToggle").setAttribute("aria-expanded", open ? "true" : "false");
+};
 if ($("#me"))
   $("#me").onchange = (e) => {
     state.me = e.target.value;
@@ -229,19 +264,18 @@ function roomFlags(roomId) {
 }
 function renderNav() {
   const mine = myRooms();
+  // The Memory tab is the owner's view of everything the assistant holds; members have no such route.
+  $('#pages [data-page="memory"]').hidden = !state.agents.some((a) => a.ownerId === state.me);
   $("#rooms").innerHTML = mine.length
     ? mine
         .map((r) => {
           const f = roomFlags(r.id);
-          return `<a href="#chat" data-room="${esc(r.id)}" class="${r.id === state.room ? "on" : ""}"><span class="name">${esc(r.name)}</span>${f ? `<span class="dot ${f}"></span>` : `<span class="sub">${r.kind === "dm" ? "private" : r.members.length}</span>`}</a>`;
+          return `<a href="#chat" data-room="${esc(r.id)}" class="${r.id === state.room ? "on" : ""}"><span class="name">${esc(r.name)}</span>${f ? `<span class="dot ${f}"></span>` : `<span class="sub">${r.channel === "imessage" ? "iMessage" : r.kind === "dm" ? "private" : r.members.length}</span>`}</a>`;
         })
         .join("")
     : `<div class="empty">No rooms yet. Make one and add the people in it.</div>`;
   const open = roomOf(state.room);
-  if (open && open.kind === "group" && _roleIn(open.id) === "owner")
-    $("#rooms").insertAdjacentHTML("beforeend", `<button class="link invite" type="button" id="inviteLink">+ Invite people to ${esc(open.name)}</button>`);
-  const inv = $("#inviteLink");
-  if (inv) inv.onclick = () => copyInvite(open.id);
+  if (open && open.kind === "group") renderMembers(open);
   $$("#rooms a").forEach((a) => {
     a.onclick = (e) => {
       e.preventDefault();
@@ -262,12 +296,77 @@ function renderNav() {
             `<div class="row"><span class="name">${esc(p.displayName)}${p.id === state.me ? ' <span class="tiny">(you)</span>' : ""}</span>${p.id === state.me ? `<button class="link" data-edit="${esc(p.id)}" type="button">Edit</button>` : `<span class="sub">${esc(p.techComfort ? `${p.techComfort} tech` : "")}</span>`}</div>`,
         )
         .join("")
-    : `<div class="empty">Nobody yet. Add the people in your circle.</div>`;
+    : `<div class="empty">${window.__CLERK_PK ? "Nobody yet. Send a chat's invite link and they appear here." : "Nobody yet. Add the people in your circle."}</div>`;
+  // Signed-in deployments: people join by invite link; a person added by hand would share no chat and never show.
+  $("#newPerson").hidden = !!window.__CLERK_PK;
   $$("#people [data-edit]").forEach((b) => {
     b.onclick = () => personForm(personOf(b.dataset.edit));
   });
 }
 $("#newRoom").onclick = () => roomForm();
+
+// Who is in the open chat, under the rooms list. The owner edits roles, removes people, adds by name with a
+// phone or email (so a text or a sign-in lands on them), or copies the invite link; everyone else just sees the list.
+function renderMembers(room) {
+  const owner = _roleIn(room.id) === "owner";
+  // Roles are derived, not chosen: the owner, and everyone else. A guest is someone who texted from an unknown
+  // number and has no seat yet; the owner adding them makes them a member, so the panel never asks.
+  const rows = room.members
+    .map((m) => {
+      const name = esc(m.person?.displayName ?? m.personId);
+      const sub = m.role === "owner" ? "owner" : m.role === "guest" ? "not added yet" : "";
+      const remove = owner && m.role !== "owner" ? `<button class="link" data-remove="${esc(m.personId)}" type="button" aria-label="Remove">×</button>` : "";
+      return `<div class="memrow"><span class="name">${name}</span>${sub ? `<span class="sub">${sub}</span>` : ""}${remove}</div>`;
+    })
+    .join("");
+  $("#rooms").insertAdjacentHTML(
+    "beforeend",
+    `<div class="members" id="members"><h2>In ${esc(room.name)}${owner ? ` <button class="link" id="renameRoom" type="button">rename</button>` : ""}</h2>${rows}${
+      owner
+        ? `<form class="addrow wrap" id="addMember"><input type="text" name="displayName" placeholder="Name" required /><input type="text" name="contact" placeholder="phone or email" /><button class="btn small" type="submit">Add</button></form>
+      <button class="link invite" type="button" id="inviteLink">+ Invite people to ${esc(room.name)}</button>`
+        : ""
+    }</div>`,
+  );
+  const inv = $("#inviteLink");
+  if (inv) inv.onclick = () => copyInvite(room.id);
+  const rn = $("#renameRoom");
+  if (rn)
+    rn.onclick = () => {
+      const name = window.prompt("Name this chat", room.name);
+      if (!name || name.trim() === room.name) return;
+      api(`/api/rooms/${encodeURIComponent(room.id)}`, { name: name.trim() }, "PATCH")
+        .then(load)
+        .catch((e) => status(e.message, true));
+    };
+  const member = (id) => `/api/rooms/${encodeURIComponent(room.id)}/members/${encodeURIComponent(id)}`;
+  $$("#members [data-remove]").forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api(member(b.dataset.remove), undefined, "DELETE");
+        load();
+      } catch (e) {
+        status(e.message, true);
+      }
+    };
+  });
+  const form = $("#addMember");
+  if (form)
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const contact = String(fd.get("contact") ?? "").trim();
+      const body = { displayName: fd.get("displayName"), role: "member" };
+      if (contact.includes("@")) body.email = contact;
+      else if (contact) body.phoneE164 = contact;
+      try {
+        await api(`/api/rooms/${encodeURIComponent(room.id)}/members`, body);
+        load();
+      } catch (err) {
+        status(err.message, true);
+      }
+    };
+}
 
 // Chat search (after Fo's /search): 300 ms debounce, three characters or more, one row per room with a snippet.
 let searchTimer;
@@ -310,6 +409,7 @@ async function renderSearch() {
 }
 $("#newPerson").onclick = () => personForm();
 
+/** One field. Members arrive through the invite link, and the assistant learns what the chat is for by reading it. */
 function roomForm() {
   const el = $("#roomForm");
   if (el.innerHTML) {
@@ -321,43 +421,45 @@ function roomForm() {
     status("Make an agent first.");
     return;
   }
-  el.innerHTML = `<form class="form"><h4>New room</h4>
-    <div class="field"><label>Name</label><input type="text" name="name" placeholder="Tahoe trip, Flat 4B, Sunday dinner…" required /></div>
-    <div class="field"><label>Kind</label><select name="kind"><option value="group">Group chat</option><option value="dm">Private chat</option></select></div>
-    <div class="field"><label>Priorities here (optional)</label><textarea name="focus" placeholder="What this chat mostly needs from it, e.g. the trip: cabin, carpool, splitting costs."></textarea><div class="hint">It stays a general assistant; these come first and it may step in on them without being named.</div></div>
-    <div class="field"><span class="lab">Who is in it</span>${state.people
-      .map(
-        (p) =>
-          `<div class="memberrow"><label class="check"><input type="checkbox" name="m" value="${esc(p.id)}" ${p.id === state.me ? "checked" : ""} /> ${esc(p.displayName)}</label><select name="role:${esc(p.id)}">${Object.entries(
-            ROLE_WORDS,
-          )
-            .map(([k, w]) => `<option value="${k}" ${k === (p.id === state.me ? "owner" : "member") ? "selected" : ""}>${esc(w)}</option>`)
-            .join("")}</select></div>`,
-      )
-      .join("")}
-    <div class="hint">The owner's accounts pay. Someone who can decide may approve care decisions. Guests are served through you.</div></div>
+  el.innerHTML = `<form class="form"><h4>New chat</h4>
+    <div class="field"><input type="text" name="name" placeholder="What is it for?" required autocomplete="off" maxlength="80" /></div>
+    <div class="chips starters" id="starters"></div>
+    <div class="hint">That is all. You get a link to send; people join when they open it, no app needed. ${esc(agent.name)} picks up what the chat is for as you talk.</div>
     <div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button><span class="note"></span></div></form>`;
   const form = el.querySelector("form");
+  const name = form.querySelector("input");
   form.querySelector("[data-cancel]").onclick = () => (el.innerHTML = "");
+  // Starter chips come from what the assistant knows about this person, so a new account sees none.
+  api(`/api/rooms/starters?agentId=${encodeURIComponent(agent.id)}${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`)
+    .then(({ names }) => {
+      const box = $("#starters");
+      if (!box || !names?.length) return;
+      box.innerHTML = names.map((n) => `<button class="chip" type="button" data-starter="${esc(n)}">${esc(n)}</button>`).join("");
+      $$("#roomForm [data-starter]").forEach((b) => {
+        b.onclick = () => {
+          name.value = b.dataset.starter;
+          name.focus();
+        };
+      });
+    })
+    .catch(() => undefined);
   form.onsubmit = async (e) => {
     e.preventDefault();
-    const fd = new FormData(form);
-    const members = fd.getAll("m").map((personId) => {
-      const role = fd.get(`role:${personId}`);
-      return { personId, role, consented: role !== "guest" };
-    });
     try {
-      const room = await api("/api/rooms", { agentId: agent.id, name: fd.get("name"), kind: fd.get("kind"), focus: fd.get("focus"), members });
+      const members = state.me ? [{ personId: state.me, role: "owner", consented: true }] : [];
+      const room = await api("/api/rooms", { agentId: agent.id, name: name.value.trim(), kind: "group", members });
       el.innerHTML = "";
       state.room = room.id;
       state.lastMsgCount = -1;
+      if (state.page !== "chat") location.hash = "chat";
+      else setPhoneTab("chat");
       load();
     } catch (err) {
       form.querySelector(".note").textContent = err.message;
       form.querySelector(".note").classList.add("bad");
     }
   };
-  form.querySelector("input").focus();
+  name.focus();
 }
 
 function personForm(person) {
@@ -406,6 +508,10 @@ async function renderInbox() {
     return;
   }
   const inbox = await api(`/api/inbox?personId=${encodeURIComponent(state.me)}&agentId=${encodeURIComponent(agent.id)}`);
+  // Browser notification for a card that landed while this tab was in the background (Settings → Notifications).
+  if (state.seenNeeds && document.hidden && notifyOn() && Notification.permission === "granted")
+    for (const i of inbox.needsYou) if (!state.seenNeeds.has(i.id)) new Notification(`${agent.name} needs you`, { body: i.title, tag: i.id });
+  state.seenNeeds = new Set(inbox.needsYou.map((i) => i.id));
   state.inbox = inbox;
   counts.forEach((c) => {
     c.hidden = !inbox.needsYou.length;
@@ -522,9 +628,11 @@ async function renderLedger() {
     el.innerHTML = "";
     return;
   }
-  const cs = (await api(`/api/commitments?roomId=${encodeURIComponent(state.room)}`)).sort(
+  const roomId = state.room;
+  const cs = (await api(`/api/commitments?roomId=${encodeURIComponent(roomId)}`)).sort(
     (a, b) => (a.status === "open" || a.status === "blocked" ? 0 : 1) - (b.status === "open" || b.status === "blocked" ? 0 : 1) || (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity),
   );
+  if (state.room !== roomId) return;
   el.innerHTML = cs.length
     ? cs
         .map(
@@ -598,7 +706,9 @@ async function renderThread() {
     el.innerHTML = `<div class="welcome"><h1>${greeting()}.</h1><p>You are not in any room yet. Make one from the Rooms list.</p></div>`;
     return;
   }
-  const data = await api(`/api/rooms/${encodeURIComponent(state.room)}/messages?limit=100${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
+  const roomId = state.room;
+  const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/messages?limit=100${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`);
+  if (state.room !== roomId) return; // the person moved on while this loaded; never paint one room under another
   // Timer and answer prompts are the agent's own notes; the Why? drawer shows them, the thread does not.
   const msgs = (data.messages ?? data).filter((m) => m.role !== "system");
   const active = data.activeRun;
@@ -618,10 +728,11 @@ async function renderThread() {
     }
     const all = state.sugg;
     const picks = all.slice(state.suggOffset, state.suggOffset + 3);
-    el.innerHTML = `<div class="welcome"><h1>${greeting()}${state.me ? `, ${esc(firstName(state.me))}` : ""}.</h1><p>${agent ? `${esc(agent.name)} is in ${esc(room?.name ?? "this room")}. Ask for anything: something to find, book, fix, remind, or sort out.${room?.focus ? ` Priorities here: ${esc(room.focus)}` : ""}` : "No agent in this room yet."}</p><div class="slot" id="slot"></div>${picks.length ? `<div class="sugg">${picks.map((p) => `<button type="button" data-prompt="${esc(p[1])}"><span>${esc(p[0])}</span>${esc(p[2] ?? p[1])}</button>`).join("")}</div>` : ""}${all.length > 3 ? `<button class="another" id="another" type="button">Show others</button>` : ""}</div>`;
+    el.innerHTML = `<div class="welcome"><h1>${greeting()}${state.me ? `, ${esc(firstName(state.me))}` : ""}.</h1><p>${agent ? `${esc(agent.name)} is in ${esc(room?.name ?? "this room")}. Ask for anything: something to find, book, fix, remind, or sort out.${room?.focus ? ` Priorities here: ${esc(room.focus)}` : ""}` : "No agent in this room yet."}</p>${inviteBox(room)}<div class="slot" id="slot"></div>${picks.length ? `<div class="sugg">${picks.map((p) => `<button type="button" data-prompt="${esc(p[1])}"><span>${esc(p[0])}</span>${esc(p[2] ?? p[1])}</button>`).join("")}</div>` : ""}${all.length > 3 ? `<button class="another" id="another" type="button">Show others</button>` : ""}</div>`;
     $$(".sugg button").forEach((b) => {
       b.onclick = () => send(b.dataset.prompt);
     });
+    wireInviteBox(room);
     const another = $("#another");
     if (another)
       another.onclick = () => {
@@ -644,27 +755,23 @@ async function renderThread() {
     .map((m) => {
       const who = m.role === "assistant" ? (agent?.name ?? "Agent") : m.role === "system" ? `${agent?.name ?? "Agent"} · ${m.source ?? "note"}` : nameOf(m.authorId);
       const cls = m.role === "user" && m.authorId === state.me ? "me" : m.role === "system" ? "system" : m.source === "notice" || m.source === "narration" ? "notice" : "";
-      let body = esc(m.text),
-        footer = "";
-      const fi = m.role === "assistant" ? m.text.lastIndexOf("\n— ") : -1;
-      if (fi > 0) {
-        body = m.text.slice(0, fi);
-        footer = m.text.slice(fi + 1);
-      } else if (m.role === "assistant") body = m.text;
+      // The server serves the assistant's text without its record footer; steps come from records, never from text.
+      let body = m.role === "assistant" ? m.text : esc(m.text);
       // The assistant writes light Markdown; people's own messages stay as typed.
       const rich = m.role === "assistant";
-      body = rich ? md(body) : linkify(esc(m.text));
+      const att = rich ? { text: m.text, atts: [] } : splitAttachments(m.text);
+      body = rich ? md(body) : linkify(esc(att.text));
       const card = m.card ? cardHtml(m.card) : "";
-      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div></div>`;
+      return `<div class="msg ${cls}" data-id="${esc(m.id)}"><div class="who">${esc(who)} · ${fmt(m.at)}</div>${attachmentsHtml(att.atts)}${att.text || card || rich ? `<div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : ""}</div>` : ""}</div>`;
     })
     .join("");
   if (active && active.status === "running") {
     const running = active.steps.find((s) => s.status === "running");
-    html += `<div class="working"><span class="dot"></span><span class="shimmer">${esc(running ? running.label : `${agent?.name ?? "Agent"} is working…`)}</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
+    html += `<div class="working" data-id="working"><span class="dot"></span><span class="shimmer">${esc(running ? running.label : `${agent?.name ?? "Agent"} is working…`)}</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
   } else if (active && active.status === "waiting") {
-    html += `<div class="working"><span class="dot hold"></span><span>${esc(agent?.name ?? "Agent")} is waiting on someone.</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
+    html += `<div class="working" data-id="working"><span class="dot hold"></span><span>${esc(agent?.name ?? "Agent")} is waiting on someone.</span><a href="#" class="why" data-why="${esc(active.id)}">Why?</a></div>`;
   }
-  el.innerHTML = html;
+  patchThread(el, html);
   $$("#inner [data-connect]").forEach((b) => {
     b.onclick = async () => {
       const card = b.closest(".acard");
@@ -697,6 +804,26 @@ async function renderThread() {
   }
 }
 
+/**
+ * Replace only what changed: messages already on screen keep their nodes (a sign-in iframe mid-typing
+ * survives a delivery), new ones are appended, and the "working" line at the end is always redrawn.
+ * Anything else (an edit, a removal, a different room) falls back to a full repaint.
+ */
+function patchThread(el, html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const next = [...tpl.content.children];
+  const have = [...el.children].filter((c) => c.dataset.id && c.dataset.id !== "working");
+  const want = next.filter((c) => c.dataset.id !== "working");
+  const prefix = have.length && have.length <= want.length && have.every((c, i) => c.dataset.id === want[i].dataset.id);
+  if (!prefix) {
+    el.replaceChildren(...next);
+    return;
+  }
+  el.querySelector('[data-id="working"]')?.remove();
+  for (const c of next.slice(have.length)) el.appendChild(c);
+}
+
 // A link to something the assistant made becomes a preview card under the message: title, kind, live progress.
 const docCards = new Map();
 const KIND_WORDS = { document: "Note", dashboard: "Dashboard", image: "Image", audio: "Voice note", file: "File" };
@@ -711,7 +838,7 @@ function docCardHtml(a) {
       : a.summary.sections?.length
         ? esc(a.summary.sections.join(" · "))
         : "";
-  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
+  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener">${a.kind === "image" ? `<img class="thumb" src="/d/${esc(a.id)}?raw=1" alt="" />` : ""}<span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
 }
 async function decorateDocLinks() {
   for (const link of $$("#inner .body a[href*='/d/']")) {
@@ -743,8 +870,8 @@ function md(text) {
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s"(]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)"(]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
   const out = [];
   let list = null;
   let para = [];
@@ -756,10 +883,36 @@ function md(text) {
     if (list) out.push(`</${list}>`);
     list = null;
   };
+  let table = null; // rows of a pipe table being collected
+  const closeTable = () => {
+    if (!table) return;
+    const [head, ...rows] = table;
+    out.push(
+      `<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`,
+    );
+    table = null;
+  };
   for (const line of text.split("\n")) {
     const h = line.match(/^(#{1,4})\s+(.*)$/);
     const li = line.match(/^\s*[-*•]\s+(.*)$/);
     const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    // A pipe table: header row, a |---| rule, then rows. The rule line is dropped.
+    const row = line.trim().startsWith("|")
+      ? line
+          .trim()
+          .replace(/^\||\|$/g, "")
+          .split("|")
+          .map((c) => c.trim())
+      : null;
+    if (row) {
+      flush();
+      closeList();
+      if (row.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+      if (!table) table = [];
+      table.push(row);
+      continue;
+    }
+    closeTable();
     if (h) {
       flush();
       closeList();
@@ -783,6 +936,7 @@ function md(text) {
   }
   flush();
   closeList();
+  closeTable();
   return out.join("");
 }
 
@@ -802,21 +956,112 @@ function cardHtml(c) {
   }</div>`;
 }
 
+// ---------- Attachments: photos and files go up as artifacts; the message carries their links ----------
+const pendingFiles = [];
+function renderPending() {
+  const box = $("#pending");
+  box.hidden = !pendingFiles.length;
+  box.innerHTML = pendingFiles
+    .map(
+      (f, i) =>
+        `<span class="pend">${f.type.startsWith("image/") ? `<img src="${URL.createObjectURL(f)}" alt="" />` : ""}<span class="name">${esc(f.name)}</span><button type="button" data-rm="${i}" aria-label="Remove">×</button></span>`,
+    )
+    .join("");
+  $$("#pending [data-rm]").forEach((b) => {
+    b.onclick = () => {
+      pendingFiles.splice(Number(b.dataset.rm), 1);
+      renderPending();
+    };
+  });
+  placeComposer();
+}
+function addFiles(files) {
+  for (const f of files) {
+    if (f.size > 10 * 1024 * 1024) status(`${f.name} is over 10 MB.`, true);
+    else pendingFiles.push(f);
+  }
+  renderPending();
+}
+$("#attach").onclick = () => $("#file").click();
+$("#file").onchange = () => {
+  addFiles($("#file").files);
+  $("#file").value = "";
+};
+$("#text").addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.files ?? [])];
+  if (files.length) addFiles(files);
+});
+$("#thread").addEventListener("dragover", (e) => e.preventDefault());
+$("#thread").addEventListener("drop", (e) => {
+  e.preventDefault();
+  addFiles(e.dataTransfer?.files ?? []);
+});
+async function uploadFile(f, roomId = state.room) {
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("roomId", roomId);
+  fd.append("agentId", agentFor(roomId)?.id ?? "");
+  const headers = authToken ? { authorization: `Bearer ${authToken}` } : {};
+  const res = await fetch(`/api/files${state.me ? `?personId=${encodeURIComponent(state.me)}` : ""}`, { method: "POST", body: fd, headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `Upload failed (${res.status})`);
+  return data;
+}
+
+/** An attachment line as send() writes it: "Photo name: <link>" or "File name: <link>". Shown as the thing itself, never as a filename. */
+const ATTACH_LINE = /^(Photo|File) (.+?): https?:\/\/\S+\/d\/([A-Za-z0-9_-]+)$/;
+function splitAttachments(text) {
+  const atts = [];
+  const rest = [];
+  for (const line of (text ?? "").split("\n")) {
+    const m = line.match(ATTACH_LINE);
+    if (m) atts.push({ kind: m[1] === "Photo" ? "image" : "file", name: m[2], id: m[3] });
+    else rest.push(line);
+  }
+  return { text: rest.join("\n").trim(), atts };
+}
+function attachmentsHtml(atts) {
+  if (!atts.length) return "";
+  return `<div class="atts">${atts
+    .map((a) =>
+      a.kind === "image"
+        ? `<a class="att img" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><img src="/d/${esc(a.id)}?raw=1" alt="${esc(a.name)}" /></a>`
+        : `<a class="att file" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3h7l4 4v10H5z M12 3v4h4"/></svg><span>${esc(a.name)}</span></a>`,
+    )
+    .join("")}</div>`;
+}
+
 async function send(text) {
-  if (!text || !state.room || !state.me) return;
+  if ((!text && !pendingFiles.length) || !state.room || !state.me) return;
+  const roomId = state.room;
   $("#text").value = "";
   status("");
+  if (pendingFiles.length) {
+    const files = pendingFiles.splice(0);
+    renderPending();
+    try {
+      const lines = [];
+      for (const f of files) {
+        const { url } = await uploadFile(f, roomId);
+        lines.push(`${f.type.startsWith("image/") ? "Photo" : "File"} ${f.name}: ${location.origin}${url}`);
+      }
+      text = [text, ...lines].filter(Boolean).join("\n");
+    } catch (e) {
+      status(e.message, true);
+      return;
+    }
+  }
   const inner = $("#inner");
   if ($("#composer").classList.contains("centered")) inner.innerHTML = "";
   // Show the message at once; the run follows.
   inner.insertAdjacentHTML(
     "beforeend",
-    `<div class="msg me"><div class="who">${esc(nameOf(state.me))}</div><div class="body">${esc(text)}</div></div><div class="working"><span class="dot"></span><span class="shimmer">${esc(agentFor(state.room)?.name ?? "Agent")} is working…</span></div>`,
+    `<div class="msg me"><div class="who">${esc(nameOf(state.me))}</div>${attachmentsHtml(splitAttachments(text).atts)}${splitAttachments(text).text ? `<div class="body">${esc(splitAttachments(text).text)}</div>` : ""}</div><div class="working"><span class="dot"></span><span class="shimmer">${esc(agentFor(state.room)?.name ?? "Agent")} is working…</span></div>`,
   );
   dropComposer();
   $("#thread").scrollTop = $("#thread").scrollHeight;
   try {
-    await api(`/api/rooms/${encodeURIComponent(state.room)}/messages`, { personId: state.me, text, dedupKey: `${state.me}:${Date.now()}` });
+    await api(`/api/rooms/${encodeURIComponent(roomId)}/messages`, { personId: state.me, text, dedupKey: `${state.me}:${Date.now()}` });
   } catch (e) {
     status(e.message);
   }
@@ -882,6 +1127,8 @@ async function openDrawer(runId) {
     body = $("#drawerBody");
   drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
+  state.drawerOpener = document.activeElement;
+  $("#drawerClose").focus();
   $("#drawerTitle").textContent = "Why";
   body.innerHTML = `<div class="mut">Loading…</div>`;
   let d;
@@ -922,6 +1169,8 @@ function closeDrawer() {
   const d = $("#drawer");
   d.classList.remove("open");
   d.setAttribute("aria-hidden", "true");
+  state.drawerOpener?.focus?.();
+  state.drawerOpener = null;
 }
 $("#drawerClose").onclick = closeDrawer;
 addEventListener("keydown", (e) => {
@@ -933,61 +1182,340 @@ document.addEventListener("click", (e) => {
 });
 
 // ---------- Settings page ----------
+// Sections follow Fo's /user layout (docs/research/wajo-fo-build.md §8): you first, the assistant last.
+const SETTINGS_SECTIONS = [
+  ["general", "General"],
+  ["address", "Address"],
+  ["spending", "Spending"],
+  ["invites", "Invites"],
+  ["connections", "Connections"],
+  ["channels", "Channels"],
+  ["permissions", "Permissions"],
+  ["notifications", "Notifications"],
+  ["assistant", "Assistant"],
+];
+const NOTIFY_KEY = "circle.notify";
+const notifyOn = () => {
+  try {
+    return localStorage.getItem(NOTIFY_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const saved = (form, msg) => {
+  const n = form.querySelector(".note");
+  n.classList.remove("bad");
+  n.textContent = msg;
+  setTimeout(() => {
+    if (n.textContent === msg) n.textContent = "";
+  }, 3000);
+};
+const failed = (form, e) => {
+  const n = form.querySelector(".note");
+  n.classList.add("bad");
+  n.textContent = e.message;
+};
+const patchMe = (body) => api(`/api/people/${encodeURIComponent(state.me)}`, body, "PATCH");
+
+/** Every field's label points at its control, and every switch says what it switches, without touching the markup each form writes. */
+function labelFields(root) {
+  let k = 0;
+  for (const field of root.querySelectorAll(".field")) {
+    const label = field.querySelector("label");
+    const control = field.querySelector("input, select, textarea, button.switch");
+    if (!label || !control) continue;
+    if (control.classList.contains("switch")) {
+      control.setAttribute("aria-label", label.firstChild?.textContent?.trim() || label.textContent.trim());
+      continue;
+    }
+    if (!control.id) control.id = `f_${root.id || "x"}_${k++}`;
+    label.htmlFor = control.id;
+  }
+}
+
 function renderSettings() {
   const el = $("#settings");
-  if (el.contains(document.activeElement)) return; // do not clobber what the person is typing
+  const active = document.activeElement;
+  if (el.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return; // do not clobber what the person is typing
   const agent = agentFor(state.room);
-  if (!agent) {
-    el.innerHTML = `<h1>Settings</h1><div class="empty">No agent yet.</div>`;
+  const me = personOf(state.me);
+  const section = SETTINGS_SECTIONS.some(([k]) => k === state.settingsSection) ? state.settingsSection : "general";
+  const render = {
+    general: settingsGeneral,
+    address: settingsAddress,
+    spending: settingsSpending,
+    invites: settingsInvites,
+    connections: settingsConnections,
+    channels: settingsChannels,
+    permissions: settingsPermissions,
+    notifications: settingsNotifications,
+    assistant: settingsAssistant,
+  }[section];
+  el.innerHTML = `<h1>Settings</h1><div class="settings"><nav class="subnav">${SETTINGS_SECTIONS.map(([k, w]) => `<a href="#settings/${k}" class="${k === section ? "on" : ""}">${w}</a>`).join("")}</nav><div class="grow" id="settingsBody"></div></div>`;
+  const box = $("#settingsBody");
+  if (!me && section !== "assistant") {
+    box.innerHTML = `<div class="empty">Pick who you are first.</div>`;
     return;
   }
+  if (!agent && (section === "spending" || section === "permissions" || section === "assistant")) {
+    box.innerHTML = `<div class="empty">No agent yet.</div>`;
+    return;
+  }
+  if (agent && agent.ownerId !== state.me && (section === "spending" || section === "permissions" || section === "assistant")) {
+    box.innerHTML = `<div class="empty">Only ${esc(nameOf(agent.ownerId))} can change this; it is their assistant and their money.</div>`;
+    return;
+  }
+  render(box, agent, me);
+  labelFields(box);
+}
+
+function settingsGeneral(box, _agent, me) {
+  const zones = Intl.supportedValuesOf?.("timeZone") ?? [];
+  const comfort = [
+    ["medium", "Normal"],
+    ["low", "One step at a time, in plain words"],
+    ["high", "Brief; I know my way around"],
+  ];
+  box.innerHTML = `<form class="section" id="generalForm"><h3>About you</h3><p class="lead">What the assistant knows about you when it speaks for you, fills in a form, or picks a time.</p>
+    <div class="field"><label>Name</label><input type="text" name="displayName" value="${esc(me.displayName)}" required /></div>
+    <div class="field"><label>Pronouns</label><input type="text" name="pronouns" maxlength="40" value="${esc(me.pronouns ?? "")}" placeholder="she/her" /><div class="hint">Used when it refers to you, including to other people.</div></div>
+    <div class="field"><label>Time zone</label><input type="text" name="timezone" value="${esc(me.timezone ?? "")}" list="tzList" required /><datalist id="tzList">${zones.map((z) => `<option value="${esc(z)}"></option>`).join("")}</datalist><div class="hint">Reminders and "tomorrow morning" are in this zone.</div></div>
+    <div class="field"><label>Phone</label><input type="tel" name="phoneE164" value="${esc(me.phoneE164 ?? "")}" placeholder="+1 408 555 0100" /><div class="hint">Texts from this number reach the assistant as you.</div></div>
+    <div class="field"><label>Email</label><input type="text" inputmode="email" name="email" value="${esc(me.email ?? "")}" placeholder="you@example.com" /><div class="hint">Mail you send from here reaches the assistant as you.</div></div>
+    <div class="field"><label>How it talks to you</label><select name="techComfort">${comfort.map(([v, w]) => `<option value="${v}" ${(me.techComfort ?? "medium") === v ? "selected" : ""}>${w}</option>`).join("")}</select></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>`;
+  const form = $("#generalForm");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    try {
+      await patchMe(Object.fromEntries(["displayName", "pronouns", "timezone", "phoneE164", "email", "techComfort"].map((k) => [k, String(fd.get(k) ?? "").trim()])));
+      saved(form, "Saved.");
+      document.activeElement?.blur();
+      load();
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+function settingsAddress(box, _agent, me) {
+  const row = (label, sub, action) => `<div class="connrow"><div><strong>${esc(label)}</strong><div class="tiny">${esc(sub)}</div></div>${action}</div>`;
+  box.innerHTML = `<div class="section"><h3>Addresses</h3><p class="lead">Used to fill in checkout and forms when the assistant shops or books for you. It can save one from the chat too.</p>
+    ${(me.addresses ?? []).map((a) => row(a.label, `${a.line1}${a.line2 ? `, ${a.line2}` : ""}, ${a.city}${a.region ? ` ${a.region}` : ""} ${a.postalCode ?? ""}`, `<button class="btn small" type="button" data-addr="${esc(a.id)}">Remove</button>`)).join("") || `<div class="tiny">None yet.</div>`}
+    <form class="addrow wrap" id="addrForm"><input type="text" name="label" placeholder="Home" required /><input type="text" name="line1" placeholder="Street" required /><input type="text" name="city" placeholder="City" required /><input type="text" name="region" placeholder="State" /><input type="text" name="postalCode" placeholder="Postal code" /><button class="btn small" type="submit">Save address</button></form></div>`;
+  $$("#settingsBody [data-addr]").forEach((b) => {
+    b.onclick = async () => {
+      await patchMe({ addresses: (me.addresses ?? []).filter((a) => a.id !== b.dataset.addr) });
+      await load();
+      renderSettings();
+    };
+  });
+  const af = $("#addrForm");
+  af.onsubmit = async (e) => {
+    e.preventDefault();
+    const a = Object.fromEntries(new FormData(af).entries());
+    await patchMe({ addresses: [...(me.addresses ?? []), { id: `addr_${Date.now().toString(36)}`, country: "US", ...a }] });
+    document.activeElement?.blur();
+    await load();
+    renderSettings();
+  };
+}
+
+function settingsSpending(box, agent) {
   const t = agent.trust ?? {};
-  el.innerHTML = `<div class="headrow"><h1>${esc(agent.name)}</h1><a class="link" href="#memory">What it remembers →</a></div><p class="lead">How your assistant introduces itself, anything it should always keep in mind, and what it may do without asking. Each chat sets its own priorities when you add it.</p>
-  <form class="section" id="aboutForm"><h3>About</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to.</p>
+  box.innerHTML = `<form class="section" id="spendForm"><h3>Spending approvals</h3><p class="lead">Purchases you ask for at or under this amount go through without asking. Anyone else's purchase asks you every time.</p>
+    <div class="field"><label>Ask before purchases over (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="0.01" value="${esc(Number(t.autoApproveUnderUsd ?? 0).toFixed(2))}" /><div class="hint">0 means it asks for every purchase.</div></div>
+    <div class="field inline"><label>Pause agent spending<div class="hint">While paused, it won't buy anything, whatever the amount.</div></label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}"></button></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
+  <div class="section"><h3>How it pays</h3><p class="lead">Each purchase gets a single-use card for exactly that amount at that shop; the card details go to the browser inside the vault and never pass through the chat. The receipt in the chat carries the amount, the shop and the last four digits.</p></div>`;
+  const form = $("#spendForm");
+  const sw = form.querySelector(".switch");
+  sw.onclick = () => sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api(
+        `/api/agents/${encodeURIComponent(agent.id)}`,
+        { trust: { autoApproveUnderUsd: Math.max(0, Number(new FormData(form).get("autoApproveUnderUsd")) || 0), spendingPaused: sw.getAttribute("aria-checked") === "true" } },
+        "PATCH",
+      );
+      saved(form, "Saved.");
+      document.activeElement?.blur();
+      load();
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+function settingsInvites(box) {
+  const rooms = myRooms().filter((r) => r.kind === "group");
+  box.innerHTML = `<div class="section"><h3>Invite people</h3><p class="lead">Each chat has its own link. Whoever opens it joins that chat and can ask the assistant there; anything that spends money or uses an account still asks the owner.</p>
+    ${rooms.map((r) => `<div class="connrow"><div><strong>${esc(r.name)}</strong><div class="tiny">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</div></div><div class="actions" style="margin:0"><button class="btn small" type="button" data-invite="${esc(r.id)}">Copy invite link</button><span class="note"></span></div></div>`).join("") || `<div class="empty">No group chats yet. Make one from the Rooms list.</div>`}
+  </div>`;
+  $$("#settingsBody [data-invite]").forEach((b) => {
+    b.onclick = () => copyInvite(b.dataset.invite, b.closest(".actions").querySelector(".note"));
+  });
+}
+
+function settingsConnections(box) {
+  box.innerHTML = `<div class="section"><h3>Connections</h3><p class="lead">Your own accounts and the services the assistant may reach for your requests. It sees names only; secrets stay in the vault.</p><div id="connections">Loading…</div></div>`;
+  renderConnections();
+}
+
+/** Putting the assistant in your own chats: its number, a contact card, your phone linked, a group to add it to. */
+async function settingsChannels(box, agent) {
+  let info = { channels: [], linked: {}, mine: {} };
+  try {
+    info = await api(`/api/channels?personId=${encodeURIComponent(state.me)}`);
+  } catch {}
+  const im = info.channels.find((c) => c.channel === "imessage");
+  const name = esc(agent?.name ?? "the assistant");
+  if (!im) {
+    box.innerHTML = `<div class="section"><h3>Put ${name} in your chats</h3><p class="lead">iMessage is not connected on this server yet. Until it is, ${name} lives here on the web: make a chat and send its invite link.</p></div>`;
+    return;
+  }
+  const linked = info.linked?.phone;
+  const mine = info.mine?.phone;
+  const contact = (phone) =>
+    `<strong>${esc(phone)}</strong> <a class="btn small" href="/api/channels/vcard?personId=${encodeURIComponent(state.me)}">Add to contacts</a> <a class="btn small" href="sms:${esc(phone)}">Text it</a>`;
+  if (im.mode === "shared") {
+    // The free plan: no number of its own. Each person registers the handle they iMessage from and gets a
+    // number from Photon's pool; the assistant texts first so that number lands in their Messages.
+    box.innerHTML = `<div class="section"><h3>Text with ${name}</h3><p class="lead">${name} can text with you one-to-one on iMessage. Give it the number you iMessage from and it texts you first; save that number like a friend's and reply there any time.</p>
+      ${
+        mine
+          ? `<p>Your number for ${name}: ${contact(mine)}</p><p class="tiny">It replied to <strong>${esc(linked)}</strong>. Texts from that phone reach ${name} as you.</p>`
+          : `<form class="row" id="registerForm"><input type="tel" name="phone" value="${esc(linked ?? "")}" placeholder="+1 408 555 0100" required /><button class="btn primary" type="submit">Text me</button><span class="note"></span></form><div class="hint">The number you iMessage from, with the country code. If ${name}'s text never arrives, your iPhone may start chats from your Apple ID email: Settings → Messages → Send & Receive → Start new conversations from.</div>`
+      }
+      <div class="hint" style="margin-top:14px"><strong>Group chats</strong> need ${name} to have a number of its own, which Photon sells on its Business plan. Until then, groups live here on the web: make a chat and send its invite link, and ${name} still texts each of you one-to-one.</div></div>`;
+    const form = $("#registerForm");
+    if (form)
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const note = form.querySelector(".note");
+        const btn = form.querySelector("button");
+        btn.disabled = true;
+        note.textContent = "Registering…";
+        try {
+          const r = await api("/api/channels/register", { personId: state.me, phone: new FormData(form).get("phone") });
+          note.textContent = `Sent. Look for a text from ${r.assignedPhone}.`;
+          setTimeout(() => renderSettings(), 1500);
+        } catch (err) {
+          note.textContent = err.message;
+          btn.disabled = false;
+        }
+      };
+    return;
+  }
+  const phone = im.phone;
+  box.innerHTML = `<div class="section"><h3>Put ${name} in your chats</h3><p class="lead">${name} has its own phone number. Save it like a friend's, then text it or add it to any group in Messages.</p>
+    <ol class="howto">
+      <li><strong>Save the number:</strong> ${contact(phone)}</li>
+      <li><strong>Link your phone</strong> so ${name} knows texts from it are you: ${linked ? `${esc(linked)} is linked.` : `<button class="btn small primary" type="button" id="linkPhone">Link my phone</button>`}<div id="linkBox"></div></li>
+      <li><strong>Add it to a group:</strong> open the group in Messages, tap the names at the top, Add Contact, pick ${name}. It joins like a friend, the group shows up here in Rooms, and you can name it and set what it is for.</li>
+    </ol>
+    <div class="hint">In a group it answers when named or when a message is clearly for it, and stays quiet otherwise. Anything that spends money or contacts someone still asks you first, in your own thread with it.</div></div>`;
+  const btn = $("#linkPhone");
+  if (btn)
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const r = await api("/api/channels/link-code", { personId: state.me });
+        $("#linkBox").innerHTML =
+          `<div class="linkcode"><div class="code">${esc(r.code)}</div><p>Text this code to ${esc(r.phone ?? "the number above")} within 15 minutes.${r.sms ? ` On your phone, <a href="${esc(r.sms)}">tap to open Messages with it typed</a>; from a computer, scan it:` : ""}</p>${r.qr ? `<div class="qr">${r.qr}</div>` : ""}<div class="tiny">You get "Linked" back by text; this page shows it when you reopen it.</div></div>`;
+      } catch (e) {
+        status(e.message, true);
+        btn.disabled = false;
+      }
+    };
+}
+
+async function settingsPermissions(box, agent, me) {
+  const t = agent.trust ?? {};
+  let info = { google: false };
+  try {
+    info = await api(`/api/connections/info?personId=${encodeURIComponent(state.me)}`);
+  } catch {}
+  box.innerHTML = `<div class="section"><h3>Send email as you</h3><p class="lead">Let the assistant send from your connected Google account, as you. Each send still needs your go-ahead in the chat. Off until you turn it on; when off it writes from its own address with you in cc.</p>
+    <div class="field inline"><label>Send email from my Gmail${info.google ? "" : `<div class="hint">Connect Google first, under Connections.</div>`}</label><button class="switch" id="sendAsMe" type="button" role="switch" aria-checked="${me.sendAsMe ? "true" : "false"}" ${info.google ? "" : "disabled"}></button></div></div>
+  <form class="section" id="allowForm"><h3>Allowed without asking</h3><p class="lead">Only for your own requests. Everything else that contacts someone asks you first, and outside 8am to 8pm it waits until morning.</p>
+    <div class="field">${AUTO_ALLOW_TOOLS.map(([k, w]) => `<label class="check"><input type="checkbox" name="autoAllow" value="${k}" ${(t.autoAllow ?? []).includes(k) ? "checked" : ""} /> ${esc(w)}</label>`).join("")}</div>
+    <div class="field"><span class="lab">Communities it may post to</span><div class="chips" id="communities">${(t.communityPostingAllowed ?? []).map((c) => `<span class="chip" data-c="${esc(c)}">${esc(c)}<button type="button" aria-label="Remove">×</button></span>`).join("")}</div><div class="addrow"><input type="text" id="newCommunity" placeholder="a subreddit or a Rednote group…" /><button class="btn" type="button" id="addCommunity">Add</button></div><div class="hint">Anywhere else it shows you the exact text and waits for a yes.</div></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>`;
+  const sam = $("#sendAsMe");
+  sam.onclick = async () => {
+    const on = sam.getAttribute("aria-checked") !== "true";
+    sam.setAttribute("aria-checked", on ? "true" : "false");
+    await patchMe({ sendAsMe: on });
+    load();
+  };
+  const form = $("#allowForm");
+  const addCommunity = () => {
+    const i = $("#newCommunity");
+    const v = i.value.trim();
+    if (!v) return;
+    $("#communities").insertAdjacentHTML("beforeend", `<span class="chip" data-c="${esc(v)}">${esc(v)}<button type="button" aria-label="Remove">×</button></span>`);
+    i.value = "";
+  };
+  $("#addCommunity").onclick = addCommunity;
+  $("#newCommunity").onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addCommunity();
+    }
+  };
+  $("#communities").onclick = (e) => {
+    if (e.target.tagName === "BUTTON") e.target.closest(".chip").remove();
+  };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api(
+        `/api/agents/${encodeURIComponent(agent.id)}`,
+        { trust: { autoAllow: new FormData(form).getAll("autoAllow"), communityPostingAllowed: $$("#communities .chip").map((c) => c.dataset.c) } },
+        "PATCH",
+      );
+      saved(form, "Saved.");
+      document.activeElement?.blur();
+      load();
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+function settingsNotifications(box) {
+  const supported = "Notification" in window;
+  box.innerHTML = `<div class="section"><h3>Browser notifications</h3><p class="lead">Get told when the assistant stops and needs you (a purchase approval, a sign-in, a question) while you are in another tab.</p>
+    <div class="field inline"><label>Needs your input${supported ? "" : `<div class="hint">This browser does not support notifications.</div>`}</label><button class="switch" id="notifyToggle" type="button" role="switch" aria-checked="${notifyOn() ? "true" : "false"}" ${supported ? "" : "disabled"}></button></div>
+    <div class="hint" id="notifyNote">${supported && Notification.permission === "denied" ? "Notifications are blocked for this site in your browser settings." : ""}</div></div>`;
+  const sw = $("#notifyToggle");
+  sw.onclick = async () => {
+    const on = sw.getAttribute("aria-checked") !== "true";
+    if (on && Notification.permission !== "granted" && (await Notification.requestPermission()) !== "granted") {
+      $("#notifyNote").textContent = "Notifications are blocked for this site in your browser settings.";
+      return;
+    }
+    sw.setAttribute("aria-checked", on ? "true" : "false");
+    try {
+      localStorage.setItem(NOTIFY_KEY, on ? "1" : "0");
+    } catch {}
+  };
+}
+
+function settingsAssistant(box, agent) {
+  const rooms = state.rooms.filter((r) => r.agentId === agent.id && r.kind === "group");
+  box.innerHTML = `<form class="section" id="aboutForm"><h3>About ${esc(agent.name)}</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to. <a class="link" href="#memory">What it remembers →</a></p>
     <div class="field"><label>Name</label><input type="text" name="name" value="${esc(agent.name)}" required /></div>
-    <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set on that chat.</div></div>
+    <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set below.</div></div>
     <div class="field"><label>Instructions</label><textarea name="instructions" placeholder="Anything it should always keep in mind.">${esc(agent.instructions)}</textarea></div>
     <div class="field"><label>Effort</label><select name="effort">${EFFORTS.map((e) => `<option value="${e}" ${e === agent.effort ? "selected" : ""}>${e}</option>`).join("")}</select><div class="hint">How hard it thinks before acting. Higher is slower and more careful.</div></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
   <div class="section" id="whereForm"><h3>Where it is</h3><p class="lead">Every chat it has been added to, and what that chat mostly needs from it. It stays a general assistant everywhere.</p>
-    ${
-      state.rooms.filter((r) => r.agentId === agent.id && r.kind === "group").length
-        ? state.rooms
-            .filter((r) => r.agentId === agent.id && r.kind === "group")
-            .map(
-              (r) =>
-                `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><button class="btn" type="button" data-invite="${esc(r.id)}">Copy invite link</button><span class="note"></span></div></form>`,
-            )
-            .join("")
-        : `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then copy its invite link for the others.</div>`
-    }
-  </div>
-  <div class="section" id="connForm"><h3>Connections</h3><p class="lead">Your own accounts and the services the assistant may reach for your requests. It sees names only; secrets stay in the vault.</p><div id="connections">Loading…</div></div>
-  <form class="section" id="trustForm"><h3>Trust</h3><p class="lead">Everything else that spends money or contacts someone asks you first.</p>
-    <div class="field"><label>Purchases up to this amount go through without asking (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="1" value="${esc(t.autoApproveUnderUsd ?? 0)}" /><div class="hint">0 means it always asks.</div></div>
-    <div class="field inline"><label>Pause all spending</label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}" data-name="spendingPaused"></button></div>
-    <div class="field"><span class="lab">Allowed without asking</span>${AUTO_ALLOW_TOOLS.map(([k, w]) => `<label class="check"><input type="checkbox" name="autoAllow" value="${k}" ${(t.autoAllow ?? []).includes(k) ? "checked" : ""} /> ${esc(w)}</label>`).join("")}<div class="hint">Only for your own requests. Outside 8am to 8pm it still waits until morning.</div></div>
-    <div class="field"><span class="lab">Communities it may post to</span><div class="chips" id="communities">${(t.communityPostingAllowed ?? []).map((c) => `<span class="chip" data-c="${esc(c)}">${esc(c)}<button type="button" aria-label="Remove">×</button></span>`).join("")}</div><div class="addrow"><input type="text" id="newCommunity" placeholder="a subreddit or a Rednote group…" /><button class="btn" type="button" id="addCommunity">Add</button></div><div class="hint">Anywhere else it shows you the exact text and waits for a yes.</div></div>
-    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
-`;
-
-  renderConnections();
-  const saved = (form, msg) => {
-    const n = form.querySelector(".note");
-    n.classList.remove("bad");
-    n.textContent = msg;
-    setTimeout(() => {
-      if (n.textContent === msg) n.textContent = "";
-    }, 3000);
-  };
-  const failed = (form, e) => {
-    const n = form.querySelector(".note");
-    n.classList.add("bad");
-    n.textContent = e.message;
-  };
-  $$("#whereForm [data-invite]").forEach((b) => {
-    b.onclick = () => copyInvite(b.dataset.invite, b.closest(".actions").querySelector(".note"));
-  });
+    ${rooms.map((r) => `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`).join("") || `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then share its invite link under Invites.</div>`}
+  </div>`;
   $$("#whereForm form.whereroom").forEach((form) => {
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -1017,51 +1545,9 @@ function renderSettings() {
       failed(about, err);
     }
   };
-  const trust = $("#trustForm");
-  trust.querySelector(".switch").onclick = (e) => {
-    const b = e.currentTarget;
-    b.setAttribute("aria-checked", b.getAttribute("aria-checked") === "true" ? "false" : "true");
-  };
-  const addCommunity = () => {
-    const i = $("#newCommunity");
-    const v = i.value.trim();
-    if (!v) return;
-    $("#communities").insertAdjacentHTML("beforeend", `<span class="chip" data-c="${esc(v)}">${esc(v)}<button type="button" aria-label="Remove">×</button></span>`);
-    i.value = "";
-  };
-  $("#addCommunity").onclick = addCommunity;
-  $("#newCommunity").onkeydown = (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addCommunity();
-    }
-  };
-  $("#communities").onclick = (e) => {
-    if (e.target.tagName === "BUTTON") e.target.closest(".chip").remove();
-  };
-  trust.onsubmit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(trust);
-    const body = {
-      trust: {
-        autoApproveUnderUsd: Math.max(0, Number(fd.get("autoApproveUnderUsd")) || 0),
-        spendingPaused: trust.querySelector(".switch").getAttribute("aria-checked") === "true",
-        autoAllow: fd.getAll("autoAllow"),
-        communityPostingAllowed: $$("#communities .chip").map((c) => c.dataset.c),
-      },
-    };
-    try {
-      await api(`/api/agents/${encodeURIComponent(agent.id)}`, body, "PATCH");
-      saved(trust, "Saved.");
-      document.activeElement?.blur();
-      load();
-    } catch (err) {
-      failed(trust, err);
-    }
-  };
 }
 
-// ---------- Connections (Google, Slack, MCP servers, APIs, addresses, the assistant's email) ----------
+// ---------- Connections (Google, Slack, MCP servers, APIs, the assistant's email) ----------
 async function renderConnections() {
   const box = $("#connections");
   if (!box || !state.me) return;
@@ -1072,12 +1558,10 @@ async function renderConnections() {
     box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     return;
   }
-  const me = personOf(state.me) ?? {};
   const row = (label, sub, action) => `<div class="connrow"><div><strong>${esc(label)}</strong><div class="tiny">${esc(sub)}</div></div>${action}</div>`;
   box.innerHTML = `
     ${row("Assistant's email", info.agentEmail, `<span class="mut">it sends from here</span>`)}
     ${row("Google", info.google ? "Connected: Gmail, Calendar, Drive, Sheets, Forms, Slides" : info.googleConfigured ? "Not connected" : "Not set up on this server (GOOGLE_CLIENT_ID)", info.google ? `<button class="btn small" type="button" data-disconnect="google">Disconnect</button>` : info.googleConfigured ? `<button class="btn small primary" type="button" id="connectGoogle">Connect</button>` : "")}
-    ${info.google ? `<label class="check"><input type="checkbox" id="sendAsMe" ${me.sendAsMe ? "checked" : ""} /> Send email as me <span class="tiny">· off until you turn it on; each send still asks you first. When off, it writes from its own address with you in cc.</span></label>` : ""}
     ${row("Slack", info.slack ? "Token saved" : "Not connected", info.slack ? `<button class="btn small" type="button" data-disconnect="slack">Disconnect</button>` : `<form class="addrow" data-kind="slack"><input type="password" name="token" placeholder="xoxb-… or xoxp-…" /><button class="btn small" type="submit">Save</button></form>`)}
     <h4 class="tiny" style="margin:14px 0 4px">MCP servers</h4>
     ${info.mcp.map((n) => row(n, "MCP", `<button class="btn small" type="button" data-disconnect="mcp:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. Any app with an MCP endpoint: paste its URL (and a token if it needs one).</div>`}
@@ -1086,10 +1570,7 @@ async function renderConnections() {
     ${info.apis.map((n) => row(n, "HTTP API", `<button class="btn small" type="button" data-disconnect="api:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. A base URL, an OpenAPI document if there is one, and a token.</div>`}
     <form class="addrow wrap" data-kind="api"><input type="text" name="name" placeholder="name, e.g. luma" required /><input type="url" name="baseUrl" placeholder="https://api.example.com" required /><input type="url" name="openapiUrl" placeholder="OpenAPI JSON URL (optional)" /><input type="password" name="token" placeholder="token (optional)" /><button class="btn small" type="submit">Add API</button></form>
     <h4 class="tiny" style="margin:14px 0 4px">Site logins</h4>
-    <div class="tiny">${info.sites.length ? `Signed in to: ${info.sites.map(esc).join(", ")}. ` : ""}Sign in to a site inside the chat when the assistant asks (connect_account); passwords never pass through here.</div>
-    <h4 class="tiny" style="margin:14px 0 4px">Addresses</h4>
-    ${(me.addresses ?? []).map((a) => row(a.label, `${a.line1}${a.line2 ? `, ${a.line2}` : ""}, ${a.city}${a.region ? ` ${a.region}` : ""} ${a.postalCode ?? ""}`, `<button class="btn small" type="button" data-addr="${esc(a.id)}">Remove</button>`)).join("") || `<div class="tiny">None yet; for deliveries and forms.</div>`}
-    <form class="addrow wrap" id="addrForm"><input type="text" name="label" placeholder="Home" required /><input type="text" name="line1" placeholder="Street" required /><input type="text" name="city" placeholder="City" required /><input type="text" name="region" placeholder="State" /><input type="text" name="postalCode" placeholder="Postal code" /><button class="btn small" type="submit">Save address</button></form>`;
+    <div class="tiny">${info.sites.length ? `Signed in to: ${info.sites.map(esc).join(", ")}. ` : ""}Sign in to a site inside the chat when the assistant asks (connect_account); passwords never pass through here.</div>`;
   const g = $("#connectGoogle");
   if (g)
     g.onclick = async () => {
@@ -1099,12 +1580,6 @@ async function renderConnections() {
       } catch (e) {
         status(e.message, true);
       }
-    };
-  const sam = $("#sendAsMe");
-  if (sam)
-    sam.onchange = async () => {
-      await api(`/api/people/${encodeURIComponent(state.me)}`, { sendAsMe: sam.checked }, "PATCH");
-      load();
     };
   $$("#connections [data-disconnect]").forEach((b) => {
     b.onclick = async () => {
@@ -1124,24 +1599,6 @@ async function renderConnections() {
       }
     };
   });
-  $$("#connections [data-addr]").forEach((b) => {
-    b.onclick = async () => {
-      const addresses = (me.addresses ?? []).filter((a) => a.id !== b.dataset.addr);
-      await api(`/api/people/${encodeURIComponent(state.me)}`, { addresses }, "PATCH");
-      await load();
-      renderConnections();
-    };
-  });
-  const af = $("#addrForm");
-  if (af)
-    af.onsubmit = async (e) => {
-      e.preventDefault();
-      const a = Object.fromEntries(new FormData(af).entries());
-      const addresses = [...(me.addresses ?? []), { id: `addr_${Date.now().toString(36)}`, country: "US", ...a }];
-      await api(`/api/people/${encodeURIComponent(state.me)}`, { addresses }, "PATCH");
-      await load();
-      renderConnections();
-    };
 }
 
 // ---------- Memory page ----------
@@ -1204,6 +1661,8 @@ async function watch() {
     try {
       const headers = authToken ? { authorization: `Bearer ${authToken}` } : {};
       const res = await fetch("/api/deliveries/watch", { headers });
+      // Anything delivered while the stream was down was missed: refresh on every reconnect.
+      if (state.watchConnections++) load().catch(() => {});
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -1265,6 +1724,74 @@ async function acceptInvite(token) {
     status(e.message, true);
   }
   location.hash = "chat";
+}
+// How to reach the assistant, the way Fo shows it: its email and number sit in the header all the time.
+async function loadReach() {
+  if (!state.me) return;
+  try {
+    const [ch, info] = await Promise.all([api(`/api/channels?personId=${encodeURIComponent(state.me)}`), api(`/api/connections/info?personId=${encodeURIComponent(state.me)}`)]);
+    state.reach = { phone: ch.channels.find((c) => c.phone)?.phone ?? null, linkedPhone: ch.linked?.phone ?? null, email: info.agentEmail ?? null, google: !!info.google };
+  } catch {
+    state.reach = state.reach ?? {};
+  }
+  const r = state.reach;
+  $("#start").innerHTML = gettingStarted();
+  $("#reach").innerHTML = [r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : "", r.phone ? `<a href="sms:${esc(r.phone)}">${esc(r.phone)}</a>` : ""]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** The owner's first steps, as Fo lists them: each line is done or a link to where it is done. */
+function gettingStarted() {
+  const agent = agentFor(state.room) ?? state.agents[0];
+  if (!agent || state.me !== agent.ownerId) return "";
+  const r = state.reach ?? {};
+  const groups = state.rooms.filter((x) => x.kind === "group");
+  const items = [
+    [`Say hi to ${agent.name}`, state.rooms.some((x) => x.kind === "dm" && (x.lastActivityAt ?? 0) > (x.createdAt ?? 0)), "#chat"],
+    ["Link your phone, so texts from it are you", !!r.linkedPhone, "#settings/channels"],
+    ["Connect Google for mail and calendar", !!r.google, "#settings/connections"],
+    [`Add ${agent.name} to a group chat`, groups.some((x) => x.channel !== "web" || x.members.length > 1), "#settings/channels"],
+    ["Invite a friend to a chat", groups.some((x) => x.members.length > 1), "#settings/invites"],
+  ];
+  if (items.every((i) => i[1])) return "";
+  return `<div class="gettingstarted"><strong>Getting started</strong><span class="tiny">Optional, in any order.</span>${items.map(([text, done, href]) => `<a class="${done ? "done" : ""}" href="${href}"><span class="mark">${done ? "✓" : "○"}</span>${esc(text)}</a>`).join("")}</div>`;
+}
+
+/** A group chat with nobody else in it yet: the next step is the link, not a form. */
+function inviteBox(room) {
+  if (room?.kind !== "group" || room.members.length > 1) return "";
+  const others = window.__CLERK_PK ? [] : state.people.filter((p) => !room.members.some((m) => m.personId === p.id));
+  return `<div class="invitebox"><strong>Just you here so far.</strong>Send the link to the others; they join when they open it, no app needed.<div class="row"><button class="btn primary" type="button" id="inviteCopy">Copy invite link</button>${navigator.share ? `<button class="btn" type="button" id="inviteShare">Share…</button>` : ""}<span class="note"></span></div>${
+    others.length
+      ? `<div class="row"><span class="note">Or add someone already here:</span>${others.map((p) => `<button class="btn small" type="button" data-addmember="${esc(p.id)}">${esc(p.displayName)}</button>`).join("")}</div>`
+      : ""
+  }</div>`;
+}
+function wireInviteBox(room) {
+  const copy = $("#inviteCopy");
+  if (!copy) return;
+  copy.onclick = () => copyInvite(room.id, copy.parentElement.querySelector(".note"));
+  const share = $("#inviteShare");
+  if (share)
+    share.onclick = async () => {
+      try {
+        const r = await api(`/api/rooms/${encodeURIComponent(room.id)}/invites`, { personId: state.me });
+        await navigator.share({ title: room.name, text: `Join "${room.name}"`, url: r.url });
+      } catch (e) {
+        if (e.name !== "AbortError") status(e.message, true);
+      }
+    };
+  $$("[data-addmember]").forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api(`/api/rooms/${encodeURIComponent(room.id)}/members`, { personId: b.dataset.addmember, role: "member" });
+        load();
+      } catch (e) {
+        status(e.message, true);
+      }
+    };
+  });
 }
 async function copyInvite(roomId, note) {
   try {

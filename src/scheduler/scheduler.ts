@@ -1,6 +1,6 @@
 import { newId } from "../core/ids.ts";
-import { DAY, HOUR, hourIn, nextOccurrence, type Clock } from "../core/clock.ts";
-import type { Authorization, Calendar, Commitment, Id, Schedule, StagedItem } from "../core/types.ts";
+import { DAY, HOUR, nextOccurrence, type Clock } from "../core/clock.ts";
+import type { Authorization, Calendar, Commitment, Id, Schedule } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { Runtime } from "../runtime/runtime.ts";
 import type { CommitmentService } from "../care/commitments.ts";
@@ -10,7 +10,6 @@ import type { ModelClient } from "../model/types.ts";
 /**
  * Timers. One tick does five things, each idempotent by dedup key:
  *  1. fire due schedules (after re-checking the premise),
- *  2. deliver staged outreach once working hours begin,
  *  3. nudge owners of responsibilities that are due,
  *  4. expire stale attention items,
  *  5. heartbeat: wake the agent on standing work at most once a day per room.
@@ -72,9 +71,9 @@ export class Scheduler {
     this.store.putSchedule(s);
   }
 
-  async tick(): Promise<{ fired: number; staged: number; nudged: number; expired: number; heartbeats: number }> {
+  async tick(): Promise<{ fired: number; nudged: number; expired: number; heartbeats: number }> {
     const now = this.clock.now();
-    const out = { fired: 0, staged: 0, nudged: 0, expired: 0, heartbeats: 0 };
+    const out = { fired: 0, nudged: 0, expired: 0, heartbeats: 0 };
 
     // Each item on its own: one bad firing must not skip the rest of the tick.
     for (const s of this.store.dueSchedules(now)) {
@@ -84,23 +83,6 @@ export class Scheduler {
       } catch (e) {
         console.error(`schedule ${s.id} failed to fire:`, (e as Error).message);
       }
-    }
-
-    for (const item of this.store.dueStaged(now)) {
-      const room = this.store.getRoom(item.roomId);
-      const zone = room ? (this.store.getPerson(this.store.getAgent(room.agentId)?.ownerId ?? "")?.timezone ?? "UTC") : "UTC";
-      const h = hourIn(zone, now);
-      if (room && (h < room.outreachHours.start || h >= room.outreachHours.end)) continue;
-      item.deliveredAt = now;
-      this.store.putStaged(item);
-      await this.runtime.startSystemRun({
-        roomId: item.roomId,
-        trigger: "scheduled_action",
-        source: "staged_outreach",
-        dedupKey: `staged:${item.id}`,
-        text: `Working hours began. Deliver the held outreach now: ${JSON.stringify(item.payload)}. Re-check that it is still needed first; if not, say what you found instead.`,
-      });
-      out.staged += 1;
     }
 
     for (const c of this.commitments.takeDueNudges(now)) {
@@ -256,13 +238,6 @@ export class Scheduler {
       console.warn(`premise check for ${s.id} returned no JSON; failing open`);
     }
     return { holds: true, note: "not verified automatically; verify before acting" };
-  }
-
-  /** Hold an outreach payload until working hours. */
-  stage(input: Omit<StagedItem, "id" | "createdAt" | "deliveredAt">): StagedItem {
-    const item: StagedItem = { ...input, id: newId("stg"), createdAt: this.clock.now() };
-    this.store.putStaged(item);
-    return item;
   }
 }
 

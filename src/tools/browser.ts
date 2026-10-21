@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 /**
@@ -90,30 +91,162 @@ const MAX_TEXT = 12_000;
 /** A 1x1 transparent PNG, for fakes. */
 export const FAKE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
+/** The page as the model reads it: title, text and the first links. Shared by every real browser. */
+async function readFrom(page: Page, evidence: string): Promise<PageRead> {
+  const title = await page.title();
+  const text = (await page.evaluate(() => document.body?.innerText ?? "")).replace(/\n{3,}/g, "\n\n").slice(0, MAX_TEXT);
+  const links = (
+    await page.evaluate(() =>
+      Array.from(document.querySelectorAll("a[href]"))
+        .slice(0, 60)
+        .map((a) => ({ text: (a.textContent ?? "").trim().slice(0, 80), href: (a as HTMLAnchorElement).href })),
+    )
+  ).filter((l) => l.text);
+  return { url: page.url(), title, text, links, evidence };
+}
+
+async function runSteps(page: Page, steps: BrowserStep[]): Promise<string[]> {
+  const screenshots: string[] = [];
+  for (const st of steps.slice(0, 20)) {
+    if ("goto" in st) await page.goto(st.goto, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    else if ("click" in st) await page.click(st.click, { timeout: 10_000 });
+    else if ("fill" in st) await page.fill(st.fill.selector, st.fill.value, { timeout: 10_000 });
+    else if ("press" in st) await page.keyboard.press(st.press);
+    else if ("scroll" in st) await page.mouse.wheel(0, st.scroll === "down" ? 800 : -800);
+    else if ("waitMs" in st) await page.waitForTimeout(Math.min(st.waitMs, 10_000));
+    else if ("screenshot" in st) screenshots.push((await page.screenshot({ type: "png" })).toString("base64"));
+    await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
+  }
+  return screenshots;
+}
+
+async function act(page: Page, action?: { click?: string; fill?: { selector: string; value: string }; waitMs?: number }) {
+  if (action?.fill) await page.fill(action.fill.selector, action.fill.value, { timeout: 10_000 });
+  if (action?.click) await page.click(action.click, { timeout: 10_000 });
+  if (action?.waitMs) await page.waitForTimeout(Math.min(action.waitMs, 10_000));
+  else if (action?.click || action?.fill) await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
+}
+
+const DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+const BOT_WALL = /something has gone wrong|access denied|are you a (robot|human)|verify you are human|captcha|unusual traffic|enable javascript and cookies/i;
+/** A short page that is only a bot wall is a failure for the chain, not a page for the model. */
+function unblocked(r: PageRead): PageRead {
+  if (r.text.length < 800 && BOT_WALL.test(r.text)) throw new Error(`blocked by the site: ${r.text.replace(/\s+/g, " ").slice(0, 80)}`);
+  return r;
+}
+
+/** Where a Google Chrome lives on this machine, if anywhere; CHROME_PATH overrides. */
+export function localChromePath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidates = [
+    env.CHROME_PATH,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+  ];
+  return candidates.find((c) => c && existsSync(c));
+}
+
+/**
+ * The Chrome already installed on the machine, headless. One browser, a fresh
+ * context per read. It cannot browse as a signed-in person (no persisted
+ * contexts) and has no live view for sign-in cards, so those calls fail and the
+ * chain below moves on to a provider that can.
+ */
+export class LocalBrowser implements BrowserProvider {
+  private browser?: Promise<Browser>;
+  private reads = 0;
+  constructor(private executablePath = localChromePath()) {}
+  private open(): Promise<Browser> {
+    this.browser ??= chromium.launch({ executablePath: this.executablePath, headless: true, args: ["--disable-blink-features=AutomationControlled"] }).then((b) => {
+      b.on("disconnected", () => {
+        this.browser = undefined;
+      });
+      return b;
+    });
+    return this.browser;
+  }
+  private async withPage<T>(contextId: string | undefined, fn: (page: Page) => Promise<T>): Promise<T> {
+    if (contextId) throw new Error("the local browser has no signed-in contexts");
+    // Headless Chrome announces itself; shops answer with a bot wall. A plain desktop identity is enough for most.
+    const ctx = await (await this.open()).newContext({ userAgent: DESKTOP_UA, locale: "en-US", viewport: { width: 1280, height: 900 } });
+    try {
+      return await fn(await ctx.newPage());
+    } finally {
+      await ctx.close().catch(() => undefined);
+    }
+  }
+  async readPage(input: { url: string; contextId?: string; action?: { click?: string; fill?: { selector: string; value: string }; waitMs?: number } }): Promise<PageRead> {
+    return this.withPage(input.contextId, async (page) => {
+      await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await act(page, input.action);
+      return unblocked(await readFrom(page, `chrome:${++this.reads}`));
+    });
+  }
+  async run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun> {
+    return this.withPage(input.contextId, async (page) => {
+      await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      const screenshots = await runSteps(page, input.steps);
+      const r = unblocked(await readFrom(page, `chrome:${++this.reads}`));
+      return { ...r, screenshots };
+    });
+  }
+}
+
+/**
+ * Try each browser in order; the first that answers wins. Sign-in goes to the
+ * first provider that can host one, and stays there for the matching finish.
+ */
+export class FallbackBrowser implements BrowserProvider {
+  startSignIn?: (input: { site: string }) => Promise<SignInSession>;
+  finishSignIn?: (sessionId: string, keep: boolean) => Promise<void>;
+  constructor(
+    private chain: { name: string; browser: BrowserProvider }[],
+    private warn: (line: string) => void = (l) => console.warn(l),
+  ) {
+    const signer = chain.find((c) => c.browser.startSignIn)?.browser;
+    if (signer) {
+      this.startSignIn = (input) => signer.startSignIn!(input);
+      this.finishSignIn = (id, keep) => signer.finishSignIn!(id, keep);
+    }
+  }
+  private async first<T>(what: string, fn: (b: BrowserProvider) => Promise<T>): Promise<T> {
+    let last: unknown = new Error("no browser configured");
+    for (const { name, browser } of this.chain) {
+      try {
+        return await fn(browser);
+      } catch (e) {
+        last = e;
+        this.warn(
+          `browser ${name} failed on ${what}: ${String((e as Error).message)
+            .split("\n")[0]
+            ?.slice(0, 160)}`,
+        );
+      }
+    }
+    throw last instanceof Error ? last : new Error(String(last));
+  }
+  readPage(input: Parameters<BrowserProvider["readPage"]>[0]): Promise<PageRead> {
+    return this.first(input.url, (b) => b.readPage(input));
+  }
+  run(input: Parameters<BrowserProvider["run"]>[0]): Promise<BrowserRun> {
+    return this.first(input.url, (b) => b.run(input));
+  }
+}
+
 export class BrowserbaseBrowser implements BrowserProvider {
   async run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun> {
     const projectId = await this.project();
     const session = await this.createSession(projectId, input.contextId ? { browserSettings: { context: { id: input.contextId, persist: true } } } : {});
     let browser: Browser | undefined;
-    const screenshots: string[] = [];
     try {
       browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
       const ctx = browser.contexts()[0] ?? (await browser.newContext());
       const page: Page = ctx.pages()[0] ?? (await ctx.newPage());
       await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-      for (const st of input.steps.slice(0, 20)) {
-        if ("goto" in st) await page.goto(st.goto, { waitUntil: "domcontentloaded", timeout: 45_000 });
-        else if ("click" in st) await page.click(st.click, { timeout: 10_000 });
-        else if ("fill" in st) await page.fill(st.fill.selector, st.fill.value, { timeout: 10_000 });
-        else if ("press" in st) await page.keyboard.press(st.press);
-        else if ("scroll" in st) await page.mouse.wheel(0, st.scroll === "down" ? 800 : -800);
-        else if ("waitMs" in st) await page.waitForTimeout(Math.min(st.waitMs, 10_000));
-        else if ("screenshot" in st) screenshots.push((await page.screenshot({ type: "png" })).toString("base64"));
-        await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
-      }
-      const title = await page.title();
-      const text = (await page.evaluate(() => document.body?.innerText ?? "")).replace(/\n{3,}/g, "\n\n").slice(0, MAX_TEXT);
-      return { url: page.url(), title, text, screenshots, evidence: `browserbase:${session.id}` };
+      const screenshots = await runSteps(page, input.steps);
+      const r = await readFrom(page, `browserbase:${session.id}`);
+      return { ...r, screenshots };
     } finally {
       await browser?.close().catch(() => undefined);
       await this.release(projectId, session.id);
@@ -205,20 +338,8 @@ export class BrowserbaseBrowser implements BrowserProvider {
       const ctx = browser.contexts()[0] ?? (await browser.newContext());
       const page: Page = ctx.pages()[0] ?? (await ctx.newPage());
       await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 45_000 });
-      if (input.action?.fill) await page.fill(input.action.fill.selector, input.action.fill.value, { timeout: 10_000 });
-      if (input.action?.click) await page.click(input.action.click, { timeout: 10_000 });
-      if (input.action?.waitMs) await page.waitForTimeout(Math.min(input.action.waitMs, 10_000));
-      else if (input.action?.click || input.action?.fill) await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => undefined);
-      const title = await page.title();
-      const text = (await page.evaluate(() => document.body?.innerText ?? "")).replace(/\n{3,}/g, "\n\n").slice(0, MAX_TEXT);
-      const links = (
-        await page.evaluate(() =>
-          Array.from(document.querySelectorAll("a[href]"))
-            .slice(0, 60)
-            .map((a) => ({ text: (a.textContent ?? "").trim().slice(0, 80), href: (a as HTMLAnchorElement).href })),
-        )
-      ).filter((l) => l.text);
-      return { url: page.url(), title, text, links, evidence: `browserbase:${session.id}` };
+      await act(page, input.action);
+      return await readFrom(page, `browserbase:${session.id}`);
     } finally {
       await browser?.close().catch(() => undefined);
       await this.release(projectId, session.id);

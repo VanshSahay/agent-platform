@@ -16,24 +16,26 @@ This is a from-scratch build. Its design comes from three sources: a reverse eng
 
 **Earns trust one notch at a time.** Every write asks first. The owner can allow specific tools, set a dollar amount under which purchases pass, pause spending, and pre-approve communities. Contacting a third party is disclosed (who, how, why); outside 8am to 8pm it is held until morning. Scheduled work carries the authorisation it was given and re-checks its premise before acting. Every tool call is stored with evidence; the reply's footer ("— 3 steps · 2 verified: Searched: plumber mandarin san jose, Made a call") comes from those records, and a reply that claims an action with no record is corrected. An approval covers one exact action; doing it again asks again.
 
+**Keeps boundaries.** Co-members see each other's names, never addresses or phone numbers; a run's tool inputs and results are shown only to the person who asked and the owner; a request that reads someone else's connected account (mail, calendar, cart, an MCP server) asks that person once per run before anything is read; clicking inside a signed-in site asks first; a member's unrelated message never answers an open approval card; and what a person tells the assistant privately shapes their private profile only, never a group prompt. There is no code runner and no local command execution; MCP servers are URLs, and a connector's token only ever goes to the API it was issued for.
+
 **Knows when to say nothing, and hands off long work.** On a timer, a watch or an app event the agent stays quiet unless something changed; silence is a recorded outcome, not a message. Long errands go to a task agent in its own session, so the chat answers now and the task reports once when done. Alert rules ("tell us when the host confirms") check every few hours and speak only when the condition holds. When a site needs someone's login, a sign-in card with a real browser opens inside the chat for that person; they sign in, press Done, and the assistant browses that site as them from then on. Members' credentials sit in an encrypted vault the model never sees. Long chats are folded into a running summary, and the chat search finds any room by what was said in it.
 
 **Remembers the right things in the right places.** The agent only writes dated observations during a run; a background pass promotes them into typed memories, merges duplicates, rewrites corrected facts with their date, retracts what was taken back, and derives a short profile the agent reads first.
 
 ## The tools
 
-Eighty tools, the same catalogue Fo's client knows, each recorded with evidence and gated the same way as everything else (anything that contacts someone, spends money or uses another person's account asks first):
+Ninety-five tools: twenty of Circle's own and the catalogue Fo's client knows, less four twins of core tools and an unsandboxed code runner. Each call is recorded with evidence and gated the same way as everything else (anything that contacts someone, spends money or uses another person's account asks first; reading another person's account asks too):
 
 | Family | Tools |
 |---|---|
 | core | plan, web_search, browse_page, connect_account, find_person, ask_room, ask_person, wait_for_user_input, place_call, send_sms, post_community, read_community_replies, compare_options, remember, search_memory, schedule_action, track_commitment, update_commitment, request_purchase, stay_quiet, delegate_task, update_task, steer_task, watch_for |
 | google | list_events, create_calendar, check_availability, find_mutual_availability, create_event, update_event, delete_event, move_events, search_emails, get_email_content, label_email, archive_email, remove_email_label, send_email_as_user, find_files, list_in_folder, get_metadata, share, create_form, get_spreadsheet, update_spreadsheet, search_user_spreadsheets, get_slide_thumbnail, append_slides, replace_slide, delete_slide |
-| operator | get_connect_link, request_call, list_tasks, get_task, list_scheduled_actions, cancel_scheduled_action, update_task_status, browser_use, connector_call, get_current_time, run_javascript, search_tools, publish_dashboard, read_dashboard, list_past_sessions, get_session_transcript, load_workspace_context, present_files, write_document, generate_image, analyze_image |
-| knowledge | load_soul_document, web_scrape, capture_and_analyze, email_load_unprocessed, email_load_thread, slack_load_recent, slack_load_aggregates, slack_search_messages, whatsapp_load_recent, whatsapp_load_conversation, whatsapp_get_summary |
+| operator | get_connect_link, request_call, list_tasks, get_task, list_scheduled_actions, cancel_scheduled_action, update_task_status, browser_use, connector_call, get_current_time, search_tools, publish_dashboard, read_dashboard, list_past_sessions, get_session_transcript, load_workspace_context, present_files, write_document, generate_image, analyze_image |
+| knowledge | load_soul_document, email_load_unprocessed, email_load_thread, slack_load_recent, slack_load_aggregates, slack_search_messages, whatsapp_load_recent, whatsapp_load_conversation, whatsapp_get_summary |
 | shopping | search_products, add_to_cart, view_cart, remove_from_cart, checkout_cart, save_address, list_saved_addresses, delete_saved_address |
-| voice, calls, contacts, email, mcp | text_to_speech, register_pronunciations, list_sms_groups, place_vendor_call, search_contacts, add_contact, send_agent_email, mcp_call |
+| voice, calls, contacts, email, mcp | text_to_speech, register_pronunciations, list_sms_groups, add_contact, send_agent_email, mcp_call |
 
-What each needs: Google tools need `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the server and each person connecting their account under Settings → Connections; the assistant's own mailbox needs AgentMail (send and receive) or Resend (send only); Slack a token per person; MCP servers and HTTP APIs are added per person in Settings; calls need Vapi and SMS Twilio; voice notes ElevenLabs; images any OpenRouter image model; checkout cards Stripe Issuing. Without a service, its tools say so and the agent hands out a connect link. Documents, dashboards, images and voice notes open at `/d/:id`. A document is a small shared app, not a static page: every list line is a tappable item, ticks and "who brings it" are shared with the whole chat, anyone can add a line, and the page keeps the product's look with a progress bar, filters and a stamp when everything is done.
+What each needs: Google tools need `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the server and each person connecting their account under Settings → Connections; the assistant's own mailbox needs AgentMail (send and receive) or Resend (send only); Slack a token per person; MCP servers and HTTP APIs are added per person in Settings; calls need Vapi and SMS Twilio; voice notes ElevenLabs; images any OpenRouter image model; checkout cards Stripe Issuing (not wired yet: `checkout_cart` clears the budget, keeps the cart and says plainly that nothing was ordered). Without a service, its tools say so and the agent hands out a connect link. Documents, dashboards, images and voice notes open at `/d/:id`. A document is a small shared app, not a static page: every list line is a tappable item, ticks and "who brings it" are shared with the whole chat, anyone can add a line, and the page keeps the product's look with a progress bar, filters and a stamp when everything is done.
 
 ## Run it
 
@@ -51,6 +53,8 @@ Testing it locally, two ways:
 - **Without sign-in (quickest).** `bun run local` (sets `LOCAL=1`, which blanks the Clerk, iMessage and `HOST` settings for that process whatever `.env` holds). The server binds `127.0.0.1` and the top-right "You" picker lets you act as anyone in the database: start as You, add people with "+ Add" or open an invite link in the same browser and give a name, then switch between them to play both sides of a conversation.
 - **With Clerk.** Set the Clerk keys and `MASTER_KEY`, add `http://localhost:3000` to `CLERK_AUTHORIZED_PARTIES`, start, and sign in. The first account to sign in becomes the owner; everyone else arrives through an invite link and signs in as themselves.
 
+- **With iMessage, no sign-in.** `CLERK_SECRET_KEY= CLERK_PUBLISHABLE_KEY= CHANNELS=imessage DB_PATH=data/local-im.sqlite bun run start` keeps the Photon keys from `.env` and the "You" picker. Settings → Channels then does the real registration and texts your phone. Stop it when done: a local instance and production listen to the same Photon project.
+
 The landing page is at `/welcome`; with sign-in on, signed-out visitors are sent there and its button opens sign-in.
 
 The database is one file at `DB_PATH` (default `data/circle.sqlite`); delete it to start over.
@@ -59,7 +63,7 @@ What gets wired depends on `.env`:
 
 | Setting | What it turns on |
 |---|---|
-| `OPENROUTER_API_KEY` | The model, through OpenRouter: `z-ai/glm-5.3` for the agent and `z-ai/glm-5.3-flash` for labels, premise checks and the memory pass. Override with `MODEL` and `MODEL_SMALL` (Claude ids work too: `anthropic/claude-opus-5.5`). |
+| `OPENROUTER_API_KEY` | The model, through OpenRouter: `deepseek/deepseek-v4.1-flash-1017` for every call (17/17 checks on three live scenarios, two to three times faster than GLM 5.3, $0.15 in and $0.60 out per million tokens). Override with `MODEL`, and `MODEL_SMALL` to split labels, premise checks and the memory pass onto a cheaper model (Claude ids work too: `anthropic/claude-opus-5.5`). The configured model wins over the id stored on an agent record. |
 | `ANTHROPIC_API_KEY` | The model directly from Anthropic: Claude Opus 5.5 and Haiku 5.5. |
 | `PROJECT_ID`, `PROJECT_SECRET`, `CHANNELS` | Chat channels through Photon Spectrum: `imessage` (default), `whatsapp`, `telegram`, `slack`, comma-separated. Each chat becomes a room; senders become people; the owner is recognised by the phone number or email on their person record (`PATCH /api/people/:id {phoneE164}`). |
 | `BROWSERBASE_API_KEY` | The `browse_page` tool runs in a cloud browser. Without it, pages are read as text through Jina Reader. |
@@ -67,6 +71,8 @@ What gets wired depends on `.env`:
 | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Sign-in on the owner UI; every API call is made as the signed-in person, and each route checks that person against the room, agent or item it touches (see the API section). Without these the API trusts the "You" picker, so the server binds to loopback only. |
 | `HOST`, `PORT` | Where to listen. `HOST` defaults to `127.0.0.1` without Clerk and `0.0.0.0` with it; a non-loopback host is refused unless Clerk and `MASTER_KEY` are both set. |
 | `MASTER_KEY` | Encrypts members' credentials in the vault. Required off loopback. |
+| `OWNER_EMAIL` | With sign-in on, the only address that may claim the owner's seat on a fresh deployment. Without it, the first sign-in takes it. |
+| `IMESSAGE_PHONE` | A dedicated line's number when Photon does not report it. Not needed on the shared pool, where each person is assigned their own. |
 | `EVENT_TOKEN` | Shared secret for `POST /api/events` and `POST /api/tick` (`Authorization: Bearer …`). Without it, only a signed-in agent owner may call them. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | The Google OAuth app behind the 26 Google tools (redirect URI `<PUBLIC_URL>/oauth/google/callback`). People connect their own accounts in Settings. |
 | `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX` or `RESEND_API_KEY`, `EMAIL_FROM` | The assistant's own mailbox. AgentMail reads and sends; inbound mail enters as an app event. Resend sends only. |
@@ -79,9 +85,38 @@ Offline, with no key, the whole runtime runs against a scripted model in a test 
 
 ```bash
 bun test        # offline tests across the run loop, gates, ledger, planner, memory, timers, hands, web api, channels, eval
-bun run eval    # six group errands played against the configured model, graded on stored state
+bun run harness # one Harness² step: propose edits to skills/ for failing scenarios, probe them, adopt what fixes without regressing, note the lesson in skills/EXPERIENCE.md
+bun run eval    # sixteen errands played against the configured model, graded on stored state; --only <name>, --list for coverage, --trials k for pass^k
+bun test test/eval.test.ts   # the same sixteen offline: each under its well-behaved script and under a do-nothing control
 bun run typecheck
 ```
+
+## On iMessage
+
+Most people meet Circle in Messages, not in the web app. Which way in depends on the Photon plan:
+
+- **Free and Pro (the shared pool).** Circle has no number of its own. Under Settings → Channels a person gives the number they iMessage from; the server registers it with Photon (`POST /api/channels/register`), Photon assigns that person a number from its pool, and Circle texts them first so the number is in their Messages. One-to-one only: the pool cannot sit in a group chat. Groups live on the web with invite links, and Circle still texts each member privately for approvals.
+- **Business (a dedicated line, $250 a month per line).** Circle gets its own number; people add it to groups the way they would add a friend, and link their phone by texting a code.
+
+What differs from the web app:
+
+- **Joining** is adding the number. The group appears in the owner's Rooms as "iMessage · Sam, Riley & 2 more" until the owner names it; each person who writes gets a seat (as a guest until the owner adds them, then a member).
+- **Approvals are text.** "OK to spend $80?" arrives in the person's own thread with the line; "yes" or "no" is the answer. Anything that needs buttons or a browser (signing in to a site, an embedded page) comes with a link into the app that opens that chat.
+- **Pages open from their link** with no sign-in, since the link was posted in that chat.
+- **Everything is mirrored.** The web app shows the same chats, members and cards; replies sent from either side land in both.
+- **The owner's phone** is linked once: on the shared pool, by registering it (above); on a dedicated line, Settings → Channels → Link my phone (a code texted to the line), or the phone field under General.
+
+## Deploy
+
+Production runs on Railway as one always-on container with SQLite on a volume. `Dockerfile`, `railway.json` and `.railwayignore` are checked in; nothing else is needed on the host.
+
+```bash
+npx @railway/cli login          # once; opens a pairing link in your browser
+npx @railway/cli link           # pick the project and environment
+npx @railway/cli up --detach    # upload this folder, build the image, roll it out
+```
+
+Images and document links open under sign-in through Clerk's same-origin session cookie, accepted for reads only, so no extra configuration is needed for `/d/` links. The service needs a volume mounted at `/data` and the variables from `.env.example` set in Railway (a fresh `MASTER_KEY` per deployment; `HOST=0.0.0.0`; `PUBLIC_URL` and `CLERK_AUTHORIZED_PARTIES` set to the Railway domain). One thing to know: the uploader honours `.git/info/exclude` with gitignore semantics, so a line like `agent/` there silently drops `src/agent` from the image; anchor such lines with a leading slash.
 
 ## Layout
 
@@ -97,9 +132,11 @@ src/care        the responsibilities ledger and its nudges
 src/planning    plans with an approach ladder and stall handling
 src/tools       the tool registry (labels, gates) and the "hands" interfaces with fakes
 src/runtime     the run loop: events with cursors, steering, gates, resume, footer
-src/scheduler   schedules with authorisation and premise checks, staged outreach, heartbeat
-src/channels    web server: JSON API, watch stream, owner UI
-skills/         markdown procedures the agent reads when a task matches
+src/scheduler   schedules with authorisation and premise checks, heartbeat
+src/channels    web server: JSON API, watch stream, owner UI; Photon Spectrum channels; Clerk
+src/eval        the scenario harness (world, scenarios, graders) and the Harness² loop over skills/
+skills/         markdown procedures the agent reads when a task matches; _core-rules.md is the prompt's rulebook; EXPERIENCE.md the loop's lessons
+docs/research   what was learned from Fo (REA passes), eval harnesses, browser providers, the 21 Oct codebase review
 web/            the owner's page: inbox, chat, memory, ledger
 test/           offline tests with a scripted model and fake hands
 ```
@@ -156,8 +193,18 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 ## Status
 
+<<<<<<< HEAD
 Built: the full 80-tool catalogue (above); one general assistant with per-chat priorities; rooms with owner, member and guest roles, invite links and guest serving; the responsibilities ledger with nudges and escalation; proactive suggestions; the run loop with gates, steering and resume; message priority rules (the requester steers; a member's contribution to a live errand joins it attributed; a separate ask queues as its own run, coalescing rapid messages); approvals as single-use records; quiet outcomes; durable execution (a run interrupted by a restart resumes at boot; a side effect never acts twice in one run); task agents with delivery state; watches (alert rules); app events as triggers; an encrypted credential vault; sign-in cards inside the chat (Browserbase live view); session compaction; plans with the approach ladder and model-driven re-planning (revise_plan); schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; chat search; search steps labelled by query and narration kept in the thread; a people lookup across the chats it is in; the owner UI with Clerk sign-in and a landing page; iMessage, WhatsApp Business, Telegram and Slack channels through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; a two-block cached system prompt and a per-run tool list; an eval harness.
+=======
+Last full pass: 21 October 2026 (the codebase review in [docs/research/codebase-review-2026-10-21.md](docs/research/codebase-review-2026-10-21.md), with what was applied and what was left open at its top).
+>>>>>>> a313384c1ddec67b41edf0d7011dedaea2916556
 
-Internet reach: `web_search` and `browse_page` are real (Exa and Jina Reader, both keyless; Brave and Browserbase when keyed). The agent follows `skills/internet-reach.md`, adapted from Agent Reach's skill to the two tools it has; it says plainly which platforms it cannot read yet.
+**Built.** The run loop with gates, steering, resume and a footer from records; approvals as single-use records bound to one action; quiet outcomes; task agents; watches; app events; the responsibilities ledger with nudges and escalation; memory with scopes, privacy, transcript mining and nightly consolidation in the owner's zone; session compaction; plans with the approach ladder and stall handling; the tool catalogue above, contained (see "Keeps boundaries"); an encrypted vault with sign-in cards inside the chat; rooms with owner, member and guest, invite links and guest serving; chat search; the owner UI with Clerk sign-in, a landing page, Fo-style settings sections, attachments, a getting-started checklist and the assistant's email and number in the header; iMessage, WhatsApp Business, Telegram and Slack through Photon Spectrum, with Settings → Channels telling the truth per Photon plan (shared pool: register the number you iMessage from and get texted first, one-to-one; dedicated line: the assistant's number, a phone link by code, and group chats); the model through OpenRouter (DeepSeek V4.1 Flash) or Anthropic; a browser chain (local Chrome in local mode, Browserbase, Jina as the floor) and search through Browserbase Search with Exa behind it; the scenario harness with a store-diff grader and pass^k, and a Harness² loop (`bun run harness`) that proposes, validates, probes and adopts edits to `skills/` with the eval as the judge and records every verdict in `skills/EXPERIENCE.md`.
 
-Needs an account to go live: calls (Vapi), SMS (Twilio), the assistant's mailbox (AgentMail), checkout cards (Stripe Issuing), voice notes (ElevenLabs), Google (an OAuth app). Each tool runs against a fake until its key is set and says so to the person. Not yet: reading or posting on Reddit and Rednote (both need a logged-in session); voice chat in the browser. Postgres is not used: the store is one SQLite file.
+**Measured.** Live eval on 21 October: 12 of 16 scenarios, 77 of 87 checks (from 9 of 16 two days earlier). The misses are model behaviour inside delegated tasks and one re-ask after a yes. DeepSeek V4.1 Flash passed 17 of 17 checks on the three scenarios tried before it became the default; a full run on it is the next measurement.
+
+**Internet reach.** `web_search` and `browse_page` are real (Browserbase Search on the Parallel engine when the browser key is set, Exa and Jina keyless, Brave when keyed; a bot wall on one provider falls through to the next). The agent follows `skills/internet-reach.md` and says plainly which platforms it cannot read yet.
+
+**Needs an account to go live.** Calls (Vapi), SMS (Twilio), the assistant's mailbox (AgentMail), checkout cards (Stripe Issuing, and a checkout hand that does not exist yet), voice notes (ElevenLabs), Google (an OAuth app). Each tool runs against a fake until its key is set and says so to the person. A dedicated iMessage line needs Photon's Business plan.
+
+**Not yet.** Reading or posting on Reddit and Rednote (both need a logged-in session); voice chat in the browser; a real checkout; patch-by-id thread rendering and an accessibility pass in the web UI (listed as open in the review). Postgres is not used: the store is one SQLite file.

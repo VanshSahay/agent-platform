@@ -12,19 +12,19 @@ export function saveArtifact(ctx: ToolContext, a: { kind: Artifact["kind"]; titl
     kind: a.kind,
     title: a.title,
     data: a.data,
-    share: a.share ?? "room",
+    // A page posted into Messages is opened by tapping its link, with no sign-in: anyone with the link may read it there.
+    share: a.share ?? (ctx.room.channel !== "web" ? "link" : "room"),
     createdAt: ctx.clock.now(),
   };
   ctx.store.putArtifact(art);
   return { id: art.id, url: `${ctx.publicUrl}/d/${art.id}` };
 }
 
-/** Rooms the requester may read: the ones they are in (the owner sees every room of the agent). */
+/** Rooms the requester may read: the ones they are in. The owner also sees every group, never another person's private chat. */
 export function readableRooms(ctx: ToolContext) {
   const all = ctx.store.listRooms(ctx.agent.id);
-  if (ctx.requesterId === ctx.agent.ownerId) return all;
   const mine = new Set(ctx.requesterId ? ctx.store.roomsForPerson(ctx.requesterId) : []);
-  return all.filter((r) => mine.has(r.id));
+  return all.filter((r) => mine.has(r.id) || (ctx.requesterId === ctx.agent.ownerId && r.kind !== "dm"));
 }
 
 export const clip = (text: string, max = 4000) => (text.length > max ? `${text.slice(0, max)}…` : text);

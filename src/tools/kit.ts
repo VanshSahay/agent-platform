@@ -90,7 +90,7 @@ export interface ToolContext {
     title: string;
     detail: string;
     money?: number;
-    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" };
+    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post"; contact?: string };
     /** What a yes permits: the tool and the payload that matters (number, text, amount, merchant). An approval covers exactly this. */
     key: unknown[];
   }): GateDecision;
@@ -142,12 +142,49 @@ export function parseOutreach(v: unknown): Outreach[] {
     if (!x || typeof x !== "object") continue;
     const o = x as Record<string, unknown>;
     if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how))
-      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
+      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated", contact: contactKey(s(o.contact)) || undefined });
   }
   return out.slice(0, 10);
 }
-export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
+export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who}${d.contact ? ` <${d.contact}>` : ""} by ${d.how} (${d.why})`).join("; ");
+
+/**
+ * The one way a tool answers a gate that did not open: a working-hours hold is reported as held, a pending
+ * card pauses the run with the waiting text. Returns undefined when the gate is granted.
+ */
+export function askFirst(gate: GateDecision, waiting: string, extra: Partial<ToolResult> = {}): ToolResult | undefined {
+  if (gate.granted) return undefined;
+  if ("held" in gate) return { ok: true, content: gate.held, held: true, ...extra };
+  return { ok: true, content: waiting, waitingOn: gate.item, roomNotice: gate.notice, ...extra };
+}
+
+/** A phone number or address in one comparable form: digits with the plus, or a lowercased email. */
+export const contactKey = (v: string) => {
+  const t = v.trim().toLowerCase();
+  if (!t) return "";
+  return t.includes("@") ? t : t.replace(/[^+\d]/g, "");
+};
 /** "https://www.ubereats.com/orders" and "ubereats.com" both mean ubereats.com. */
+/**
+ * A URL the server may fetch on a member's behalf: http(s), and not the box itself or the
+ * network behind it. Checked by hostname, not by resolving it (ponytail: a DNS answer that
+ * points at 10.x gets through; resolve first if this ever runs somewhere with private services).
+ */
+export function publicUrl(v: string): URL | undefined {
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return undefined;
+  if (/^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)) return undefined;
+  if (h === "::1" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return undefined;
+  return u;
+}
+
 export function siteOf(v: string): string {
   return v
     .trim()

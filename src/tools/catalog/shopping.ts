@@ -1,6 +1,6 @@
 import { newId } from "../../core/ids.ts";
 import type { Address } from "../../core/types.ts";
-import { n, num, obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
+import { askFirst, n, num, obj, s, str, type ToolContext, type ToolDef, type ToolResult } from "../kit.ts";
 import { clip } from "./shared.ts";
 
 /**
@@ -18,6 +18,12 @@ export interface CartItem {
   merchant: string;
 }
 const cartKey = (ctx: ToolContext) => `cart:${ctx.accountOwnerId}`;
+/** Changing someone else's cart or saved addresses asks them first; your own is yours. */
+function foreignWrite(ctx: ToolContext, title: string, detail: string, key: unknown[]): ToolResult | undefined {
+  if (ctx.requesterId === ctx.accountOwnerId) return undefined;
+  const owner = ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "the account owner";
+  return askFirst(ctx.gate({ kind: "action", title, detail, key }), `Asked ${owner} before changing their ${title.includes("address") ? "addresses" : "cart"}.`);
+}
 const readCart = (ctx: ToolContext): CartItem[] => JSON.parse(ctx.store.getKv(cartKey(ctx)) ?? "[]") as CartItem[];
 const writeCart = (ctx: ToolContext, items: CartItem[]) => ctx.store.setKv(cartKey(ctx), JSON.stringify(items));
 const merchantOf = (url: string) =>
@@ -62,12 +68,16 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Adding to cart…", done: "Added to cart" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to add to your cart?", JSON.stringify(input).slice(0, 300), ["add_to_cart", input]);
+      if (asked) return asked;
+      if (!/^https:\/\//i.test(s(input.url))) return { ok: false, content: "url must be the product page (https://…)." };
+      if (n(input.priceUsd) !== undefined && n(input.priceUsd)! < 0) return { ok: false, content: "priceUsd cannot be negative." };
       const items = readCart(ctx);
       const item: CartItem = {
         id: newId("ci"),
         title: s(input.title).slice(0, 140),
         url: s(input.url),
-        priceUsd: n(input.priceUsd),
+        priceUsd: n(input.priceUsd) !== undefined && n(input.priceUsd)! >= 0 ? n(input.priceUsd) : undefined,
         quantity: Math.max(1, Math.trunc(n(input.quantity) ?? 1)),
         merchant: merchantOf(s(input.url)),
       };
@@ -92,6 +102,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Removing from cart…", done: "Removed from cart" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to change your cart?", JSON.stringify(input).slice(0, 300), ["remove_from_cart", input]);
+      if (asked) return asked;
       const items = readCart(ctx).filter((i) => i.id !== s(input.itemId));
       writeCart(ctx, items);
       return { ok: true, content: { items: items.length, totalUsd: total(items) } };
@@ -101,12 +113,12 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     spec: {
       name: "checkout_cart",
       description:
-        "Buy what is in the cart: asks the owner (or passes under their threshold), mints a single-use card for exactly this amount, and places the order in the browser at the merchant with the saved address. Card details never pass through the chat.",
+        "Clear the budget for what is in the cart: asks the owner (or passes under their threshold) for exactly this amount at this merchant. It does not place the order: there is no checkout hand yet, so say what was approved, keep the cart, and hand the person the merchant link and the delivery address to finish.",
       input_schema: obj({ addressId: str("Saved address id; default the first one."), note: str("Anything the merchant should know.") }),
     },
     family: "shopping",
-    labels: { running: "Preparing checkout…", done: "Checkout ready", failed: "Checkout did not go through" },
-    sideEffect: true,
+    labels: { running: "Clearing the budget…", done: "Budget cleared", failed: "Checkout did not go through" },
+    sideEffect: false,
     async run(input, ctx) {
       const items = readCart(ctx);
       if (!items.length) return { ok: false, content: "The cart is empty." };
@@ -122,37 +134,25 @@ export const SHOPPING_TOOLS: ToolDef[] = [
         money: amount,
         key: ["checkout_cart", merchant, amount, items.map((i) => i.id)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for approval before paying.");
+      if (held) return held;
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       const address = (person?.addresses ?? []).find((a) => a.id === s(input.addressId)) ?? person?.addresses?.[0];
       if (!address) return { ok: false, content: `No delivery address saved for ${person?.displayName ?? "the buyer"}. Ask for one and save it with save_address.` };
-      try {
-        const card = await ctx.hands.payments.issueCard({ amountUsd: amount, merchant, personId: ctx.accountOwnerId });
-        ctx.vault.put(`card:${card.cardId}`, card.details);
-        // The browser hand pays with the card inside vault.use; the model sees the outcome only.
-        const steps = [{ waitMs: 500 }, { screenshot: true as const }];
-        const run = await ctx.vault.use(`card:${card.cardId}`, () => ctx.hands.browser.run({ url: items[0]!.url, steps }));
-        writeCart(ctx, []);
-        return {
-          ok: true,
-          content: {
-            approved: gate.reason,
-            amountUsd: amount,
-            merchant,
-            card: `single-use card ending ${card.last4}`,
-            deliverTo: `${address.line1}, ${address.city}`,
-            note: "The card is issued and the merchant page is open; finishing the order form is the next browser_use steps (never type the card number yourself: it is filled by the checkout hand).",
-            page: run ? clip(run.text, 1500) : undefined,
-          },
-          evidence: card.evidence,
-          label: `Checkout at ${merchant}: $${amount.toFixed(2)}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `Checkout failed: ${String((e as Error).message).slice(0, 200)}` };
-      }
+      // No card is minted and nothing is ordered: an approval is not a purchase, and a footer
+      // must never say "Checkout" for an order that was not placed. The cart stays for the person.
+      return {
+        ok: true,
+        content: {
+          approved: gate.granted ? gate.reason : "",
+          amountUsd: amount,
+          merchant,
+          deliverTo: `${address.line1}, ${address.city}`,
+          cart: items.map((i) => ({ title: i.title, url: i.url, quantity: i.quantity, priceUsd: i.priceUsd })),
+          note: "Budget cleared, order NOT placed: Circle cannot pay at a merchant yet. Give the person the item links, the amount and the address so they can finish, and say plainly that nothing was ordered.",
+        },
+        label: `Budget cleared at ${merchant}: $${amount.toFixed(2)} (order not placed)`,
+      };
     },
   },
   {
@@ -176,6 +176,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Saving an address…", done: "Saved an address" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to save an address on your account?", JSON.stringify(input).slice(0, 300), ["save_address", input]);
+      if (asked) return asked;
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       if (!person) return { ok: false, content: "No person." };
       const a: Address = {
@@ -208,6 +210,8 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Removing an address…", done: "Removed an address" },
     sideEffect: false,
     async run(input, ctx) {
+      const asked = foreignWrite(ctx, "OK to remove a saved address?", JSON.stringify(input).slice(0, 300), ["delete_saved_address", input]);
+      if (asked) return asked;
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       if (!person) return { ok: false, content: "No person." };
       person.addresses = (person.addresses ?? []).filter((a) => a.id !== s(input.addressId));

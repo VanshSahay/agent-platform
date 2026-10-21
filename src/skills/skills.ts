@@ -44,6 +44,7 @@ export function matchSkills(skills: Skill[], text: string, opts: { group: boolea
   const t = text.toLowerCase();
   const out: Skill[] = [];
   for (const s of skills) {
+    if (s.name.startsWith("_")) continue; // core rules and other prompt parts, never matched as procedures
     if (s.when.startsWith("always")) {
       if (opts.group) out.push(s);
       continue;
@@ -60,5 +61,8 @@ export function matchSkills(skills: Skill[], text: string, opts: { group: boolea
 }
 
 export function skillIndex(skills: Skill[]): string {
-  return skills.map((s) => `- ${s.name}: ${s.when}`).join("\n");
+  return skills
+    .filter((s) => !s.name.startsWith("_"))
+    .map((s) => `- ${s.name}: ${s.when}`)
+    .join("\n");
 }

@@ -1,6 +1,6 @@
 import type { ApproachKind, AttentionKind, Id, Task } from "../core/types.ts";
 import type { ToolSpec } from "../model/types.ts";
-import { describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
+import { askFirst, describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
 import { CATALOG_TOOLS } from "./catalog/index.ts";
 
 export type { GateDecision, ToolContext, ToolDef, ToolFamily, ToolResult } from "./kit.ts";
@@ -77,7 +77,8 @@ export const CORE_TOOLS: ToolDef[] = [
   {
     spec: {
       name: "web_search",
-      description: "Search the web. Use for businesses, hours, prices, how-tos and anything public. Returns titles, URLs and snippets.",
+      description:
+        "Search the web. Use for businesses, hours, prices, how-tos and anything public. Returns titles and URLs, with a snippet when the engine has one; read the page with browse_page before repeating a price, an hour or a number.",
       input_schema: obj({ query: str("Search query."), near: str("Optional place to bias results, e.g. a city.") }, ["query"]),
     },
     family: "search",
@@ -222,6 +223,53 @@ export const CORE_TOOLS: ToolDef[] = [
   },
   {
     spec: {
+      name: "add_member",
+      description:
+        "Add someone to this chat: 'add my sister Mia, +1 415 555 0101' or 'add Sam, sam@example.com'. A phone or email lets their texts or sign-in land on them. Owner only; others are told to ask the owner. Guests are served through the owner; members can be trusted with their own accounts later.",
+      input_schema: obj(
+        { name: str("Their name."), phone: str("Phone in E.164, optional."), email: str("Email, optional."), role: { type: "string", enum: ["member", "guest"] } },
+        ["name"],
+      ),
+    },
+    family: "people",
+    labels: { running: "Adding someone…", done: "Added someone to the chat" },
+    sideEffect: false,
+    async run(input, ctx) {
+      if (ctx.requesterId !== ctx.agent.ownerId && ctx.rooms.role(ctx.room.id, ctx.requesterId ?? "") !== "owner")
+        return { ok: false, content: `Only ${ctx.store.getPerson(ctx.agent.ownerId)?.displayName ?? "the owner"} can add people to this chat; suggest they ask.` };
+      const person = ctx.rooms.findOrCreatePerson({ displayName: s(input.name), email: s(input.email) || undefined, phoneE164: s(input.phone) || undefined });
+      if (!person) return { ok: false, content: "Give a name." };
+      if (ctx.store.getMembership(ctx.room.id, person.id)) return { ok: true, content: `${person.displayName} is already in this chat.` };
+      const role = s(input.role) === "guest" ? "guest" : "member";
+      ctx.rooms.addMember(ctx.room.id, person.id, role);
+      return {
+        ok: true,
+        content: `Added ${person.displayName} as ${role}${person.phoneE164 || person.email ? "" : " (no phone or email yet, so their messages cannot be matched to them until one is added)"}.`,
+        evidence: `member:${person.id}`,
+        label: `Added ${person.displayName}`,
+      };
+    },
+  },
+  {
+    spec: {
+      name: "remove_member",
+      description: "Take someone out of this chat. Owner only. The owner cannot be removed.",
+      input_schema: obj({ name: str("Member name.") }, ["name"]),
+    },
+    family: "people",
+    labels: { running: "Removing someone…", done: "Removed someone from the chat" },
+    sideEffect: false,
+    async run(input, ctx) {
+      if (ctx.requesterId !== ctx.agent.ownerId && ctx.rooms.role(ctx.room.id, ctx.requesterId ?? "") !== "owner")
+        return { ok: false, content: `Only ${ctx.store.getPerson(ctx.agent.ownerId)?.displayName ?? "the owner"} can remove people from this chat.` };
+      const who = ctx.findMember(s(input.name));
+      if (!who) return { ok: false, content: `No member named "${s(input.name)}".` };
+      if (!ctx.rooms.removeMember(ctx.room.id, who.id)) return { ok: false, content: `${who.name} is the owner and stays.` };
+      return { ok: true, content: `Removed ${who.name} from this chat.`, evidence: `member-removed:${who.id}`, label: `Removed ${who.name}` };
+    },
+  },
+  {
+    spec: {
       name: "ask_room",
       description:
         "Ask the whole group a question and wait for an answer (recommendations, availability, who can do what). The run pauses until someone replies. Use before calling strangers.",
@@ -276,7 +324,7 @@ export const CORE_TOOLS: ToolDef[] = [
         kind,
         title: `${ctx.agent.name} has a question`,
         detail: s(input.question),
-        options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
+        options: Array.isArray(input.options) ? input.options.filter((o): o is string => typeof o === "string").slice(0, 8) : undefined,
         ttlMs: 3 * 24 * 60 * 60 * 1000,
       });
       ctx.dm(who.id, s(input.question));
@@ -313,10 +361,10 @@ export const CORE_TOOLS: ToolDef[] = [
         roomId: ctx.room.id,
         runId: ctx.run.id,
         assigneeId: assignee,
-        kind: s(input.kind) as AttentionKind,
+        kind: (["decision", "information", "action"].includes(s(input.kind)) ? s(input.kind) : "information") as AttentionKind,
         title: "Your input is needed",
         detail: s(input.question),
-        options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
+        options: Array.isArray(input.options) ? input.options.filter((o): o is string => typeof o === "string").slice(0, 8) : undefined,
         ttlMs: 7 * 24 * 60 * 60 * 1000,
       });
       return { ok: true, content: "Waiting.", waitingOn: item, roomNotice: s(input.question), approach: "wait" };
@@ -341,19 +389,19 @@ export const CORE_TOOLS: ToolDef[] = [
     labels: { running: "On a call…", done: "Made a call", failed: "Call failed" },
     sideEffect: true,
     async run(input, ctx) {
+      const to = e164(s(input.to));
+      if (!to) return { ok: false, content: "Give the number in E.164, like +14085550100.", approach: "call" };
       const gate = ctx.gate({
         kind: "outreach_approval",
         title: `OK to call ${s(input.who)}?`,
-        detail: `${ctx.agent.name} wants to call ${s(input.who)} (${s(input.to)}) by phone to: ${s(input.objective)}`,
-        outreach: { who: s(input.who), how: "phone" },
-        key: ["place_call", s(input.to)],
+        detail: `${ctx.agent.name} wants to call ${s(input.who)} (${to}) by phone to: ${s(input.objective)}`,
+        outreach: { who: s(input.who), how: "phone", contact: to },
+        key: ["place_call", to],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "call", held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing has been dialed.", waitingOn: gate.item, roomNotice: gate.notice, approach: "call" };
-      }
+      const held = askFirst(gate, "Waiting for the owner's go-ahead. Nothing has been dialed.", { approach: "call" });
+      if (held) return held;
       ctx.progress(`Calling ${s(input.who)}…`);
-      const r = await ctx.hands.phone.call({ to: s(input.to), objective: s(input.objective), callerName: ctx.agent.name, language: s(input.language) || undefined });
+      const r = await ctx.hands.phone.call({ to, objective: s(input.objective), callerName: ctx.agent.name, language: s(input.language) || undefined });
       const stalled = r.status !== "completed";
       return {
         ok: true,
@@ -378,13 +426,11 @@ export const CORE_TOOLS: ToolDef[] = [
         kind: "outreach_approval",
         title: `OK to text ${s(input.who)}?`,
         detail: `${ctx.agent.name} wants to text ${s(input.who)} (${s(input.to)}): "${s(input.text)}"`,
-        outreach: { who: s(input.who), how: "sms" },
+        outreach: { who: s(input.who), how: "sms", contact: s(input.to) },
         key: ["send_sms", s(input.to), s(input.text)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for the owner's go-ahead. Nothing was sent.");
+      if (held) return held;
       const r = await ctx.hands.phone.sendSms({ to: s(input.to), text: s(input.text), from: ctx.agent.name });
       return { ok: true, content: { sent: true, messageId: r.messageId }, evidence: r.evidence };
     },
@@ -415,10 +461,8 @@ export const CORE_TOOLS: ToolDef[] = [
         outreach: { who: s(input.community), how: "community_post" },
         key: ["post_community", s(input.community), s(input.title), s(input.body)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "community_post", held: true };
-        return { ok: true, content: "Waiting for the owner's OK before posting anything public.", waitingOn: gate.item, roomNotice: gate.notice, approach: "community_post" };
-      }
+      const held = askFirst(gate, "Waiting for the owner's OK before posting anything public.", { approach: "community_post" });
+      if (held) return held;
       const r = await ctx.hands.community.post({ community: s(input.community), title: s(input.title), body: s(input.body), language: s(input.language) || undefined });
       return {
         ok: true,
@@ -504,7 +548,8 @@ export const CORE_TOOLS: ToolDef[] = [
         text: stored === "observation" ? `[${type}] ${s(input.text)}` : s(input.text),
         aliases: Array.isArray(input.aliases) ? (input.aliases as string[]) : [],
         subjectPersonId: about?.id ?? ctx.requesterId,
-        visibleToRooms: input.private ? [ctx.room.id] : [ctx.room.id],
+        // Private: the note never leaves this chat; otherwise a group may see it (a DM is not a group, see deriveProfile).
+        visibleToRooms: input.private ? [] : [ctx.room.id],
         sourceRunId: ctx.run.id,
       });
       return { ok: true, content: `Noted (${m.id}).` };
@@ -545,7 +590,15 @@ export const CORE_TOOLS: ToolDef[] = [
           premise: str("What must still be true for this to make sense, e.g. 'the reservation is still unconfirmed'."),
           disclosedOutreach: {
             type: "array",
-            items: obj({ who: str("Name"), how: { type: "string", enum: ["phone", "email", "sms", "community_post"] }, why: str("Purpose") }, ["who", "how", "why"]),
+            items: obj(
+              {
+                who: str("Name"),
+                how: { type: "string", enum: ["phone", "email", "sms", "community_post"] },
+                why: str("Purpose"),
+                contact: str("Their number (E.164) or email when known; the first one used is bound otherwise."),
+              },
+              ["who", "how", "why"],
+            ),
           },
         },
         ["title", "prompt", "premise"],
@@ -571,10 +624,8 @@ export const CORE_TOOLS: ToolDef[] = [
           detail: `${s(input.prompt)}\nPremise: ${s(input.premise)}${outreach.length ? `\nIt may contact: ${describeOutreach(outreach)}` : ""}`,
           key: ["schedule_action", s(input.title), s(input.prompt), outreach],
         });
-        if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held, held: true };
-          return { ok: true, content: "Asked the owner before scheduling.", waitingOn: gate.item, roomNotice: gate.notice };
-        }
+        const held = askFirst(gate, "Asked the owner before scheduling.");
+        if (held) return held;
       }
       if (outreach.length && ctx.requesterId === ctx.agent.ownerId)
         ctx.dm(ctx.agent.ownerId, `Scheduled "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
@@ -700,15 +751,15 @@ export const CORE_TOOLS: ToolDef[] = [
         title: `OK to spend $${amount.toFixed(2)}?`,
         detail: `${ctx.agent.name} wants to pay $${amount.toFixed(2)} at ${s(input.where)} for: ${s(input.what)}`,
         money: amount,
-        key: ["request_purchase", amount.toFixed(2), s(input.where), s(input.what)],
+        // The yes covers the money (to the next $10) and the merchant; the item's wording lives in the card, so a
+        // re-issue that says "$79.99" or paraphrases "what" after the yes does not open a second card.
+        key: ["request_purchase", Math.ceil(amount / 10) * 10, s(input.where).toLowerCase()],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for approval before paying.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for approval before paying.");
+      if (held) return held;
       return {
         ok: true,
-        content: `Approved: ${gate.reason}. The budget is cleared. No ordering tool is connected yet, so reply in one line that it is approved and that the order itself still has to be placed by hand, then stop. Do not ask anyone anything else and do not browse shops.`,
+        content: `Approved: ${gate.granted ? gate.reason : ""}. The budget is cleared for $${amount.toFixed(2)} at ${s(input.where)}. Next: search_products and add_to_cart, then checkout_cart, which confirms the budget against the cart but does not place the order: hand the person the item links, the amount and the address to finish, and never say it was ordered.`,
         evidence: `purchase-approved:${amount}`,
       };
     },
@@ -810,7 +861,7 @@ export const CORE_TOOLS: ToolDef[] = [
     spec: {
       name: "watch_for",
       description:
-        "Set an alert rule: check a condition every few hours and act only when it holds, otherwise stay quiet. For 'tell me when the pharmacy confirms', 'if the price drops under $100', 'once Ben replies'. Name any third party you would contact.",
+        "Set an alert rule: check a condition every few hours and act only when it holds, otherwise stay quiet. For 'tell me when the pharmacy confirms', 'if the price drops under $100', 'once Ben replies'. Needs no connection: each check can read your own inbox (email_load_unprocessed), your notes, the ledger, a page or a search. Name any third party you would contact.",
       input_schema: obj(
         {
           title: str("Short title."),
@@ -820,7 +871,15 @@ export const CORE_TOOLS: ToolDef[] = [
           untilDays: num("Stop after this many days (default 14)."),
           disclosedOutreach: {
             type: "array",
-            items: obj({ who: str("Name"), how: { type: "string", enum: ["phone", "email", "sms", "community_post"] }, why: str("Purpose") }, ["who", "how", "why"]),
+            items: obj(
+              {
+                who: str("Name"),
+                how: { type: "string", enum: ["phone", "email", "sms", "community_post"] },
+                why: str("Purpose"),
+                contact: str("Their number (E.164) or email when known; the first one used is bound otherwise."),
+              },
+              ["who", "how", "why"],
+            ),
           },
         },
         ["title", "condition", "action", "everyHours"],
@@ -840,10 +899,8 @@ export const CORE_TOOLS: ToolDef[] = [
           detail: `Every ${every}h: ${s(input.condition)} → ${s(input.action)}${outreach.length ? `\nIt may contact: ${describeOutreach(outreach)}` : ""}`,
           key: ["watch_for", s(input.title), s(input.condition), s(input.action), outreach],
         });
-        if (!gate.granted) {
-          if ("held" in gate) return { ok: true, content: gate.held, held: true };
-          return { ok: true, content: "Asked the owner before setting the watch.", waitingOn: gate.item, roomNotice: gate.notice };
-        }
+        const held = askFirst(gate, "Asked the owner before setting the watch.");
+        if (held) return held;
       }
       if (outreach.length && ctx.requesterId === ctx.agent.ownerId)
         ctx.dm(ctx.agent.ownerId, `Watch "${s(input.title)}" may contact without asking again: ${describeOutreach(outreach)}.`);
@@ -869,6 +926,13 @@ export const CORE_TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/** A phone number as E.164, taking "(408) 555-0100" as US; anything else that is not +country… is refused. */
+export function e164(raw: string): string | undefined {
+  const digits = raw.replace(/[^+\d]/g, "");
+  const v = digits.startsWith("+") ? digits : digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits.startsWith("1") ? `+${digits}` : "";
+  return /^\+\d{8,15}$/.test(v) ? v : undefined;
+}
 
 /** Every tool that exists: the core set plus the catalogue (Google, operator, knowledge, shopping, voice, contacts, email, MCP). */
 export const TOOLS: ToolDef[] = [...CORE_TOOLS, ...CATALOG_TOOLS];

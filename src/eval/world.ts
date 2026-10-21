@@ -26,8 +26,12 @@ export interface EvalWorld {
   riley: Person;
   hands: FakeHands;
   deliveries: Delivery[];
-  /** Resolve a scenario's room key to a room id. */
+  /** Resolve a scenario's room key to a room id; an unknown key is taken as a raw id. */
   roomId(key: RoomKey): string;
+  /** Name a room a scenario created in setup, so its turns can use the name as a key. */
+  alias(key: string, roomId: string): void;
+  /** The key a room id was registered under, for readable turn records. */
+  keyOf(roomId: string): string;
 }
 
 export type RoomKey = "room" | "ownerDm" | "samDm" | (string & {});
@@ -41,6 +45,8 @@ export interface WorldOptions {
   hands?: Partial<FakeHands>;
   /** Boot-level providers wired on the server. Default: every hand (the fakes are all "wired"). */
   providers?: string[];
+  /** A different skills folder: the harness loop probes candidate rules and procedures this way. */
+  skillsDir?: string[] | string;
 }
 
 /** 10:00 in Los Angeles on Tuesday 13 October 2026; every world starts here. */
@@ -50,7 +56,7 @@ export function evalWorld(opts: WorldOptions): EvalWorld {
   const clock = new FakeClock(WORLD_START);
   const hands = fakeHands(opts.hands);
   // A day between heartbeats keeps the scheduler out of the way unless a test advances to it.
-  const app = createApp({ clock, model: opts.model, hands, heartbeatEveryMs: 24 * 3600 * 1000, maxTurns: opts.maxTurns, providers: opts.providers });
+  const app = createApp({ clock, model: opts.model, hands, heartbeatEveryMs: 24 * 3600 * 1000, maxTurns: opts.maxTurns, providers: opts.providers, skillsDir: opts.skillsDir });
   const deliveries: Delivery[] = [];
   app.onDeliver((d) => deliveries.push(d));
 
@@ -88,5 +94,23 @@ export function evalWorld(opts: WorldOptions): EvalWorld {
   const samDm = app.rooms.dmFor(agent, sam.id);
   const rooms: Record<string, string> = { room: room.id, ownerDm: ownerDm.id, samDm: samDm.id };
 
-  return { app, clock, agent, room, ownerDm, samDm, alex, sam, jo, riley, hands, deliveries, roomId: (key) => rooms[key] ?? key };
+  return {
+    app,
+    clock,
+    agent,
+    room,
+    ownerDm,
+    samDm,
+    alex,
+    sam,
+    jo,
+    riley,
+    hands,
+    deliveries,
+    roomId: (key) => rooms[key] ?? key,
+    alias: (key, roomId) => {
+      rooms[key] = roomId;
+    },
+    keyOf: (roomId) => Object.keys(rooms).find((k) => rooms[k] === roomId) ?? roomId,
+  };
 }

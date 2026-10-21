@@ -1,4 +1,4 @@
-import { n, obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
+import { askFirst, obj, s, str, type ToolContext, type ToolDef } from "../kit.ts";
 import { clip, notConnected } from "./shared.ts";
 
 /**
@@ -9,8 +9,6 @@ import { clip, notConnected } from "./shared.ts";
 export interface McpServerRecord {
   url: string;
   token?: string;
-  /** stdio servers: a command to spawn instead of a URL. */
-  command?: string[];
 }
 export interface ApiRecord {
   baseUrl: string;
@@ -31,14 +29,13 @@ const listOf = (ctx: ToolContext, kind: "mcp" | "api") =>
     .filter((x) => x.startsWith(`${kind}:`))
     .map((x) => x.slice(kind.length + 1));
 
-/** Minimal MCP client over streamable HTTP (JSON-RPC), or stdio for a local command. One session per call. */
+/** Minimal MCP client over streamable HTTP (JSON-RPC). One session per call. No stdio: a command a member could register would run on this box. */
 export class McpClient {
   private seq = 1;
   constructor(private rec: McpServerRecord) {}
 
   private async rpc(method: string, params: unknown, sessionId?: string): Promise<{ result?: unknown; error?: { message: string }; sessionId?: string }> {
     const body = { jsonrpc: "2.0", id: this.seq++, method, params };
-    if (this.rec.command) return this.rpcStdio(body);
     const res = await fetch(this.rec.url, {
       method: "POST",
       headers: {
@@ -62,22 +59,6 @@ export class McpClient {
       : text;
     const parsed = JSON.parse(payload) as { result?: unknown; error?: { message: string } };
     return { ...parsed, sessionId: sid ?? undefined };
-  }
-
-  private async rpcStdio(body: unknown): Promise<{ result?: unknown; error?: { message: string } }> {
-    // ponytail: one process per call, initialize then the call; a long-lived process if latency matters.
-    const proc = Bun.spawn(this.rec.command!, { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
-    const init = { jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "circle", version: "0.1" } } };
-    proc.stdin.write(`${JSON.stringify(init)}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n${JSON.stringify(body)}\n`);
-    proc.stdin.flush();
-    proc.stdin.end();
-    const out = await Promise.race([new Response(proc.stdout).text(), new Promise<string>((_, rej) => setTimeout(() => rej(new Error("MCP stdio timeout")), 30_000))]).finally(() =>
-      proc.kill(),
-    );
-    const id = (body as { id: number }).id;
-    const line = out.split("\n").find((l) => l.includes(`"id":${id}`));
-    if (!line) throw new Error("MCP stdio: no reply");
-    return JSON.parse(line) as { result?: unknown; error?: { message: string } };
   }
 
   async listTools(): Promise<{ name: string; description?: string; inputSchema?: unknown }[]> {
@@ -116,7 +97,7 @@ export class OpenApiConnector {
       this.ops = [];
       return this.ops;
     }
-    const res = await fetch(this.rec.openapiUrl, { headers: { accept: "application/json, application/yaml, text/plain" } });
+    const res = await fetch(this.rec.openapiUrl, { headers: { accept: "application/json, text/plain" } });
     if (!res.ok) throw new Error(`OpenAPI ${res.status}`);
     const text = await res.text();
     const doc = JSON.parse(text) as { paths?: Record<string, Record<string, { operationId?: string; summary?: string; parameters?: { name: string }[] }>> };
@@ -131,23 +112,32 @@ export class OpenApiConnector {
     return this.ops;
   }
 
-  async call(input: { operationId?: string; method?: string; path?: string; params?: Record<string, unknown>; body?: unknown }): Promise<unknown> {
-    let method = input.method?.toUpperCase();
-    let path = input.path;
+  /** The method and path a call would use, resolved from the document when an operationId is given. */
+  async resolve(input: { operationId?: string; method?: string; path?: string }): Promise<{ method: string; path: string }> {
     if (input.operationId) {
       const op = (await this.operations()).find((o) => o.id === input.operationId);
       if (!op) throw new Error(`no operation ${input.operationId}`);
-      method = op.method;
-      path = op.path;
+      return { method: op.method, path: op.path };
     }
-    if (!method || !path) throw new Error("give operationId, or method and path");
+    const method = input.method?.toUpperCase();
+    if (!method || !input.path) throw new Error("give operationId, or method and path");
+    return { method, path: input.path };
+  }
+
+  async call(input: { operationId?: string; method?: string; path?: string; params?: Record<string, unknown>; body?: unknown }): Promise<unknown> {
+    const { method, path: rawPath } = await this.resolve(input);
+    let path = rawPath;
     const params = { ...(input.params ?? {}) } as Record<string, unknown>;
     path = path.replace(/\{(\w+)\}/g, (_m, k: string) => {
       const v = params[k];
       delete params[k];
       return encodeURIComponent(String(v ?? ""));
     });
-    const url = new URL(path.replace(/^\//, ""), this.rec.baseUrl.endsWith("/") ? this.rec.baseUrl : `${this.rec.baseUrl}/`);
+    // Records are written only by the connections route, which checks the hosts are public.
+    const base = new URL(this.rec.baseUrl);
+    const url = new URL(path.replace(/^\//, ""), base.href.endsWith("/") ? base.href : `${base.href}/`);
+    // The token goes to the API it was issued for, never to a host a path or document names.
+    if (url.origin !== base.origin) throw new Error(`path leaves ${base.origin}`);
     if (method === "GET") for (const [k, v] of Object.entries(params)) if (v !== undefined) url.searchParams.set(k, String(v));
     const headers: Record<string, string> = { accept: "application/json", "content-type": "application/json" };
     if (this.rec.token) headers[this.rec.header || "authorization"] = this.rec.header ? this.rec.token : `Bearer ${this.rec.token}`;
@@ -178,41 +168,41 @@ export const MCP_TOOLS: ToolDef[] = [
       if (!s(input.server)) return { ok: true, content: servers.length ? { servers } : "No MCP servers connected. Settings → Connections → Add MCP." };
       const key = service("mcp", s(input.server));
       if (!ctx.vault.has(key)) return notConnected(ctx, `MCP server "${s(input.server)}"`);
-      const rec = ctx.vault.use(key, (raw) => JSON.parse(raw) as McpServerRecord);
-      if (!rec) return notConnected(ctx, `MCP server "${s(input.server)}"`);
-      const client = new McpClient(rec);
-      try {
-        if (!s(input.tool))
+      // The record (URL and token) lives only inside this callback; the model sees names and results.
+      const out = await ctx.vault.use(key, async (raw) => {
+        const client = new McpClient(JSON.parse(raw) as McpServerRecord);
+        try {
+          if (!s(input.tool))
+            return {
+              ok: true,
+              content: (await client.listTools()).map((t) => ({ name: t.name, description: clip(t.description ?? "", 300), inputSchema: t.inputSchema })),
+              evidence: `mcp:${s(input.server)}:list`,
+            };
+          // A write on someone else's connection asks them; the person's own connection is theirs to use.
+          if (ctx.requesterId !== ctx.accountOwnerId) {
+            const gate = ctx.gate({
+              kind: "action",
+              title: `OK to use ${s(input.server)}: ${s(input.tool)}?`,
+              detail: clip(JSON.stringify(input.args ?? {}), 600),
+              key: ["mcp_call", s(input.server), s(input.tool), input.args],
+            });
+            const held = askFirst(gate, "Asked the connection's owner first.");
+            if (held) return held;
+          }
+          const r = await client.callTool(s(input.tool), (input.args && typeof input.args === "object" ? input.args : {}) as Record<string, unknown>);
+          const content = (r as { content?: { type: string; text?: string }[] })?.content;
+          const text = Array.isArray(content) ? content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n") : JSON.stringify(r);
           return {
             ok: true,
-            content: (await client.listTools()).map((t) => ({ name: t.name, description: clip(t.description ?? "", 300), inputSchema: t.inputSchema })),
-            evidence: `mcp:${s(input.server)}:list`,
+            content: clip(text, 12_000),
+            evidence: `mcp:${s(input.server)}:${s(input.tool)}`,
+            label: `${s(input.server)} · ${s(input.tool).replace(/[_-]+/g, " ")}`,
           };
-        // A write on someone else's connection asks them; the person's own connection is theirs to use.
-        if (ctx.requesterId !== ctx.accountOwnerId) {
-          const gate = ctx.gate({
-            kind: "action",
-            title: `OK to use ${s(input.server)}: ${s(input.tool)}?`,
-            detail: clip(JSON.stringify(input.args ?? {}), 600),
-            key: ["mcp_call", s(input.server), s(input.tool), input.args],
-          });
-          if (!gate.granted) {
-            if ("held" in gate) return { ok: true, content: gate.held, held: true };
-            return { ok: true, content: "Asked the connection's owner first.", waitingOn: gate.item, roomNotice: gate.notice };
-          }
+        } catch (e) {
+          return { ok: false, content: `${s(input.server)} said: ${String((e as Error).message).slice(0, 300)}` };
         }
-        const r = await client.callTool(s(input.tool), (input.args && typeof input.args === "object" ? input.args : {}) as Record<string, unknown>);
-        const content = (r as { content?: { type: string; text?: string }[] })?.content;
-        const text = Array.isArray(content) ? content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n") : JSON.stringify(r);
-        return {
-          ok: true,
-          content: clip(text, 12_000),
-          evidence: `mcp:${s(input.server)}:${s(input.tool)}`,
-          label: `${s(input.server)} · ${s(input.tool).replace(/[_-]+/g, " ")}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `${s(input.server)} said: ${String((e as Error).message).slice(0, 300)}` };
-      }
+      });
+      return out ?? notConnected(ctx, `MCP server "${s(input.server)}"`);
     },
   },
   {
@@ -237,42 +227,40 @@ export const MCP_TOOLS: ToolDef[] = [
       if (!s(input.connector)) return { ok: true, content: apis.length ? { connectors: apis } : "No APIs connected. Settings → Connections → Add API." };
       const key = service("api", s(input.connector));
       if (!ctx.vault.has(key)) return notConnected(ctx, `API "${s(input.connector)}"`);
-      const rec = ctx.vault.use(key, (raw) => JSON.parse(raw) as ApiRecord);
-      if (!rec) return notConnected(ctx, `API "${s(input.connector)}"`);
-      const api = new OpenApiConnector(rec);
-      try {
-        if (!s(input.operationId) && !s(input.path)) return { ok: true, content: (await api.operations()).slice(0, 100), evidence: `api:${s(input.connector)}:ops` };
-        const method = (s(input.method) || "GET").toUpperCase();
-        if (ctx.requesterId !== ctx.accountOwnerId && method !== "GET") {
-          const gate = ctx.gate({
-            kind: "action",
-            title: `OK to call ${s(input.connector)}?`,
-            detail: clip(`${s(input.operationId) || `${method} ${s(input.path)}`} ${JSON.stringify(input.body ?? input.params ?? {})}`, 600),
-            key: ["connector_call", s(input.connector), s(input.operationId), s(input.path), input.body],
-          });
-          if (!gate.granted) {
-            if ("held" in gate) return { ok: true, content: gate.held, held: true };
-            return { ok: true, content: "Asked the connection's owner first.", waitingOn: gate.item, roomNotice: gate.notice };
+      const out = await ctx.vault.use(key, async (raw) => {
+        const api = new OpenApiConnector(JSON.parse(raw) as ApiRecord);
+        try {
+          if (!s(input.operationId) && !s(input.path)) return { ok: true, content: (await api.operations()).slice(0, 100), evidence: `api:${s(input.connector)}:ops` };
+          // Gate on what will actually be sent: an operationId's method comes from the document, not the model.
+          const { method, path } = await api.resolve({ operationId: s(input.operationId) || undefined, method: s(input.method) || undefined, path: s(input.path) || undefined });
+          if (ctx.requesterId !== ctx.accountOwnerId && method !== "GET") {
+            const gate = ctx.gate({
+              kind: "action",
+              title: `OK to call ${s(input.connector)}?`,
+              detail: clip(`${method} ${path} ${JSON.stringify(input.body ?? input.params ?? {})}`, 600),
+              key: ["connector_call", s(input.connector), method, path, input.params, input.body],
+            });
+            const held = askFirst(gate, "Asked the connection's owner first.");
+            if (held) return held;
           }
+          const r = await api.call({
+            operationId: s(input.operationId) || undefined,
+            method: s(input.method) || undefined,
+            path: s(input.path) || undefined,
+            params: (input.params ?? {}) as Record<string, unknown>,
+            body: input.body,
+          });
+          return {
+            ok: true,
+            content: typeof r === "string" ? r : clip(JSON.stringify(r), 12_000),
+            evidence: `api:${s(input.connector)}:${s(input.operationId) || s(input.path)}`,
+            label: `${s(input.connector)} · ${(s(input.operationId) || s(input.path)).replace(/[_-]+/g, " ").slice(0, 40)}`,
+          };
+        } catch (e) {
+          return { ok: false, content: `${s(input.connector)} said: ${String((e as Error).message).slice(0, 300)}` };
         }
-        const r = await api.call({
-          operationId: s(input.operationId) || undefined,
-          method: s(input.method) || undefined,
-          path: s(input.path) || undefined,
-          params: (input.params ?? {}) as Record<string, unknown>,
-          body: input.body,
-        });
-        return {
-          ok: true,
-          content: typeof r === "string" ? r : clip(JSON.stringify(r), 12_000),
-          evidence: `api:${s(input.connector)}:${s(input.operationId) || s(input.path)}`,
-          label: `${s(input.connector)} · ${(s(input.operationId) || s(input.path)).replace(/[_-]+/g, " ").slice(0, 40)}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `${s(input.connector)} said: ${String((e as Error).message).slice(0, 300)}` };
-      }
+      });
+      return out ?? notConnected(ctx, `API "${s(input.connector)}"`);
     },
   },
 ];
-
-export { n as _n };

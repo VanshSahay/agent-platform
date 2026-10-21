@@ -4,9 +4,9 @@ Circle is a personal agent that lives in group chats. Read `docs/design.md` befo
 
 ## Commands
 
-- `bun test` runs the offline suite (scripted model, fake hands). Keep it under a second.
+- `bun test` runs the offline suite (scripted model, fake hands). Keep it under two seconds.
 - `bun run typecheck` must pass; `strict` and `noUncheckedIndexedAccess` are on.
-- `bun run demo` plays the handyman errand end to end offline; run it after touching the runtime, gates or planner.
+- `bun test test/eval.test.ts` plays every scenario end to end offline under its well-behaved script and the do-nothing control; run it after touching the runtime, gates or planner. `bun run eval` runs the same scenarios against the real model (costs money); `bun run harness` is the Harness² loop over `skills/`.
 - `SEED_DEMO=1 bun run start` boots the web UI on port 3000; without credentials the model is an offline stand-in.
 
 ## Rules that are not negotiable
@@ -16,7 +16,7 @@ Circle is a personal agent that lives in group chats. Read `docs/design.md` befo
 - The agent writes only `observation` memories during a run (owner rules excepted). Durable memory is written by `Consolidator`.
 - Memory and messages carry scope and visibility; context assembly filters by room. Do not add a code path that reads memory without going through `MemoryService.visibleIn` or `recall`.
 - Events are append-only with a per-session `seq`. Never update or delete a run event.
-- Model: the Anthropic SDK (`src/model/anthropic.ts`) through one of two doors chosen in `src/model/config.ts`: OpenRouter (default `z-ai/glm-5.3`, small `z-ai/glm-5.3-flash`) or Anthropic directly (Claude Opus 5.5 / Haiku 5.5). Both speak the Messages shape with tools and effort. Do not add OpenAI-style adapters; change `MODEL` instead.
+- Model: the Anthropic SDK (`src/model/anthropic.ts`) through one of two doors chosen in `src/model/config.ts`: OpenRouter (default `deepseek/deepseek-v4.1-flash-1017` for every call; GLM 5.3 before 21 Oct 2026) or Anthropic directly (Claude Opus 5.5 / Haiku 5.5). Both speak the Messages shape with tools and effort. Do not add OpenAI-style adapters; change `MODEL` instead.
 - Secrets live only in `.env` (gitignored). Never write a key into code, docs, tests or commit messages. Members' credentials go through `Vault` and are handed to hands inside `vault.use` only; they never enter a prompt, a transcript, an event or an API response.
 - Silence is an outcome. Timer, watch and event runs end with `stay_quiet` when nothing changed; never make the agent post "(nothing to report)". Long work goes through `delegate_task`; the room session must stay free.
 

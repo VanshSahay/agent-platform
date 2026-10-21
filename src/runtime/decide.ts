@@ -18,8 +18,11 @@ export function parseDecision(text: string, options: string[] = []): Decision | 
     if (t === lo || t.startsWith(`${lo} `) || t.startsWith(`${lo},`) || t.startsWith(`${lo}.`)) return { kind: "option", option: o };
   }
   if (NO.test(t)) return { kind: "no" };
-  if (YES.test(t)) return NEGATED.test(t.slice(0, 40)) ? { kind: "no" } : { kind: "yes" };
-  return undefined;
+  if (!YES.test(t)) return undefined;
+  if (NEGATED.test(t.slice(0, 40))) return { kind: "no" };
+  // "ok, but first check the price" opens with a yes and is not one; a soft opener counts only on a short message.
+  if (/^\s*(ok|okay|sure|fine|please)\b/.test(t) && t.split(/\s+/).length > 6) return undefined;
+  return { kind: "yes" };
 }
 
 export function isYes(text: string, options: string[] = []): boolean {

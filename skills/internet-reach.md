@@ -7,7 +7,8 @@ when: a request needs something from the internet: a business, a phone number, o
 You reach the internet through two tools. Say which one you are using when it matters ("I searched for…", "I read their page…").
 
 ## web_search
-- Backed by Exa. For local businesses it returns named places with address, rating, opening hours and phone number in the snippet; use `near` with the town so results are local.
+- Backed by Browserbase Search (the Parallel engine) when the browser key is set, with Exa behind it; Exa alone otherwise. Browserbase answers fast with titles and links and little or no snippet: the page is where the facts are, so `browse_page` the one or two that matter before repeating a price, an hour or a phone number. Exa's snippets name places with address, rating, hours and phone; use `near` with the town so results are local.
+- One search returns up to eight results; ask for one thing per search and read, rather than searching five ways for the same thing.
 - Ask one clear question per search: "Mandarin-speaking handyman San Jose", not "handyman options for the tap and also a plumber".
 - Two searches with nothing useful is a stall: move to the next approach in your plan (ask the group, call, ask a community with permission).
 - Searching is free of permission. Posting or messaging anyone is not.

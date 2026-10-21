@@ -1,23 +1,8 @@
-import { newId } from "../../core/ids.ts";
-import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
-import { notConnected, saveArtifact } from "./shared.ts";
+import { askFirst, obj, s, str, type ToolDef } from "../kit.ts";
+import { saveArtifact } from "./shared.ts";
 
-/** Fo's "contacts", "voice", "calls" (the vendor variant) and "wajo" (own email) families. */
+/** Fo's "contacts", "voice" and "wajo" (own email) families. Its vendor call and contact search were twins of place_call and find_person. */
 export const PEOPLE_TOOLS: ToolDef[] = [
-  {
-    spec: {
-      name: "search_contacts",
-      description: "Same as find_person: look up someone the assistant knows by name, email or phone.",
-      input_schema: obj({ query: str("Name, email or phone.") }, ["query"]),
-    },
-    family: "contacts",
-    labels: { running: "Looking up contacts…", done: "Looked up your contacts" },
-    sideEffect: false,
-    async run(input, ctx) {
-      const { TOOL_INDEX } = await import("../registry.ts");
-      return TOOL_INDEX.get("find_person")!.run(input, ctx);
-    },
-  },
   {
     spec: {
       name: "add_contact",
@@ -47,8 +32,8 @@ export const PEOPLE_TOOLS: ToolDef[] = [
         agentId: ctx.agent.id,
         scope: "person",
         scopeId: p.id,
-        type: "person",
-        text: `${name}${s(input.note) ? `: ${s(input.note)}` : ""}${phone ? ` (phone ${phone})` : ""}${s(input.email) ? ` (email ${s(input.email)})` : ""}`,
+        type: "observation",
+        text: `[person] ${name}${s(input.note) ? `: ${s(input.note)}` : ""}${phone ? ` (phone ${phone})` : ""}${s(input.email) ? ` (email ${s(input.email)})` : ""}`,
         visibleToRooms: [ctx.room.id],
         sourceRunId: ctx.run.id,
       });
@@ -116,65 +101,6 @@ export const PEOPLE_TOOLS: ToolDef[] = [
   },
   {
     spec: {
-      name: "place_vendor_call",
-      description:
-        "Call a business on the owner's behalf with a scripted objective: ask hours, prices, availability, book a slot, confirm an order. Asks first like place_call; the call follows the objective and reports back a summary. Use place_call for people, this for businesses.",
-      input_schema: obj(
-        {
-          vendor: str("The business name."),
-          phone: str("Phone in E.164."),
-          objective: str("What to find out or arrange, in order, with any hard limits (budget, dates)."),
-          language: str("Language to speak, optional."),
-          maxMinutes: num("Hang up after this many minutes; default 8."),
-        },
-        ["vendor", "phone", "objective"],
-      ),
-    },
-    family: "calls",
-    needs: "phone",
-    labels: { running: "Calling the business…", done: "Called the business", failed: "The call did not get through" },
-    sideEffect: true,
-    async run(input, ctx) {
-      const to = s(input.phone).replace(/[^+\d]/g, "");
-      if (!/^\+\d{8,15}$/.test(to)) return { ok: false, content: "Give the phone in E.164, like +14085550100." };
-      const gate = ctx.gate({
-        kind: "outreach_approval",
-        title: `OK to call ${s(input.vendor)}?`,
-        detail: `${ctx.agent.name} wants to call ${s(input.vendor)} (${to}) to: ${s(input.objective)}`,
-        outreach: { who: s(input.vendor), how: "phone" },
-        key: ["place_vendor_call", to, s(input.objective)],
-      });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "call", held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing has been dialed.", waitingOn: gate.item, roomNotice: gate.notice, approach: "call" };
-      }
-      const limit = Math.min(20, Math.max(1, n(input.maxMinutes) ?? 8));
-      const r = await ctx.hands.phone.call({
-        to,
-        objective: `${s(input.objective)}\nBe brief and polite; you are calling on behalf of ${ctx.store.getPerson(ctx.agent.ownerId)?.displayName ?? "a customer"}. Hang up after ${limit} minutes.`,
-        callerName: ctx.agent.name,
-        language: s(input.language) || undefined,
-      });
-      if (r.status !== "completed")
-        return {
-          ok: true,
-          content: `Call ${r.status}: ${r.summary}`,
-          evidence: r.evidence,
-          stall: `call ${r.status}`,
-          approach: "call",
-          label: `Called ${s(input.vendor)} (${r.status})`,
-        };
-      return {
-        ok: true,
-        content: { summary: r.summary, durationSeconds: r.durationSeconds, transcript: r.transcript?.slice(0, 40) },
-        evidence: r.evidence,
-        approach: "call",
-        label: `Called ${s(input.vendor)}`,
-      };
-    },
-  },
-  {
-    spec: {
       name: "send_agent_email",
       description:
         "Send an email from the assistant's own address (never from a person's). Use for vendors, bookings and replies to mail the assistant received; cc the person it is for. Asks first.",
@@ -196,18 +122,17 @@ export const PEOPLE_TOOLS: ToolDef[] = [
     async run(input, ctx) {
       const to = (Array.isArray(input.to) ? input.to : []).map((x) => s(x).trim()).filter((x) => /^[^@\s]+@[^@\s]+$/.test(x));
       if (!to.length) return { ok: false, content: "Give at least one valid email address." };
-      const cc = (Array.isArray(input.cc) ? input.cc : []).map((x) => s(x).trim()).filter(Boolean);
+      const cc = (Array.isArray(input.cc) ? input.cc : []).map((x) => s(x).trim()).filter((x) => /^[^@\s]+@[^@\s]+$/.test(x));
+      const everyone = [...to, ...cc];
       const gate = ctx.gate({
         kind: "outreach_approval",
-        title: `OK to email ${to.join(", ")}?`,
-        detail: `From ${ctx.hands.email.address()}\nSubject: ${s(input.subject)}\n\n${s(input.text).slice(0, 1500)}`,
-        outreach: { who: to.join(", "), how: "email" },
-        key: ["send_agent_email", to, s(input.subject), s(input.text)],
+        title: `OK to email ${everyone.join(", ")}?`,
+        detail: `From ${ctx.hands.email.address()}\nSubject: ${s(input.subject)}${s(input.replyToMessageId) ? " (a reply)" : ""}\n\n${s(input.text).slice(0, 1500)}`,
+        outreach: { who: everyone.join(", "), how: "email", contact: everyone.join(",") },
+        key: ["send_agent_email", to, cc, s(input.subject), s(input.text), s(input.replyToMessageId)],
       });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
-      }
+      const held = askFirst(gate, "Waiting for the owner's go-ahead. Nothing was sent.");
+      if (held) return held;
       try {
         const r = await ctx.hands.email.send({
           to,
@@ -228,5 +153,3 @@ export const PEOPLE_TOOLS: ToolDef[] = [
     },
   },
 ];
-
-export { newId as _newId, notConnected as _nc };

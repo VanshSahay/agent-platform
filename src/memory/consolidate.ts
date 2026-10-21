@@ -1,5 +1,5 @@
 import type { Clock } from "../core/clock.ts";
-import type { AgentSpec, Id, Memory, MemoryType } from "../core/types.ts";
+import type { AgentSpec, Id, Memory, MemoryType, Person, Room } from "../core/types.ts";
 import type { ModelClient } from "../model/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { MemoryService } from "./memory.ts";
@@ -21,8 +21,9 @@ export class Consolidator {
     private memory: MemoryService,
   ) {}
 
-  async runFor(agent: AgentSpec): Promise<{ scopes: number; promoted: number; retracted: number; superseded: number }> {
-    const stats = { scopes: 0, promoted: 0, retracted: 0, superseded: 0 };
+  async runFor(agent: AgentSpec): Promise<{ scopes: number; promoted: number; retracted: number; superseded: number; mined: number }> {
+    const stats = { scopes: 0, promoted: 0, retracted: 0, superseded: 0, mined: 0 };
+    for (const room of this.store.listRooms(agent.id)) stats.mined += await this.mineRoom(agent, room);
     const all = this.store.listMemories(agent.id);
     const scopes = new Map<string, Memory[]>();
     for (const m of all) {
@@ -40,6 +41,75 @@ export class Consolidator {
     }
     this.store.setKv(`consolidated:${agent.id}`, String(this.clock.now()));
     return stats;
+  }
+
+  /**
+   * The agent rarely takes notes while it works, so the chat itself is read
+   * here, once per pass, from where the last pass stopped: what is worth
+   * keeping becomes an observation, scoped like a note the agent would have
+   * written (a DM to the person, a group to the room), and the normal
+   * promotion follows. Fo and Instinct mine transcripts the same way.
+   */
+  private async mineRoom(agent: AgentSpec, room: Room): Promise<number> {
+    const key = `mined:${room.id}`;
+    const since = Number(this.store.getKv(key) ?? 0);
+    const members = this.store
+      .listMembers(room.id)
+      .map((m) => this.store.getPerson(m.personId))
+      .filter((p): p is Person => !!p);
+    const name = (id: string) => members.find((p) => p.id === id)?.displayName ?? (id === agent.id ? agent.name : "someone");
+    const msgs = this.store
+      .messagesForRoom(room.id, 400)
+      .filter((m) => m.at > since && !m.folded && (m.role === "user" || (m.role === "assistant" && !m.source)))
+      .sort((a, b) => a.at - b.at)
+      .slice(-60);
+    if (!msgs.length) return 0;
+    const last = msgs[msgs.length - 1]!.at;
+    const known = this.store
+      .listMemories(agent.id)
+      .filter((m) => m.type !== "observation" && (m.scope === "agent" || m.scopeId === room.id || m.visibleToRooms.includes(room.id)))
+      .slice(0, 40);
+    let raw = "";
+    try {
+      raw = await this.model.complete({
+        system:
+          "Read a chat and pull out what an assistant should remember for next time: facts about the people (where they live, what they drive, who they are to each other), preferences, decisions, routines, shops and places they use, standing rules the owner states, and lessons from its own work (a site that blocks readers, a shop that ships to the US, a tool that failed and what worked instead). " +
+          'Return only JSON: an array of {"type": <preference|person|schedule|store|inventory|decision|fact|rule|lesson>, "text": <one specific sentence, third person, with names and dates>, "about": <member name the note is about, omit for the chat as a whole>}. ' +
+          "Skip small talk, one-time codes, anything already in the known notes, and the assistant's own research unless it states a decision. Return [] when there is nothing. Never invent.",
+        prompt: `Chat "${room.name}" (${room.kind === "dm" ? "private chat" : "group"}). Members: ${members.map((p) => p.displayName).join(", ")}.\nKnown notes:\n${known.map((m) => `- ${m.text}`).join("\n") || "(none)"}\n\nMessages:\n${msgs
+          .map((m) => `[${new Date(m.at).toISOString().slice(0, 10)}] ${name(m.authorId)}: ${m.text.slice(0, 600)}`)
+          .join("\n")
+          .slice(0, 9000)}\n\nJSON:`,
+        effort: "low",
+        maxTokens: 800,
+      });
+    } catch {
+      return 0; // the next pass picks the same messages up again
+    }
+    const found = parseNotes(raw);
+    if (found === undefined) return 0;
+    const dmPerson = room.kind === "dm" ? members.find((p) => p.id !== agent.id) : undefined;
+    let n = 0;
+    for (const note of found) {
+      const about = note.about
+        ? members.find((p) => p.displayName.toLowerCase() === note.about!.toLowerCase() || p.displayName.toLowerCase().split(/\s+/)[0] === note.about!.toLowerCase())
+        : dmPerson;
+      // Rules are the owner's to state; from a transcript they are at most a fact about the room.
+      const type = note.type === "rule" ? "decision" : note.type;
+      this.memory.write({
+        agentId: agent.id,
+        scope: about ? "person" : "room",
+        scopeId: about ? about.id : room.id,
+        type: "observation",
+        text: `[${type}] ${note.text}`,
+        subjectPersonId: about?.id,
+        visibleToRooms: [room.id],
+        statedAt: last,
+      });
+      n += 1;
+    }
+    this.store.setKv(key, String(last));
+    return n;
   }
 
   private async consolidateScope(agent: AgentSpec, mems: Memory[]) {
@@ -152,7 +222,8 @@ export class Consolidator {
         agent,
         scope,
         scopeId,
-        all.filter((m) => m.visibleToRooms.length > 0),
+        // Shared with a group, not merely "told in some room": a DM is a room too.
+        all.filter((m) => m.visibleToRooms.some((rid) => this.store.getRoom(rid)?.kind === "group")),
       );
       await this.writeProfile(agent, scope, privateProfileId(scopeId), all);
       return;
@@ -199,6 +270,30 @@ function arr(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String) : [];
 }
 type Op = { op: string; id?: unknown; ids?: unknown[]; old?: unknown; type?: unknown; text?: unknown; aliases?: unknown };
+const NOTE_TYPES = new Set(["preference", "person", "schedule", "store", "inventory", "decision", "fact", "rule", "lesson"]);
+/** Notes mined from a chat; undefined when the model gave no JSON, so the cursor does not move. */
+function parseNotes(raw: string): { type: string; text: string; about?: string }[] | undefined {
+  const m = raw.match(/\[[\s\S]*\]/);
+  if (!m) return undefined;
+  try {
+    const v = JSON.parse(m[0]) as unknown;
+    if (!Array.isArray(v)) return undefined;
+    return v
+      .filter(
+        (x): x is { type: string; text: string; about?: string } =>
+          !!x && typeof x === "object" && typeof (x as { text?: unknown }).text === "string" && (x as { text: string }).text.trim().length > 0,
+      )
+      .map((x) => ({
+        type: NOTE_TYPES.has(String(x.type)) ? String(x.type) : "fact",
+        text: x.text.trim().slice(0, 400),
+        about: typeof x.about === "string" && x.about.trim() ? x.about.trim() : undefined,
+      }))
+      .slice(0, 20);
+  } catch {
+    return undefined;
+  }
+}
+
 function parseOps(raw: string): Op[] {
   const start = raw.indexOf("[");
   const end = raw.lastIndexOf("]");

@@ -4,12 +4,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newAgent } from "../agent/spec.ts";
 import type { App } from "../app.ts";
-import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
+import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, Memory, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
 import { newId } from "../core/ids.ts";
-import type { Delivery } from "../runtime/runtime.ts";
+import { buildFooter, type Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
-import { listPeople, peopleVisibleTo } from "../store/queries.ts";
+import QRCode from "qrcode";
+import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
+import { publicUrl } from "../tools/kit.ts";
+import { privateProfileId } from "../memory/consolidate.ts";
+import type { IMessageHandle } from "./imessage.ts";
+import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
 import { artifactPage, type DocState, emptyState, parseDocument } from "./artifacts.ts";
@@ -63,6 +68,16 @@ export interface WebOptions {
   hostname?: string;
   auth?: Pick<Auth, "personFor"> | null;
   eventToken?: string;
+  /** Chat channels that are up (filled in as they connect), with the number people text. */
+  channels?: ChannelInfo[];
+}
+
+export interface ChannelInfo {
+  channel: string;
+  /** A dedicated line's number. Absent on the shared pool, where each person is assigned their own. */
+  phone?: string;
+  mode?: "dedicated" | "shared";
+  handle?: Pick<IMessageHandle, "register" | "assigned" | "textFirst">;
 }
 
 const ROLES: MemberRole[] = ["owner", "member", "guest"];
@@ -120,6 +135,8 @@ function snippetAround(text: string, q: string): string {
 
 async function readBody(req: Request): Promise<Body | Response> {
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) return {};
+  // Uploads are multipart; the route reads the form itself, so the body must stay unread here.
+  if ((req.headers.get("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")) return {};
   const text = await req.text();
   if (!text.trim()) return {};
   if (!(req.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) return bad("content-type must be application/json", 415);
@@ -203,6 +220,9 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
   const reachesAgent = (agent: AgentSpec, me: string) => agent.ownerId === me || app.store.listRooms(agent.id).some((r) => isMember(r.id, me));
   const myRooms = (me: string | undefined) => (me ? app.store.listRooms().filter((r) => isMember(r.id, me)) : app.store.listRooms());
   const inMyRooms = <T extends { roomId: string }>(me: string | undefined, xs: T[]) => (me ? xs.filter((x) => isMember(x.roomId, me)) : xs);
+  // Full records for yourself and for the owner of an agent (who adds and edits people); a projection for everyone else.
+  const personFor = (me: string | undefined, p: Person | undefined) => (!p || !me || p.id === me || app.store.listAgents(me).length > 0 ? p : publicPerson(p));
+  const peopleFor = (me: string | undefined) => (me ? peopleVisibleTo(app.store, me) : listPeople(app.store)).map((p) => personFor(me, p)!);
 
   /** The policy. With Clerk off nothing is checked beyond the token routes, as before. */
   function permit(route: Route, c: Ctx): Response | undefined {
@@ -238,13 +258,17 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       handle: (c) => {
         const rooms = myRooms(c.me);
         const agents = c.me ? app.store.listAgents().filter((a) => a.ownerId === c.me || rooms.some((r) => r.agentId === a.id)) : app.store.listAgents();
-        const people = c.me ? peopleVisibleTo(app.store, c.me) : listPeople(app.store);
-        return json({ agents, people, rooms: rooms.map((r) => ({ ...r, members: app.rooms.members(r.id).map((m) => ({ ...m, person: app.store.getPerson(m.personId) })) })) });
+        const people = peopleFor(c.me);
+        return json({
+          agents,
+          people,
+          rooms: rooms.map((r) => ({ ...r, members: app.rooms.members(r.id).map((m) => ({ ...m, person: personFor(c.me, app.store.getPerson(m.personId)) })) })),
+        });
       },
     },
 
     // ---- people
-    { method: "GET", re: /^\/api\/people$/, access: "signedIn", handle: (c) => json(c.me ? peopleVisibleTo(app.store, c.me) : listPeople(app.store)) },
+    { method: "GET", re: /^\/api\/people$/, access: "signedIn", handle: (c) => json(peopleFor(c.me)) },
     {
       method: "POST",
       re: /^\/api\/people$/,
@@ -359,6 +383,88 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         return json(a);
       },
     },
+    // ---- channels: where the assistant can be texted, and linking a phone to a person
+    {
+      method: "GET",
+      re: /^\/api\/channels$/,
+      access: "signedIn",
+      handle: async ({ me, url }) => {
+        const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        // Shared pool: the number to text is per person, known once they are registered.
+        const assigned = im?.mode === "shared" && person?.phoneE164 && im.handle ? ((await im.handle.assigned(person.phoneE164)) ?? null) : null;
+        return json({
+          channels: (opts.channels ?? []).map((c) => ({ channel: c.channel, phone: c.phone ?? null, mode: c.mode ?? (c.phone ? "dedicated" : "shared") })),
+          linked: { phone: person?.phoneE164 ?? null, email: person?.email ?? null },
+          mine: { phone: im?.phone ?? assigned },
+        });
+      },
+    },
+    {
+      // Shared pool: register the person's own iMessage handle with Photon, then text them first so the
+      // number is in their Messages. The handle is theirs to give; the project's credentials stay here.
+      method: "POST",
+      re: /^\/api\/channels\/register$/,
+      access: "signedIn",
+      handle: async ({ me, body: b }) => {
+        const person = app.store.getPerson(me ?? str(b.personId) ?? "");
+        if (!person) return bad("personId required");
+        const phone = (str(b.phone) ?? "").replace(/[^+\d]/g, "");
+        if (!/^\+\d{8,15}$/.test(phone)) return bad("phone must be in E.164, like +14085550100");
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        if (!im?.handle) return bad("iMessage is not connected on this server", 404);
+        const agent = app.store.listAgents()[0];
+        try {
+          const { assignedPhone } = await im.handle.register(phone, person.displayName);
+          app.store.putPerson({ ...person, phoneE164: phone });
+          await im.handle.textFirst(phone, `Hi ${person.displayName.split(" ")[0]}, it's ${agent?.name ?? "your assistant"}. Save this number and text me here any time.`);
+          return json({ assignedPhone, texted: true });
+        } catch (e) {
+          return bad((e as Error).message, 502);
+        }
+      },
+    },
+    {
+      method: "GET",
+      re: /^\/api\/channels\/vcard$/,
+      access: "signedIn",
+      handle: async ({ me, url }) => {
+        const agent = app.store.listAgents()[0];
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+        const phone = im?.phone ?? (person?.phoneE164 && im?.handle ? await im.handle.assigned(person.phoneE164) : undefined);
+        if (!agent || !phone) return bad("no number yet", 404);
+        const vcf = `BEGIN:VCARD\nVERSION:3.0\nFN:${agent.name}\nTEL;TYPE=CELL:${phone}\nNOTE:${agent.name}, the assistant in your chats\nEND:VCARD\n`;
+        return new Response(vcf, { headers: { "content-type": "text/vcard; charset=utf-8", "content-disposition": `attachment; filename="${agent.name}.vcf"` } });
+      },
+    },
+    {
+      method: "POST",
+      re: /^\/api\/channels\/link-code$/,
+      access: "signedIn",
+      handle: async ({ me, body: b }) => {
+        const person = app.store.getPerson(me ?? str(b.personId) ?? "");
+        if (!person) return bad("personId required");
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        const phone = im?.phone ?? (person.phoneE164 && im?.handle ? await im.handle.assigned(person.phoneE164) : undefined);
+        const code = mintLinkCode(app.store, person.id, app.clock.now());
+        // "sms:<number>?&body=" opens Messages with the code typed, on iOS and Android alike.
+        const sms = phone ? `sms:${phone}?&body=${encodeURIComponent(code)}` : null;
+        const qr = sms ? await QRCode.toString(sms, { type: "svg", margin: 1, width: 180 }) : null;
+        return json({ code, phone: phone ?? null, sms, qr, expiresInMs: LINK_CODE_TTL_MS });
+      },
+    },
+    {
+      method: "GET",
+      re: /^\/api\/rooms\/starters$/,
+      access: "signedIn",
+      handle: async ({ me, url }) => {
+        const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+        const agent = app.store.getAgent(url.searchParams.get("agentId") ?? "") ?? app.store.listAgents()[0];
+        if (!person || !agent) return bad("personId and agentId required");
+        return json({ names: await suggestions.roomStarters(person, agent) });
+      },
+    },
     {
       method: "GET",
       re: /^\/api\/suggestions$/,
@@ -426,12 +532,37 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       scope: (c) => roomScope(c.params[0]),
       handle: ({ params, body: b }) => {
         if (!app.store.getRoom(params[0]!)) return bad("no such room", 404);
-        const personId = str(b.personId);
         const role = (str(b.role) ?? "member") as MemberRole;
-        if (!personId || !app.store.getPerson(personId)) return bad("no such person", 404);
-        if (!ROLES.includes(role)) return bad(`role must be one of ${ROLES.join(", ")}`);
-        return json(app.rooms.addMember(params[0]!, personId, role, { consented: !!b.consented }));
+        if (!ROLES.includes(role) || role === "owner") return bad("role must be member or guest");
+        // An existing person by id, or someone new by name with a phone or email so a later text or sign-in lands on them.
+        const person = str(b.personId)
+          ? app.store.getPerson(str(b.personId)!)
+          : app.rooms.findOrCreatePerson({ displayName: str(b.displayName), email: str(b.email), phoneE164: str(b.phoneE164) });
+        if (!person) return bad("give a personId, or a displayName with an email or phone");
+        const existing = app.store.getMembership(params[0]!, person.id);
+        // Adding someone who texted in as a stranger gives them their seat.
+        if (existing) return json({ membership: existing.role === "guest" ? app.rooms.setRole(params[0]!, person.id, "member") : existing, person });
+        return json({ membership: app.rooms.addMember(params[0]!, person.id, role, { consented: !!b.consented }), person });
       },
+    },
+    {
+      method: "PATCH",
+      re: /^\/api\/rooms\/([^/]+)\/members\/([^/]+)$/,
+      access: "roomOwner",
+      scope: (c) => roomScope(c.params[0]),
+      handle: ({ params, body: b }) => {
+        const role = str(b.role) as MemberRole | undefined;
+        if (!role || !ROLES.includes(role) || role === "owner") return bad("role must be member or guest");
+        const m = app.rooms.setRole(params[0]!, params[1]!, role);
+        return m ? json(m) : bad("no such member, or the owner", 404);
+      },
+    },
+    {
+      method: "DELETE",
+      re: /^\/api\/rooms\/([^/]+)\/members\/([^/]+)$/,
+      access: "roomOwner",
+      scope: (c) => roomScope(c.params[0]),
+      handle: ({ params }) => (app.rooms.removeMember(params[0]!, params[1]!) ? json({ ok: true }) : bad("no such member, or the owner", 404)),
     },
 
     // ---- chat
@@ -452,8 +583,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           .filter(visible)
           .map((m) => {
             if (m.role !== "assistant" || !m.runId || m.source === "notice" || m.source === "card" || m.source === "narration") return m;
-            const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
-            return { ...m, steps };
+            const calls = app.store.toolCallsForRun(m.runId);
+            const steps = calls.map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
+            // The stored text ends with the record footer; the client renders steps from records instead and never parses text for a footer.
+            const footer = buildFooter(calls);
+            const text = footer && m.text.endsWith(`\n${footer}`) ? m.text.slice(0, -(footer.length + 1)) : m.text;
+            return { ...m, text, steps };
           });
         const session = app.store.latestSessionForRoom(roomId);
         const active = session ? app.store.activeRunForSession(session.id) : undefined;
@@ -526,14 +661,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           if (!str(b.token)) return bad("token required");
           app.vault.put(params[0]!, "slack", str(b.token)!);
         } else if (kind === "mcp") {
-          if (!name || (!str(b.url) && !str(b.command))) return bad("name and url (or command) required");
-          app.vault.put(
-            params[0]!,
-            `mcp:${name}`,
-            JSON.stringify({ url: str(b.url) ?? "", token: str(b.token) || undefined, command: str(b.command) ? str(b.command)!.split(/\s+/) : undefined }),
-          );
+          if (!name || !str(b.url)) return bad("name and url required");
+          if (!publicUrl(str(b.url)!)) return bad("url must be a public http(s) address");
+          app.vault.put(params[0]!, `mcp:${name}`, JSON.stringify({ url: str(b.url), token: str(b.token) || undefined }));
         } else if (kind === "api") {
           if (!name || !str(b.baseUrl)) return bad("name and baseUrl required");
+          if (!publicUrl(str(b.baseUrl)!) || (str(b.openapiUrl) && !publicUrl(str(b.openapiUrl)!))) return bad("baseUrl and openapiUrl must be public http(s) addresses");
           app.vault.put(
             params[0]!,
             `api:${name}`,
@@ -654,9 +787,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const file = form?.get("file");
         if (!(file instanceof File)) return bad("multipart form with a file");
         if (file.size > 10 * 1024 * 1024) return bad("10 MB at most", 413);
-        const agentId = str((form?.get("agentId") as string | null) ?? undefined) ?? app.store.listAgents()[0]?.id;
-        if (!agentId) return bad("no agent");
         const roomId = str((form?.get("roomId") as string | null) ?? undefined);
+        const room = roomId ? app.store.getRoom(roomId) : undefined;
+        if (!room) return bad("roomId required", 404);
+        if (me && !isMember(room.id, me)) return bad("not a member of that chat", 403);
+        const agentId = room.agentId;
         const bytes = Buffer.from(await file.arrayBuffer());
         const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "audio" : "file";
         const art = {
@@ -813,10 +948,16 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/runs\/([^/]+)$/,
       access: "roomMember",
       scope: (c) => roomScope(app.store.getRun(c.params[0]!)?.roomId),
-      handle: ({ params }) => {
+      handle: ({ params, me }) => {
         const run = app.store.getRun(params[0]!);
         if (!run) return bad("no such run", 404);
-        return json({ run, toolCalls: app.store.toolCallsForRun(run.id), plan: app.planner.get(run.id), events: app.store.eventsForRun(run.id) });
+        const room = app.store.getRoom(run.roomId);
+        // Tool inputs and results can hold a signed-in page or an inbox; those are for the
+        // requester and the owner. Other members see what the chat saw: labels and evidence.
+        const full = !me || run.requesterId === me || (room && ownsRoom(room, me));
+        const calls = app.store.toolCallsForRun(run.id).map((c) => (full ? c : { ...c, input: {}, result: undefined }));
+        const events = app.store.eventsForRun(run.id).filter((e) => full || !["delta", "tool_end"].includes(e.type));
+        return json({ run, toolCalls: calls, plan: app.planner.get(run.id), events });
       },
     },
     {
@@ -824,9 +965,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/runs\/([^/]+)\/stop$/,
       access: "roomMember",
       scope: (c) => roomScope(app.store.getRun(c.params[0]!)?.roomId),
-      handle: async ({ params }) => {
-        if (!app.store.getRun(params[0]!)) return bad("no such run", 404);
-        await app.runtime.stop(params[0]!);
+      handle: async ({ params, me }) => {
+        const run = app.store.getRun(params[0]!);
+        if (!run) return bad("no such run", 404);
+        const room = app.store.getRoom(run.roomId);
+        if (me && run.requesterId !== me && !(room && ownsRoom(room, me))) return bad("only the person who asked, or the owner, can stop this", 403);
+        await app.runtime.stop(run.id);
         return json({ ok: true });
       },
     },
@@ -897,6 +1041,21 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const runAt = b.runAt ? Date.parse(String(b.runAt)) : undefined;
         if (runAt !== undefined && !Number.isFinite(runAt)) return bad("runAt must be a date");
         const session = app.store.latestSessionForRoom(room.id);
+        const cal = b.calendar && typeof b.calendar === "object" ? (b.calendar as Record<string, unknown>) : undefined;
+        if (!runAt && !cal) return bad("runAt or calendar required");
+        const zone = app.store.getPerson(app.store.getAgent(room.agentId)?.ownerId ?? "")?.timezone ?? "UTC";
+        const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+        const calendar: Calendar | undefined = cal
+          ? {
+              hour: num(cal.hour),
+              minute: num(cal.minute) ?? 0,
+              dayOfWeek: Array.isArray(cal.dayOfWeek) ? cal.dayOfWeek.filter((d): d is number => typeof d === "number") : undefined,
+              everyDays: num(cal.everyDays),
+              everyHours: num(cal.everyHours),
+              timeZone: zone,
+            }
+          : undefined;
+        if (calendar && calendar.hour === undefined && !calendar.everyHours) return bad("calendar needs hour or everyHours");
         // A schedule made here was asked for by a person and discloses no outreach: the agent must still ask before contacting anyone.
         return json(
           Scheduler.createSchedule(app.store, app.clock, {
@@ -906,7 +1065,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
             title,
             prompt,
             runAt,
-            calendar: b.calendar as Calendar | undefined,
+            calendar,
             authorization: { basis: "user_requested", disclosedOutreach: [], premise: str(b.premise) ?? "always" },
           }),
         );
@@ -934,14 +1093,18 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/commitments\/([^/]+)$/,
       access: "roomMember",
       scope: (c) => roomScope(app.store.getCommitment(c.params[0]!)?.roomId),
-      handle: ({ params, body: b }) => {
+      handle: ({ params, body: b, me }) => {
         const c = app.store.getCommitment(params[0]!);
         if (!c) return bad("no such responsibility", 404);
+        const room = app.store.getRoom(c.roomId);
+        if (me && c.ownerId !== me && !(room && ownsRoom(room, me))) return bad("only its owner, or the chat's owner, can change this", 403);
+        const ownerId = str(b.ownerId);
+        if (ownerId && !isMember(c.roomId, ownerId)) return bad("ownerId must be a member of the chat");
         const status = str(b.status) as Commitment["status"] | undefined;
         if (status && !["open", "done", "dropped", "blocked"].includes(status)) return bad("status must be open, done, dropped or blocked");
         const dueAt = b.dueAt !== undefined ? Number(b.dueAt) : undefined;
         if (dueAt !== undefined && !Number.isFinite(dueAt)) return bad("dueAt must be a number");
-        return json(app.commitments.update(c.id, { status, dueAt, detail: str(b.detail), ownerId: str(b.ownerId) }));
+        return json(app.commitments.update(c.id, { status, dueAt, detail: str(b.detail), ownerId }));
       },
     },
 
@@ -951,7 +1114,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/profiles$/,
       access: "agentOwner",
       scope: (c) => agentScope(c.url.searchParams.get("agentId") ?? undefined),
-      handle: ({ url }) => {
+      handle: ({ url, me }) => {
         const agentId = url.searchParams.get("agentId") ?? "";
         const out: Profile[] = [];
         const add = (scope: MemoryScope, scopeId: string) => {
@@ -959,8 +1122,10 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           if (prof) out.push(prof);
         };
         add("agent", agentId);
-        for (const r of app.store.listRooms(agentId)) add("room", r.id);
+        for (const r of app.store.listRooms(agentId)) if (r.kind === "group") add("room", r.id);
+        // Public person profiles only: what a person told the assistant privately shapes their private profile, which stays theirs.
         for (const person of listPeople(app.store)) add("person", person.id);
+        if (me) add("person", privateProfileId(me));
         return json(out);
       },
     },
@@ -969,12 +1134,25 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/memory$/,
       access: "agentOwner",
       scope: (c) => agentScope(c.url.searchParams.get("agentId") ?? undefined),
-      handle: ({ url }) => {
+      handle: ({ url, me }) => {
         const agentId = url.searchParams.get("agentId") ?? "";
         // Room visibility (MemoryService.visibleIn) is what the agent sees inside a room. This is the owner's
-        // admin view of their own agent's memory, so it reads the store directly; the policy above limits it to the owner.
+        // admin view, limited to the owner by the policy above, and it keeps one promise: a note another
+        // member made in their own private chat is theirs. Shown: agent and group notes, the owner's own
+        // notes, and notes about people that some group may see.
+        const groupIds = new Set(
+          app.store
+            .listRooms(agentId)
+            .filter((r) => r.kind === "group")
+            .map((r) => r.id),
+        );
+        const ownerDm = me ? app.rooms.dmFor(app.store.getAgent(agentId)!, me).id : undefined;
+        const shownToOwner = (m: Memory) =>
+          m.scope === "agent" ||
+          (m.scope === "room" && groupIds.has(m.scopeId)) ||
+          (m.scope === "person" && (m.scopeId === me || m.visibleToRooms.some((rid) => groupIds.has(rid) || rid === ownerDm)));
         return json({
-          memories: app.store.listMemories(agentId, { includeInactive: url.searchParams.get("all") === "1" }),
+          memories: app.store.listMemories(agentId, { includeInactive: url.searchParams.get("all") === "1" }).filter(shownToOwner),
           consolidatedAt: app.store.getKv(`consolidated:${agentId}`),
         });
       },

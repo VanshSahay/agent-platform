@@ -1,6 +1,19 @@
 import { plainText } from "../src/channels/handles.ts";
 import { describe, expect, test } from "bun:test";
-import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, roleForNewcomer } from "../src/channels/handles.ts";
+import {
+  claimLinkCode,
+  groupRoomName,
+  HandleRateLimit,
+  handleMatches,
+  isDefaultRoomName,
+  LINK_CODE_TTL_MS,
+  mintLinkCode,
+  normaliseHandle,
+  personIdForHandle,
+  roleForNewcomer,
+} from "../src/channels/handles.ts";
+import { reply } from "../src/model/scripted.ts";
+import { groupWorld } from "./helpers.ts";
 
 describe("imessage handles", () => {
   test("a handle normalises to one spelling: phones lose punctuation, emails lose case", () => {
@@ -47,5 +60,41 @@ describe("text channels get plain text", () => {
     expect(plainText("**Classics:**\n- **Loop** — 3.8 mi, *hard*.\n\n\n## Easy\nSee [the map](https://example.com/map.pdf) or `signage`.")).toBe(
       "Classics:\n- Loop — 3.8 mi, hard.\n\nEasy\nSee the map https://example.com/map.pdf or signage.",
     );
+  });
+});
+
+describe("linking a phone by code", () => {
+  test("a code from Settings, texted from a new number, writes that number onto the person; it works once and expires", () => {
+    const w = groupWorld(() => reply("ok"));
+    const code = mintLinkCode(w.app.store, "alex", w.clock.now());
+    expect(code).toMatch(/^\d{6}$/);
+    expect(claimLinkCode(w.app.store, "hello", "+14085550199", w.clock.now())).toBeUndefined();
+    expect(claimLinkCode(w.app.store, "000000", "+14085550199", w.clock.now())).toBeUndefined();
+    const linked = claimLinkCode(w.app.store, ` ${code} `, "+1 (408) 555-0199", w.clock.now() + 1000)!;
+    expect(linked.id).toBe("alex");
+    expect(w.app.store.getPerson("alex")!.phoneE164).toBe("+14085550199");
+    expect(handleMatches(w.app.store.getPerson("alex")!, "+14085550199")).toBe(true);
+    expect(claimLinkCode(w.app.store, code, "+14085550199", w.clock.now())).toBeUndefined(); // consumed
+    const stale = mintLinkCode(w.app.store, "sam", w.clock.now());
+    expect(claimLinkCode(w.app.store, stale, "sam@example.com", w.clock.now() + LINK_CODE_TTL_MS + 1)).toBeUndefined();
+  });
+});
+
+describe("where people are", () => {
+  test("a group on a text channel is named by who is in it until the owner names it", () => {
+    expect(groupRoomName("imessage", ["Sam"])).toBe("iMessage · Sam");
+    expect(groupRoomName("imessage", ["Sam", "Riley", "Jo", "Mia", "Lee"])).toBe("iMessage · Sam, Riley, Jo & 2 more");
+    expect(isDefaultRoomName("iMessage · Sam")).toBe(true);
+    expect(isDefaultRoomName("imessage group ab12cd")).toBe(true);
+    expect(isDefaultRoomName("Tahoe trip")).toBe(false);
+  });
+
+  test("cards for someone who texts the line go to their Messages thread, not a web-only chat", () => {
+    const w = groupWorld(() => reply("ok"));
+    const web = w.app.rooms.dmFor(w.agent, "sam"); // created on demand, web
+    expect(web.channel).toBe("web");
+    const im = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "dm", channel: "imessage", externalId: "space-1", name: "Pip & Sam" });
+    w.app.rooms.addMember(im.id, "sam", "member");
+    expect(w.app.rooms.dmFor(w.agent, "sam").id).toBe(im.id);
   });
 });

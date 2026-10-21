@@ -13,6 +13,8 @@ import { newId } from "../src/core/ids.ts";
 import type { Run, ToolCallRecord } from "../src/core/types.ts";
 import type { Delivery } from "../src/runtime/runtime.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
+import { parseDecision } from "../src/runtime/decide.ts";
+import { e164 } from "../src/tools/registry.ts";
 
 describe("run loop", () => {
   test("a plain reply in a group only when the agent is named, with no footer when no tools ran", async () => {
@@ -52,6 +54,10 @@ describe("run loop", () => {
   test("a reply that claims an action with no side-effect record is corrected", () => {
     expect(integrityNote("I booked the plumber for Tuesday.", [])).toContain("Correction");
     expect(integrityNote("Here are three options.", [])).toBe("");
+    const call = (name: string) => ({ id: "c", runId: "r", name, input: "{}", status: "done", evidence: "x", labelRunning: "", labelDone: "", startedAt: 0 }) as never;
+    // Any catalogue side effect with evidence backs a claim; a cleared budget alone does not.
+    expect(integrityNote("I've emailed the clinic.", [call("send_agent_email")])).toBe("");
+    expect(integrityNote("I've ordered the kettle.", [call("request_purchase")])).toContain("Correction");
     expect(buildFooter([])).toBe("");
   });
 
@@ -164,7 +170,7 @@ describe("gates and group serving", () => {
     const phone = new FakePhone();
     const w = groupWorld(
       (req, i) => {
-        if (i === 0) return callTool("place_call", { to: "+1", who: "the pharmacy", objective: "refill" });
+        if (i === 0) return callTool("place_call", { to: "+14085550100", who: "the pharmacy", objective: "refill" });
         return reply(lastToolResult(req) ?? "");
       },
       { phone },
@@ -263,6 +269,44 @@ describe("chatter is not an answer", () => {
     const resumed = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "Great Wall" });
     expect(resumed?.id).toBe(run!.id);
     expect(w.app.store.listAttention({ roomId: w.room.id })[0]!.answer).toBe("Great Wall");
+  });
+
+  test("an unrelated message from the person who holds an open card neither answers nor declines it", async () => {
+    const w = groupWorld((_req, i) => {
+      if (i === 0) return callTool("request_purchase", { amount: 40, merchant: "argos.co.uk", item: "a kettle" });
+      return reply("ok");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip get me a kettle" });
+    expect(run?.status).toBe("waiting");
+    // A new request that names the agent, in the group and in the DM, starts its own run.
+    const plumber = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip also find me a plumber for Saturday" });
+    expect(plumber?.id).not.toBe(run!.id);
+    const reminder = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "@pip remind me to call mum tomorrow" });
+    expect(reminder?.id).not.toBe(run!.id);
+    const item = w.app.store.listAttention({ roomId: w.room.id })[0]!;
+    expect(item.status).toBe("open");
+    expect(w.app.store.getRun(run!.id)!.status).toBe("waiting");
+    // Chatter without the agent's name is chatter.
+    expect(await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "Thanks everyone, Jo will be home all week." })).toBeUndefined();
+    expect(w.app.store.getAttention(item.id)!.status).toBe("open");
+    // A plain yes still approves it.
+    const resumed = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "yes" });
+    expect(resumed?.id).toBe(run!.id);
+  });
+
+  test("a US number without its country code still dials; a malformed one does not", () => {
+    expect(e164("(408) 555-0100")).toBe("+14085550100");
+    expect(e164("1-408-555-0100")).toBe("+14085550100");
+    expect(e164("+44 20 7946 0958")).toBe("+442079460958");
+    expect(e164("555-0100")).toBeUndefined();
+  });
+
+  test("a soft opener on a long message is not a yes", () => {
+    expect(parseDecision("ok")).toEqual({ kind: "yes" });
+    expect(parseDecision("ok, go ahead")).toEqual({ kind: "yes" });
+    expect(parseDecision("ok, but first check the price with the other shop and tell me")).toBeUndefined();
+    expect(parseDecision("yes, but first check the price with the other shop and tell me")).toEqual({ kind: "yes" });
+    expect(parseDecision("please don't")).toEqual({ kind: "no" });
   });
 
   test("messages written in the same millisecond keep their order", async () => {
@@ -408,14 +452,14 @@ describe("planner", () => {
         if (i === 0) return callTool("plan", { goal: "Find a Mandarin-speaking handyman", steps: [{ text: "Find candidates", approach: "search" }] });
         if (i === 1 || i === 2) return callTool("web_search", { query: "handyman mandarin" });
         const t = JSON.stringify(req.messages);
-        expect(t).toContain('the plan now tries "ask_room"');
+        expect(t).toContain('the plan now tries "browse"');
         return reply("Nothing online; I'll ask the group next.");
       },
       { search },
     );
     const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a mandarin handyman" });
     const plan = w.app.planner.get(run!.id)!;
-    expect(plan.steps[0]!.approach).toBe("ask_room");
+    expect(plan.steps[0]!.approach).toBe("browse");
     expect(plan.steps[0]!.attempts).toBe(0);
     expect(
       w.app.store
@@ -509,10 +553,20 @@ describe("hands", () => {
     expect(browser.visited).toEqual(["https://lin-repair.example"]);
   });
 
-  test("model config picks OpenRouter with GLM 5.3 by default and maps Claude ids between doors", async () => {
+  test("model config picks OpenRouter with DeepSeek V4.1 Flash by default and maps Claude ids between doors", async () => {
     const { modelConfig, normalizeModelId } = await import("../src/model/config.ts");
-    expect(modelConfig({ OPENROUTER_API_KEY: "x" })).toEqual({ provider: "openrouter", model: "z-ai/glm-5.3", smallModel: "z-ai/glm-5.3-flash" });
-    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5" }).model).toBe("anthropic/claude-opus-5.5");
+    expect(modelConfig({ OPENROUTER_API_KEY: "x" })).toEqual({
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4.1-flash-1017",
+      smallModel: "deepseek/deepseek-v4.1-flash-1017",
+    });
+    // MODEL alone moves both; MODEL_SMALL splits the small calls off again.
+    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5" })).toEqual({
+      provider: "openrouter",
+      model: "anthropic/claude-opus-5.5",
+      smallModel: "anthropic/claude-opus-5.5",
+    });
+    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5", MODEL_SMALL: "z-ai/glm-5.3-flash" }).smallModel).toBe("z-ai/glm-5.3-flash");
     expect(modelConfig({ ANTHROPIC_API_KEY: "x" })).toEqual({ provider: "anthropic", model: "claude-opus-5-5", smallModel: "claude-haiku-5-5" });
     expect(modelConfig({}).provider).toBe("none");
     expect(normalizeModelId("claude-opus-5-5", "openrouter")).toBe("anthropic/claude-opus-5.5");
@@ -651,5 +705,23 @@ describe("people the assistant knows", () => {
     const seenByOwner = w.app.store.toolCallsForRun(asOwner!.id)[0]!.result as { phone?: string }[];
     expect(seenByOwner[0]!.phone).toBe("+14085550177");
     expect(w.app.store.toolCallsForRun(asOwner!.id)[0]!.labelDone).toBe("Looked up: sam");
+  });
+});
+
+describe("members from the chat", () => {
+  test("the owner adds and removes people by asking; a member is told to ask the owner", async () => {
+    const w = groupWorld((req) => {
+      const t = lastUserText(req);
+      if (/add my sister/i.test(t)) return toolCallsSoFar(req).length ? reply("Added Mia.") : callTool("add_member", { name: "Mia", phone: "+14155550101" });
+      if (/remove riley/i.test(t)) return toolCallsSoFar(req).length ? reply("Done.") : callTool("remove_member", { name: "Riley" });
+      return reply("ok");
+    });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip add my sister Mia, +1 415 555 0101" });
+    const mia = w.app.store.findPersonByPhone("+14155550101")!;
+    expect(w.app.rooms.role(w.room.id, mia.id)).toBe("member");
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip remove riley from this chat" });
+    expect(w.app.rooms.role(w.room.id, "riley")).toBe("guest"); // Sam may not
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip remove riley from this chat" });
+    expect(w.app.rooms.role(w.room.id, "riley")).toBeUndefined();
   });
 });

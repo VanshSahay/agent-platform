@@ -94,7 +94,7 @@ Every gate decision is in the records: the item, the `gate_opened` and `gate_res
 
 `CommitmentService` is the responsibilities ledger: owner, beneficiary, due time, status, nudges. The first nudge goes a day before due (or in two days with no due date), then daily while open, and after three overdue nudges the item is marked blocked. A blocked item is escalated once: a `decision` card ("X is stuck": reassign, drop, keep nudging) opens for the owner, and the nudging stops. `Scheduler.tick` turns due nudges into `follow_up` runs whose prompt tells the agent to do it (if it owns it) or check in with the owner in one line and update the ledger. The ledger is in every prompt for the room.
 
-Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), staged outreach once working hours begin, commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
+Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
 
 ## 8b. What we took from Instinct's harness
 
@@ -113,7 +113,7 @@ Not taken: files as an outcome (channels here are chat), and a leased sandbox pe
 
 ## 9. Services wired, and what is deliberately not built yet
 
-Wired through `.env` (see README): the model through OpenRouter (GLM 5.3 by default; the OpenRouter door speaks the Anthropic Messages shape, so the same adapter serves Claude directly), iMessage through Photon Spectrum (`src/channels/imessage.ts`: one Spectrum space is one room, one sender handle is one person, the owner is recognised by phone number, deliveries go back through the space), the browser hand through Browserbase (`src/tools/browser.ts`: a fresh cloud session per page read, released after), and Clerk sign-in on the web channel (`src/channels/auth.ts`: the bearer token maps to a person on first sight and the caller may only act as that person).
+Wired through `.env` (see README): the model through OpenRouter (DeepSeek V4.1 Flash by default, `deepseek/deepseek-v4.1-flash-1017`; the OpenRouter door speaks the Anthropic Messages shape, so the same adapter serves Claude directly), iMessage through Photon Spectrum (`src/channels/imessage.ts`: one Spectrum space is one room, one sender handle is one person, the owner is recognised by phone number, deliveries go back through the space; on the free plan's shared pool there is no line of its own, so a person registers their handle and is texted first, one-to-one only), the browser hand through Browserbase (`src/tools/browser.ts`: a fresh cloud session per page read, released after), and Clerk sign-in on the web channel (`src/channels/auth.ts`: the bearer token maps to a person on first sight and the caller may only act as that person).
 
 Not built yet:
 

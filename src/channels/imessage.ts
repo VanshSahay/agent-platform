@@ -17,7 +17,7 @@ import type { App } from "../app.ts";
 import type { Person, Room } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { findPersonByEmail } from "../store/queries.ts";
-import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
+import { claimLinkCode, groupRoomName, HandleRateLimit, handleMatches, isDefaultRoomName, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
 
 /**
  * iMessage through Photon Spectrum. Each iMessage chat (a DM or a group)
@@ -31,8 +31,47 @@ import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, pla
  * their Person record.
  */
 export interface IMessageHandle {
+  /** The line's number on a dedicated line; "shared" on the free and Pro plans, where each person gets their own number from a pool. */
   phone?: string;
+  mode: "dedicated" | "shared";
+  /** Shared pool: register a person's iMessage handle with Photon and learn the number the pool assigned them. */
+  register(phone: string, name: string): Promise<{ assignedPhone: string }>;
+  /** Shared pool: the number already assigned to this handle, if registered. */
+  assigned(phone: string): Promise<string | undefined>;
+  /** Open (or reuse) a one-to-one chat with a handle and send one text, so the person has the number in Messages. */
+  textFirst(phone: string, text: string): Promise<void>;
   stop(): Promise<void>;
+}
+
+/**
+ * Photon's Spectrum REST API for the project's users (the allowlist of the shared pool). Basic auth with the
+ * project's own credentials, which never leave the server. On the free plan a line cannot be bought
+ * (business plan only), so this is how a person gets a number to text: register, then text them first.
+ */
+function spectrumUsers(cfg: { projectId: string; projectSecret: string }) {
+  const base = `https://spectrum.photon.codes/projects/${encodeURIComponent(cfg.projectId)}/users/`;
+  const headers = { authorization: `Basic ${Buffer.from(`${cfg.projectId}:${cfg.projectSecret}`).toString("base64")}`, "content-type": "application/json" };
+  type User = { id: string; phoneNumber?: string; email?: string; assignedPhoneNumber?: string };
+  const find = async (phone: string): Promise<User | undefined> => {
+    const res = await fetch(`${base}?type=shared&search=${encodeURIComponent(phone)}&limit=50`, { headers });
+    if (!res.ok) throw new Error(`Photon users ${res.status}`);
+    const body = (await res.json()) as { data?: { users?: User[] } };
+    return (body.data?.users ?? []).find((u) => normaliseHandle(u.phoneNumber ?? "") === normaliseHandle(phone));
+  };
+  return {
+    find,
+    async create(phone: string, name: string): Promise<User> {
+      const [firstName, ...rest] = name.trim().split(/\s+/);
+      const res = await fetch(base, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "shared", phoneNumber: phone, firstName: firstName || undefined, lastName: rest.join(" ") || undefined }),
+      });
+      if (!res.ok) throw new Error(`Photon could not register that number (${res.status}): ${(await res.text()).slice(0, 200)}`);
+      const body = (await res.json()) as { data?: User };
+      return body.data ?? ((await find(phone)) as User);
+    },
+  };
 }
 
 export async function startIMessage(app: App, cfg: { projectId: string; projectSecret: string }): Promise<IMessageHandle> {
@@ -45,7 +84,8 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
   const channel: ChannelKind = cfg.channel;
   const spectrum = await Spectrum({ projectId: cfg.projectId, projectSecret: cfg.projectSecret, providers: [provider.config()] });
   const im = provider(spectrum);
-  const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone;
+  // Spectrum does not always report the line's number; IMESSAGE_PHONE (from the Photon dashboard) fills it in for Settings.
+  const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone ?? process.env.IMESSAGE_PHONE;
   const limiter = new HandleRateLimit();
 
   const agentFor = () => app.store.listAgents()[0];
@@ -79,7 +119,7 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
       kind,
       channel,
       externalId: space.id,
-      name: kind === "dm" ? `${agent.name} & ${person.displayName}` : `${channel} group ${space.id.slice(0, 6)}`,
+      name: kind === "dm" ? `${agent.name} & ${person.displayName}` : groupRoomName(channel, [person.displayName]),
     });
     app.rooms.addMember(room.id, person.id, roleForNewcomer({ isOwner, kind }), { consented: isOwner });
     return room;
@@ -90,9 +130,13 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
     if (d.kind === "progress") return;
     const room = app.store.getRoom(d.roomId);
     if (room?.channel !== channel || !room.externalId) return;
+    // A card for one person (a sign-in, an approval) goes to their own chat with the assistant, not the group thread.
+    if (d.visibleTo?.length && room.kind === "group") return;
     try {
       const space = await im.space.get(room.externalId);
-      await spectrum.send(space, plainText(d.text));
+      // A card in Messages is plain text; the app has the buttons and the sign-in browser, so link it.
+      const link = d.kind === "card" && process.env.PUBLIC_URL ? `\n\nOr open it in the app: ${process.env.PUBLIC_URL}/#room=${room.id}` : "";
+      await spectrum.send(space, plainText(d.text) + link);
     } catch (e) {
       console.error(`${channel} send failed`, (e as Error).message);
     }
@@ -112,19 +156,56 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
           console.warn(`${channel}: rate limit for ${normaliseHandle(senderId).slice(0, 4)}…, dropping a message`);
           continue;
         }
+        // A six-digit code from Settings links this handle to the signed-in person; no run starts.
+        const linked = claimLinkCode(app.store, text, senderId, app.clock.now());
+        if (linked) {
+          await spectrum
+            .send(space, plainText(`Linked: this number is now ${linked.displayName}'s. Text me here any time, or add me to a group chat and I'll be there too.`))
+            .catch(() => undefined);
+          continue;
+        }
         const person = personFor(senderId);
         const room = roomFor(space as { id: string; type?: "dm" | "group" }, person);
         if (!room) continue;
-        if (!app.store.getMembership(room.id, person.id)) app.rooms.addMember(room.id, person.id, "guest");
-        await spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }));
+        if (!app.store.getMembership(room.id, person.id)) {
+          app.rooms.addMember(room.id, person.id, "guest");
+          // Until the owner names the group, its name is who is in it.
+          if (room.kind === "group" && isDefaultRoomName(room.name)) {
+            room.name = groupRoomName(
+              channel,
+              app.rooms.memberIds(room.id).map((id) => app.store.getPerson(id)?.displayName ?? id),
+            );
+            app.store.putRoom(room);
+          }
+        }
+        // Not awaited: a run can take minutes, and the next text (another chat, or a steer
+        // for this one) must be read while it runs.
+        void spectrum
+          .responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }))
+          .catch((e) => console.error(`${channel} run failed`, (e as Error).message));
       } catch (e) {
         console.error(`${channel} inbound failed`, (e as Error).message);
       }
     }
   })().catch((e) => console.error(`${channel} stream ended`, (e as Error).message));
 
+  const users = spectrumUsers(cfg);
+  const mode = phone && phone !== "shared" ? "dedicated" : "shared";
   return {
-    phone,
+    phone: mode === "dedicated" ? phone : undefined,
+    mode,
+    async register(handle, name) {
+      const u = (await users.find(handle)) ?? (await users.create(handle, name));
+      if (!u.assignedPhoneNumber) throw new Error("Photon registered the number but assigned no line yet; try again in a minute.");
+      return { assignedPhone: u.assignedPhoneNumber };
+    },
+    async assigned(handle) {
+      return (await users.find(handle).catch(() => undefined))?.assignedPhoneNumber;
+    },
+    async textFirst(handle, text) {
+      const space = await im.space.create(handle);
+      await spectrum.send(space, plainText(text));
+    },
     async stop() {
       unsubscribe();
       await spectrum.stop();

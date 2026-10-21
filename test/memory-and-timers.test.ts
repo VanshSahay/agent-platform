@@ -20,6 +20,18 @@ describe("memory", () => {
     expect(w.app.memory.recall(w.agent.id, dm, ["sam"], "jobs", 5).length).toBe(1);
   });
 
+  test("a note told in a private chat shapes the person's private profile only, never a group prompt", async () => {
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("remember", { type: "fact", text: "Alex is in debt and hiding it from Sam." }) : reply("ok")), {
+      completer: (system, prompt) => (system.startsWith("Write a short profile") ? (prompt.split("\n").find((l) => l.includes("debt")) ?? "Alex.") : ""),
+    });
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "@pip remember I'm in debt and hiding it from Sam" });
+    await w.app.consolidator.runFor(w.agent);
+    expect(w.app.store.getProfile(w.agent.id, "person", privateProfileId("alex"))?.text).toContain("debt");
+    expect(w.app.store.getProfile(w.agent.id, "person", "alex")?.text ?? "").not.toContain("debt");
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip hi" });
+    expect(w.model.calls.at(-1)!.system).not.toContain("debt");
+  });
+
   test("remember writes observations; the owner's rules take effect at once", async () => {
     const w = groupWorld((_req, i) => {
       if (i === 0) return callTool("remember", { type: "rule", text: "Never text Jo after 9pm." });
@@ -120,6 +132,43 @@ describe("timers", () => {
     expect(sched.nextRunAt).toBeUndefined();
   });
 
+  test("a disclosure binds to the first number used; the same name at another number asks again", async () => {
+    const phone = new FakePhone(() => ({ summary: "ok" }));
+    const dialed = () => phone.calls.map((c) => c.to);
+    const w = groupWorld(
+      (_req, i) => (i % 2 === 0 ? callTool("place_call", { to: i === 0 ? "+14085550100" : "+14085559999", who: "Graciela", objective: "retry" }) : reply("done")),
+      { phone, completer: () => '{"holds": true}' },
+    );
+    const sched = Scheduler.createSchedule(w.app.store, w.clock, {
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      sessionId: w.app.store.latestSessionForRoom(w.room.id)?.id ?? "none",
+      title: "Retry Graciela",
+      prompt: "Call Graciela again.",
+      runAt: w.clock.now() + HOUR,
+      authorization: { basis: "user_requested", disclosedOutreach: [{ who: "Graciela", how: "phone", why: "retry" }], premise: "always" },
+    });
+    w.clock.advance(HOUR + 1);
+    await w.app.scheduler.tick();
+    expect(dialed()).toEqual(["+14085550100"]);
+    expect(w.app.store.getSchedule(sched.id)!.authorization.disclosedOutreach[0]!.contact).toBe("+14085550100");
+    // A second firing reaching a different number under the same name is not covered by the disclosure.
+    const again = Scheduler.createSchedule(w.app.store, w.clock, {
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      sessionId: w.app.store.latestSessionForRoom(w.room.id)?.id ?? "none",
+      title: "Retry Graciela 2",
+      prompt: "Call Graciela again.",
+      runAt: w.clock.now() + HOUR,
+      authorization: { basis: "user_requested", disclosedOutreach: [{ who: "Graciela", how: "phone", why: "retry", contact: "+14085550100" }], premise: "always" },
+    });
+    w.clock.advance(HOUR + 1);
+    await w.app.scheduler.tick();
+    expect(dialed()).toEqual(["+14085550100"]);
+    expect(w.app.store.listAttention({ roomId: w.room.id, status: ["open"] }).some((a) => a.kind === "outreach_approval")).toBe(true);
+    void again;
+  });
+
   test("when the premise no longer holds, the schedule is paused and the agent reports instead of acting", async () => {
     const phone = new FakePhone();
     const w = groupWorld(
@@ -202,5 +251,46 @@ describe("timers", () => {
     w.clock.advance(HOUR + 1);
     expect(w.app.attention.expireDue().map((i) => i.id)).toEqual([item.id]);
     expect(w.app.store.getAttention(item.id)!.status).toBe("expired");
+  });
+});
+
+describe("memory mining", () => {
+  test("the consolidator reads a chat the agent took no notes in, and a private chat's notes stay private", async () => {
+    const completer = (system: string, prompt: string) => {
+      if (system.startsWith("Read a chat")) {
+        if (prompt.includes("private chat")) return JSON.stringify([{ type: "fact", text: "Sam is between jobs and money is tight this month." }]);
+        return JSON.stringify([
+          { type: "person", text: "Sam drives and lives in Brooklyn.", about: "Sam" },
+          { type: "decision", text: "The hike is Doodletown on Saturday, on the trail by 10am." },
+        ]);
+      }
+      return "";
+    };
+    const w = groupWorld(() => reply("ok"), { completer });
+    const say = (roomId: string, authorId: string, text: string) => {
+      const session = { id: `ses_${roomId}`, roomId, agentId: w.agent.id, kind: "room" as const, createdAt: w.clock.now(), lastActivityAt: w.clock.now() };
+      w.app.store.putSession(session);
+      w.app.store.putMessage({ id: `msg_${Math.random().toString(36).slice(2)}`, sessionId: session.id, roomId, role: "user", authorId, text, visibleTo: [], at: w.clock.now() });
+      w.clock.advance(1000);
+    };
+    say(w.room.id, "alex", "Doodletown on Saturday, three of us. Sam drives from Brooklyn, on the trail by 10.");
+    say(w.samDm.id, "sam", "Between us: I'm between jobs and money is tight this month.");
+    const stats = await w.app.consolidator.runFor(w.agent);
+    expect(stats.mined).toBe(3);
+    expect(stats.promoted).toBe(3);
+    const sam = w.app.store.listMemories(w.agent.id, { scope: "person", scopeId: "sam" }).filter((m) => m.type !== "observation");
+    expect(sam.map((m) => [m.type, m.text]).sort()).toEqual([
+      ["fact", "Sam is between jobs and money is tight this month."],
+      ["person", "Sam drives and lives in Brooklyn."],
+    ]);
+    const roomNotes = w.app.store.listMemories(w.agent.id, { scope: "room", scopeId: w.room.id }).filter((m) => m.type !== "observation");
+    expect(roomNotes.map((m) => m.type)).toEqual(["decision"]);
+    // What Sam said privately is scoped to his chat and never visible in the group.
+    const inGroup = w.app.memory.visibleIn(w.agent.id, w.room, ["alex", "sam", "jo", "riley"]).map((m) => m.text);
+    expect(inGroup).toContain("Sam drives and lives in Brooklyn.");
+    expect(inGroup.some((t) => t.includes("money is tight"))).toBe(false);
+    // The second pass starts where the first stopped: nothing new, nothing re-mined.
+    const again = await w.app.consolidator.runFor(w.agent);
+    expect(again.mined).toBe(0);
   });
 });

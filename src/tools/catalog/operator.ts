@@ -1,10 +1,8 @@
-import { newId } from "../../core/ids.ts";
 import { fmtWhen } from "../../core/clock.ts";
-import type { Id } from "../../core/types.ts";
 import type { ModelImage } from "../../model/types.ts";
 import type { BrowserStep } from "../browser.ts";
-import { n, num, obj, s, siteOf, str, type ToolDef } from "../kit.ts";
-import { clip, notConnected, readableRooms, saveArtifact } from "./shared.ts";
+import { askFirst, n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
+import { clip, readableRooms, saveArtifact } from "./shared.ts";
 
 const list = (description: string) => ({ type: "array", items: { type: "string" }, description });
 
@@ -125,7 +123,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     labels: { running: "Listing chats…", done: "Listed chats" },
     sideEffect: false,
     async run(input, ctx) {
-      const rooms = readableRooms(ctx).slice(0, n(input.limit) ?? 20);
+      const rooms = readableRooms(ctx).slice(0, Math.min(100, Math.max(1, n(input.limit) ?? 20)));
       return {
         ok: true,
         content: rooms.map((r) => {
@@ -149,7 +147,7 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       const room = readableRooms(ctx).find((r) => r.id === s(input.roomId));
       if (!room) return { ok: false, content: "Not a chat you can read." };
       const msgs = ctx.store
-        .messagesForRoom(room.id, n(input.limit) ?? 60)
+        .messagesForRoom(room.id, Math.min(300, Math.max(1, n(input.limit) ?? 60)))
         .filter((m) => m.role !== "system" && (m.visibleTo.length === 0 || (ctx.requesterId !== undefined && m.visibleTo.includes(ctx.requesterId))));
       return {
         ok: true,
@@ -191,29 +189,6 @@ export const OPERATOR_TOOLS: ToolDef[] = [
           ...(x.t.needs && !ctx.providers.has(x.t.needs) ? { note: `unavailable on this server: needs the ${x.t.needs} provider` } : {}),
         })),
       };
-    },
-  },
-  {
-    spec: {
-      name: "run_javascript",
-      description: "Run a short JavaScript snippet for arithmetic, dates, parsing or formatting and get what it prints. No network, no files, five seconds.",
-      input_schema: obj({ code: str("JavaScript. Use console.log for output.") }, ["code"]),
-    },
-    family: "operator",
-    labels: { running: "Running code…", done: "Ran code" },
-    sideEffect: false,
-    async run(input) {
-      // ponytail: a child process with an empty environment and a timeout; a real sandbox (isolate, worker with no
-      // host bindings) if untrusted code ever runs here. The model writes this code; the person never does.
-      const code = s(input.code).slice(0, 20_000);
-      const prelude =
-        'for (const k of ["fetch","Bun","require","WebSocket","XMLHttpRequest"]) { try { Object.defineProperty(globalThis, k, { value: undefined, configurable: false }); } catch {} }';
-      const proc = Bun.spawn([process.execPath, "--smol", "-e", prelude + code], { env: { PATH: "" }, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-      const timer = setTimeout(() => proc.kill(), 5000);
-      const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-      const exit = await proc.exited;
-      clearTimeout(timer);
-      return { ok: exit === 0, content: { stdout: clip(out, 6000), stderr: clip(err, 2000), exit }, evidence: `js:exit${exit}` };
     },
   },
   {
@@ -358,7 +333,8 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     sideEffect: false,
     async run(input, ctx) {
       const ref = s(input.url);
-      const art = ctx.store.getArtifact(ref);
+      // An attachment arrives in the chat as a link like https://host/d/art_x; the id inside it is the image.
+      const art = ctx.store.getArtifact(ref.match(/\/d\/([A-Za-z0-9_-]+)/)?.[1] ?? ref);
       const image: ModelImage | undefined =
         art && art.kind === "image"
           ? { base64: (art.data as { base64: string }).base64, mediaType: ((art.data as { mimeType?: string }).mimeType ?? "image/png") as "image/png" }
@@ -402,16 +378,32 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     family: "operator",
     needs: "browser",
     labels: { running: "Operating the browser…", done: "Operated the browser", failed: "The browser hit a wall" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       const url = s(input.url);
-      if (!/^https?:\/\//i.test(url)) return { ok: false, content: "url must start with http:// or https://" };
+      if (!publicUrl(url)) return { ok: false, content: "url must be a public http:// or https:// address" };
       const steps = (Array.isArray(input.steps) ? input.steps : []).filter((x) => x && typeof x === "object") as BrowserStep[];
       for (const st of steps)
         if ("fill" in st && /password|cvc|card ?number|cvv/i.test(JSON.stringify(st)))
           return { ok: false, content: "I don't type passwords or card details. Use connect_account or checkout_cart." };
       const site = s(input.account) ? siteOf(s(input.account)) : "";
       if (site && !ctx.vault.has(`browser:${site}`)) return { ok: false, content: `${site} is not connected. Call connect_account first.` };
+      // Clicking and typing inside someone's signed-in site can order, book or send as them: that asks,
+      // as does any use of an account that is not the requester's own.
+      const acts = steps.some((st) => "click" in st || "fill" in st || "press" in st);
+      if (site && (acts || ctx.requesterId !== ctx.accountOwnerId)) {
+        const gate = ctx.gate({
+          kind: "action",
+          title: `OK to ${acts ? "act" : "look"} on ${site} as ${ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "the account owner"}?`,
+          detail: `${url}\n${steps
+            .map((st) => JSON.stringify(st))
+            .join("\n")
+            .slice(0, 800)}`,
+          key: ["browser_use", url, site, steps],
+        });
+        const held = askFirst(gate, "Asked first. Nothing was clicked.");
+        if (held) return held;
+      }
       try {
         const r = site ? await ctx.vault.use(`browser:${site}`, (contextId) => ctx.hands.browser.run({ url, contextId, steps })) : await ctx.hands.browser.run({ url, steps });
         if (!r) return { ok: false, content: `${site} is not connected.` };
@@ -443,16 +435,25 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     spec: {
       name: "get_connect_link",
       description:
-        "A link the person opens to connect a service in Settings (Google, an MCP server, an API, a site login). Give it to them when a tool says something is not connected.",
+        "A link the person opens to connect a service in Settings: Google, Slack, an MCP server or an API. Not for website logins (a gym, a shop, a portal): those use connect_account, which opens the sign-in inside the chat.",
       input_schema: obj({ service: str("What to connect, e.g. google, slack, an MCP server, ubereats.com.") }, ["service"]),
     },
     family: "operator",
     labels: { running: "Making a connect link…", done: "Made a connect link" },
     sideEffect: false,
     async run(input, ctx) {
+      const service = s(input.service).trim().toLowerCase();
+      // Settings connects Google, Slack, MCP servers and APIs. Anything else is a website login, which happens
+      // inside the chat: do what connect_account does, guessing the domain from a plain name ("Planet Fitness").
+      if (service && !/^(google|gmail|calendar|drive|slack|mcp|api)\b|mcp|api\b/.test(service)) {
+        const site = /\.[a-z]{2,}$/.test(service) ? service : `${service.replace(/[^a-z0-9]+/g, "")}.com`;
+        const { TOOL_INDEX } = await import("../registry.ts");
+        const connect = TOOL_INDEX.get("connect_account");
+        if (connect) return connect.run({ site, why: `use ${site} for this request` }, ctx);
+      }
       return {
         ok: true,
-        content: { url: `${ctx.publicUrl}/#settings`, note: `Open Settings → Connections and connect ${s(input.service) || "the service"}; then say "done" here.` },
+        content: { url: `${ctx.publicUrl}/#settings/connections`, note: `Open Settings → Connections and connect ${service || "the service"}; then say "done" here.` },
       };
     },
   },
@@ -491,5 +492,3 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     },
   },
 ];
-
-export { newId as _newId, type Id as _Id, notConnected as _notConnected };

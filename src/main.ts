@@ -1,3 +1,4 @@
+import { hourIn } from "./core/clock.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,9 +9,10 @@ import { createModel, modelConfig } from "./model/config.ts";
 import { authConfig } from "./channels/auth.ts";
 import { startWebServer } from "./channels/web.ts";
 import { SPECTRUM_CHANNELS, type SpectrumChannel, startChannel } from "./channels/imessage.ts";
+import type { ChannelInfo } from "./channels/web.ts";
 import { newAgent } from "./agent/spec.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
-import { BrowserbaseBrowser } from "./tools/browser.ts";
+import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } from "./tools/browser.ts";
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
 import { GoogleApi } from "./tools/providers/google.ts";
@@ -95,17 +97,31 @@ function pickHands(): { hands: Hands; providers: string[] } {
   console.log(
     `Phone: ${env.VAPI_API_KEY ? "Vapi calls" : "no calls"}, ${twilio ? "Twilio SMS" : "no SMS"}; speech: ${env.ELEVENLABS_API_KEY ? "ElevenLabs" : "fake"}; images: ${env.OPENROUTER_API_KEY ? "OpenRouter" : "fake"}; cards: ${env.STRIPE_SECRET_KEY ? "Stripe Issuing" : "fake"}`,
   );
-  if (process.env.BROWSERBASE_API_KEY) {
-    hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
-    providers.push("browser");
-    console.log("Browser: Browserbase");
-  } else {
-    hands.browser = new JinaReader();
-    console.log("Browser: Jina Reader (read-only pages; set BROWSERBASE_API_KEY for a real browser)");
-  }
+  // Browsers in the order to try: a local Chrome first when developing (free, instant), Browserbase for
+  // signed-in contexts and the live sign-in view, Jina as the read-only floor so a page is never unreadable.
+  const browsers: { name: string; browser: import("./tools/browser.ts").BrowserProvider }[] = [];
+  const chrome = localChromePath();
+  if (chrome && process.env.LOCAL === "1") browsers.push({ name: "chrome", browser: new LocalBrowser(chrome) });
+  if (process.env.BROWSERBASE_API_KEY)
+    browsers.push({ name: "browserbase", browser: new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID }) });
+  if (chrome && process.env.LOCAL !== "1") browsers.push({ name: "chrome", browser: new LocalBrowser(chrome) });
+  browsers.push({ name: "jina", browser: new JinaReader() });
+  hands.browser = browsers.length === 1 ? browsers[0]!.browser : new FallbackBrowser(browsers);
+  if (process.env.BROWSERBASE_API_KEY || chrome) providers.push("browser"); // a browser that can act, not just read
+  console.log(`Browser: ${browsers.map((b) => b.name).join(" → ")}${browsers.some((b) => b.name === "browserbase") ? "" : " (set BROWSERBASE_API_KEY for sign-in cards)"}`);
   const search = createSearch(process.env);
   hands.search = search;
-  console.log(`Search: ${search.name === "brave" ? "Brave" : search.name === "exa" ? "Exa (keyless, via the Agent Reach channel)" : "DuckDuckGo (keyless)"}`);
+  console.log(
+    `Search: ${
+      search.name === "brave"
+        ? "Brave"
+        : search.name.startsWith("browserbase")
+          ? `Browserbase Search (Parallel, ${process.env.BROWSERBASE_SEARCH_MODE === "fast" ? "fast" : "advanced"}) with Exa behind it`
+          : search.name === "exa"
+            ? "Exa (keyless, via the Agent Reach channel)"
+            : "DuckDuckGo (keyless)"
+    }`,
+  );
   console.log("Community posting: fake (adapter in src/tools/hands.ts)");
   console.log(`Tool catalogue: ${providers.length ? `offering families for ${providers.join(", ")}` : "core set only (no providers wired)"}`);
   return { hands, providers };
@@ -135,6 +151,12 @@ if (app.store.listAgents().length === 0) {
   console.log(`First run: created ${agent.name} and its owner's seat. Make a room, add people, or share an invite link.`);
 }
 
+// The deployment's model is the model: refresh what each agent record shows so Settings → Assistant does not name an old one.
+for (const agent of app.store.listAgents()) {
+  const want = modelConfig(process.env).model;
+  if (agent.model !== want) app.store.putAgent({ ...agent, model: want });
+}
+
 // Without sign-in the API trusts whoever it is talking to, so it may only talk to this machine.
 const clerk = !!authConfig();
 const host = process.env.HOST ?? (clerk ? "0.0.0.0" : "127.0.0.1");
@@ -153,7 +175,8 @@ if (!loopback && !process.env.MASTER_KEY) {
 }
 if (!process.env.EVENT_TOKEN)
   console.log(`Events: EVENT_TOKEN not set; POST /api/events and /api/tick accept only a signed-in agent owner${clerk ? "" : " (or anyone, since sign-in is off)"}`);
-const server = startWebServer(app, { hostname: host, port: Number(process.env.PORT ?? 3000) });
+const channels: ChannelInfo[] = [];
+const server = startWebServer(app, { hostname: host, port: Number(process.env.PORT ?? 3000), channels });
 console.log(`Circle listening on http://${host}:${server.port}${clerk ? " (Clerk sign-in on)" : ""}`);
 
 // Chat channels through Photon Spectrum: CHANNELS lists which (default imessage); all share PROJECT_ID and PROJECT_SECRET.
@@ -164,13 +187,25 @@ if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
     .filter((x): x is SpectrumChannel => x in SPECTRUM_CHANNELS);
   for (const channel of wanted)
     startChannel(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET, channel })
-      .then((h) => console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : ""}`))
+      .then((h) => {
+        channels.push({ channel, phone: h.phone, mode: h.mode, handle: h });
+        console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : h.mode === "shared" ? " (shared pool: each person gets a number once registered)" : ""}`);
+      })
       .catch((e) => console.error(`${channel}: failed to start`, e));
 } else console.log("Channels: off (set PROJECT_ID and PROJECT_SECRET, and CHANNELS=imessage,whatsapp,telegram,slack)");
 
+let ticking = false;
 setInterval(
   () => {
-    app.scheduler.tick().catch((e) => console.error("tick failed", e));
+    // A firing can take minutes (it awaits the run); the next tick waits rather than piling up.
+    if (ticking) return;
+    ticking = true;
+    app.scheduler
+      .tick()
+      .catch((e) => console.error("tick failed", e))
+      .finally(() => {
+        ticking = false;
+      });
     // Mail that arrived in the assistant's own inbox enters like an app event, into the owner's chat.
     if (!(app.hands.email instanceof FakeEmail))
       app.hands.email
@@ -193,12 +228,11 @@ setInterval(
   Number(process.env.TICK_MS ?? 30_000),
 );
 
-// Nightly memory pass at 03:00 server time.
+// Nightly memory pass at 03:00 in each owner's zone.
 setInterval(
   async () => {
-    const h = new Date().getHours();
-    if (h !== 3) return;
     for (const agent of app.store.listAgents()) {
+      if (hourIn(app.store.getPerson(agent.ownerId)?.timezone ?? "UTC", Date.now()) !== 3) continue;
       const last = Number(app.store.getKv(`consolidated:${agent.id}`) ?? 0);
       if (Date.now() - last < 20 * 3600 * 1000) continue;
       await app.consolidator.runFor(agent).catch((e) => console.error("consolidate failed", e));

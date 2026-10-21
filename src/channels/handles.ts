@@ -1,5 +1,7 @@
+import { randomInt } from "node:crypto";
 import { sha256 } from "../core/ids.ts";
 import type { MemberRole, Person, RoomKind } from "../core/types.ts";
+import type { Store } from "../store/repos.ts";
 
 /**
  * Pure helpers for mapping a messaging handle (a phone number or an email)
@@ -65,3 +67,43 @@ export function plainText(md: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/**
+ * Linking a phone the way Fo does it: the signed-in person gets a six-digit code in
+ * Settings and texts it to the agent's number; the sender handle becomes theirs.
+ * Codes live fifteen minutes in the kv store and are consumed on first use.
+ */
+export const LINK_CODE_TTL_MS = 15 * 60 * 1000;
+
+export function mintLinkCode(store: Store, personId: string, now: number): string {
+  const code = String(randomInt(100000, 1000000));
+  store.setKv(`link:${code}`, JSON.stringify({ personId, at: now }));
+  return code;
+}
+
+/** The person a code belongs to, with the handle written onto them; undefined for an unknown or stale code. */
+export function claimLinkCode(store: Store, text: string, handle: string, now: number): Person | undefined {
+  const code = text.trim().match(/^(\d{6})$/)?.[1];
+  if (!code) return undefined;
+  const raw = store.getKv(`link:${code}`);
+  if (!raw) return undefined;
+  store.deleteKv(`link:${code}`);
+  const { personId, at } = JSON.parse(raw) as { personId: string; at: number };
+  if (now - at > LINK_CODE_TTL_MS) return undefined;
+  const person = store.getPerson(personId);
+  if (!person) return undefined;
+  const h = normaliseHandle(handle);
+  if (h.includes("@")) person.email = h;
+  else person.phoneE164 = h;
+  store.putPerson(person);
+  return person;
+}
+
+/** "iMessage · Sam, Riley & Jo": a group room named by who is in it, until the owner names it. */
+export function groupRoomName(channel: string, names: string[]): string {
+  const label = channel === "imessage" ? "iMessage" : channel;
+  const shown = names.slice(0, 3).join(", ");
+  const more = names.length - 3;
+  return `${label} · ${shown}${more > 0 ? ` & ${more} more` : ""}`;
+}
+export const isDefaultRoomName = (name: string) => /^(imessage|whatsapp|telegram|slack) (group|·)/i.test(name);

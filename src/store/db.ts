@@ -77,9 +77,6 @@ CREATE TABLE IF NOT EXISTS schedules (
   id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, room_id TEXT NOT NULL, paused INTEGER NOT NULL, next_run_at INTEGER, data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS schedules_due ON schedules(paused, next_run_at);
-CREATE TABLE IF NOT EXISTS staged (
-  id TEXT PRIMARY KEY, room_id TEXT NOT NULL, deliver_after INTEGER NOT NULL, delivered_at INTEGER, data TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS commitments (
   id TEXT PRIMARY KEY, room_id TEXT NOT NULL, owner_id TEXT NOT NULL, status TEXT NOT NULL, next_nudge_at INTEGER, data TEXT NOT NULL
 );
