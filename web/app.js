@@ -5,6 +5,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 const state = {
   people: [],
+  watchConnections: 0,
   rooms: [],
   agents: [],
   me: null,
@@ -19,6 +20,8 @@ const state = {
 let authToken = null;
 
 // ---------- API ----------
+// A click handler that forgot its catch still tells the person what went wrong.
+addEventListener("unhandledrejection", (e) => status(e.reason?.message ?? "Something went wrong.", true));
 const api = async (path, body, method) => {
   const headers = body ? { "content-type": "application/json" } : {};
   if (authToken) headers.authorization = `Bearer ${authToken}`;
@@ -178,6 +181,10 @@ function route() {
     location.replace("#chat");
     return;
   }
+  if (!$("#pageChat")) {
+    location.reload(); // signed out: the page holds only the sign-in form, and #signup needs the other one
+    return;
+  }
   const [page, sub] = h.split("/");
   state.page = page === "settings" || page === "memory" ? page : "chat";
   state.settingsSection = sub;
@@ -251,6 +258,8 @@ function roomFlags(roomId) {
 }
 function renderNav() {
   const mine = myRooms();
+  // The Memory tab is the owner's view of everything the assistant holds; members have no such route.
+  $('#pages [data-page="memory"]').hidden = !state.agents.some((a) => a.ownerId === state.me);
   $("#rooms").innerHTML = mine.length
     ? mine
         .map((r) => {
@@ -736,19 +745,14 @@ async function renderThread() {
     .map((m) => {
       const who = m.role === "assistant" ? (agent?.name ?? "Agent") : m.role === "system" ? `${agent?.name ?? "Agent"} · ${m.source ?? "note"}` : nameOf(m.authorId);
       const cls = m.role === "user" && m.authorId === state.me ? "me" : m.role === "system" ? "system" : m.source === "notice" || m.source === "narration" ? "notice" : "";
-      let body = esc(m.text),
-        footer = "";
-      const fi = m.role === "assistant" ? m.text.lastIndexOf("\n— ") : -1;
-      if (fi > 0) {
-        body = m.text.slice(0, fi);
-        footer = m.text.slice(fi + 1);
-      } else if (m.role === "assistant") body = m.text;
+      // The server serves the assistant's text without its record footer; steps come from records, never from text.
+      let body = m.role === "assistant" ? m.text : esc(m.text);
       // The assistant writes light Markdown; people's own messages stay as typed.
       const rich = m.role === "assistant";
       const att = rich ? { text: m.text, atts: [] } : splitAttachments(m.text);
       body = rich ? md(body) : linkify(esc(att.text));
       const card = m.card ? cardHtml(m.card) : "";
-      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div>${attachmentsHtml(att.atts)}${att.text || card || rich ? `<div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div>` : ""}</div>`;
+      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div>${attachmentsHtml(att.atts)}${att.text || card || rich ? `<div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : ""}</div>` : ""}</div>`;
     })
     .join("");
   if (active && active.status === "running") {
@@ -836,8 +840,8 @@ function md(text) {
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s"(]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)"(]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
   const out = [];
   let list = null;
   let para = [];
@@ -1177,6 +1181,10 @@ function renderSettings() {
   }
   if (!agent && (section === "spending" || section === "permissions" || section === "assistant")) {
     box.innerHTML = `<div class="empty">No agent yet.</div>`;
+    return;
+  }
+  if (agent && agent.ownerId !== state.me && (section === "spending" || section === "permissions" || section === "assistant")) {
+    box.innerHTML = `<div class="empty">Only ${esc(nameOf(agent.ownerId))} can change this; it is their assistant and their money.</div>`;
     return;
   }
   render(box, agent, me);
@@ -1542,6 +1550,8 @@ async function watch() {
     try {
       const headers = authToken ? { authorization: `Bearer ${authToken}` } : {};
       const res = await fetch("/api/deliveries/watch", { headers });
+      // Anything delivered while the stream was down was missed: refresh on every reconnect.
+      if (state.watchConnections++) load().catch(() => {});
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -1622,12 +1632,12 @@ async function loadReach() {
 
 /** The owner's first steps, as Fo lists them: each line is done or a link to where it is done. */
 function gettingStarted() {
-  const agent = state.agents[0];
+  const agent = agentFor(state.room) ?? state.agents[0];
   if (!agent || state.me !== agent.ownerId) return "";
   const r = state.reach ?? {};
   const groups = state.rooms.filter((x) => x.kind === "group");
   const items = [
-    [`Say hi to ${agent.name}`, state.rooms.some((x) => x.kind === "dm" && (x.lastMessageAt ?? 0) > 0) || (state.lastMsgCount ?? 0) > 0, "#chat"],
+    [`Say hi to ${agent.name}`, state.rooms.some((x) => x.kind === "dm" && (x.lastActivityAt ?? 0) > (x.createdAt ?? 0)), "#chat"],
     ["Link your phone, so texts from it are you", !!r.linkedPhone, "#settings/channels"],
     ["Connect Google for mail and calendar", !!r.google, "#settings/connections"],
     [`Add ${agent.name} to a group chat`, groups.some((x) => x.channel !== "web" || x.members.length > 1), "#settings/channels"],

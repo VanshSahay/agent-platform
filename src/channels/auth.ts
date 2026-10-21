@@ -76,7 +76,10 @@ export class Auth {
   /** Resolve the bearer token to a Person, creating one on first sign-in. */
   async personFor(req: Request): Promise<Person | undefined> {
     const h = req.headers.get("authorization") ?? "";
-    const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+    let token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+    // <img src="/d/…"> and "Open →" links cannot send a header; Clerk keeps the same JWT in a
+    // same-origin cookie, accepted for reads only so a cross-site form cannot change anything.
+    if (!token && req.method === "GET") token = /(?:^|;\s*)__session=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1]?.trim() ?? "";
     if (!token) return undefined;
     const v = await this.verifier(token);
     if (!v) return undefined;

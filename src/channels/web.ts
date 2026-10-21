@@ -6,7 +6,7 @@ import { newAgent } from "../agent/spec.ts";
 import type { App } from "../app.ts";
 import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
 import { newId } from "../core/ids.ts";
-import type { Delivery } from "../runtime/runtime.ts";
+import { buildFooter, type Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
@@ -539,8 +539,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           .filter(visible)
           .map((m) => {
             if (m.role !== "assistant" || !m.runId || m.source === "notice" || m.source === "card" || m.source === "narration") return m;
-            const steps = app.store.toolCallsForRun(m.runId).map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
-            return { ...m, steps };
+            const calls = app.store.toolCallsForRun(m.runId);
+            const steps = calls.map((c) => ({ name: c.name, label: c.labelDone, status: c.status, verified: !!c.evidence }));
+            // The stored text ends with the record footer; the client renders steps from records instead and never parses text for a footer.
+            const footer = buildFooter(calls);
+            const text = footer && m.text.endsWith(`\n${footer}`) ? m.text.slice(0, -(footer.length + 1)) : m.text;
+            return { ...m, text, steps };
           });
         const session = app.store.latestSessionForRoom(roomId);
         const active = session ? app.store.activeRunForSession(session.id) : undefined;
