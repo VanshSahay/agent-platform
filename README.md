@@ -79,9 +79,21 @@ Offline, with no key, the whole runtime runs against a scripted model in a test 
 
 ```bash
 bun test        # offline tests across the run loop, gates, ledger, planner, memory, timers, hands, web api, channels, eval
-bun run eval    # six group errands played against the configured model, graded on stored state
+bun run eval    # sixteen errands played against the configured model, graded on stored state; --list for coverage, --trials k for pass^k
 bun run typecheck
 ```
+
+## Deploy
+
+Production runs on Railway as one always-on container with SQLite on a volume. `Dockerfile`, `railway.json` and `.railwayignore` are checked in; nothing else is needed on the host.
+
+```bash
+npx @railway/cli login          # once; opens a pairing link in your browser
+npx @railway/cli link           # pick the project and environment
+npx @railway/cli up --detach    # upload this folder, build the image, roll it out
+```
+
+The service needs a volume mounted at `/data` and the variables from `.env.example` set in Railway (a fresh `MASTER_KEY` per deployment; `HOST=0.0.0.0`; `PUBLIC_URL` and `CLERK_AUTHORIZED_PARTIES` set to the Railway domain). One thing to know: the uploader honours `.git/info/exclude` with gitignore semantics, so a line like `agent/` there silently drops `src/agent` from the image; anchor such lines with a leading slash.
 
 ## Layout
 
@@ -156,8 +168,8 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 ## Status
 
-Built: the full 80-tool catalogue (above); one general assistant with per-chat priorities; rooms with owner, member and guest roles, invite links and guest serving; the responsibilities ledger with nudges and escalation; proactive suggestions; the run loop with gates, steering and resume; approvals as single-use records; quiet outcomes; task agents with delivery state; watches (alert rules); app events as triggers; an encrypted credential vault; sign-in cards inside the chat (Browserbase live view); session compaction; plans with the approach ladder; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; chat search; search steps labelled by query and narration kept in the thread; a people lookup across the chats it is in; the owner UI with Clerk sign-in and a landing page; iMessage, WhatsApp Business, Telegram and Slack channels through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
+Built: the full 80-tool catalogue (above); a browser chain (local Chrome in local mode, Browserbase, Jina as the read-only floor) so a page is never unreadable; resourcefulness guards in the run loop (a plan opens on the first search whether or not the model wrote one, more than three searches in a row count as stalls, long work is pushed to a task, a reply after real work is checked once against the request's constraints); transcript mining in the consolidator so memory fills from the chats even when the agent took no notes; procedures for shopping and shipping, research and compare, travel, subscriptions and refunds, and government forms; one general assistant with per-chat priorities; rooms with owner, member and guest roles, invite links and guest serving; the responsibilities ledger with nudges and escalation; proactive suggestions; the run loop with gates, steering and resume; approvals as single-use records; quiet outcomes; task agents with delivery state; watches (alert rules); app events as triggers; an encrypted credential vault; sign-in cards inside the chat (Browserbase live view); session compaction; plans with the approach ladder; schedules with authorisation, premise re-check and working-hours holds; memory with scopes, privacy and consolidation; chat search; search steps labelled by query and narration kept in the thread; a people lookup across the chats it is in; the owner UI with Clerk sign-in and a landing page; iMessage, WhatsApp Business, Telegram and Slack channels through Photon Spectrum; the browser hand through Browserbase; the model through OpenRouter (GLM 5.3) or Anthropic; web search through Exa and page reading through Jina Reader; an eval harness.
 
-Internet reach: `web_search` and `browse_page` are real (Exa and Jina Reader, both keyless; Brave and Browserbase when keyed). The agent follows `skills/internet-reach.md`, adapted from Agent Reach's skill to the two tools it has; it says plainly which platforms it cannot read yet.
+Internet reach: `web_search` and `browse_page` are real (Browserbase Search on the Parallel engine when the browser key is set, with Exa behind it; Exa and Jina Reader keyless; Brave when keyed; pages go through local Chrome first in local mode, then Browserbase when keyed, then Jina, and a bot wall on one provider falls through to the next). The agent follows `skills/internet-reach.md`, adapted from Agent Reach's skill to the two tools it has; it says plainly which platforms it cannot read yet.
 
 Needs an account to go live: calls (Vapi), SMS (Twilio), the assistant's mailbox (AgentMail), checkout cards (Stripe Issuing), voice notes (ElevenLabs), Google (an OAuth app). Each tool runs against a fake until its key is set and says so to the person. Not yet: reading or posting on Reddit and Rednote (both need a logged-in session); voice chat in the browser. Postgres is not used: the store is one SQLite file.
