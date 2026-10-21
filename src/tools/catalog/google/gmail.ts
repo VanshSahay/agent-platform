@@ -1,6 +1,6 @@
 import { askFirst, n, num, obj, s, str, type ToolDef } from "../../kit.ts";
 import { clip } from "../shared.ts";
-import { GMAIL, g, gmailText, guard, header, labelId, list, who, gtool } from "./shared.ts";
+import { GMAIL, g, gmailText, guard, header, labelId, list, gtool } from "./shared.ts";
 
 const defs: ToolDef[] = [
   {

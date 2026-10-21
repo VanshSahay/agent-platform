@@ -1,4 +1,4 @@
-import { n, s, type ToolContext, type ToolDef, type ToolResult } from "../../kit.ts";
+import type { ToolContext, ToolDef, ToolResult } from "../../kit.ts";
 import { notConnected } from "../shared.ts";
 
 /**

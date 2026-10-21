@@ -1,5 +1,5 @@
 import { askFirst, n, num, obj, s, str, type ToolDef } from "../../kit.ts";
-import { DRIVE, FORMS, g, guard, list, who, gtool } from "./shared.ts";
+import { DRIVE, FORMS, g, guard, list, gtool } from "./shared.ts";
 
 const defs: ToolDef[] = [
   {
