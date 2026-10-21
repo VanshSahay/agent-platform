@@ -883,10 +883,35 @@ function md(text) {
     if (list) out.push(`</${list}>`);
     list = null;
   };
+  let table = null; // rows of a pipe table being collected
+  const closeTable = () => {
+    if (!table) return;
+    const [head, ...rows] = table;
+    out.push(
+      `<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`,
+    );
+    table = null;
+  };
   for (const line of text.split("\n")) {
     const h = line.match(/^(#{1,4})\s+(.*)$/);
     const li = line.match(/^\s*[-*•]\s+(.*)$/);
     const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    // A pipe table: header row, a |---| rule, then rows. The rule line is dropped.
+    const row = line.trim().startsWith("|")
+      ? line
+          .trim()
+          .replace(/^\||\|$/g, "")
+          .split("|")
+          .map((c) => c.trim())
+      : null;
+    if (row) {
+      flush();
+      closeList();
+      if (row.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+      (table ??= []).push(row);
+      continue;
+    }
+    closeTable();
     if (h) {
       flush();
       closeList();
@@ -910,6 +935,7 @@ function md(text) {
   }
   flush();
   closeList();
+  closeTable();
   return out.join("");
 }
 
