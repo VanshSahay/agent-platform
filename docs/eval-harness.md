@@ -129,3 +129,9 @@ Offline: every scenario runs with its script in `bun test` (the suite stays unde
 
 The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/harness-loop.test.ts` (adoption end to end, and the validator refusing an unloadable procedure, a dropped guard rule, an identical file and a test-aware edit).
 
+## 8. Live runs (real model, `bun run eval`)
+
+| Date | Result | Notes |
+|---|---|---|
+| 19 Oct 2026, runs 1–5 | 3 → 9 of 16 scenarios; best 79/87 checks | before the harness loop and the audit |
+| 21 Oct 2026, run 6 | 12 of 16 scenarios, 77/87 checks | after the audit fixes; the four misses are purchase-threshold (the model re-asked after the yes), oven-repair and meal-plan (both delegated to a task and the DM-level checks could not see the task's calls), packing-list (one run still waiting). place_call now normalises "(408) 555-0100" to E.164 after this run showed the vendor snippet's format. |

@@ -356,8 +356,8 @@ export const CORE_TOOLS: ToolDef[] = [
     labels: { running: "On a call…", done: "Made a call", failed: "Call failed" },
     sideEffect: true,
     async run(input, ctx) {
-      const to = s(input.to).replace(/[^+\d]/g, "");
-      if (!/^\+\d{8,15}$/.test(to)) return { ok: false, content: "Give the number in E.164, like +14085550100.", approach: "call" };
+      const to = e164(s(input.to));
+      if (!to) return { ok: false, content: "Give the number in E.164, like +14085550100.", approach: "call" };
       const gate = ctx.gate({
         kind: "outreach_approval",
         title: `OK to call ${s(input.who)}?`,
@@ -891,6 +891,13 @@ export const CORE_TOOLS: ToolDef[] = [
 ];
 
 /** Every tool the model may call: the core set plus the catalogue (Google, operator, knowledge, shopping, voice, contacts, email, MCP). */
+/** A phone number as E.164, taking "(408) 555-0100" as US; anything else that is not +country… is refused. */
+export function e164(raw: string): string | undefined {
+  const digits = raw.replace(/[^+\d]/g, "");
+  const v = digits.startsWith("+") ? digits : digits.length === 10 ? `+1${digits}` : digits.length === 11 && digits.startsWith("1") ? `+${digits}` : "";
+  return /^\+\d{8,15}$/.test(v) ? v : undefined;
+}
+
 export const TOOLS: ToolDef[] = [...CORE_TOOLS, ...CATALOG_TOOLS];
 export const TOOL_INDEX = new Map(TOOLS.map((t) => [t.spec.name, t]));
 

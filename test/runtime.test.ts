@@ -5,6 +5,7 @@ import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
 import { parseDecision } from "../src/runtime/decide.ts";
+import { e164 } from "../src/tools/registry.ts";
 
 describe("run loop", () => {
   test("a plain reply in a group only when the agent is named, with no footer when no tools ran", async () => {
@@ -282,6 +283,13 @@ describe("chatter is not an answer", () => {
     // A plain yes still approves it.
     const resumed = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "yes" });
     expect(resumed?.id).toBe(run!.id);
+  });
+
+  test("a US number without its country code still dials; a malformed one does not", () => {
+    expect(e164("(408) 555-0100")).toBe("+14085550100");
+    expect(e164("1-408-555-0100")).toBe("+14085550100");
+    expect(e164("+44 20 7946 0958")).toBe("+442079460958");
+    expect(e164("555-0100")).toBeUndefined();
   });
 
   test("a soft opener on a long message is not a yes", () => {
