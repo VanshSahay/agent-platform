@@ -1038,14 +1038,29 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     name: "stall-revise-course",
+    category: "home-services",
+    shape: "care",
+    cases: [72],
     description:
       "The open web returns paid directories that do not confirm Mandarin speakers; the agent changes course on what it learned (revises the plan or moves to another approach) instead of repeating the same search.",
     setup(_app, w) {
       w.hands.search = new FakeSearch(() => [
         { title: "Top 10 handyman websites", url: "https://directories.example/", snippet: "Compare handyman services anywhere." },
       ]);
+      w.hands.browser = new FakeBrowser(() => ({ text: "Chinese community forum: Lee's Repairs — 普通话, (408) 555-0100, does home repairs." }));
     },
     turns: [{ room: "room", personId: "alex", text: "@pip find a Mandarin-speaking handyman near Jo's in San Jose to fix her dripping kitchen tap this week." }],
+    script: (req) => {
+      if (!toolCallsSoFar(req).length)
+        return callTool("plan", { goal: "Find a Mandarin-speaking handyman for Jo's tap", steps: [{ text: "Find candidates", approach: "search" }] });
+      if (n(req, "web_search") === 0) return callTool("web_search", { query: "Mandarin speaking handyman San Jose" });
+      if (n(req, "revise_plan") === 0)
+        return callTool("revise_plan", {
+          evidence: "the results are paid directories; none confirm Mandarin speakers, so the Chinese community forum is the reliable source",
+          steps: [{ text: "Read the Chinese community forum thread for confirmed handymen", approach: "browse" }],
+        });
+      return callTool("browse_page", { url: "https://ccyp.example/mandarin-handymen" });
+    },
     checks: [
       {
         name: "searched the open web first",
@@ -1066,6 +1081,7 @@ export const SCENARIOS: Scenario[] = [
       {
         name: "a revision names what was learned",
         detail: "If the agent revised the plan, the revise_plan input carries the evidence it acted on.",
+        noOpPasses: true,
         pass: (app, w) =>
           toolCalls(app, w, "revise_plan").every((c) => {
             const evidence = (c.input as { evidence?: unknown } | null)?.evidence;
@@ -1075,6 +1091,7 @@ export const SCENARIOS: Scenario[] = [
       {
         name: "never repeats the identical search",
         detail: "Every web_search query is distinct: reformulating is right, repeating is not.",
+        noOpPasses: true,
         pass: (_app, w) => new Set(w.hands.search.queries).size === w.hands.search.queries.length,
       },
     ],

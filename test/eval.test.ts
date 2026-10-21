@@ -128,7 +128,7 @@ describe("eval harness", () => {
     const c = coverage(SCENARIOS);
     expect(Object.keys(c.categories)).toHaveLength(22);
     expect(c.categories.booking).toBe(0);
-    expect(c.categories["home-services"]).toBe(3);
+    expect(c.categories["home-services"]).toBe(4);
     expect(Object.values(c.shapes).every((n) => n > 0)).toBe(true);
     expect(c.cases).toContain(72);
     expect(findScenarios(undefined, { shape: "couple" }).map((s) => s.name)).toEqual(["meal-plan-claims"]);

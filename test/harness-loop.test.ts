@@ -14,7 +14,7 @@ const watchAgent = () =>
   new ScriptedModel(
     (req) => {
       if (/heartbeat/i.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing" });
-      if (/pharmacy|metformin/i.test(JSON.stringify(req.messages)) && /ALWAYS SET A WATCH/.test(req.system)) {
+      if (/pharmacy|metformin/i.test(JSON.stringify(req.messages)) && /ALWAYS SET A WATCH/.test(req.system.stable)) {
         if (toolCallsSoFar(req).some((c) => c.name === "watch_for")) return reply("Watching.");
         if (/Check whether this holds/.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing yet" });
         if (/Event from/.test(JSON.stringify(req.messages))) return reply("Walgreens says Jo's metformin is ready for pickup.");

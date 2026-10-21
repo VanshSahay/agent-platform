@@ -46,7 +46,7 @@ export interface WorldOptions {
   /** Boot-level providers wired on the server. Default: every hand (the fakes are all "wired"). */
   providers?: string[];
   /** A different skills folder: the harness loop probes candidate rules and procedures this way. */
-  skillsDir?: string[] | string;
+  skillsDir?: string;
 }
 
 /** 10:00 in Los Angeles on Tuesday 13 October 2026; every world starts here. */

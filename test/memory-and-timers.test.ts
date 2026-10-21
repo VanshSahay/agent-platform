@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { privateProfileId } from "../src/memory/consolidate.ts";
 import { callTool, lastToolResult, reply } from "../src/model/scripted.ts";
-import { groupWorld } from "./helpers.ts";
+import { groupWorld, sysText } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
 import { Scheduler } from "../src/scheduler/scheduler.ts";
 import { FakePhone } from "../src/tools/hands.ts";
@@ -29,7 +29,7 @@ describe("memory", () => {
     expect(w.app.store.getProfile(w.agent.id, "person", privateProfileId("alex"))?.text).toContain("debt");
     expect(w.app.store.getProfile(w.agent.id, "person", "alex")?.text ?? "").not.toContain("debt");
     await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip hi" });
-    expect(w.model.calls.at(-1)!.system).not.toContain("debt");
+    expect(sysText(w.model.calls.at(-1)!)).not.toContain("debt");
   });
 
   test("remember writes observations; the owner's rules take effect at once", async () => {
