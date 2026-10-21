@@ -11,6 +11,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
     "eval": "bun run src/eval/run.ts",
+    "harness": "bun run src/eval/harness-run.ts",
     "lint": "biome check src test web/app.js",
     "format": "biome format --write src test web/app.js"
   },

@@ -151,6 +151,7 @@ export interface RunOptions {
   modelId?: string;
   timeoutMs?: number;
   maxTurns?: number;
+  skillsDir?: string;
   onTurn?: (turn: Turn, result: TurnRecord) => void;
 }
 
@@ -211,7 +212,7 @@ const toolList = (app: App, runId: string) =>
 
 export async function runScenario(scenario: Scenario, opts: RunOptions): Promise<ScenarioResult> {
   const metered = new MeteredModel(opts.model);
-  const world = evalWorld({ model: metered, modelId: opts.modelId, maxTurns: opts.maxTurns });
+  const world = evalWorld({ model: metered, modelId: opts.modelId, maxTurns: opts.maxTurns, skillsDir: opts.skillsDir });
   const { app } = world;
   const started = Date.now();
   const turns: TurnRecord[] = [];

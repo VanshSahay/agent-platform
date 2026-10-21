@@ -115,3 +115,7 @@ The uncovered categories are mostly the same mechanisms with a different noun (h
 ## 6. Cost
 
 Offline: every scenario runs with its script in `bun test` (the suite stays under a second; each world is an in-memory SQLite). Online: `bun run eval` with 15 scenarios is roughly 15 to 25 model turns each on GLM 5.3, well inside the daily cap; `--category` and `--only` keep a single run cheap.
+
+## 7. The harness loop (added 21 Oct 2026)
+
+`bun run harness` is one Harness² step (google-research/harness2) over the agent's markdown harness: `skills/_core-rules.md` plus the procedures. Reference run, two proposed files per failing scenario (an invariant rule and a domain procedure), a probe of that scenario from a temp copy of the folder, then a full-suite confirmation: adopted only when a failed check passes and nothing regresses, one adoption per scenario per step. Adopted files land in `skills/` for review in git; the lesson and its evidence go to `skills/EXPERIENCE.md`, which the next proposal reads. The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/harness-loop.test.ts`.

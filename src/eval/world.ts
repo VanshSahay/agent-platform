@@ -43,6 +43,8 @@ export interface WorldOptions {
   maxTurns?: number;
   /** Fakes to seed up front; a scenario may also swap them in setup(). */
   hands?: Partial<FakeHands>;
+  /** A different skills folder: the harness loop probes candidate rules and procedures this way. */
+  skillsDir?: string;
 }
 
 /** 10:00 in Los Angeles on Tuesday 13 October 2026; every world starts here. */
@@ -52,7 +54,7 @@ export function evalWorld(opts: WorldOptions): EvalWorld {
   const clock = new FakeClock(WORLD_START);
   const hands = fakeHands(opts.hands);
   // A day between heartbeats keeps the scheduler out of the way unless a test advances to it.
-  const app = createApp({ clock, model: opts.model, hands, heartbeatEveryMs: 24 * 3600 * 1000, maxTurns: opts.maxTurns });
+  const app = createApp({ clock, model: opts.model, hands, heartbeatEveryMs: 24 * 3600 * 1000, maxTurns: opts.maxTurns, skillsDir: opts.skillsDir });
   const deliveries: Delivery[] = [];
   app.onDeliver((d) => deliveries.push(d));
 
