@@ -424,3 +424,10 @@ h2 { font-weight: 600; color: var(--text-2); letter-spacing: 0.04em; text-transf
 .memrow .sub { color: var(--text-3); font-size: 12px }
 .memrow select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--paper) }
 .members .addrow { margin: 6px 0 2px } .members .addrow input { flex: 1 1 90px; font-size: 12px; padding: 5px 8px }
+
+/* Channels: the number to text, and the one-text phone link. */
+.phonebig { font: 600 20px var(--display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; flex-wrap: wrap }
+.linkcode { margin-top: 10px; padding: 12px 14px; background: var(--bg-2); border-radius: var(--radius) }
+.linkcode .code { font: 700 32px var(--display); letter-spacing: 0.12em }
+.linkcode p { margin: 6px 0 8px; font-size: 13px; color: var(--text-2) }
+.linkcode .qr svg { width: 180px; height: 180px; display: block; background: #fff; border-radius: 8px }

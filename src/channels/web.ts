@@ -9,7 +9,9 @@ import { newId } from "../core/ids.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
+import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo } from "../store/queries.ts";
+import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
 import { artifactPage, type DocState, emptyState, parseDocument } from "./artifacts.ts";
@@ -63,6 +65,8 @@ export interface WebOptions {
   hostname?: string;
   auth?: Pick<Auth, "personFor"> | null;
   eventToken?: string;
+  /** Chat channels that are up (filled in as they connect), with the number people text. */
+  channels?: { channel: string; phone?: string }[];
 }
 
 const ROLES: MemberRole[] = ["owner", "member", "guest"];
@@ -359,6 +363,31 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         });
         app.store.putAgent(a);
         return json(a);
+      },
+    },
+    // ---- channels: where the assistant can be texted, and linking a phone to a person
+    {
+      method: "GET",
+      re: /^\/api\/channels$/,
+      access: "signedIn",
+      handle: ({ me, url }) => {
+        const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+        return json({ channels: opts.channels ?? [], linked: { phone: person?.phoneE164 ?? null, email: person?.email ?? null } });
+      },
+    },
+    {
+      method: "POST",
+      re: /^\/api\/channels\/link-code$/,
+      access: "signedIn",
+      handle: async ({ me, body: b }) => {
+        const person = app.store.getPerson(me ?? str(b.personId) ?? "");
+        if (!person) return bad("personId required");
+        const phone = (opts.channels ?? []).find((c) => c.phone)?.phone;
+        const code = mintLinkCode(app.store, person.id, app.clock.now());
+        // "sms:<number>?&body=" opens Messages with the code typed, on iOS and Android alike.
+        const sms = phone ? `sms:${phone}?&body=${encodeURIComponent(code)}` : null;
+        const qr = sms ? await QRCode.toString(sms, { type: "svg", margin: 1, width: 180 }) : null;
+        return json({ code, phone: phone ?? null, sms, qr, expiresInMs: LINK_CODE_TTL_MS });
       },
     },
     {

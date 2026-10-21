@@ -145,7 +145,8 @@ if (!loopback && !process.env.MASTER_KEY) {
 }
 if (!process.env.EVENT_TOKEN)
   console.log(`Events: EVENT_TOKEN not set; POST /api/events and /api/tick accept only a signed-in agent owner${clerk ? "" : " (or anyone, since sign-in is off)"}`);
-const server = startWebServer(app, { hostname: host, port: Number(process.env.PORT ?? 3000) });
+const channels: { channel: string; phone?: string }[] = [];
+const server = startWebServer(app, { hostname: host, port: Number(process.env.PORT ?? 3000), channels });
 console.log(`Circle listening on http://${host}:${server.port}${clerk ? " (Clerk sign-in on)" : ""}`);
 
 // Chat channels through Photon Spectrum: CHANNELS lists which (default imessage); all share PROJECT_ID and PROJECT_SECRET.
@@ -156,7 +157,10 @@ if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
     .filter((x): x is SpectrumChannel => x in SPECTRUM_CHANNELS);
   for (const channel of wanted)
     startChannel(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET, channel })
-      .then((h) => console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : ""}`))
+      .then((h) => {
+        channels.push({ channel, phone: h.phone });
+        console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : ""}`);
+      })
       .catch((e) => console.error(`${channel}: failed to start`, e));
 } else console.log("Channels: off (set PROJECT_ID and PROJECT_SECRET, and CHANNELS=imessage,whatsapp,telegram,slack)");
 

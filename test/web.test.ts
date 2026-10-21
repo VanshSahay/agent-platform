@@ -5,7 +5,7 @@ import { reply } from "../src/model/scripted.ts";
 import { groupWorld } from "./helpers.ts";
 
 /** The group world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
-function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string> } = {}) {
+function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: { channel: string; phone?: string }[] } = {}) {
   const w = groupWorld(() => reply("ok"));
   const zed = w.app.rooms.createPerson({ id: "zed", displayName: "Zed", timezone: "UTC" }); // signed in, in no room
   for (const id of ["alex", "sam", "jo", "riley", zed.id]) w.app.store.setKv(`clerk:${id}`, id);
@@ -14,7 +14,7 @@ function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>
     { secretKey: "sk", publishableKey: "pk_test_x", authorizedParties: [] },
     { verifier: async (t) => (t.startsWith("as:") ? { sub: t.slice(3) } : undefined), lookup: async (sub) => ({ displayName: sub, email: opts.lookupEmail?.[sub] }) },
   );
-  const server = startWebServer(w.app, { port: 0, auth, eventToken: opts.eventToken });
+  const server = startWebServer(w.app, { port: 0, auth, eventToken: opts.eventToken, channels: opts.channels });
   const base = `http://127.0.0.1:${server.port}`;
   const call = (who: string | undefined, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
     fetch(base + path, {
@@ -26,7 +26,7 @@ function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>
 }
 
 const servers: { stop(): void }[] = [];
-const up = (opts?: { eventToken?: string; lookupEmail?: Record<string, string> }) => {
+const up = (opts?: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: { channel: string; phone?: string }[] }) => {
   const s = serve(opts);
   servers.push(s.server);
   return s;
@@ -299,5 +299,18 @@ describe("web api: members", () => {
     const me = await (await s.call("newbie", "GET", "/api/me")).json();
     expect(me.id).toBe(added.person.id);
     expect((await s.call("newbie", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);
+  });
+});
+
+describe("web api: channels", () => {
+  test("a signed-in person gets a link code with the number to text and a QR; the list shows what is up", async () => {
+    const s = up({ channels: [{ channel: "imessage", phone: "+14155550123" }] });
+    const list = await (await s.call("alex", "GET", "/api/channels")).json();
+    expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123" }]);
+    const r = await (await s.call("alex", "POST", "/api/channels/link-code", {})).json();
+    expect(r.code).toMatch(/^\d{6}$/);
+    expect(r.sms).toBe(`sms:+14155550123?&body=${r.code}`);
+    expect(r.qr).toContain("<svg");
+    expect((await s.call(undefined, "POST", "/api/channels/link-code", {})).status).toBe(401);
   });
 });

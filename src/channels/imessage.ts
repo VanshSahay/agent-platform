@@ -17,7 +17,7 @@ import type { App } from "../app.ts";
 import type { Person, Room } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { findPersonByEmail } from "../store/queries.ts";
-import { HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
+import { claimLinkCode, HandleRateLimit, handleMatches, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
 
 /**
  * iMessage through Photon Spectrum. Each iMessage chat (a DM or a group)
@@ -110,6 +110,14 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
         if (!senderId) continue;
         if (!limiter.allow(senderId)) {
           console.warn(`${channel}: rate limit for ${normaliseHandle(senderId).slice(0, 4)}…, dropping a message`);
+          continue;
+        }
+        // A six-digit code from Settings links this handle to the signed-in person; no run starts.
+        const linked = claimLinkCode(app.store, text, senderId, app.clock.now());
+        if (linked) {
+          await spectrum
+            .send(space, plainText(`Linked: this number is now ${linked.displayName}'s. Text me here any time, or add me to a group chat and I'll be there too.`))
+            .catch(() => undefined);
           continue;
         }
         const person = personFor(senderId);

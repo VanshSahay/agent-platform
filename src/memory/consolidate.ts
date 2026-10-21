@@ -73,8 +73,8 @@ export class Consolidator {
     try {
       raw = await this.model.complete({
         system:
-          "Read a chat and pull out what an assistant should remember for next time: facts about the people (where they live, what they drive, who they are to each other), preferences, decisions, routines, shops and places they use, and standing rules the owner states. " +
-          'Return only JSON: an array of {"type": <preference|person|schedule|store|inventory|decision|fact|rule>, "text": <one specific sentence, third person, with names and dates>, "about": <member name the note is about, omit for the chat as a whole>}. ' +
+          "Read a chat and pull out what an assistant should remember for next time: facts about the people (where they live, what they drive, who they are to each other), preferences, decisions, routines, shops and places they use, standing rules the owner states, and lessons from its own work (a site that blocks readers, a shop that ships to the US, a tool that failed and what worked instead). " +
+          'Return only JSON: an array of {"type": <preference|person|schedule|store|inventory|decision|fact|rule|lesson>, "text": <one specific sentence, third person, with names and dates>, "about": <member name the note is about, omit for the chat as a whole>}. ' +
           "Skip small talk, one-time codes, anything already in the known notes, and the assistant's own research unless it states a decision. Return [] when there is nothing. Never invent.",
         prompt: `Chat "${room.name}" (${room.kind === "dm" ? "private chat" : "group"}). Members: ${members.map((p) => p.displayName).join(", ")}.\nKnown notes:\n${known.map((m) => `- ${m.text}`).join("\n") || "(none)"}\n\nMessages:\n${msgs
           .map((m) => `[${new Date(m.at).toISOString().slice(0, 10)}] ${name(m.authorId)}: ${m.text.slice(0, 600)}`)
@@ -269,7 +269,7 @@ function arr(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String) : [];
 }
 type Op = { op: string; id?: unknown; ids?: unknown[]; old?: unknown; type?: unknown; text?: unknown; aliases?: unknown };
-const NOTE_TYPES = new Set(["preference", "person", "schedule", "store", "inventory", "decision", "fact", "rule"]);
+const NOTE_TYPES = new Set(["preference", "person", "schedule", "store", "inventory", "decision", "fact", "rule", "lesson"]);
 /** Notes mined from a chat; undefined when the model gave no JSON, so the cursor does not move. */
 function parseNotes(raw: string): { type: string; text: string; about?: string }[] | undefined {
   const m = raw.match(/\[[\s\S]*\]/);
