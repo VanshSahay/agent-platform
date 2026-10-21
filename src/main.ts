@@ -129,6 +129,12 @@ if (app.store.listAgents().length === 0) {
   console.log(`First run: created ${agent.name} and its owner's seat. Make a room, add people, or share an invite link.`);
 }
 
+// The deployment's model is the model: refresh what each agent record shows so Settings → Assistant does not name an old one.
+for (const agent of app.store.listAgents()) {
+  const want = modelConfig(process.env).model;
+  if (agent.model !== want) app.store.putAgent({ ...agent, model: want });
+}
+
 // Without sign-in the API trusts whoever it is talking to, so it may only talk to this machine.
 const clerk = !!authConfig();
 const host = process.env.HOST ?? (clerk ? "0.0.0.0" : "127.0.0.1");
