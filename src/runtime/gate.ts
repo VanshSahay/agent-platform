@@ -25,7 +25,7 @@ export function decideGate(
   const owner = store.getPerson(agent.ownerId);
   const zone = owner?.timezone ?? "UTC";
 
-  // Working hours for outreach; held items are delivered by the scheduler sweep.
+  // Working hours for outreach: a held item is not queued anywhere; the model is told to schedule it for the morning.
   if (g.outreach && g.outreach.how !== "community_post") {
     const h = hourIn(zone, clock.now());
     if (h < room.outreachHours.start || h >= room.outreachHours.end) {

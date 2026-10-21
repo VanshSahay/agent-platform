@@ -118,8 +118,6 @@ export interface AgentSpec {
   model: string;
   effort: Effort;
   trust: TrustPolicy;
-  /** Standing rules the owner typed, verbatim, newest last. */
-  rules: string[];
   createdAt: UnixMs;
 }
 
@@ -438,19 +436,6 @@ export interface Approval {
   decidedBy: Id;
   decidedAt: UnixMs;
   consumedAt?: UnixMs;
-}
-
-/** Outreach held until working hours; delivered by the scheduler sweep. */
-export interface StagedItem {
-  id: Id;
-  roomId: Id;
-  sessionId: Id;
-  agentId: Id;
-  kind: "sms" | "email" | "phone" | "community_post";
-  payload: Record<string, unknown>;
-  deliverAfter: UnixMs;
-  deliveredAt?: UnixMs;
-  createdAt: UnixMs;
 }
 
 // ---------- Responsibilities ----------

@@ -131,26 +131,3 @@ function ladderAfter(a: ApproachKind): ApproachKind[] {
   const i = DEFAULT_LADDER.indexOf(a);
   return i >= 0 ? DEFAULT_LADDER.slice(i + 1) : [];
 }
-
-/** Map a tool name to the approach it embodies, for automatic plan progress. */
-export function approachOfTool(tool: string): ApproachKind | undefined {
-  switch (tool) {
-    case "web_search":
-      return "search";
-    case "browse_page":
-      return "browse";
-    case "ask_room":
-      return "ask_room";
-    case "ask_person":
-      return "ask_person";
-    case "place_call":
-      return "call";
-    case "post_community":
-    case "read_community_replies":
-      return "community_post";
-    case "wait_for_user_input":
-      return "wait";
-    default:
-      return undefined;
-  }
-}

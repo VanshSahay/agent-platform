@@ -969,7 +969,7 @@ export class Runtime {
             card: paused.card,
             at: clock.now(),
           });
-          void this.d.deliver({ roomId: room.id, text, kind: "card" });
+          void this.d.deliver({ roomId: room.id, text, kind: "card", visibleTo: [paused.assigneeId] });
           if (room.kind !== "dm") {
             const dm = rooms.dmFor(agent, paused.assigneeId);
             store.putMessage({

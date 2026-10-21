@@ -1,22 +1,8 @@
-import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
+import { obj, s, str, type ToolDef } from "../kit.ts";
 import { saveArtifact } from "./shared.ts";
 
-/** Fo's "contacts", "voice", "calls" (the vendor variant) and "wajo" (own email) families. */
+/** Fo's "contacts", "voice" and "wajo" (own email) families. Its vendor call and contact search were twins of place_call and find_person. */
 export const PEOPLE_TOOLS: ToolDef[] = [
-  {
-    spec: {
-      name: "search_contacts",
-      description: "Same as find_person: look up someone the assistant knows by name, email or phone.",
-      input_schema: obj({ query: str("Name, email or phone.") }, ["query"]),
-    },
-    family: "contacts",
-    labels: { running: "Looking up contacts…", done: "Looked up your contacts" },
-    sideEffect: false,
-    async run(input, ctx) {
-      const { TOOL_INDEX } = await import("../registry.ts");
-      return TOOL_INDEX.get("find_person")!.run(input, ctx);
-    },
-  },
   {
     spec: {
       name: "add_contact",
@@ -108,64 +94,6 @@ export const PEOPLE_TOOLS: ToolDef[] = [
       return {
         ok: true,
         content: rooms.map((r) => ({ roomId: r.id, name: r.name, channel: r.channel, members: ctx.rooms.memberIds(r.id).map((id) => ctx.store.getPerson(id)?.displayName ?? id) })),
-      };
-    },
-  },
-  {
-    spec: {
-      name: "place_vendor_call",
-      description:
-        "Call a business on the owner's behalf with a scripted objective: ask hours, prices, availability, book a slot, confirm an order. Asks first like place_call; the call follows the objective and reports back a summary. Use place_call for people, this for businesses.",
-      input_schema: obj(
-        {
-          vendor: str("The business name."),
-          phone: str("Phone in E.164."),
-          objective: str("What to find out or arrange, in order, with any hard limits (budget, dates)."),
-          language: str("Language to speak, optional."),
-          maxMinutes: num("Hang up after this many minutes; default 8."),
-        },
-        ["vendor", "phone", "objective"],
-      ),
-    },
-    family: "calls",
-    labels: { running: "Calling the business…", done: "Called the business", failed: "The call did not get through" },
-    sideEffect: true,
-    async run(input, ctx) {
-      const to = s(input.phone).replace(/[^+\d]/g, "");
-      if (!/^\+\d{8,15}$/.test(to)) return { ok: false, content: "Give the phone in E.164, like +14085550100." };
-      const gate = ctx.gate({
-        kind: "outreach_approval",
-        title: `OK to call ${s(input.vendor)}?`,
-        detail: `${ctx.agent.name} wants to call ${s(input.vendor)} (${to}) to: ${s(input.objective)}`,
-        outreach: { who: s(input.vendor), how: "phone" },
-        key: ["place_vendor_call", to, s(input.objective)],
-      });
-      if (!gate.granted) {
-        if ("held" in gate) return { ok: true, content: gate.held, approach: "call", held: true };
-        return { ok: true, content: "Waiting for the owner's go-ahead. Nothing has been dialed.", waitingOn: gate.item, roomNotice: gate.notice, approach: "call" };
-      }
-      const limit = Math.min(20, Math.max(1, n(input.maxMinutes) ?? 8));
-      const r = await ctx.hands.phone.call({
-        to,
-        objective: `${s(input.objective)}\nBe brief and polite; you are calling on behalf of ${ctx.store.getPerson(ctx.agent.ownerId)?.displayName ?? "a customer"}. Hang up after ${limit} minutes.`,
-        callerName: ctx.agent.name,
-        language: s(input.language) || undefined,
-      });
-      if (r.status !== "completed")
-        return {
-          ok: true,
-          content: `Call ${r.status}: ${r.summary}`,
-          evidence: r.evidence,
-          stall: `call ${r.status}`,
-          approach: "call",
-          label: `Called ${s(input.vendor)} (${r.status})`,
-        };
-      return {
-        ok: true,
-        content: { summary: r.summary, durationSeconds: r.durationSeconds, transcript: r.transcript?.slice(0, 40) },
-        evidence: r.evidence,
-        approach: "call",
-        label: `Called ${s(input.vendor)}`,
       };
     },
   },

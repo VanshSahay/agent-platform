@@ -1,5 +1,5 @@
-import { n, num, obj, s, siteOf, str, type ToolDef } from "../kit.ts";
-import { clip, notConnected, readableRooms, saveArtifact } from "./shared.ts";
+import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
+import { clip, notConnected, readableRooms } from "./shared.ts";
 
 /** Fo's "knowledge" family: reading the world, the mailbox, Slack and WhatsApp, and the agent's own soul. */
 export const KNOWLEDGE_TOOLS: ToolDef[] = [
@@ -10,74 +10,6 @@ export const KNOWLEDGE_TOOLS: ToolDef[] = [
     sideEffect: false,
     async run(_input, ctx) {
       return { ok: true, content: ctx.agent.soul };
-    },
-  },
-  {
-    spec: {
-      name: "web_scrape",
-      description: "Read a web page as text (hours, prices, listings, an article). Same as browse_page; use either.",
-      input_schema: obj({ url: str("Absolute URL.") }, ["url"]),
-    },
-    family: "knowledge",
-    labels: { running: "Reading web page…", done: "Read web page", failed: "Couldn't load the page" },
-    sideEffect: false,
-    async run(input, ctx) {
-      const url = s(input.url);
-      if (!/^https?:\/\//i.test(url)) return { ok: false, content: "url must start with http:// or https://" };
-      try {
-        const r = await ctx.hands.browser.readPage({ url });
-        if (!r.text.trim()) return { ok: true, content: { url: r.url, title: r.title, text: "" }, evidence: r.evidence, stall: `empty page at ${url}`, approach: "browse" };
-        return {
-          ok: true,
-          content: { url: r.url, title: r.title, text: r.text, links: r.links.slice(0, 30) },
-          evidence: r.evidence,
-          approach: "browse",
-          label: `Read ${siteOf(url)}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `Could not load ${url}: ${String((e as Error).message).slice(0, 200)}`, stall: `page failed: ${url}`, approach: "browse" };
-      }
-    },
-  },
-  {
-    spec: {
-      name: "capture_and_analyze",
-      description: "Open a page in a real browser, take a screenshot, and answer a question from what is visible (a map, a chart, a widget that is not text).",
-      input_schema: obj({ url: str("Absolute URL."), question: str("What to look for."), account: str("A connected site to browse as the person, optional.") }, [
-        "url",
-        "question",
-      ]),
-    },
-    family: "knowledge",
-    labels: { running: "Looking at the page…", done: "Looked at the page" },
-    sideEffect: false,
-    async run(input, ctx) {
-      const url = s(input.url);
-      if (!/^https?:\/\//i.test(url)) return { ok: false, content: "url must start with http:// or https://" };
-      const site = s(input.account) ? siteOf(s(input.account)) : "";
-      if (site && !ctx.vault.has(`browser:${site}`)) return { ok: false, content: `${site} is not connected. Call connect_account first.` };
-      try {
-        const r = site
-          ? await ctx.vault.use(`browser:${site}`, (contextId) => ctx.hands.browser.run({ url, contextId, steps: [{ screenshot: true }] }))
-          : await ctx.hands.browser.run({ url, steps: [{ screenshot: true }] });
-        if (!r?.screenshots.length) return { ok: false, content: "No screenshot came back." };
-        const shot = saveArtifact(ctx, { kind: "image", title: `Screenshot of ${siteOf(r.url)}`, data: { base64: r.screenshots[0], mimeType: "image/png" } });
-        const answer = await ctx.model.complete({
-          system: "Answer from the screenshot, briefly. Say what you cannot read.",
-          prompt: s(input.question),
-          images: [{ base64: r.screenshots[0]!, mediaType: "image/png" }],
-          effort: "low",
-          maxTokens: 500,
-        });
-        return {
-          ok: true,
-          content: { answer: answer || "(nothing readable)", screenshot: shot.url, pageText: clip(r.text, 2000) },
-          evidence: r.evidence,
-          label: `Looked at ${siteOf(r.url)}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `Could not capture ${url}: ${String((e as Error).message).slice(0, 200)}` };
-      }
     },
   },
   {

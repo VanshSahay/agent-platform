@@ -356,19 +356,21 @@ export const CORE_TOOLS: ToolDef[] = [
     labels: { running: "On a call…", done: "Made a call", failed: "Call failed" },
     sideEffect: true,
     async run(input, ctx) {
+      const to = s(input.to).replace(/[^+\d]/g, "");
+      if (!/^\+\d{8,15}$/.test(to)) return { ok: false, content: "Give the number in E.164, like +14085550100.", approach: "call" };
       const gate = ctx.gate({
         kind: "outreach_approval",
         title: `OK to call ${s(input.who)}?`,
-        detail: `${ctx.agent.name} wants to call ${s(input.who)} (${s(input.to)}) by phone to: ${s(input.objective)}`,
+        detail: `${ctx.agent.name} wants to call ${s(input.who)} (${to}) by phone to: ${s(input.objective)}`,
         outreach: { who: s(input.who), how: "phone" },
-        key: ["place_call", s(input.to)],
+        key: ["place_call", to],
       });
       if (!gate.granted) {
         if ("held" in gate) return { ok: true, content: gate.held, approach: "call", held: true };
         return { ok: true, content: "Waiting for the owner's go-ahead. Nothing has been dialed.", waitingOn: gate.item, roomNotice: gate.notice, approach: "call" };
       }
       ctx.progress(`Calling ${s(input.who)}…`);
-      const r = await ctx.hands.phone.call({ to: s(input.to), objective: s(input.objective), callerName: ctx.agent.name, language: s(input.language) || undefined });
+      const r = await ctx.hands.phone.call({ to, objective: s(input.objective), callerName: ctx.agent.name, language: s(input.language) || undefined });
       const stalled = r.status !== "completed";
       return {
         ok: true,
@@ -519,7 +521,8 @@ export const CORE_TOOLS: ToolDef[] = [
         text: stored === "observation" ? `[${type}] ${s(input.text)}` : s(input.text),
         aliases: Array.isArray(input.aliases) ? (input.aliases as string[]) : [],
         subjectPersonId: about?.id ?? ctx.requesterId,
-        visibleToRooms: input.private ? [ctx.room.id] : [ctx.room.id],
+        // Private: the note never leaves this chat; otherwise a group may see it (a DM is not a group, see deriveProfile).
+        visibleToRooms: input.private ? [] : [ctx.room.id],
         sourceRunId: ctx.run.id,
       });
       return { ok: true, content: `Noted (${m.id}).` };

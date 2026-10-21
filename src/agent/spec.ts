@@ -50,7 +50,6 @@ export function newAgent(input: {
     model: input.model ?? modelConfig().model,
     effort: "high",
     trust: { ...DEFAULT_TRUST, ...input.trust },
-    rules: [],
     createdAt: Date.now(),
   };
 }

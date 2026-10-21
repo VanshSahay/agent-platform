@@ -20,7 +20,6 @@ import type {
   RunStatus,
   Schedule,
   Session,
-  StagedItem,
   ToolCallRecord,
 } from "../core/types.ts";
 
@@ -50,9 +49,6 @@ export class Store {
   }
   getAgent(id: string) {
     return parse<AgentSpec>(this.db.query("SELECT data FROM agents WHERE id = ?").get(id) as Row | null);
-  }
-  getAgentByHandle(handle: string) {
-    return parse<AgentSpec>(this.db.query("SELECT data FROM agents WHERE handle = ?").get(handle) as Row | null);
   }
   listAgents(ownerId?: string) {
     const rows = ownerId ? (this.db.query("SELECT data FROM agents WHERE owner_id = ?").all(ownerId) as Row[]) : (this.db.query("SELECT data FROM agents").all() as Row[]);
@@ -338,7 +334,7 @@ export class Store {
     return parseAll<AttentionItem>(this.db.query(sql).all(...(args as string[])) as Row[]);
   }
 
-  // ----- schedules and staged items -----
+  // ----- schedules -----
   putSchedule(s: Schedule) {
     this.db.run(
       "INSERT INTO schedules(id, agent_id, room_id, paused, next_run_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, room_id = excluded.room_id, paused = excluded.paused, next_run_at = excluded.next_run_at, data = excluded.data",
@@ -364,24 +360,6 @@ export class Store {
   }
   dueSchedules(now: number) {
     return parseAll<Schedule>(this.db.query("SELECT data FROM schedules WHERE paused = 0 AND next_run_at IS NOT NULL AND next_run_at <= ?").all(now) as Row[]);
-  }
-  putStaged(s: StagedItem) {
-    this.db.run("INSERT OR REPLACE INTO staged(id, room_id, deliver_after, delivered_at, data) VALUES (?, ?, ?, ?, ?)", [
-      s.id,
-      s.roomId,
-      s.deliverAfter,
-      s.deliveredAt ?? null,
-      JSON.stringify(s),
-    ]);
-  }
-  dueStaged(now: number) {
-    return parseAll<StagedItem>(this.db.query("SELECT data FROM staged WHERE delivered_at IS NULL AND deliver_after <= ?").all(now) as Row[]);
-  }
-  listStaged(roomId?: string) {
-    const rows = roomId
-      ? (this.db.query("SELECT data FROM staged WHERE room_id = ? ORDER BY deliver_after").all(roomId) as Row[])
-      : (this.db.query("SELECT data FROM staged ORDER BY deliver_after").all() as Row[]);
-    return parseAll<StagedItem>(rows);
   }
 
   // ----- commitments -----

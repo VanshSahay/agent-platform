@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { sha256 } from "../core/ids.ts";
 import type { MemberRole, Person, RoomKind } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
@@ -75,7 +76,7 @@ export function plainText(md: string): string {
 export const LINK_CODE_TTL_MS = 15 * 60 * 1000;
 
 export function mintLinkCode(store: Store, personId: string, now: number): string {
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const code = String(randomInt(100000, 1000000));
   store.setKv(`link:${code}`, JSON.stringify({ personId, at: now }));
   return code;
 }

@@ -161,7 +161,7 @@ export interface RunOptions {
  * The catalogue carries twins of some core tools (a business call, a page read by another name).
  * Graders judge the action, so a twin counts as the tool it mirrors.
  */
-const TWINS: Record<string, string> = { place_vendor_call: "place_call", web_scrape: "browse_page", browser_use: "browse_page" };
+const TWINS: Record<string, string> = { browser_use: "browse_page" };
 export const canonical = (tool: string) => TWINS[tool] ?? tool;
 
 /** Side-effect tools that reach a third party; evidenced calls to these are what `expects.outreach` declares. */

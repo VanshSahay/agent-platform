@@ -159,7 +159,7 @@ describe("gates and group serving", () => {
     const phone = new FakePhone();
     const w = groupWorld(
       (req, i) => {
-        if (i === 0) return callTool("place_call", { to: "+1", who: "the pharmacy", objective: "refill" });
+        if (i === 0) return callTool("place_call", { to: "+14085550100", who: "the pharmacy", objective: "refill" });
         return reply(lastToolResult(req) ?? "");
       },
       { phone },

@@ -12,7 +12,7 @@ const once =
     toolCallsSoFar(req).some((c) => c.name === name) ? reply(text) : callTool(name, input);
 
 describe("the catalogue", () => {
-  test("matches Fo's tool names (less run_javascript, which had no sandbox), plus ours", () => {
+  test("matches Fo's tool names, less the twins of core tools and the unsandboxed code runner, plus ours", () => {
     const names = new Set(TOOLS.map((t) => t.spec.name));
     const fo = [
       "list_events",
@@ -74,8 +74,6 @@ describe("the catalogue", () => {
       "whatsapp_load_conversation",
       "whatsapp_get_summary",
       "web_search",
-      "web_scrape",
-      "capture_and_analyze",
       "search_products",
       "add_to_cart",
       "view_cart",
@@ -89,15 +87,13 @@ describe("the catalogue", () => {
       "register_pronunciations",
       "list_sms_groups",
       "place_call",
-      "place_vendor_call",
-      "search_contacts",
       "add_contact",
       "mcp_call",
     ];
     const missing = fo.filter((n) => !names.has(n));
     expect(missing).toEqual([]);
     expect(names.has("send_agent_email")).toBe(true); // Fo's send_wajo_email
-    expect(fo.length + 1).toBe(79);
+    expect(fo.length + 1).toBe(75);
     expect(new Set(TOOLS.map((t) => t.spec.name)).size).toBe(TOOLS.length); // no duplicate names
   });
 

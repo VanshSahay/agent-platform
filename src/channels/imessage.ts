@@ -91,6 +91,8 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
     if (d.kind === "progress") return;
     const room = app.store.getRoom(d.roomId);
     if (room?.channel !== channel || !room.externalId) return;
+    // A card for one person (a sign-in, an approval) goes to their own chat with the assistant, not the group thread.
+    if (d.visibleTo?.length && room.kind === "group") return;
     try {
       const space = await im.space.get(room.externalId);
       // A card in Messages is plain text; the app has the buttons and the sign-in browser, so link it.

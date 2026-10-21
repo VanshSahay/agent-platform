@@ -25,7 +25,6 @@ export function buildSystemPrompt(input: {
   ledger: string;
   plan?: Plan;
   planText?: string;
-  readOnly?: boolean;
   accounts: { accountOwnerName: string; needsApproval: boolean };
   /** The room's own priorities, set when the circle added the assistant. */
   roomFocus?: string;
@@ -34,7 +33,6 @@ export function buildSystemPrompt(input: {
   tasksText?: string;
   /** Services the account owner for this request has connected (names only). */
   connectedServices?: string[];
-  extra?: string;
 }): string {
   const a = input.agent;
   const zone = input.owner?.timezone ?? "UTC";
@@ -122,8 +120,6 @@ export function buildSystemPrompt(input: {
     input.requester
       ? `Speaking with: ${input.requester.displayName}${input.requester.pronouns ? ` (${input.requester.pronouns})` : ""}${input.requester.techComfort === "low" ? ", low tech comfort: one step at a time" : ""}.`
       : "",
-    input.readOnly ? "This room is read-only for you; answer questions but take no actions." : "",
-    input.extra ?? "",
   ]
     .filter(Boolean)
     .join("\n");

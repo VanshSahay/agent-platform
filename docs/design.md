@@ -92,7 +92,7 @@ Every gate decision is in the records: the item, the `gate_opened` and `gate_res
 
 `CommitmentService` is the responsibilities ledger: owner, beneficiary, due time, status, nudges. The first nudge goes a day before due (or in two days with no due date), then daily while open, and after three overdue nudges the item is marked blocked. A blocked item is escalated once: a `decision` card ("X is stuck": reassign, drop, keep nudging) opens for the owner, and the nudging stops. `Scheduler.tick` turns due nudges into `follow_up` runs whose prompt tells the agent to do it (if it owns it) or check in with the owner in one line and update the ledger. The ledger is in every prompt for the room.
 
-Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), staged outreach once working hours begin, commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
+Timers in one tick, all idempotent by dedup key: due schedules (after the premise check), commitment nudges, attention expiry, and a heartbeat per room at most once a day when there is standing work.
 
 ## 8b. What we took from Instinct's harness
 

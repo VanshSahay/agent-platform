@@ -20,12 +20,11 @@ export function saveArtifact(ctx: ToolContext, a: { kind: Artifact["kind"]; titl
   return { id: art.id, url: `${ctx.publicUrl}/d/${art.id}` };
 }
 
-/** Rooms the requester may read: the ones they are in (the owner sees every room of the agent). */
+/** Rooms the requester may read: the ones they are in. The owner also sees every group, never another person's private chat. */
 export function readableRooms(ctx: ToolContext) {
   const all = ctx.store.listRooms(ctx.agent.id);
-  if (ctx.requesterId === ctx.agent.ownerId) return all;
   const mine = new Set(ctx.requesterId ? ctx.store.roomsForPerson(ctx.requesterId) : []);
-  return all.filter((r) => mine.has(r.id));
+  return all.filter((r) => mine.has(r.id) || (ctx.requesterId === ctx.agent.ownerId && r.kind !== "dm"));
 }
 
 export const clip = (text: string, max = 4000) => (text.length > max ? `${text.slice(0, max)}…` : text);

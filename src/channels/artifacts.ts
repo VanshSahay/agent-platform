@@ -2,53 +2,6 @@ import type { Artifact } from "../core/types.ts";
 
 const esc = (x: unknown) => String(x ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-/** A small Markdown renderer: headings, lists, bold, italics, code, links, paragraphs. Enough for notes and plans. */
-export function markdownToHtml(md: string): string {
-  const inline = (t: string) =>
-    esc(t)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noopener">$1</a>');
-  const out: string[] = [];
-  let list: "ul" | "ol" | null = null;
-  let para: string[] = [];
-  const flush = () => {
-    if (para.length) out.push(`<p>${inline(para.join(" "))}</p>`);
-    para = [];
-  };
-  const closeList = () => {
-    if (list) out.push(`</${list}>`);
-    list = null;
-  };
-  for (const raw of md.split("\n")) {
-    const line = raw.trimEnd();
-    const h = line.match(/^(#{1,4})\s+(.*)$/);
-    const li = line.match(/^\s*[-*]\s+(.*)$/);
-    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (h) {
-      flush();
-      closeList();
-      out.push(`<h${h[1]!.length}>${inline(h[2]!)}</h${h[1]!.length}>`);
-    } else if (li || ol) {
-      flush();
-      const kind = li ? "ul" : "ol";
-      if (list !== kind) {
-        closeList();
-        list = kind;
-        out.push(`<${kind}>`);
-      }
-      out.push(`<li>${inline((li ?? ol)![1]!)}</li>`);
-    } else if (!line.trim()) {
-      flush();
-      closeList();
-    } else para.push(line);
-  }
-  flush();
-  closeList();
-  return out.join("\n");
-}
-
 /** A document as sections: each heading opens one; list lines become items; other lines become notes. */
 export interface DocSection {
   key: string;

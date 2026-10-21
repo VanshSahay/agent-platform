@@ -28,10 +28,10 @@ Eighty tools, the same catalogue Fo's client knows, each recorded with evidence 
 |---|---|
 | core | plan, web_search, browse_page, connect_account, find_person, ask_room, ask_person, wait_for_user_input, place_call, send_sms, post_community, read_community_replies, compare_options, remember, search_memory, schedule_action, track_commitment, update_commitment, request_purchase, stay_quiet, delegate_task, update_task, steer_task, watch_for |
 | google | list_events, create_calendar, check_availability, find_mutual_availability, create_event, update_event, delete_event, move_events, search_emails, get_email_content, label_email, archive_email, remove_email_label, send_email_as_user, find_files, list_in_folder, get_metadata, share, create_form, get_spreadsheet, update_spreadsheet, search_user_spreadsheets, get_slide_thumbnail, append_slides, replace_slide, delete_slide |
-| operator | get_connect_link, request_call, list_tasks, get_task, list_scheduled_actions, cancel_scheduled_action, update_task_status, browser_use, connector_call, get_current_time, run_javascript, search_tools, publish_dashboard, read_dashboard, list_past_sessions, get_session_transcript, load_workspace_context, present_files, write_document, generate_image, analyze_image |
-| knowledge | load_soul_document, web_scrape, capture_and_analyze, email_load_unprocessed, email_load_thread, slack_load_recent, slack_load_aggregates, slack_search_messages, whatsapp_load_recent, whatsapp_load_conversation, whatsapp_get_summary |
+| operator | get_connect_link, request_call, list_tasks, get_task, list_scheduled_actions, cancel_scheduled_action, update_task_status, browser_use, connector_call, get_current_time, search_tools, publish_dashboard, read_dashboard, list_past_sessions, get_session_transcript, load_workspace_context, present_files, write_document, generate_image, analyze_image |
+| knowledge | load_soul_document, email_load_unprocessed, email_load_thread, slack_load_recent, slack_load_aggregates, slack_search_messages, whatsapp_load_recent, whatsapp_load_conversation, whatsapp_get_summary |
 | shopping | search_products, add_to_cart, view_cart, remove_from_cart, checkout_cart, save_address, list_saved_addresses, delete_saved_address |
-| voice, calls, contacts, email, mcp | text_to_speech, register_pronunciations, list_sms_groups, place_vendor_call, search_contacts, add_contact, send_agent_email, mcp_call |
+| voice, calls, contacts, email, mcp | text_to_speech, register_pronunciations, list_sms_groups, add_contact, send_agent_email, mcp_call |
 
 What each needs: Google tools need `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the server and each person connecting their account under Settings → Connections; the assistant's own mailbox needs AgentMail (send and receive) or Resend (send only); Slack a token per person; MCP servers and HTTP APIs are added per person in Settings; calls need Vapi and SMS Twilio; voice notes ElevenLabs; images any OpenRouter image model; checkout cards Stripe Issuing. Without a service, its tools say so and the agent hands out a connect link. Documents, dashboards, images and voice notes open at `/d/:id`. A document is a small shared app, not a static page: every list line is a tappable item, ticks and "who brings it" are shared with the whole chat, anyone can add a line, and the page keeps the product's look with a progress bar, filters and a stamp when everything is done.
 
@@ -120,7 +120,7 @@ src/care        the responsibilities ledger and its nudges
 src/planning    plans with an approach ladder and stall handling
 src/tools       the tool registry (labels, gates) and the "hands" interfaces with fakes
 src/runtime     the run loop: events with cursors, steering, gates, resume, footer
-src/scheduler   schedules with authorisation and premise checks, staged outreach, heartbeat
+src/scheduler   schedules with authorisation and premise checks, heartbeat
 src/channels    web server: JSON API, watch stream, owner UI
 skills/         markdown procedures the agent reads when a task matches
 web/            the owner's page: inbox, chat, memory, ledger
