@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ModelRequest } from "../src/model/types.ts";
 import { callTool, reply, toolCallsSoFar } from "../src/model/scripted.ts";
 import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";

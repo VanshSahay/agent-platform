@@ -1,10 +1,8 @@
-import { newId } from "../../core/ids.ts";
 import { fmtWhen } from "../../core/clock.ts";
-import type { Id } from "../../core/types.ts";
 import type { ModelImage } from "../../model/types.ts";
 import type { BrowserStep } from "../browser.ts";
 import { n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
-import { clip, notConnected, readableRooms, saveArtifact } from "./shared.ts";
+import { clip, readableRooms, saveArtifact } from "./shared.ts";
 
 const list = (description: string) => ({ type: "array", items: { type: "string" }, description });
 

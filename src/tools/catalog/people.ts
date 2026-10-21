@@ -1,6 +1,5 @@
-import { newId } from "../../core/ids.ts";
 import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
-import { notConnected, saveArtifact } from "./shared.ts";
+import { saveArtifact } from "./shared.ts";
 
 /** Fo's "contacts", "voice", "calls" (the vendor variant) and "wajo" (own email) families. */
 export const PEOPLE_TOOLS: ToolDef[] = [
