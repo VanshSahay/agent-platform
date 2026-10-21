@@ -64,7 +64,7 @@ async function ensureAuth() {
   await window.Clerk.load();
   if (!window.Clerk.user) {
     // Signed out: the landing page, unless they came from its button or an invite link.
-    if (!/^#sign(in|up)$/.test(location.hash) && !location.hash.startsWith("#join=")) {
+    if (!/^#sign(in|up)\/?$/.test(location.hash) && !location.hash.startsWith("#join=")) {
       location.replace("/welcome");
       return false;
     }
@@ -77,10 +77,10 @@ async function ensureAuth() {
       afterSignUpUrl: `${location.origin}/`,
       appearance: { variables: { colorPrimary: "#111", colorText: "#111", colorBackground: "#fff", borderRadius: "12px", fontFamily: "Inter, system-ui, sans-serif" } },
     };
-    if (location.hash === "#signup") window.Clerk.mountSignUp(document.getElementById("signin"), opts);
+    if (/^#signup\/?$/.test(location.hash)) window.Clerk.mountSignUp(document.getElementById("signin"), opts);
     else window.Clerk.mountSignIn(document.getElementById("signin"), opts);
     addEventListener("hashchange", () => {
-      if (/^#sign(in|up)$/.test(location.hash)) location.reload();
+      if (/^#sign(in|up)\/?$/.test(location.hash)) location.reload();
     });
     window.Clerk.addListener(({ user }) => {
       if (user) location.reload();
