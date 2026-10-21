@@ -134,6 +134,26 @@ export function parseOutreach(v: unknown): Outreach[] {
 }
 export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
 /** "https://www.ubereats.com/orders" and "ubereats.com" both mean ubereats.com. */
+/**
+ * A URL the server may fetch on a member's behalf: http(s), and not the box itself or the
+ * network behind it. Checked by hostname, not by resolving it (ponytail: a DNS answer that
+ * points at 10.x gets through; resolve first if this ever runs somewhere with private services).
+ */
+export function publicUrl(v: string): URL | undefined {
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return undefined;
+  if (/^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)) return undefined;
+  if (h === "::1" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return undefined;
+  return u;
+}
+
 export function siteOf(v: string): string {
   return v
     .trim()

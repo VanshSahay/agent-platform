@@ -11,6 +11,7 @@ import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
+import { publicUrl } from "../tools/kit.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
@@ -612,14 +613,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           if (!str(b.token)) return bad("token required");
           app.vault.put(params[0]!, "slack", str(b.token)!);
         } else if (kind === "mcp") {
-          if (!name || (!str(b.url) && !str(b.command))) return bad("name and url (or command) required");
-          app.vault.put(
-            params[0]!,
-            `mcp:${name}`,
-            JSON.stringify({ url: str(b.url) ?? "", token: str(b.token) || undefined, command: str(b.command) ? str(b.command)!.split(/\s+/) : undefined }),
-          );
+          if (!name || !str(b.url)) return bad("name and url required");
+          if (!publicUrl(str(b.url)!)) return bad("url must be a public http(s) address");
+          app.vault.put(params[0]!, `mcp:${name}`, JSON.stringify({ url: str(b.url), token: str(b.token) || undefined }));
         } else if (kind === "api") {
           if (!name || !str(b.baseUrl)) return bad("name and baseUrl required");
+          if (!publicUrl(str(b.baseUrl)!) || (str(b.openapiUrl) && !publicUrl(str(b.openapiUrl)!))) return bad("baseUrl and openapiUrl must be public http(s) addresses");
           app.vault.put(
             params[0]!,
             `api:${name}`,

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ModelRequest } from "../src/model/types.ts";
 import { callTool, reply, toolCallsSoFar } from "../src/model/scripted.ts";
 import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";
@@ -12,7 +13,7 @@ const once =
     toolCallsSoFar(req).some((c) => c.name === name) ? reply(text) : callTool(name, input);
 
 describe("the catalogue", () => {
-  test("matches Fo's 80 tool names, plus ours", () => {
+  test("matches Fo's tool names (less run_javascript, which had no sandbox), plus ours", () => {
     const names = new Set(TOOLS.map((t) => t.spec.name));
     const fo = [
       "list_events",
@@ -53,7 +54,6 @@ describe("the catalogue", () => {
       "wait_for_user_input",
       "connector_call",
       "get_current_time",
-      "run_javascript",
       "search_tools",
       "publish_dashboard",
       "read_dashboard",
@@ -98,7 +98,7 @@ describe("the catalogue", () => {
     const missing = fo.filter((n) => !names.has(n));
     expect(missing).toEqual([]);
     expect(names.has("send_agent_email")).toBe(true); // Fo's send_wajo_email
-    expect(fo.length + 1).toBe(80);
+    expect(fo.length + 1).toBe(79);
     expect(new Set(TOOLS.map((t) => t.spec.name)).size).toBe(TOOLS.length); // no duplicate names
   });
 
@@ -158,13 +158,13 @@ describe("the catalogue", () => {
     expect(call.labelDone).toBe('Wrote "Packing list"');
   });
 
-  test("checkout asks the owner, mints a single-use card into the vault, and never shows the number", async () => {
+  test("checkout asks the owner, then clears the budget without claiming an order: no card, cart kept, footer says so", async () => {
     const w = groupWorld((req) => {
       const calls = toolCallsSoFar(req);
       if (!calls.some((c) => c.name === "add_to_cart")) return callTool("add_to_cart", { title: "AA batteries", url: "https://walgreens.com/p/aa", priceUsd: 12 });
       if (!calls.some((c) => c.name === "save_address")) return callTool("save_address", { label: "Home", line1: "1 Main St", city: "San Jose" });
-      if (calls.filter((c) => c.name === "checkout_cart").length < 2 && !JSON.stringify(req.messages).includes("single-use card")) return callTool("checkout_cart", {});
-      return reply("Ordered.");
+      if (calls.filter((c) => c.name === "checkout_cart").length < 2 && !JSON.stringify(req.messages).includes("order NOT placed")) return callTool("checkout_cart", {});
+      return reply("I've ordered the batteries.");
     });
     const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip buy AA batteries from walgreens" });
     expect(run?.status).toBe("waiting");
@@ -173,11 +173,62 @@ describe("the catalogue", () => {
     expect(card.title).toContain("$12.00");
     await w.app.runtime.answerAttention(card.id, "Yes", "alex");
     expect(w.app.store.getRun(run!.id)!.status).toBe("done");
-    expect(w.hands.payments.cards).toEqual([{ amountUsd: 12, merchant: "walgreens.com", personId: "alex" }]);
-    expect(w.app.vault.services("alex")).toContain("card:card_1");
-    const transcript = JSON.stringify(w.app.store.toolCallsForRun(run!.id).map((c) => c.result));
-    expect(transcript).not.toContain("4242424242424242");
-    expect(repliesTo(w.deliveries, w.room.id).at(-1)).toContain("Checkout at walgreens.com: $12.00");
+    expect(w.hands.payments.cards).toEqual([]);
+    expect(w.app.vault.services("alex")).not.toContain("card:card_1");
+    expect(w.app.store.getKv("cart:alex") ?? "[]").not.toBe("[]");
+    const last = repliesTo(w.deliveries, w.room.id).at(-1)!;
+    expect(last).toContain("order not placed");
+    // A reply that still claims the order gets the correction: clearing a budget is not buying.
+    expect(last).toContain("Correction");
+  });
+
+  test("browser_use asks before clicking inside a signed-in site; a guest's look at the owner's account asks too", async () => {
+    const w = groupWorld((req) =>
+      toolCallsSoFar(req).length ? reply("ok") : callTool("browser_use", { url: "https://ubereats.com/orders", account: "ubereats.com", steps: [{ click: "#reorder" }] }),
+    );
+    w.app.vault.put("alex", "browser:ubereats.com", "ctx_1");
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip reorder my usual" });
+    expect(run?.status).toBe("waiting");
+    const item = w.app.attention.openFor("alex")[0]!;
+    expect(item.kind).toBe("action");
+    expect(item.title).toContain("act on ubereats.com as Alex");
+    expect(w.hands.browser.runs).toEqual([]);
+    const w2 = groupWorld((req) =>
+      toolCallsSoFar(req).length ? reply("ok") : callTool("browser_use", { url: "https://ubereats.com/orders", account: "ubereats.com", steps: [{ scroll: "down" }] }),
+    );
+    w2.app.vault.put("alex", "browser:ubereats.com", "ctx_1");
+    expect((await w2.app.runtime.handleMessage({ roomId: w2.room.id, personId: "riley", text: "@pip what did alex order last?" }))?.status).toBe("waiting");
+    expect(w2.hands.browser.runs).toEqual([]);
+  });
+
+  test("connector_call keeps the token on the API's own origin and gates on the operation's real method", async () => {
+    const seen: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        seen.push(`${req.method} ${new URL(req.url).pathname}`);
+        if (new URL(req.url).pathname === "/openapi.json")
+          return Response.json({ paths: { "/pets/{id}": { delete: { operationId: "deletePet", parameters: [{ name: "id" }] } } } });
+        return Response.json({ ok: true });
+      },
+    });
+    try {
+      const w = groupWorld((req) => {
+        const calls = toolCallsSoFar(req);
+        if (!calls.length) return callTool("connector_call", { connector: "pets", path: "https://attacker.example/x", method: "GET" });
+        if (calls.length === 1) return callTool("connector_call", { connector: "pets", operationId: "deletePet", params: { id: 7 } });
+        return reply("ok");
+      });
+      w.app.vault.put("alex", "api:pets", JSON.stringify({ baseUrl: `http://127.0.0.1:${server.port}`, openapiUrl: `http://127.0.0.1:${server.port}/openapi.json`, token: "tok" }));
+      const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "@pip clean up alex's pets" });
+      const calls = w.app.store.toolCallsForRun(run!.id);
+      expect(String(calls[0]!.result)).toContain("leaves http://127.0.0.1");
+      expect(run?.status).toBe("waiting");
+      expect(w.app.attention.openFor("alex")[0]!.detail).toContain("DELETE /pets/{id}");
+      expect(seen.some((l) => l.startsWith("DELETE"))).toBe(false);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test("send_agent_email goes from the assistant's own address after a yes", async () => {
@@ -252,11 +303,5 @@ describe("the catalogue", () => {
     } finally {
       server.stop(true);
     }
-  });
-
-  test("run_javascript runs a snippet and returns what it printed", async () => {
-    const w = groupWorld(once("run_javascript", { code: "console.log(new Date(2026, 10, 20).getDay(), 240/4)" }));
-    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip what day is the 20th and what's the split?" });
-    expect((w.app.store.toolCallsForRun(run!.id)[0]!.result as { stdout: string }).stdout.trim()).toBe("5 60");
   });
 });

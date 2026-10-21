@@ -571,28 +571,27 @@ export const GOOGLE_TOOLS: ToolDef[] = [
         };
       const to = (Array.isArray(input.to) ? input.to : []).map((x) => s(x).trim()).filter((x) => /^[^@\s]+@[^@\s]+$/.test(x));
       if (!to.length) return { ok: false, content: "Give at least one valid email address." };
-      const cc = (Array.isArray(input.cc) ? input.cc : []).map((x) => s(x).trim()).filter(Boolean);
+      const cc = (Array.isArray(input.cc) ? input.cc : []).map((x) => s(x).trim()).filter((x) => /^[^@\s]+@[^@\s]+$/.test(x));
+      const everyone = [...to, ...cc];
       const gate = ctx.gate({
         kind: "outreach_approval",
-        title: `OK to email ${to.join(", ")} as you?`,
+        title: `OK to email ${everyone.join(", ")} as you?`,
         detail: `From your Gmail\nSubject: ${s(input.subject)}\n\n${s(input.text).slice(0, 1500)}`,
-        outreach: { who: to.join(", "), how: "email" },
-        key: ["send_email_as_user", to, s(input.subject), s(input.text)],
+        outreach: { who: everyone.join(", "), how: "email" },
+        key: ["send_email_as_user", to, cc, s(input.subject), s(input.text)],
       });
       if (!gate.granted) {
         if ("held" in gate) return { ok: true, content: gate.held, held: true };
         return { ok: true, content: "Waiting for the go-ahead. Nothing was sent.", waitingOn: gate.item, roomNotice: gate.notice };
       }
-      const mime = [
+      // Headers, one blank line, then the body as given: a body that starts with "Bcc:" stays body.
+      const headers = [
         `To: ${to.join(", ")}`,
         cc.length ? `Cc: ${cc.join(", ")}` : "",
         `Subject: ${s(input.subject).replace(/[\r\n]/g, " ")}`,
         "Content-Type: text/plain; charset=utf-8",
-        "",
-        s(input.text),
-      ]
-        .filter((l) => l !== "")
-        .join("\r\n");
+      ].filter(Boolean);
+      const mime = [...headers, "", s(input.text)].join("\r\n");
       try {
         const r = await g<{ id: string }>(ctx, {
           method: "POST",

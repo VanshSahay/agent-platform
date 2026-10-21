@@ -3,7 +3,7 @@ import { fmtWhen } from "../../core/clock.ts";
 import type { Id } from "../../core/types.ts";
 import type { ModelImage } from "../../model/types.ts";
 import type { BrowserStep } from "../browser.ts";
-import { n, num, obj, s, siteOf, str, type ToolDef } from "../kit.ts";
+import { n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
 import { clip, notConnected, readableRooms, saveArtifact } from "./shared.ts";
 
 const list = (description: string) => ({ type: "array", items: { type: "string" }, description });
@@ -182,29 +182,6 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       );
       scored.sort((a, b) => b.score - a.score);
       return { ok: true, content: scored.slice(0, 12).map((x) => ({ name: x.t.spec.name, family: x.t.family, description: x.t.spec.description })) };
-    },
-  },
-  {
-    spec: {
-      name: "run_javascript",
-      description: "Run a short JavaScript snippet for arithmetic, dates, parsing or formatting and get what it prints. No network, no files, five seconds.",
-      input_schema: obj({ code: str("JavaScript. Use console.log for output.") }, ["code"]),
-    },
-    family: "operator",
-    labels: { running: "Running code…", done: "Ran code" },
-    sideEffect: false,
-    async run(input) {
-      // ponytail: a child process with an empty environment and a timeout; a real sandbox (isolate, worker with no
-      // host bindings) if untrusted code ever runs here. The model writes this code; the person never does.
-      const code = s(input.code).slice(0, 20_000);
-      const prelude =
-        'for (const k of ["fetch","Bun","require","WebSocket","XMLHttpRequest"]) { try { Object.defineProperty(globalThis, k, { value: undefined, configurable: false }); } catch {} }';
-      const proc = Bun.spawn([process.execPath, "--smol", "-e", prelude + code], { env: { PATH: "" }, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-      const timer = setTimeout(() => proc.kill(), 5000);
-      const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-      const exit = await proc.exited;
-      clearTimeout(timer);
-      return { ok: exit === 0, content: { stdout: clip(out, 6000), stderr: clip(err, 2000), exit }, evidence: `js:exit${exit}` };
     },
   },
   {
@@ -392,16 +369,34 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     },
     family: "operator",
     labels: { running: "Operating the browser…", done: "Operated the browser", failed: "The browser hit a wall" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       const url = s(input.url);
-      if (!/^https?:\/\//i.test(url)) return { ok: false, content: "url must start with http:// or https://" };
+      if (!publicUrl(url)) return { ok: false, content: "url must be a public http:// or https:// address" };
       const steps = (Array.isArray(input.steps) ? input.steps : []).filter((x) => x && typeof x === "object") as BrowserStep[];
       for (const st of steps)
         if ("fill" in st && /password|cvc|card ?number|cvv/i.test(JSON.stringify(st)))
           return { ok: false, content: "I don't type passwords or card details. Use connect_account or checkout_cart." };
       const site = s(input.account) ? siteOf(s(input.account)) : "";
       if (site && !ctx.vault.has(`browser:${site}`)) return { ok: false, content: `${site} is not connected. Call connect_account first.` };
+      // Clicking and typing inside someone's signed-in site can order, book or send as them: that asks,
+      // as does any use of an account that is not the requester's own.
+      const acts = steps.some((st) => "click" in st || "fill" in st || "press" in st);
+      if (site && (acts || ctx.requesterId !== ctx.accountOwnerId)) {
+        const gate = ctx.gate({
+          kind: "action",
+          title: `OK to ${acts ? "act" : "look"} on ${site} as ${ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "the account owner"}?`,
+          detail: `${url}\n${steps
+            .map((st) => JSON.stringify(st))
+            .join("\n")
+            .slice(0, 800)}`,
+          key: ["browser_use", url, site, steps],
+        });
+        if (!gate.granted) {
+          if ("held" in gate) return { ok: true, content: gate.held, held: true };
+          return { ok: true, content: "Asked first. Nothing was clicked.", waitingOn: gate.item, roomNotice: gate.notice };
+        }
+      }
       try {
         const r = site ? await ctx.vault.use(`browser:${site}`, (contextId) => ctx.hands.browser.run({ url, contextId, steps })) : await ctx.hands.browser.run({ url, steps });
         if (!r) return { ok: false, content: `${site} is not connected.` };
@@ -490,5 +485,3 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     },
   },
 ];
-
-export { newId as _newId, type Id as _Id, notConnected as _notConnected };

@@ -101,12 +101,12 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     spec: {
       name: "checkout_cart",
       description:
-        "Buy what is in the cart: asks the owner (or passes under their threshold), mints a single-use card for exactly this amount, and places the order in the browser at the merchant with the saved address. Card details never pass through the chat.",
+        "Clear the budget for what is in the cart: asks the owner (or passes under their threshold) for exactly this amount at this merchant. It does not place the order: there is no checkout hand yet, so say what was approved, keep the cart, and hand the person the merchant link and the delivery address to finish.",
       input_schema: obj({ addressId: str("Saved address id; default the first one."), note: str("Anything the merchant should know.") }),
     },
     family: "shopping",
-    labels: { running: "Preparing checkout…", done: "Checkout ready", failed: "Checkout did not go through" },
-    sideEffect: true,
+    labels: { running: "Clearing the budget…", done: "Budget cleared", failed: "Checkout did not go through" },
+    sideEffect: false,
     async run(input, ctx) {
       const items = readCart(ctx);
       if (!items.length) return { ok: false, content: "The cart is empty." };
@@ -129,30 +129,20 @@ export const SHOPPING_TOOLS: ToolDef[] = [
       const person = ctx.store.getPerson(ctx.accountOwnerId);
       const address = (person?.addresses ?? []).find((a) => a.id === s(input.addressId)) ?? person?.addresses?.[0];
       if (!address) return { ok: false, content: `No delivery address saved for ${person?.displayName ?? "the buyer"}. Ask for one and save it with save_address.` };
-      try {
-        const card = await ctx.hands.payments.issueCard({ amountUsd: amount, merchant, personId: ctx.accountOwnerId });
-        ctx.vault.put(`card:${card.cardId}`, card.details);
-        // The browser hand pays with the card inside vault.use; the model sees the outcome only.
-        const steps = [{ waitMs: 500 }, { screenshot: true as const }];
-        const run = await ctx.vault.use(`card:${card.cardId}`, () => ctx.hands.browser.run({ url: items[0]!.url, steps }));
-        writeCart(ctx, []);
-        return {
-          ok: true,
-          content: {
-            approved: gate.reason,
-            amountUsd: amount,
-            merchant,
-            card: `single-use card ending ${card.last4}`,
-            deliverTo: `${address.line1}, ${address.city}`,
-            note: "The card is issued and the merchant page is open; finishing the order form is the next browser_use steps (never type the card number yourself: it is filled by the checkout hand).",
-            page: run ? clip(run.text, 1500) : undefined,
-          },
-          evidence: card.evidence,
-          label: `Checkout at ${merchant}: $${amount.toFixed(2)}`,
-        };
-      } catch (e) {
-        return { ok: false, content: `Checkout failed: ${String((e as Error).message).slice(0, 200)}` };
-      }
+      // No card is minted and nothing is ordered: an approval is not a purchase, and a footer
+      // must never say "Checkout" for an order that was not placed. The cart stays for the person.
+      return {
+        ok: true,
+        content: {
+          approved: gate.reason,
+          amountUsd: amount,
+          merchant,
+          deliverTo: `${address.line1}, ${address.city}`,
+          cart: items.map((i) => ({ title: i.title, url: i.url, quantity: i.quantity, priceUsd: i.priceUsd })),
+          note: "Budget cleared, order NOT placed: Circle cannot pay at a merchant yet. Give the person the item links, the amount and the address so they can finish, and say plainly that nothing was ordered.",
+        },
+        label: `Budget cleared at ${merchant}: $${amount.toFixed(2)} (order not placed)`,
+      };
     },
   },
   {

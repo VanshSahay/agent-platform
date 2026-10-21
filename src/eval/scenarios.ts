@@ -742,7 +742,8 @@ export const SCENARIOS: Scenario[] = [
     turns: [{ room: "room", personId: "alex", text: "@pip order a 12-pack of AA batteries for Jo from Walgreens, send them to my place." }],
     script: (req) => {
       const last = lastToolResult(req) ?? "";
-      if (last.includes("single-use card")) return reply("Done: a 12-pack of Duracell AA from Walgreens, $11.99, to your place.");
+      if (last.includes("order NOT placed"))
+        return reply("Budget cleared for a 12-pack of Duracell AA at Walgreens, $11.99, to your place. Nothing is ordered yet: here is the link to finish.");
       if (last.includes("totalUsd")) return callTool("checkout_cart", {});
       if (last.includes("walgreens.com")) return callTool("add_to_cart", { title: "Duracell Coppertop AA Batteries, 12 pack", url: url(last), priceUsd: 11.99, quantity: 1 });
       return callTool("search_products", { query: "AA batteries 12-pack", merchant: "walgreens.com" });
@@ -750,14 +751,14 @@ export const SCENARIOS: Scenario[] = [
     expects: {},
     checks: [
       {
-        name: "checked out under the threshold without asking",
-        detail: "A checkout_cart call carries card evidence and no purchase_approval item was opened.",
-        pass: (app, w) => called("checkout_cart", { evidence: true })(app, w) && !app.store.listAttention({ agentId: w.agent.id }).some((a) => a.kind === "purchase_approval"),
+        name: "cleared under the threshold without asking",
+        detail: "A checkout_cart call completed and no purchase_approval item was opened.",
+        pass: (app, w) => called("checkout_cart")(app, w) && !app.store.listAttention({ agentId: w.agent.id }).some((a) => a.kind === "purchase_approval"),
       },
       {
-        name: "one small card minted for Alex",
-        detail: "The payment fake issued exactly one card, for Alex, for $25 or less.",
-        pass: (_app, w) => w.hands.payments.cards.length === 1 && w.hands.payments.cards[0]!.personId === "alex" && w.hands.payments.cards[0]!.amountUsd <= 25,
+        name: "no card minted and no order claimed",
+        detail: "Nothing can pay at a merchant yet: no card is issued, and the reply says plainly that the order is not placed.",
+        pass: (app, w) => w.hands.payments.cards.length === 0 && /\b(not (yet )?(placed|ordered)|nothing (is |was )?ordered)\b/i.test(agentTextIn(app, w.room.id, w.agent.id)),
       },
       {
         name: "the card number never entered the chat",
@@ -772,10 +773,9 @@ export const SCENARIOS: Scenario[] = [
         },
       },
       {
-        name: "the cart is empty afterwards",
-        detail: "Alex's cart holds nothing once the checkout went through.",
-        noOpPasses: true,
-        pass: (app) => (app.store.getKv("cart:alex") ?? "[]") === "[]",
+        name: "the cart is kept for Alex to finish",
+        detail: "Nothing was ordered, so the cart still holds the batteries.",
+        pass: (app) => (app.store.getKv("cart:alex") ?? "[]") !== "[]",
       },
       finishedCheck("the run finished", "The group run is done.", "room"),
     ],
