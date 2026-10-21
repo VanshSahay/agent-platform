@@ -1277,25 +1277,27 @@ function settingsConnections(box) {
   renderConnections();
 }
 
-/** Where the assistant can be texted, and linking this person's phone to their seat, the way Fo does it: text a code. */
+/** Putting the assistant in your own chats: its number, a contact card, your phone linked, a group to add it to. */
 async function settingsChannels(box, agent) {
   let info = { channels: [], linked: {} };
   try {
     info = await api(`/api/channels?personId=${encodeURIComponent(state.me)}`);
   } catch {}
   const im = info.channels.find((c) => c.channel === "imessage");
-  const others = info.channels.filter((c) => c.channel !== "imessage").map((c) => c.channel);
+  const phone = im?.phone;
   const name = esc(agent?.name ?? "the assistant");
-  box.innerHTML = `<div class="section"><h3>Text ${name}</h3>${
-    im?.phone
-      ? `<p class="lead">${name} has its own number. Text it like a person, from your phone or from any group chat you add it to.</p>
-        <div class="field"><label>Its number</label><div class="phonebig">${esc(im.phone)} <a class="btn small" href="sms:${esc(im.phone)}">Text it</a></div></div>
-        <div class="field"><label>Your phone</label>${info.linked.phone ? `<div>${esc(info.linked.phone)} is linked to you: texts from it are yours.</div>` : `<div class="hint">Not linked yet. Until it is, texts from your phone are treated as a guest's. Link it in one text:</div><div class="actions"><button class="btn primary" type="button" id="linkPhone">Link my phone</button></div><div id="linkBox"></div>`}</div>`
-      : `<p class="lead">No text channel is connected on this server. Set <code>PROJECT_ID</code> and <code>PROJECT_SECRET</code> (Photon Spectrum) and <code>CHANNELS=imessage</code>; the number appears here once it is up.</p>`
-  }</div>
-  <div class="section"><h3>Group chats</h3><p class="lead">${im?.phone ? `Add ${esc(im.phone)} to any iMessage group the way you would add a friend. ${name} joins as a member of that group, the chat shows up in your Rooms within a minute, and you set its priorities and people here.` : `Once a text channel is connected, you add ${name}'s number to a group chat like a friend, and that chat appears in your Rooms.`}</p>
-    <div class="hint">In a group it answers when named or when a message is clearly for it, and stays quiet otherwise. Anything that spends money or contacts someone still asks you first.</div></div>
-  ${others.length ? `<div class="section"><h3>Also on</h3><p class="lead">${others.map(esc).join(", ")}</p></div>` : ""}`;
+  const number = phone ? `<strong>${esc(phone)}</strong>` : `<em>its number is being set up; ask whoever runs this Circle</em>`;
+  box.innerHTML = `<div class="section"><h3>Put ${name} in your chats</h3><p class="lead">${name} has its own phone number. Save it like a friend's, then text it or add it to any group in Messages.</p>
+    <ol class="steps">
+      <li><strong>Save the number:</strong> ${number}${phone ? ` <a class="btn small" href="/api/channels/vcard?personId=${encodeURIComponent(state.me)}">Add to contacts</a> <a class="btn small" href="sms:${esc(phone)}">Text it</a>` : ""}</li>
+      <li><strong>Link your phone</strong> so ${name} knows texts from it are you: ${
+        info.linked.phone
+          ? `${esc(info.linked.phone)} is linked.`
+          : `<button class="btn small primary" type="button" id="linkPhone" ${phone ? "" : "disabled"}>Link my phone</button>`
+      }<div id="linkBox"></div></li>
+      <li><strong>Add it to a group:</strong> open the group in Messages, tap the names at the top, Add Contact, pick ${name}. It joins like a friend, the group shows up here in Rooms, and you can name it and set what it is for.</li>
+    </ol>
+    <div class="hint">In a group it answers when named or when a message is clearly for it, and stays quiet otherwise. Anything that spends money or contacts someone still asks you first, in your own thread with it.</div></div>`;
   const btn = $("#linkPhone");
   if (btn)
     btn.onclick = async () => {
@@ -1303,7 +1305,7 @@ async function settingsChannels(box, agent) {
       try {
         const r = await api("/api/channels/link-code", { personId: state.me });
         $("#linkBox").innerHTML =
-          `<div class="linkcode"><div class="code">${esc(r.code)}</div><p>Text this code to <strong>${esc(r.phone ?? "the number above")}</strong> from your phone within 15 minutes.${r.sms ? ` On your phone, <a href="${esc(r.sms)}">tap to open Messages with it typed</a>; on a computer, scan:` : ""}</p>${r.qr ? `<div class="qr">${r.qr}</div>` : ""}<div class="tiny">You get "Linked" back by text; this page shows it when you reopen it.</div></div>`;
+          `<div class="linkcode"><div class="code">${esc(r.code)}</div><p>Text this code to ${esc(r.phone ?? "the number above")} within 15 minutes.${r.sms ? ` On your phone, <a href="${esc(r.sms)}">tap to open Messages with it typed</a>; from a computer, scan it:` : ""}</p>${r.qr ? `<div class="qr">${r.qr}</div>` : ""}<div class="tiny">You get "Linked" back by text; this page shows it when you reopen it.</div></div>`;
       } catch (e) {
         status(e.message, true);
         btn.disabled = false;

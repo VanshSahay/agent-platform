@@ -376,6 +376,18 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
     {
+      method: "GET",
+      re: /^\/api\/channels\/vcard$/,
+      access: "signedIn",
+      handle: () => {
+        const agent = app.store.listAgents()[0];
+        const phone = (opts.channels ?? []).find((c) => c.phone)?.phone;
+        if (!agent || !phone) return bad("no number yet", 404);
+        const vcf = `BEGIN:VCARD\nVERSION:3.0\nFN:${agent.name}\nTEL;TYPE=CELL:${phone}\nNOTE:${agent.name}, the assistant in your chats\nEND:VCARD\n`;
+        return new Response(vcf, { headers: { "content-type": "text/vcard; charset=utf-8", "content-disposition": `attachment; filename="${agent.name}.vcf"` } });
+      },
+    },
+    {
       method: "POST",
       re: /^\/api\/channels\/link-code$/,
       access: "signedIn",
