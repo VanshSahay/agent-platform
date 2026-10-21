@@ -28,3 +28,22 @@ Not a special price source: the server searches all four suppliers for the same 
 ## Limits of this pass
 
 Client evidence only: supplier names are inferred from id shapes and image hosts, not from a key or a host the browser contacted. The two silent suppliers and the flight source remain unknown. One search, one city, one date pair.
+
+## 6. How much cheaper, measured (21 Oct 2026, same evening)
+
+No supplier publishes a discount figure; RateHawk promises a price match and Hotelbeds sells net rates under contract, so the only way to know is a side-by-side. GetOffers's price is a wholesale rate plus the agency's margin (unknown, shown as 0% discount on this account), so it is an upper bound on the wholesale price. Booking.com totals read from the search results in USD for the same dates, 2 adults, 1 room.
+
+| Hotel | Dates | GetOffers total (cheapest rate, terms) | Booking.com total (terms) | GetOffers vs Booking |
+|---|---|---|---|---|
+| Hotel Nouvel, Barcelona | 10–12 Nov 2026 | $273.02 (room only, refundable, HappyTravel) | $343 (twin inner, free cancellation) | **−20%** |
+| Hotel Arrey Alella | 1–3 Dec 2026 | $260.82 (room only, refundable, TravelgateX) | $201 (double, no free cancellation shown) | +30% |
+| Best Western Plus Alfa Aeropuerto | 1–3 Dec 2026 | $272.76 (room only, refundable, TravelgateX) | $205 (double or twin) | +33% |
+| Hotel Lloret Ramblas | 1–3 Dec 2026 | $259.20 (room only, refundable, TravelgateX) | $217, struck from $234 (double or twin) | +19% |
+
+What the sample shows, with its limits stated:
+
+- For 10–12 Nov, 11 of the 12 GetOffers hotels I checked were **unavailable on Booking.com** for those dates (Sant Agustí, Catalonia Avinyó, H10 Racó del Pi, Oriente Atiram, Ikonik Ramblas, Hesperia Barri Gòtic, Condal, Leonardo Las Ramblas, Petit Palace Boqueria Garden, SERHS Rivoli Rambla, Ilunion Almirante). Those dates fall in a trade-fair week, and bedbank allotments stay open after retail sells out. The one overlap, Nouvel, was 20% cheaper through the bedbank at equal cancellation terms. That is the wholesale advantage in practice: availability when retail is sold out, and a lower price for the same refundable room.
+- For 1–3 Dec, a quiet week, the TravelgateX-fed results were **19 to 33% more expensive** than Booking.com's cheapest rate, with refundable terms on the GetOffers side and no free cancellation shown on Booking's. Part of that gap is the terms, part is the agency margin, part is this supplier access simply not being competitive on those properties; the HappyTravel feed returned nothing for that search, so the better feed was absent.
+- Taxes: Booking's card total is what it labels "Price"; GetOffers's total is `cheapest_rate_total_amount`. Whether both include Barcelona's tourist tax was not verified, so treat differences under about 10% as noise.
+
+Reading for Circle: wholesale wins on sold-out dates and on refundable rates, and loses to the retail cheapest on quiet dates once a margin is on top. A fair comparison needs the same cancellation terms and the net rate before margin, which only an own supplier account gives. Sample: 4 priced pairs, 1 city, 2 date pairs.
