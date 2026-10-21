@@ -31,8 +31,47 @@ import { claimLinkCode, groupRoomName, HandleRateLimit, handleMatches, isDefault
  * their Person record.
  */
 export interface IMessageHandle {
+  /** The line's number on a dedicated line; "shared" on the free and Pro plans, where each person gets their own number from a pool. */
   phone?: string;
+  mode: "dedicated" | "shared";
+  /** Shared pool: register a person's iMessage handle with Photon and learn the number the pool assigned them. */
+  register(phone: string, name: string): Promise<{ assignedPhone: string }>;
+  /** Shared pool: the number already assigned to this handle, if registered. */
+  assigned(phone: string): Promise<string | undefined>;
+  /** Open (or reuse) a one-to-one chat with a handle and send one text, so the person has the number in Messages. */
+  textFirst(phone: string, text: string): Promise<void>;
   stop(): Promise<void>;
+}
+
+/**
+ * Photon's Spectrum REST API for the project's users (the allowlist of the shared pool). Basic auth with the
+ * project's own credentials, which never leave the server. On the free plan a line cannot be bought
+ * (business plan only), so this is how a person gets a number to text: register, then text them first.
+ */
+function spectrumUsers(cfg: { projectId: string; projectSecret: string }) {
+  const base = `https://spectrum.photon.codes/projects/${encodeURIComponent(cfg.projectId)}/users/`;
+  const headers = { authorization: `Basic ${Buffer.from(`${cfg.projectId}:${cfg.projectSecret}`).toString("base64")}`, "content-type": "application/json" };
+  type User = { id: string; phoneNumber?: string; email?: string; assignedPhoneNumber?: string };
+  const find = async (phone: string): Promise<User | undefined> => {
+    const res = await fetch(`${base}?type=shared&search=${encodeURIComponent(phone)}&limit=50`, { headers });
+    if (!res.ok) throw new Error(`Photon users ${res.status}`);
+    const body = (await res.json()) as { data?: { users?: User[] } };
+    return (body.data?.users ?? []).find((u) => normaliseHandle(u.phoneNumber ?? "") === normaliseHandle(phone));
+  };
+  return {
+    find,
+    async create(phone: string, name: string): Promise<User> {
+      const [firstName, ...rest] = name.trim().split(/\s+/);
+      const res = await fetch(base, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ type: "shared", phoneNumber: phone, firstName: firstName || undefined, lastName: rest.join(" ") || undefined }),
+      });
+      if (!res.ok) throw new Error(`Photon could not register that number (${res.status}): ${(await res.text()).slice(0, 200)}`);
+      const body = (await res.json()) as { data?: User };
+      return body.data ?? ((await find(phone)) as User);
+    },
+  };
 }
 
 export async function startIMessage(app: App, cfg: { projectId: string; projectSecret: string }): Promise<IMessageHandle> {
@@ -150,8 +189,23 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
     }
   })().catch((e) => console.error(`${channel} stream ended`, (e as Error).message));
 
+  const users = spectrumUsers(cfg);
+  const mode = phone && phone !== "shared" ? "dedicated" : "shared";
   return {
-    phone,
+    phone: mode === "dedicated" ? phone : undefined,
+    mode,
+    async register(handle, name) {
+      const u = (await users.find(handle)) ?? (await users.create(handle, name));
+      if (!u.assignedPhoneNumber) throw new Error("Photon registered the number but assigned no line yet; try again in a minute.");
+      return { assignedPhone: u.assignedPhoneNumber };
+    },
+    async assigned(handle) {
+      return (await users.find(handle).catch(() => undefined))?.assignedPhoneNumber;
+    },
+    async textFirst(handle, text) {
+      const space = await im.space.create(handle);
+      await spectrum.send(space, plainText(text));
+    },
     async stop() {
       unsubscribe();
       await spectrum.stop();

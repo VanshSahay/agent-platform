@@ -9,6 +9,7 @@ import { createModel, modelConfig } from "./model/config.ts";
 import { authConfig } from "./channels/auth.ts";
 import { startWebServer } from "./channels/web.ts";
 import { SPECTRUM_CHANNELS, type SpectrumChannel, startChannel } from "./channels/imessage.ts";
+import type { ChannelInfo } from "./channels/web.ts";
 import { newAgent } from "./agent/spec.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
 import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } from "./tools/browser.ts";
@@ -146,7 +147,7 @@ if (!loopback && !process.env.MASTER_KEY) {
 }
 if (!process.env.EVENT_TOKEN)
   console.log(`Events: EVENT_TOKEN not set; POST /api/events and /api/tick accept only a signed-in agent owner${clerk ? "" : " (or anyone, since sign-in is off)"}`);
-const channels: { channel: string; phone?: string }[] = [];
+const channels: ChannelInfo[] = [];
 const server = startWebServer(app, { hostname: host, port: Number(process.env.PORT ?? 3000), channels });
 console.log(`Circle listening on http://${host}:${server.port}${clerk ? " (Clerk sign-in on)" : ""}`);
 
@@ -159,8 +160,8 @@ if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
   for (const channel of wanted)
     startChannel(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET, channel })
       .then((h) => {
-        channels.push({ channel, phone: h.phone });
-        console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : ""}`);
+        channels.push({ channel, phone: h.phone, mode: h.mode, handle: h });
+        console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : h.mode === "shared" ? " (shared pool: each person gets a number once registered)" : ""}`);
       })
       .catch((e) => console.error(`${channel}: failed to start`, e));
 } else console.log("Channels: off (set PROJECT_ID and PROJECT_SECRET, and CHANNELS=imessage,whatsapp,telegram,slack)");

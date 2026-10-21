@@ -86,13 +86,18 @@ bun run typecheck
 
 ## On iMessage
 
-Most people meet Circle in Messages, not in the web app: they add the line's number to a group the way they would add a friend. What differs there:
+Most people meet Circle in Messages, not in the web app. Which way in depends on the Photon plan:
+
+- **Free and Pro (the shared pool).** Circle has no number of its own. Under Settings → Channels a person gives the number they iMessage from; the server registers it with Photon (`POST /api/channels/register`), Photon assigns that person a number from its pool, and Circle texts them first so the number is in their Messages. One-to-one only: the pool cannot sit in a group chat. Groups live on the web with invite links, and Circle still texts each member privately for approvals.
+- **Business (a dedicated line, $250 a month per line).** Circle gets its own number; people add it to groups the way they would add a friend, and link their phone by texting a code.
+
+What differs from the web app:
 
 - **Joining** is adding the number. The group appears in the owner's Rooms as "iMessage · Sam, Riley & 2 more" until the owner names it; each person who writes gets a seat (as a guest until the owner adds them, then a member).
 - **Approvals are text.** "OK to spend $80?" arrives in the person's own thread with the line; "yes" or "no" is the answer. Anything that needs buttons or a browser (signing in to a site, an embedded page) comes with a link into the app that opens that chat.
 - **Pages open from their link** with no sign-in, since the link was posted in that chat.
 - **Everything is mirrored.** The web app shows the same chats, members and cards; replies sent from either side land in both.
-- **The owner's phone** is linked once: Settings → Channels → Link my phone (a code texted to the line), or the phone field under General.
+- **The owner's phone** is linked once: on the shared pool, by registering it (above); on a dedicated line, Settings → Channels → Link my phone (a code texted to the line), or the phone field under General.
 
 ## Deploy
 

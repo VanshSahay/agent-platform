@@ -1287,22 +1287,54 @@ function settingsConnections(box) {
 
 /** Putting the assistant in your own chats: its number, a contact card, your phone linked, a group to add it to. */
 async function settingsChannels(box, agent) {
-  let info = { channels: [], linked: {} };
+  let info = { channels: [], linked: {}, mine: {} };
   try {
     info = await api(`/api/channels?personId=${encodeURIComponent(state.me)}`);
   } catch {}
   const im = info.channels.find((c) => c.channel === "imessage");
-  const phone = im?.phone;
   const name = esc(agent?.name ?? "the assistant");
-  const number = phone ? `<strong>${esc(phone)}</strong>` : `<em>its number is being set up; ask whoever runs this Circle</em>`;
+  if (!im) {
+    box.innerHTML = `<div class="section"><h3>Put ${name} in your chats</h3><p class="lead">iMessage is not connected on this server yet. Until it is, ${name} lives here on the web: make a chat and send its invite link.</p></div>`;
+    return;
+  }
+  const linked = info.linked?.phone;
+  const mine = info.mine?.phone;
+  const contact = (phone) =>
+    `<strong>${esc(phone)}</strong> <a class="btn small" href="/api/channels/vcard?personId=${encodeURIComponent(state.me)}">Add to contacts</a> <a class="btn small" href="sms:${esc(phone)}">Text it</a>`;
+  if (im.mode === "shared") {
+    // The free plan: no number of its own. Each person registers the handle they iMessage from and gets a
+    // number from Photon's pool; the assistant texts first so that number lands in their Messages.
+    box.innerHTML = `<div class="section"><h3>Text with ${name}</h3><p class="lead">${name} can text with you one-to-one on iMessage. Give it the number you iMessage from and it texts you first; save that number like a friend's and reply there any time.</p>
+      ${
+        mine
+          ? `<p>Your number for ${name}: ${contact(mine)}</p><p class="tiny">It replied to <strong>${esc(linked)}</strong>. Texts from that phone reach ${name} as you.</p>`
+          : `<form class="row" id="registerForm"><input type="tel" name="phone" value="${esc(linked ?? "")}" placeholder="+1 408 555 0100" required /><button class="btn primary" type="submit">Text me</button><span class="note"></span></form><div class="hint">The number you iMessage from, with the country code. If ${name}'s text never arrives, your iPhone may start chats from your Apple ID email: Settings → Messages → Send & Receive → Start new conversations from.</div>`
+      }
+      <div class="hint" style="margin-top:14px"><strong>Group chats</strong> need ${name} to have a number of its own, which Photon sells on its Business plan. Until then, groups live here on the web: make a chat and send its invite link, and ${name} still texts each of you one-to-one.</div></div>`;
+    const form = $("#registerForm");
+    if (form)
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const note = form.querySelector(".note");
+        const btn = form.querySelector("button");
+        btn.disabled = true;
+        note.textContent = "Registering…";
+        try {
+          const r = await api("/api/channels/register", { personId: state.me, phone: new FormData(form).get("phone") });
+          note.textContent = `Sent. Look for a text from ${r.assignedPhone}.`;
+          setTimeout(() => renderSettings(), 1500);
+        } catch (err) {
+          note.textContent = err.message;
+          btn.disabled = false;
+        }
+      };
+    return;
+  }
+  const phone = im.phone;
   box.innerHTML = `<div class="section"><h3>Put ${name} in your chats</h3><p class="lead">${name} has its own phone number. Save it like a friend's, then text it or add it to any group in Messages.</p>
     <ol class="howto">
-      <li><strong>Save the number:</strong> ${number}${phone ? ` <a class="btn small" href="/api/channels/vcard?personId=${encodeURIComponent(state.me)}">Add to contacts</a> <a class="btn small" href="sms:${esc(phone)}">Text it</a>` : ""}</li>
-      <li><strong>Link your phone</strong> so ${name} knows texts from it are you: ${
-        info.linked.phone
-          ? `${esc(info.linked.phone)} is linked.`
-          : `<button class="btn small primary" type="button" id="linkPhone" ${phone ? "" : "disabled"}>Link my phone</button>`
-      }<div id="linkBox"></div></li>
+      <li><strong>Save the number:</strong> ${contact(phone)}</li>
+      <li><strong>Link your phone</strong> so ${name} knows texts from it are you: ${linked ? `${esc(linked)} is linked.` : `<button class="btn small primary" type="button" id="linkPhone">Link my phone</button>`}<div id="linkBox"></div></li>
       <li><strong>Add it to a group:</strong> open the group in Messages, tap the names at the top, Add Contact, pick ${name}. It joins like a friend, the group shows up here in Rooms, and you can name it and set what it is for.</li>
     </ol>
     <div class="hint">In a group it answers when named or when a message is clearly for it, and stays quiet otherwise. Anything that spends money or contacts someone still asks you first, in your own thread with it.</div></div>`;

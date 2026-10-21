@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Auth } from "../src/channels/auth.ts";
-import { startWebServer } from "../src/channels/web.ts";
+import { type ChannelInfo, startWebServer } from "../src/channels/web.ts";
 import { reply } from "../src/model/scripted.ts";
 import { groupWorld } from "./helpers.ts";
 
 /** The group world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
-function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: { channel: string; phone?: string }[] } = {}) {
+function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: ChannelInfo[] } = {}) {
   const w = groupWorld(() => reply("ok"));
   const zed = w.app.rooms.createPerson({ id: "zed", displayName: "Zed", timezone: "UTC" }); // signed in, in no room
   for (const id of ["alex", "sam", "jo", "riley", zed.id]) w.app.store.setKv(`clerk:${id}`, id);
@@ -26,7 +26,7 @@ function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>
 }
 
 const servers: { stop(): void }[] = [];
-const up = (opts?: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: { channel: string; phone?: string }[] }) => {
+const up = (opts?: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: ChannelInfo[] }) => {
   const s = serve(opts);
   servers.push(s.server);
   return s;
@@ -103,6 +103,35 @@ describe("web api: deny by default", () => {
     expect((await s.call("riley", "POST", `/api/commitments/${c.id}`, { status: "done" })).status).toBe(403);
     expect((await s.call("alex", "POST", `/api/commitments/${c.id}`, { ownerId: "nobody" })).status).toBe(400);
     expect((await s.call("alex", "POST", `/api/commitments/${c.id}`, { status: "done" })).status).toBe(200);
+  });
+
+  test("on the shared pool a person registers their own handle, is texted first, and sees the number assigned to them", async () => {
+    const registered = new Map<string, string>();
+    const texts: [string, string][] = [];
+    const handle: ChannelInfo["handle"] = {
+      async register(phone) {
+        registered.set(phone, "+17735550100");
+        return { assignedPhone: "+17735550100" };
+      },
+      async assigned(phone) {
+        return registered.get(phone);
+      },
+      async textFirst(phone, text) {
+        texts.push([phone, text]);
+      },
+    };
+    const s = up({ channels: [{ channel: "imessage", mode: "shared", handle }] });
+    const before = await (await s.call("sam", "GET", `/api/channels`)).json();
+    expect(before.channels[0]).toEqual({ channel: "imessage", phone: null, mode: "shared" });
+    expect(before.mine.phone).toBeNull();
+    expect((await s.call("sam", "POST", `/api/channels/register`, { phone: "408 555" })).status).toBe(400);
+    const r = await (await s.call("sam", "POST", `/api/channels/register`, { phone: "+1 (408) 555-0100" })).json();
+    expect(r.assignedPhone).toBe("+17735550100");
+    expect(texts).toEqual([["+14085550100", expect.stringContaining("it's Pip")]]);
+    expect(s.app.store.getPerson("sam")!.phoneE164).toBe("+14085550100");
+    const after = await (await s.call("sam", "GET", `/api/channels`)).json();
+    expect(after.mine.phone).toBe("+17735550100");
+    expect((await s.call("sam", "GET", `/api/channels/vcard`)).status).toBe(200);
   });
 
   test("the owner succeeds, and trust is validated on the way in", async () => {
@@ -338,7 +367,8 @@ describe("web api: channels", () => {
   test("a signed-in person gets a link code with the number to text and a QR; the list shows what is up", async () => {
     const s = up({ channels: [{ channel: "imessage", phone: "+14155550123" }] });
     const list = await (await s.call("alex", "GET", "/api/channels")).json();
-    expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123" }]);
+    expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123", mode: "dedicated" }]);
+    expect(list.mine.phone).toBe("+14155550123");
     const r = await (await s.call("alex", "POST", "/api/channels/link-code", {})).json();
     expect(r.code).toMatch(/^\d{6}$/);
     expect(r.sms).toBe(`sms:+14155550123?&body=${r.code}`);

@@ -12,6 +12,7 @@ import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
 import { publicUrl } from "../tools/kit.ts";
+import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
@@ -67,7 +68,15 @@ export interface WebOptions {
   auth?: Pick<Auth, "personFor"> | null;
   eventToken?: string;
   /** Chat channels that are up (filled in as they connect), with the number people text. */
-  channels?: { channel: string; phone?: string }[];
+  channels?: ChannelInfo[];
+}
+
+export interface ChannelInfo {
+  channel: string;
+  /** A dedicated line's number. Absent on the shared pool, where each person is assigned their own. */
+  phone?: string;
+  mode?: "dedicated" | "shared";
+  handle?: Pick<IMessageHandle, "register" | "assigned" | "textFirst">;
 }
 
 const ROLES: MemberRole[] = ["owner", "member", "guest"];
@@ -378,18 +387,51 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       method: "GET",
       re: /^\/api\/channels$/,
       access: "signedIn",
-      handle: ({ me, url }) => {
+      handle: async ({ me, url }) => {
         const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
-        return json({ channels: opts.channels ?? [], linked: { phone: person?.phoneE164 ?? null, email: person?.email ?? null } });
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        // Shared pool: the number to text is per person, known once they are registered.
+        const assigned = im?.mode === "shared" && person?.phoneE164 && im.handle ? ((await im.handle.assigned(person.phoneE164)) ?? null) : null;
+        return json({
+          channels: (opts.channels ?? []).map((c) => ({ channel: c.channel, phone: c.phone ?? null, mode: c.mode ?? (c.phone ? "dedicated" : "shared") })),
+          linked: { phone: person?.phoneE164 ?? null, email: person?.email ?? null },
+          mine: { phone: im?.phone ?? assigned },
+        });
+      },
+    },
+    {
+      // Shared pool: register the person's own iMessage handle with Photon, then text them first so the
+      // number is in their Messages. The handle is theirs to give; the project's credentials stay here.
+      method: "POST",
+      re: /^\/api\/channels\/register$/,
+      access: "signedIn",
+      handle: async ({ me, body: b }) => {
+        const person = app.store.getPerson(me ?? str(b.personId) ?? "");
+        if (!person) return bad("personId required");
+        const phone = (str(b.phone) ?? "").replace(/[^+\d]/g, "");
+        if (!/^\+\d{8,15}$/.test(phone)) return bad("phone must be in E.164, like +14085550100");
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        if (!im?.handle) return bad("iMessage is not connected on this server", 404);
+        const agent = app.store.listAgents()[0];
+        try {
+          const { assignedPhone } = await im.handle.register(phone, person.displayName);
+          app.store.putPerson({ ...person, phoneE164: phone });
+          await im.handle.textFirst(phone, `Hi ${person.displayName.split(" ")[0]}, it's ${agent?.name ?? "your assistant"}. Save this number and text me here any time.`);
+          return json({ assignedPhone, texted: true });
+        } catch (e) {
+          return bad((e as Error).message, 502);
+        }
       },
     },
     {
       method: "GET",
       re: /^\/api\/channels\/vcard$/,
       access: "signedIn",
-      handle: () => {
+      handle: async ({ me, url }) => {
         const agent = app.store.listAgents()[0];
-        const phone = (opts.channels ?? []).find((c) => c.phone)?.phone;
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+        const phone = im?.phone ?? (person?.phoneE164 && im?.handle ? await im.handle.assigned(person.phoneE164) : undefined);
         if (!agent || !phone) return bad("no number yet", 404);
         const vcf = `BEGIN:VCARD\nVERSION:3.0\nFN:${agent.name}\nTEL;TYPE=CELL:${phone}\nNOTE:${agent.name}, the assistant in your chats\nEND:VCARD\n`;
         return new Response(vcf, { headers: { "content-type": "text/vcard; charset=utf-8", "content-disposition": `attachment; filename="${agent.name}.vcf"` } });
@@ -402,7 +444,8 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       handle: async ({ me, body: b }) => {
         const person = app.store.getPerson(me ?? str(b.personId) ?? "");
         if (!person) return bad("personId required");
-        const phone = (opts.channels ?? []).find((c) => c.phone)?.phone;
+        const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
+        const phone = im?.phone ?? (person.phoneE164 && im?.handle ? await im.handle.assigned(person.phoneE164) : undefined);
         const code = mintLinkCode(app.store, person.id, app.clock.now());
         // "sms:<number>?&body=" opens Messages with the code typed, on iOS and Android alike.
         const sms = phone ? `sms:${phone}?&body=${encodeURIComponent(code)}` : null;
