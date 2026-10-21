@@ -78,6 +78,33 @@ describe("web api: deny by default", () => {
     expect((await s.call("alex", "POST", `/api/attention/${card.id}/dismiss`)).status).toBe(200);
   });
 
+  test("a co-member sees names, not addresses or phone numbers, and only labels of another person's run", async () => {
+    const s = up();
+    s.app.store.putPerson({
+      ...s.app.store.getPerson("alex")!,
+      phoneE164: "+14085550100",
+      addresses: [{ id: "a1", label: "Home", line1: "1 Main St", city: "San Jose", country: "US" }],
+    });
+    const run = await s.app.runtime.handleMessage({ roomId: s.room.id, personId: "alex", text: "@pip hi" });
+    const state = await (await s.call("riley", "GET", `/api/state`)).json();
+    const alex = state.people.find((p: { id: string }) => p.id === "alex");
+    expect(alex.displayName).toBe("Alex");
+    expect(alex.phoneE164).toBeUndefined();
+    expect(alex.addresses).toBeUndefined();
+    expect(state.rooms[0].members.find((m: { personId: string }) => m.personId === "alex").person.phoneE164).toBeUndefined();
+    const self = (await (await s.call("riley", "GET", `/api/people`)).json()).find((p: { id: string }) => p.id === "riley");
+    expect(self.timezone).toBe("America/Los_Angeles");
+    // The owner still sees everyone's details: they add and edit people.
+    expect((await (await s.call("alex", "GET", `/api/people`)).json()).find((p: { id: string }) => p.id === "alex").phoneE164).toBe("+14085550100");
+    const detail = await (await s.call("riley", "GET", `/api/runs/${run!.id}`)).json();
+    expect(detail.toolCalls.every((c: { input: unknown; result: unknown }) => c.result === undefined)).toBe(true);
+    expect((await s.call("riley", "POST", `/api/runs/${run!.id}/stop`)).status).toBe(403);
+    const c = s.app.commitments.track({ agentId: s.agent.id, roomId: s.room.id, ownerId: "alex", title: "Pay Jo's rent" });
+    expect((await s.call("riley", "POST", `/api/commitments/${c.id}`, { status: "done" })).status).toBe(403);
+    expect((await s.call("alex", "POST", `/api/commitments/${c.id}`, { ownerId: "nobody" })).status).toBe(400);
+    expect((await s.call("alex", "POST", `/api/commitments/${c.id}`, { status: "done" })).status).toBe(200);
+  });
+
   test("the owner succeeds, and trust is validated on the way in", async () => {
     const s = up();
     expect((await s.call("alex", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);

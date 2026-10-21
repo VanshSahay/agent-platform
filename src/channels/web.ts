@@ -10,7 +10,7 @@ import type { Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
-import { listPeople, peopleVisibleTo } from "../store/queries.ts";
+import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
@@ -209,6 +209,9 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
   const reachesAgent = (agent: AgentSpec, me: string) => agent.ownerId === me || app.store.listRooms(agent.id).some((r) => isMember(r.id, me));
   const myRooms = (me: string | undefined) => (me ? app.store.listRooms().filter((r) => isMember(r.id, me)) : app.store.listRooms());
   const inMyRooms = <T extends { roomId: string }>(me: string | undefined, xs: T[]) => (me ? xs.filter((x) => isMember(x.roomId, me)) : xs);
+  // Full records for yourself and for the owner of an agent (who adds and edits people); a projection for everyone else.
+  const personFor = (me: string | undefined, p: Person | undefined) => (!p || !me || p.id === me || app.store.listAgents(me).length > 0 ? p : publicPerson(p));
+  const peopleFor = (me: string | undefined) => (me ? peopleVisibleTo(app.store, me) : listPeople(app.store)).map((p) => personFor(me, p)!);
 
   /** The policy. With Clerk off nothing is checked beyond the token routes, as before. */
   function permit(route: Route, c: Ctx): Response | undefined {
@@ -244,13 +247,17 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       handle: (c) => {
         const rooms = myRooms(c.me);
         const agents = c.me ? app.store.listAgents().filter((a) => a.ownerId === c.me || rooms.some((r) => r.agentId === a.id)) : app.store.listAgents();
-        const people = c.me ? peopleVisibleTo(app.store, c.me) : listPeople(app.store);
-        return json({ agents, people, rooms: rooms.map((r) => ({ ...r, members: app.rooms.members(r.id).map((m) => ({ ...m, person: app.store.getPerson(m.personId) })) })) });
+        const people = peopleFor(c.me);
+        return json({
+          agents,
+          people,
+          rooms: rooms.map((r) => ({ ...r, members: app.rooms.members(r.id).map((m) => ({ ...m, person: personFor(c.me, app.store.getPerson(m.personId)) })) })),
+        });
       },
     },
 
     // ---- people
-    { method: "GET", re: /^\/api\/people$/, access: "signedIn", handle: (c) => json(c.me ? peopleVisibleTo(app.store, c.me) : listPeople(app.store)) },
+    { method: "GET", re: /^\/api\/people$/, access: "signedIn", handle: (c) => json(peopleFor(c.me)) },
     {
       method: "POST",
       re: /^\/api\/people$/,
@@ -733,9 +740,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const file = form?.get("file");
         if (!(file instanceof File)) return bad("multipart form with a file");
         if (file.size > 10 * 1024 * 1024) return bad("10 MB at most", 413);
-        const agentId = str((form?.get("agentId") as string | null) ?? undefined) ?? app.store.listAgents()[0]?.id;
-        if (!agentId) return bad("no agent");
         const roomId = str((form?.get("roomId") as string | null) ?? undefined);
+        const room = roomId ? app.store.getRoom(roomId) : undefined;
+        if (!room) return bad("roomId required", 404);
+        if (me && !isMember(room.id, me)) return bad("not a member of that chat", 403);
+        const agentId = room.agentId;
         const bytes = Buffer.from(await file.arrayBuffer());
         const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "audio" : "file";
         const art = {
@@ -892,10 +901,16 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/runs\/([^/]+)$/,
       access: "roomMember",
       scope: (c) => roomScope(app.store.getRun(c.params[0]!)?.roomId),
-      handle: ({ params }) => {
+      handle: ({ params, me }) => {
         const run = app.store.getRun(params[0]!);
         if (!run) return bad("no such run", 404);
-        return json({ run, toolCalls: app.store.toolCallsForRun(run.id), plan: app.planner.get(run.id), events: app.store.eventsForRun(run.id) });
+        const room = app.store.getRoom(run.roomId);
+        // Tool inputs and results can hold a signed-in page or an inbox; those are for the
+        // requester and the owner. Other members see what the chat saw: labels and evidence.
+        const full = !me || run.requesterId === me || (room && ownsRoom(room, me));
+        const calls = app.store.toolCallsForRun(run.id).map((c) => (full ? c : { ...c, input: {}, result: undefined }));
+        const events = app.store.eventsForRun(run.id).filter((e) => full || !["delta", "tool_end"].includes(e.type));
+        return json({ run, toolCalls: calls, plan: app.planner.get(run.id), events });
       },
     },
     {
@@ -903,9 +918,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/runs\/([^/]+)\/stop$/,
       access: "roomMember",
       scope: (c) => roomScope(app.store.getRun(c.params[0]!)?.roomId),
-      handle: async ({ params }) => {
-        if (!app.store.getRun(params[0]!)) return bad("no such run", 404);
-        await app.runtime.stop(params[0]!);
+      handle: async ({ params, me }) => {
+        const run = app.store.getRun(params[0]!);
+        if (!run) return bad("no such run", 404);
+        const room = app.store.getRoom(run.roomId);
+        if (me && run.requesterId !== me && !(room && ownsRoom(room, me))) return bad("only the person who asked, or the owner, can stop this", 403);
+        await app.runtime.stop(run.id);
         return json({ ok: true });
       },
     },
@@ -1013,14 +1031,18 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/commitments\/([^/]+)$/,
       access: "roomMember",
       scope: (c) => roomScope(app.store.getCommitment(c.params[0]!)?.roomId),
-      handle: ({ params, body: b }) => {
+      handle: ({ params, body: b, me }) => {
         const c = app.store.getCommitment(params[0]!);
         if (!c) return bad("no such responsibility", 404);
+        const room = app.store.getRoom(c.roomId);
+        if (me && c.ownerId !== me && !(room && ownsRoom(room, me))) return bad("only its owner, or the chat's owner, can change this", 403);
+        const ownerId = str(b.ownerId);
+        if (ownerId && !isMember(c.roomId, ownerId)) return bad("ownerId must be a member of the chat");
         const status = str(b.status) as Commitment["status"] | undefined;
         if (status && !["open", "done", "dropped", "blocked"].includes(status)) return bad("status must be open, done, dropped or blocked");
         const dueAt = b.dueAt !== undefined ? Number(b.dueAt) : undefined;
         if (dueAt !== undefined && !Number.isFinite(dueAt)) return bad("dueAt must be a number");
-        return json(app.commitments.update(c.id, { status, dueAt, detail: str(b.detail), ownerId: str(b.ownerId) }));
+        return json(app.commitments.update(c.id, { status, dueAt, detail: str(b.detail), ownerId }));
       },
     },
 

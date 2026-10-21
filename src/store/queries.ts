@@ -16,6 +16,11 @@ export function findPersonByEmail(store: Store, email: string): Person | undefin
   return listPeople(store).find((p) => (p.email ?? "").trim().toLowerCase() === want);
 }
 
+/** What a co-member may see of a person: a name and how to address them, never contact details or addresses. */
+export function publicPerson(p: Person): Person {
+  return { id: p.id, displayName: p.displayName, pronouns: p.pronouns, timezone: p.timezone, techComfort: p.techComfort, createdAt: p.createdAt } as Person;
+}
+
 /** Everyone who shares a room with this person, plus the person. Nobody else is visible to them. */
 export function peopleVisibleTo(store: Store, personId: string): Person[] {
   const ids = new Set<string>([personId]);
