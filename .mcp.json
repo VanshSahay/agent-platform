@@ -2,8 +2,15 @@
   "mcpServers": {
     "rea": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "rea-agents@6.4.0", "mcp"]
+      "command": "/Users/ellieli/.nvm/versions/node/v22.22.0/bin/npx",
+      "args": [
+        "-y",
+        "rea-agents@6.7.0",
+        "mcp"
+      ],
+      "env": {
+        "PATH": "/Users/ellieli/.nvm/versions/node/v22.22.0/bin:/usr/local/bin:/usr/bin:/bin"
+      }
     }
   }
 }
