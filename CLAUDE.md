@@ -4,9 +4,9 @@ Circle is a personal agent that lives in group chats. Read `docs/design.md` befo
 
 ## Commands
 
-- `bun test` runs the offline suite (scripted model, fake hands). Keep it under a second.
+- `bun test` runs the offline suite (scripted model, fake hands). Keep it under two seconds.
 - `bun run typecheck` must pass; `strict` and `noUncheckedIndexedAccess` are on.
-- `bun run demo` plays the handyman errand end to end offline; run it after touching the runtime, gates or planner.
+- `bun test test/eval.test.ts` plays every scenario end to end offline under its well-behaved script and the do-nothing control; run it after touching the runtime, gates or planner. `bun run eval` runs the same scenarios against the real model (costs money); `bun run harness` is the Harness² loop over `skills/`.
 - `SEED_DEMO=1 bun run start` boots the web UI on port 3000; without credentials the model is an offline stand-in.
 
 ## Rules that are not negotiable
