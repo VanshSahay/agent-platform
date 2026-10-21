@@ -1,6 +1,6 @@
 # Fo (Wajo) through REA, 21 Oct 2026
 
-Method: `rea capture-browser-scenario` (Playwright, local Chrome, headless) over wajo.ai/fo → /help → /user (signed out, so /user rendered the sign-in shell), network bodies retained; `rea export-web-scripts` gave 278 scripts (246 first-party chunks from assets.wajo.ai). Everything below is read from that bundle: the generated RPC access map (`rpc-access.gen`), the route tree and the help copy. No account was used. Earlier pass: `docs/research/wajo-fo.md` (12 Oct).
+Method (REA 6.7.0 on Node 22; MCP registration repaired the same day): `rea capture-browser-scenario` (Playwright, local Chrome, headless) over wajo.ai/fo → /help → /user (signed out, so /user rendered the sign-in shell), network bodies retained; `rea export-web-scripts` gave 278 scripts (246 first-party chunks from assets.wajo.ai). Everything below is read from that bundle: the generated RPC access map (`rpc-access.gen`), the route tree and the help copy. No account was used. Earlier pass: `docs/research/wajo-fo.md` (12 Oct).
 
 ## 1. How Fo gets a phone number (the question of the week)
 
@@ -39,3 +39,8 @@ Compared with 12 Oct: `apps`, `keyboard` and `social-drafts` are new under the u
 7. **Managed schedules seeded from jobs** — standing routines a person enrols in (bins, meds). Our watches and schedules cover it; the "enrol in a routine" framing is a UI idea for the Radar tab.
 
 Do not copy: fompts (prompt social network), badges and perks, chat flags, the operator-only agent builder.
+
+## 5. REA evidence
+
+- Capture: `ev_12ab5cc5…` (scenario), 1,317 network events, 316 bodies retained.
+- `analyze-javascript-application` on the exported assets: `ev_d99e6d7f…`, 245 of 246 files parsed, 1,739 module nodes, **409 endpoint nodes** (the same RPC map, recovered statically), 23 storage nodes. The main `index-*.js` chunk (368 KB) exhausts REA's static worker even at a 6 GB heap, so routes and copy from that chunk were read from the exported text, not from the graph. Static analysis; nothing was executed.
