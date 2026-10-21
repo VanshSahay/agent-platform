@@ -45,7 +45,8 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
   const channel: ChannelKind = cfg.channel;
   const spectrum = await Spectrum({ projectId: cfg.projectId, projectSecret: cfg.projectSecret, providers: [provider.config()] });
   const im = provider(spectrum);
-  const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone;
+  // Spectrum does not always report the line's number; IMESSAGE_PHONE (from the Photon dashboard) fills it in for Settings.
+  const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone ?? process.env.IMESSAGE_PHONE;
   const limiter = new HandleRateLimit();
 
   const agentFor = () => app.store.listAgents()[0];
