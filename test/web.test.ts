@@ -285,7 +285,9 @@ describe("web api: members", () => {
     const added = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com", role: "guest" })).json();
     expect(added.person.email).toBe("mia@example.com");
     expect(s.app.rooms.role(s.room.id, added.person.id)).toBe("guest");
-    expect((await s.call("alex", "PATCH", `/api/rooms/${s.room.id}/members/${added.person.id}`, { role: "member" })).status).toBe(200);
+    // Adding the same person again, now by phone, promotes the guest rather than creating a second record.
+    const again = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com" })).json();
+    expect(again.person.id).toBe(added.person.id);
     expect(s.app.rooms.role(s.room.id, added.person.id)).toBe("member");
     expect((await s.call("sam", "DELETE", `/api/rooms/${s.room.id}/members/${added.person.id}`)).status).toBe(403);
     expect((await s.call("alex", "DELETE", `/api/rooms/${s.room.id}/members/alex`)).status).toBe(404);

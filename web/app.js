@@ -285,12 +285,14 @@ $("#newRoom").onclick = () => roomForm();
 // phone or email (so a text or a sign-in lands on them), or copies the invite link; everyone else just sees the list.
 function renderMembers(room) {
   const owner = _roleIn(room.id) === "owner";
-  const roleWord = { owner: "owner", member: "member", guest: "guest" };
+  // Roles are derived, not chosen: the owner, and everyone else. A guest is someone who texted from an unknown
+  // number and has no seat yet; the owner adding them makes them a member, so the panel never asks.
   const rows = room.members
     .map((m) => {
       const name = esc(m.person?.displayName ?? m.personId);
-      if (!owner || m.role === "owner") return `<div class="memrow"><span class="name">${name}</span><span class="sub">${roleWord[m.role] ?? m.role}</span></div>`;
-      return `<div class="memrow"><span class="name">${name}</span><select data-role="${esc(m.personId)}"><option value="member" ${m.role === "member" ? "selected" : ""}>member</option><option value="guest" ${m.role === "guest" ? "selected" : ""}>guest</option></select><button class="link" data-remove="${esc(m.personId)}" type="button" aria-label="Remove">×</button></div>`;
+      const sub = m.role === "owner" ? "owner" : m.role === "guest" ? "not added yet" : "";
+      const remove = owner && m.role !== "owner" ? `<button class="link" data-remove="${esc(m.personId)}" type="button" aria-label="Remove">×</button>` : "";
+      return `<div class="memrow"><span class="name">${name}</span>${sub ? `<span class="sub">${sub}</span>` : ""}${remove}</div>`;
     })
     .join("");
   $("#rooms").insertAdjacentHTML(
@@ -305,16 +307,6 @@ function renderMembers(room) {
   const inv = $("#inviteLink");
   if (inv) inv.onclick = () => copyInvite(room.id);
   const member = (id) => `/api/rooms/${encodeURIComponent(room.id)}/members/${encodeURIComponent(id)}`;
-  $$("#members [data-role]").forEach((sel) => {
-    sel.onchange = async () => {
-      try {
-        await api(member(sel.dataset.role), { role: sel.value }, "PATCH");
-        load();
-      } catch (e) {
-        status(e.message, true);
-      }
-    };
-  });
   $$("#members [data-remove]").forEach((b) => {
     b.onclick = async () => {
       try {

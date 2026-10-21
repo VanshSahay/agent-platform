@@ -475,7 +475,9 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           ? app.store.getPerson(str(b.personId)!)
           : app.rooms.findOrCreatePerson({ displayName: str(b.displayName), email: str(b.email), phoneE164: str(b.phoneE164) });
         if (!person) return bad("give a personId, or a displayName with an email or phone");
-        if (app.store.getMembership(params[0]!, person.id)) return json({ membership: app.store.getMembership(params[0]!, person.id), person });
+        const existing = app.store.getMembership(params[0]!, person.id);
+        // Adding someone who texted in as a stranger gives them their seat.
+        if (existing) return json({ membership: existing.role === "guest" ? app.rooms.setRole(params[0]!, person.id, "member") : existing, person });
         return json({ membership: app.rooms.addMember(params[0]!, person.id, role, { consented: !!b.consented }), person });
       },
     },
