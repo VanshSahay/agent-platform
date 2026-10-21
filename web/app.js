@@ -1288,7 +1288,7 @@ async function settingsChannels(box, agent) {
   const name = esc(agent?.name ?? "the assistant");
   const number = phone ? `<strong>${esc(phone)}</strong>` : `<em>its number is being set up; ask whoever runs this Circle</em>`;
   box.innerHTML = `<div class="section"><h3>Put ${name} in your chats</h3><p class="lead">${name} has its own phone number. Save it like a friend's, then text it or add it to any group in Messages.</p>
-    <ol class="steps">
+    <ol class="howto">
       <li><strong>Save the number:</strong> ${number}${phone ? ` <a class="btn small" href="/api/channels/vcard?personId=${encodeURIComponent(state.me)}">Add to contacts</a> <a class="btn small" href="sms:${esc(phone)}">Text it</a>` : ""}</li>
       <li><strong>Link your phone</strong> so ${name} knows texts from it are you: ${
         info.linked.phone

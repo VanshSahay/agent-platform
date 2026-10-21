@@ -431,5 +431,5 @@ h2 { font-weight: 600; color: var(--text-2); letter-spacing: 0.04em; text-transf
 .linkcode .code { font: 700 32px var(--display); letter-spacing: 0.12em }
 .linkcode p { margin: 6px 0 8px; font-size: 13px; color: var(--text-2) }
 .linkcode .qr svg { width: 180px; height: 180px; display: block; background: #fff; border-radius: 8px }
-.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px }
-.steps li { line-height: 1.5 } .steps .btn { margin-left: 4px }
+.howto { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; list-style: decimal }
+.howto li { line-height: 1.5; display: list-item } .howto .btn { margin-left: 4px }
