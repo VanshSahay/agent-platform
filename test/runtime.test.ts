@@ -4,6 +4,7 @@ import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
 import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
+import { parseDecision } from "../src/runtime/decide.ts";
 
 describe("run loop", () => {
   test("a plain reply in a group only when the agent is named, with no footer when no tools ran", async () => {
@@ -281,6 +282,14 @@ describe("chatter is not an answer", () => {
     // A plain yes still approves it.
     const resumed = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "yes" });
     expect(resumed?.id).toBe(run!.id);
+  });
+
+  test("a soft opener on a long message is not a yes", () => {
+    expect(parseDecision("ok")).toEqual({ kind: "yes" });
+    expect(parseDecision("ok, go ahead")).toEqual({ kind: "yes" });
+    expect(parseDecision("ok, but first check the price with the other shop and tell me")).toBeUndefined();
+    expect(parseDecision("yes, but first check the price with the other shop and tell me")).toEqual({ kind: "yes" });
+    expect(parseDecision("please don't")).toEqual({ kind: "no" });
   });
 
   test("messages written in the same millisecond keep their order", async () => {

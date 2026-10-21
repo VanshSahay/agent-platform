@@ -63,13 +63,12 @@ export function decideGate(
   if (g.kind === "purchase_approval" && requesterIsOwner && money > 0 && money <= agent.trust.autoApproveUnderUsd) {
     return { granted: true, reason: `under the $${agent.trust.autoApproveUnderUsd} threshold` };
   }
-  if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.includes(g.outreach.who)) {
+  if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.some((c) => c.toLowerCase() === g.outreach!.who.toLowerCase())) {
     return { granted: true, reason: "community pre-approved by the owner" };
   }
-  if (g.kind === "outreach_approval" && requesterIsOwner && (agent.trust.autoAllow.includes("place_call") || agent.trust.autoAllow.includes("send_sms"))) {
-    const tool = g.outreach?.how === "phone" ? "place_call" : "send_sms";
-    if (agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
-  }
+  // The owner's trust list names tools that may run for the owner without asking; the key's first part is the tool.
+  const tool = Array.isArray(g.key) ? String(g.key[0] ?? "") : "";
+  if (requesterIsOwner && tool && agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
 
   // Who answers: the owner, whose money and accounts are at stake.
   const assignee = rooms.approversFor(room)[0] ?? owner;

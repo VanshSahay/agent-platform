@@ -196,6 +196,18 @@ describe("the catalogue", () => {
     expect(w2.hands.browser.runs).toEqual([]);
   });
 
+  test("a guest's request that reads the owner's connected account asks the owner first, before the tool runs", async () => {
+    const w = groupWorld((req) => (toolCallsSoFar(req).length ? reply("ok") : callTool("list_saved_addresses", {})));
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "@pip where does alex get things delivered?" });
+    expect(run?.status).toBe("waiting");
+    const item = w.app.attention.openFor("alex")[0]!;
+    expect(item.title).toBe("OK for Riley to read your shopping account?");
+    expect(w.app.store.toolCallsForRun(run!.id)[0]!.status).toBe("running");
+    // Sam consented to their own accounts, so Sam's reads of Sam's account do not ask.
+    const w2 = groupWorld((req) => (toolCallsSoFar(req).length ? reply("ok") : callTool("list_saved_addresses", {})));
+    expect((await w2.app.runtime.handleMessage({ roomId: w2.room.id, personId: "sam", text: "@pip where do I get things delivered?" }))?.status).toBe("done");
+  });
+
   test("connector_call keeps the token on the API's own origin and gates on the operation's real method", async () => {
     const seen: string[] = [];
     const server = Bun.serve({

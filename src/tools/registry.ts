@@ -291,7 +291,7 @@ export const CORE_TOOLS: ToolDef[] = [
         kind,
         title: `${ctx.agent.name} has a question`,
         detail: s(input.question),
-        options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
+        options: Array.isArray(input.options) ? input.options.filter((o): o is string => typeof o === "string").slice(0, 8) : undefined,
         ttlMs: 3 * 24 * 60 * 60 * 1000,
       });
       ctx.dm(who.id, s(input.question));
@@ -328,10 +328,10 @@ export const CORE_TOOLS: ToolDef[] = [
         roomId: ctx.room.id,
         runId: ctx.run.id,
         assigneeId: assignee,
-        kind: s(input.kind) as AttentionKind,
+        kind: (["decision", "information", "action"].includes(s(input.kind)) ? s(input.kind) : "information") as AttentionKind,
         title: "Your input is needed",
         detail: s(input.question),
-        options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
+        options: Array.isArray(input.options) ? input.options.filter((o): o is string => typeof o === "string").slice(0, 8) : undefined,
         ttlMs: 7 * 24 * 60 * 60 * 1000,
       });
       return { ok: true, content: "Waiting.", waitingOn: item, roomNotice: s(input.question), approach: "wait" };

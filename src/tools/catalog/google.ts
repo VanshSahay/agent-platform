@@ -160,7 +160,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Creating a calendar…", done: "Created a calendar" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const held = guard(ctx, `OK to create calendar "${s(input.name)}"?`, `On ${who(ctx)}'s Google account.`, ["create_calendar", s(input.name)]);
@@ -332,7 +332,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Updating the event…", done: "Updated the event" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const held = guard(
@@ -369,7 +369,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Removing the event…", done: "Removed the event" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const held = guard(ctx, "OK to delete an event from your calendar?", `Event ${s(input.eventId)}.`, ["delete_event", s(input.eventId)]);
@@ -390,7 +390,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Moving events…", done: "Moved events" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const ids = (Array.isArray(input.eventIds) ? input.eventIds : []).map((x) => s(x)).filter(Boolean);
@@ -496,7 +496,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Labelling email…", done: "Labelled email" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const held = guard(ctx, `OK to label an email "${s(input.label)}"?`, `Message ${s(input.messageId)}.`, ["label_email", s(input.messageId), s(input.label)]);
@@ -535,9 +535,15 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Removing a label…", done: "Removed a label" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
+      const held = guard(ctx, "OK to remove a label from an email?", `Message ${s(input.messageId)}, label ${s(input.label)}.`, [
+        "remove_email_label",
+        s(input.messageId),
+        s(input.label),
+      ]);
+      if (held) return held;
       try {
         const id = await labelId(ctx, s(input.label), false);
         if (!id) return { ok: false, content: "No such label." };
@@ -744,7 +750,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Making a form…", done: "Made a form" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const held = guard(ctx, `OK to create a form "${s(input.title)}" on your Drive?`, "", ["create_form", s(input.title)]);
@@ -818,7 +824,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
     },
     family: "google",
     labels: { running: "Updating spreadsheet…", done: "Updated spreadsheet" },
-    sideEffect: false,
+    sideEffect: true,
     async run(input, ctx) {
       if (!connected(ctx)) return notConnected(ctx, "Google");
       const held = guard(ctx, "OK to write to your spreadsheet?", `${s(input.spreadsheetId)} at ${s(input.range)}.`, [

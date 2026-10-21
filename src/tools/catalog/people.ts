@@ -32,8 +32,8 @@ export const PEOPLE_TOOLS: ToolDef[] = [
         agentId: ctx.agent.id,
         scope: "person",
         scopeId: p.id,
-        type: "person",
-        text: `${name}${s(input.note) ? `: ${s(input.note)}` : ""}${phone ? ` (phone ${phone})` : ""}${s(input.email) ? ` (email ${s(input.email)})` : ""}`,
+        type: "observation",
+        text: `[person] ${name}${s(input.note) ? `: ${s(input.note)}` : ""}${phone ? ` (phone ${phone})` : ""}${s(input.email) ? ` (email ${s(input.email)})` : ""}`,
         visibleToRooms: [ctx.room.id],
         sourceRunId: ctx.run.id,
       });

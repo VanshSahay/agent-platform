@@ -1,3 +1,4 @@
+import { hourIn } from "./core/clock.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -164,9 +165,18 @@ if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
       .catch((e) => console.error(`${channel}: failed to start`, e));
 } else console.log("Channels: off (set PROJECT_ID and PROJECT_SECRET, and CHANNELS=imessage,whatsapp,telegram,slack)");
 
+let ticking = false;
 setInterval(
   () => {
-    app.scheduler.tick().catch((e) => console.error("tick failed", e));
+    // A firing can take minutes (it awaits the run); the next tick waits rather than piling up.
+    if (ticking) return;
+    ticking = true;
+    app.scheduler
+      .tick()
+      .catch((e) => console.error("tick failed", e))
+      .finally(() => {
+        ticking = false;
+      });
     // Mail that arrived in the assistant's own inbox enters like an app event, into the owner's chat.
     if (!(app.hands.email instanceof FakeEmail))
       app.hands.email
@@ -189,12 +199,11 @@ setInterval(
   Number(process.env.TICK_MS ?? 30_000),
 );
 
-// Nightly memory pass at 03:00 server time.
+// Nightly memory pass at 03:00 in each owner's zone.
 setInterval(
   async () => {
-    const h = new Date().getHours();
-    if (h !== 3) return;
     for (const agent of app.store.listAgents()) {
+      if (hourIn(app.store.getPerson(agent.ownerId)?.timezone ?? "UTC", Date.now()) !== 3) continue;
       const last = Number(app.store.getKv(`consolidated:${agent.id}`) ?? 0);
       if (Date.now() - last < 20 * 3600 * 1000) continue;
       await app.consolidator.runFor(agent).catch((e) => console.error("consolidate failed", e));

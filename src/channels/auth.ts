@@ -90,7 +90,9 @@ export class Auth {
     // A fresh install has an owner's seat nobody has signed in as yet: the first sign-in claims it.
     const claimable = this.app.store.getKv("claim-owner");
     const owner = claimable ? this.app.store.getPerson(claimable) : undefined;
-    if (owner) {
+    // With OWNER_EMAIL set, only that address may take the seat; otherwise the first sign-in does.
+    const wanted = (process.env.OWNER_EMAIL ?? "").trim().toLowerCase();
+    if (owner && (!wanted || (info.email ?? "").toLowerCase() === wanted)) {
       owner.displayName = info.displayName;
       owner.email = info.email ?? owner.email;
       this.app.store.putPerson(owner);

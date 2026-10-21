@@ -993,6 +993,21 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const runAt = b.runAt ? Date.parse(String(b.runAt)) : undefined;
         if (runAt !== undefined && !Number.isFinite(runAt)) return bad("runAt must be a date");
         const session = app.store.latestSessionForRoom(room.id);
+        const cal = b.calendar && typeof b.calendar === "object" ? (b.calendar as Record<string, unknown>) : undefined;
+        if (!runAt && !cal) return bad("runAt or calendar required");
+        const zone = app.store.getPerson(app.store.getAgent(room.agentId)?.ownerId ?? "")?.timezone ?? "UTC";
+        const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+        const calendar: Calendar | undefined = cal
+          ? {
+              hour: num(cal.hour),
+              minute: num(cal.minute) ?? 0,
+              dayOfWeek: Array.isArray(cal.dayOfWeek) ? cal.dayOfWeek.filter((d): d is number => typeof d === "number") : undefined,
+              everyDays: num(cal.everyDays),
+              everyHours: num(cal.everyHours),
+              timeZone: zone,
+            }
+          : undefined;
+        if (calendar && calendar.hour === undefined && !calendar.everyHours) return bad("calendar needs hour or everyHours");
         // A schedule made here was asked for by a person and discloses no outreach: the agent must still ask before contacting anyone.
         return json(
           Scheduler.createSchedule(app.store, app.clock, {
@@ -1002,7 +1017,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
             title,
             prompt,
             runAt,
-            calendar: b.calendar as Calendar | undefined,
+            calendar,
             authorization: { basis: "user_requested", disclosedOutreach: [], premise: str(b.premise) ?? "always" },
           }),
         );

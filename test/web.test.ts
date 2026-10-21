@@ -152,8 +152,11 @@ describe("web api: deny by default", () => {
       agentId: "other",
       title: "Call the plumber",
       prompt: "call",
+      runAt: new Date(Date.now() + 3_600_000).toISOString(),
       authorization: { basis: "standing_rule", disclosedOutreach: [{ who: "anyone", how: "phone", why: "because" }], premise: "x" },
     };
+    expect((await s.call("alex", "POST", `/api/schedules`, { roomId: s.room.id, title: "t", prompt: "p" })).status).toBe(400); // neither runAt nor calendar
+    expect((await s.call("alex", "POST", `/api/schedules`, { roomId: s.room.id, title: "t", prompt: "p", calendar: { timeZone: "Mars/Olympus" } })).status).toBe(400);
     expect((await s.call("sam", "POST", `/api/schedules`, body)).status).toBe(403);
     const sch = await (await s.call("alex", "POST", `/api/schedules`, body)).json();
     expect(sch.authorization).toEqual({ basis: "user_requested", disclosedOutreach: [], premise: "always" });

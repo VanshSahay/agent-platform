@@ -62,12 +62,14 @@ export const SHOPPING_TOOLS: ToolDef[] = [
     labels: { running: "Adding to cart…", done: "Added to cart" },
     sideEffect: false,
     async run(input, ctx) {
+      if (!/^https:\/\//i.test(s(input.url))) return { ok: false, content: "url must be the product page (https://…)." };
+      if (n(input.priceUsd) !== undefined && n(input.priceUsd)! < 0) return { ok: false, content: "priceUsd cannot be negative." };
       const items = readCart(ctx);
       const item: CartItem = {
         id: newId("ci"),
         title: s(input.title).slice(0, 140),
         url: s(input.url),
-        priceUsd: n(input.priceUsd),
+        priceUsd: n(input.priceUsd) !== undefined && n(input.priceUsd)! >= 0 ? n(input.priceUsd) : undefined,
         quantity: Math.max(1, Math.trunc(n(input.quantity) ?? 1)),
         merchant: merchantOf(s(input.url)),
       };
