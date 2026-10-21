@@ -376,8 +376,14 @@ export class Runtime {
    * since they may answer on a guest's or the cared-for person's behalf.
    */
   private pendingItemFor(room: Room, session: Session, personId: Id, agent: AgentSpec, text: string): AttentionItem | undefined {
+    // A message that names the agent is a new request, never an answer. A bare message answers
+    // the newest card assigned to this person; for an approval it must also read as one
+    // (a yes, a no or an option), so chatter cannot decline a purchase.
+    const named = this.named(agent, text);
     const mine = this.d.attention.openFor(personId).filter((a) => a.roomId === room.id || room.kind === "dm");
-    if (mine.length) return mine[mine.length - 1];
+    const hit = mine[mine.length - 1];
+    if (hit && !named && (!hit.gateKey || answers(text, hit.options))) return hit;
+    if (hit) return undefined;
     const inRoom = this.d.store.listAttention({ roomId: room.id, status: ["open"] }).filter((a) => a.runId && this.d.store.getRun(a.runId)?.sessionId === session.id);
     const groupQ = inRoom.find((a) => a.title === "Question for the group");
     if (groupQ) return groupQ;
@@ -387,8 +393,7 @@ export class Runtime {
     const role = this.d.rooms.role(room.id, personId);
     if (role !== "owner") return undefined;
     const item = inRoom[0];
-    if (!item) return undefined;
-    void agent;
+    if (!item || named) return undefined;
     return answers(text, item.options) ? item : undefined;
   }
 
@@ -419,6 +424,10 @@ export class Runtime {
   private addressed(room: Room, agent: AgentSpec, text: string): boolean {
     if (room.kind === "dm") return true;
     if (this.d.rooms.memberIds(room.id).length <= 1) return true; // a group with one person in it is a conversation with the agent
+    return this.named(agent, text);
+  }
+
+  private named(agent: AgentSpec, text: string): boolean {
     const t = text.toLowerCase();
     return t.includes(`@${agent.handle}`) || t.includes(`@${agent.name.toLowerCase()}`) || new RegExp(`\\b${escapeRe(agent.name.toLowerCase())}\\b`).test(t);
   }
@@ -1112,13 +1121,13 @@ export function buildFooter(calls: ToolCallRecord[]): string {
   return `— ${parts.join(" · ")}: ${labels.slice(0, 6).join(", ")}${labels.length > 6 ? "…" : ""}`;
 }
 
-const CLAIM = /\b(i|i've|i have)\s+(booked|called|texted|emailed|paid|posted|ordered|scheduled|sent|confirmed)\b/i;
-const SIDE_EFFECT = new Set(["place_call", "send_sms", "post_community", "schedule_action", "request_purchase"]);
+const CLAIM = /\b(i|i've|i have)\s+(booked|called|texted|emailed|paid|posted|ordered|placed|scheduled|sent|shared|confirmed)\b/i;
 
 /** If the reply claims an action but no side-effect tool completed, say so instead of letting it stand. */
 export function integrityNote(text: string, calls: ToolCallRecord[]): string {
   if (!CLAIM.test(text)) return "";
-  const acted = calls.some((c) => c.status === "done" && SIDE_EFFECT.has(c.name) && c.evidence);
+  // request_purchase only clears a budget; "I've ordered it" after that alone is still a claim.
+  const acted = calls.some((c) => c.status === "done" && c.evidence && c.name !== "request_purchase" && TOOL_INDEX.get(c.name)?.sideEffect);
   return acted ? "" : "(Correction: no outside action was actually taken in this step.)";
 }
 

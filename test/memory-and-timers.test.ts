@@ -20,6 +20,18 @@ describe("memory", () => {
     expect(w.app.memory.recall(w.agent.id, dm, ["sam"], "jobs", 5).length).toBe(1);
   });
 
+  test("a note told in a private chat shapes the person's private profile only, never a group prompt", async () => {
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("remember", { type: "fact", text: "Alex is in debt and hiding it from Sam." }) : reply("ok")), {
+      completer: (system, prompt) => (system.startsWith("Write a short profile") ? (prompt.split("\n").find((l) => l.includes("debt")) ?? "Alex.") : ""),
+    });
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "@pip remember I'm in debt and hiding it from Sam" });
+    await w.app.consolidator.runFor(w.agent);
+    expect(w.app.store.getProfile(w.agent.id, "person", privateProfileId("alex"))?.text).toContain("debt");
+    expect(w.app.store.getProfile(w.agent.id, "person", "alex")?.text ?? "").not.toContain("debt");
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip hi" });
+    expect(w.model.calls.at(-1)!.system).not.toContain("debt");
+  });
+
   test("remember writes observations; the owner's rules take effect at once", async () => {
     const w = groupWorld((_req, i) => {
       if (i === 0) return callTool("remember", { type: "rule", text: "Never text Jo after 9pm." });

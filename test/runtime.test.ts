@@ -43,6 +43,10 @@ describe("run loop", () => {
   test("a reply that claims an action with no side-effect record is corrected", () => {
     expect(integrityNote("I booked the plumber for Tuesday.", [])).toContain("Correction");
     expect(integrityNote("Here are three options.", [])).toBe("");
+    const call = (name: string) => ({ id: "c", runId: "r", name, input: "{}", status: "done", evidence: "x", labelRunning: "", labelDone: "", startedAt: 0 }) as never;
+    // Any catalogue side effect with evidence backs a claim; a cleared budget alone does not.
+    expect(integrityNote("I've emailed the clinic.", [call("send_agent_email")])).toBe("");
+    expect(integrityNote("I've ordered the kettle.", [call("request_purchase")])).toContain("Correction");
     expect(buildFooter([])).toBe("");
   });
 
@@ -254,6 +258,29 @@ describe("chatter is not an answer", () => {
     const resumed = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "Great Wall" });
     expect(resumed?.id).toBe(run!.id);
     expect(w.app.store.listAttention({ roomId: w.room.id })[0]!.answer).toBe("Great Wall");
+  });
+
+  test("an unrelated message from the person who holds an open card neither answers nor declines it", async () => {
+    const w = groupWorld((_req, i) => {
+      if (i === 0) return callTool("request_purchase", { amount: 40, merchant: "argos.co.uk", item: "a kettle" });
+      return reply("ok");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip get me a kettle" });
+    expect(run?.status).toBe("waiting");
+    // A new request that names the agent, in the group and in the DM, starts its own run.
+    const plumber = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip also find me a plumber for Saturday" });
+    expect(plumber?.id).not.toBe(run!.id);
+    const reminder = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "@pip remind me to call mum tomorrow" });
+    expect(reminder?.id).not.toBe(run!.id);
+    const item = w.app.store.listAttention({ roomId: w.room.id })[0]!;
+    expect(item.status).toBe("open");
+    expect(w.app.store.getRun(run!.id)!.status).toBe("waiting");
+    // Chatter without the agent's name is chatter.
+    expect(await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "Thanks everyone, Jo will be home all week." })).toBeUndefined();
+    expect(w.app.store.getAttention(item.id)!.status).toBe("open");
+    // A plain yes still approves it.
+    const resumed = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "yes" });
+    expect(resumed?.id).toBe(run!.id);
   });
 
   test("messages written in the same millisecond keep their order", async () => {

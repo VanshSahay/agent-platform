@@ -137,7 +137,11 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
             app.store.putRoom(room);
           }
         }
-        await spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }));
+        // Not awaited: a run can take minutes, and the next text (another chat, or a steer
+        // for this one) must be read while it runs.
+        void spectrum
+          .responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }))
+          .catch((e) => console.error(`${channel} run failed`, (e as Error).message));
       } catch (e) {
         console.error(`${channel} inbound failed`, (e as Error).message);
       }

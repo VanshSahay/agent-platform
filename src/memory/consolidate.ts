@@ -222,7 +222,8 @@ export class Consolidator {
         agent,
         scope,
         scopeId,
-        all.filter((m) => m.visibleToRooms.length > 0),
+        // Shared with a group, not merely "told in some room": a DM is a room too.
+        all.filter((m) => m.visibleToRooms.some((rid) => this.store.getRoom(rid)?.kind === "group")),
       );
       await this.writeProfile(agent, scope, privateProfileId(scopeId), all);
       return;
