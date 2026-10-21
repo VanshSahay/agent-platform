@@ -59,7 +59,7 @@ What gets wired depends on `.env`:
 
 | Setting | What it turns on |
 |---|---|
-| `OPENROUTER_API_KEY` | The model, through OpenRouter: `z-ai/glm-5.3` for the agent and `z-ai/glm-5.3-flash` for labels, premise checks and the memory pass. Override with `MODEL` and `MODEL_SMALL` (Claude ids work too: `anthropic/claude-opus-5.5`). |
+| `OPENROUTER_API_KEY` | The model, through OpenRouter: `deepseek/deepseek-v4.1-flash-1017` for the agent and `deepseek/deepseek-v4.1-flash-1017` for labels, premise checks and the memory pass. Override with `MODEL` and `MODEL_SMALL` (Claude ids work too: `anthropic/claude-opus-5.5`). |
 | `ANTHROPIC_API_KEY` | The model directly from Anthropic: Claude Opus 5.5 and Haiku 5.5. |
 | `PROJECT_ID`, `PROJECT_SECRET`, `CHANNELS` | Chat channels through Photon Spectrum: `imessage` (default), `whatsapp`, `telegram`, `slack`, comma-separated. Each chat becomes a room; senders become people; the owner is recognised by the phone number or email on their person record (`PATCH /api/people/:id {phoneE164}`). |
 | `BROWSERBASE_API_KEY` | The `browse_page` tool runs in a cloud browser. Without it, pages are read as text through Jina Reader. |

@@ -373,10 +373,20 @@ describe("hands", () => {
     expect(browser.visited).toEqual(["https://lin-repair.example"]);
   });
 
-  test("model config picks OpenRouter with GLM 5.3 by default and maps Claude ids between doors", async () => {
+  test("model config picks OpenRouter with DeepSeek V4.1 Flash by default and maps Claude ids between doors", async () => {
     const { modelConfig, normalizeModelId } = await import("../src/model/config.ts");
-    expect(modelConfig({ OPENROUTER_API_KEY: "x" })).toEqual({ provider: "openrouter", model: "z-ai/glm-5.3", smallModel: "z-ai/glm-5.3-flash" });
-    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5" }).model).toBe("anthropic/claude-opus-5.5");
+    expect(modelConfig({ OPENROUTER_API_KEY: "x" })).toEqual({
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4.1-flash-1017",
+      smallModel: "deepseek/deepseek-v4.1-flash-1017",
+    });
+    // MODEL alone moves both; MODEL_SMALL splits the small calls off again.
+    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5" })).toEqual({
+      provider: "openrouter",
+      model: "anthropic/claude-opus-5.5",
+      smallModel: "anthropic/claude-opus-5.5",
+    });
+    expect(modelConfig({ OPENROUTER_API_KEY: "x", MODEL: "anthropic/claude-opus-5.5", MODEL_SMALL: "z-ai/glm-5.3-flash" }).smallModel).toBe("z-ai/glm-5.3-flash");
     expect(modelConfig({ ANTHROPIC_API_KEY: "x" })).toEqual({ provider: "anthropic", model: "claude-opus-5-5", smallModel: "claude-haiku-5-5" });
     expect(modelConfig({}).provider).toBe("none");
     expect(normalizeModelId("claude-opus-5-5", "openrouter")).toBe("anthropic/claude-opus-5.5");
