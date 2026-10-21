@@ -88,7 +88,7 @@ export interface ToolContext {
     title: string;
     detail: string;
     money?: number;
-    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post" };
+    outreach?: { who: string; how: "phone" | "sms" | "email" | "community_post"; contact?: string };
     /** What a yes permits: the tool and the payload that matters (number, text, amount, merchant). An approval covers exactly this. */
     key: unknown[];
   }): GateDecision;
@@ -128,11 +128,18 @@ export function parseOutreach(v: unknown): Outreach[] {
     if (!x || typeof x !== "object") continue;
     const o = x as Record<string, unknown>;
     if (typeof o.who === "string" && o.who.trim() && typeof o.how === "string" && HOWS.has(o.how))
-      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated" });
+      out.push({ who: o.who.trim(), how: o.how as Outreach["how"], why: s(o.why) || "not stated", contact: contactKey(s(o.contact)) || undefined });
   }
   return out.slice(0, 10);
 }
-export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who} by ${d.how} (${d.why})`).join("; ");
+export const describeOutreach = (xs: Outreach[]) => xs.map((d) => `${d.who}${d.contact ? ` <${d.contact}>` : ""} by ${d.how} (${d.why})`).join("; ");
+
+/** A phone number or address in one comparable form: digits with the plus, or a lowercased email. */
+export const contactKey = (v: string) => {
+  const t = v.trim().toLowerCase();
+  if (!t) return "";
+  return t.includes("@") ? t : t.replace(/[^+\d]/g, "");
+};
 /** "https://www.ubereats.com/orders" and "ubereats.com" both mean ubereats.com. */
 /**
  * A URL the server may fetch on a member's behalf: http(s), and not the box itself or the

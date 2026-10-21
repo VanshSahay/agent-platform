@@ -281,7 +281,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
           kind: "outreach_approval",
           title: `OK to invite ${attendees.join(", ")} to "${s(input.title)}"?`,
           detail: `${s(input.start)} to ${s(input.end)}${s(input.location) ? ` at ${s(input.location)}` : ""}. Google will email them the invitation.`,
-          outreach: { who: attendees.join(", "), how: "email" },
+          outreach: { who: attendees.join(", "), how: "email", contact: attendees.join(",") },
           key: ["create_event", s(input.title), s(input.start), attendees],
         });
         if (!gate.granted) {
@@ -583,7 +583,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
         kind: "outreach_approval",
         title: `OK to email ${everyone.join(", ")} as you?`,
         detail: `From your Gmail\nSubject: ${s(input.subject)}\n\n${s(input.text).slice(0, 1500)}`,
-        outreach: { who: everyone.join(", "), how: "email" },
+        outreach: { who: everyone.join(", "), how: "email", contact: everyone.join(",") },
         key: ["send_email_as_user", to, cc, s(input.subject), s(input.text)],
       });
       if (!gate.granted) {
@@ -712,7 +712,7 @@ export const GOOGLE_TOOLS: ToolDef[] = [
         kind: "outreach_approval",
         title: `OK to share a file with ${s(input.email)}?`,
         detail: `File ${s(input.fileId)} as ${s(input.role) || "reader"}. Google will email them.`,
-        outreach: { who: s(input.email), how: "email" },
+        outreach: { who: s(input.email), how: "email", contact: s(input.email) },
         key: ["share", s(input.fileId), s(input.email), s(input.role)],
       });
       if (!gate.granted) {

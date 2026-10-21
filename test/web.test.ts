@@ -134,6 +134,20 @@ describe("web api: deny by default", () => {
     expect((await s.call("sam", "GET", `/api/channels/vcard`)).status).toBe(200);
   });
 
+  test("the owner's Memory tab shows group and own notes, never what another member told the assistant privately", async () => {
+    const s = up();
+    const samDm = s.app.rooms.dmFor(s.agent, "sam");
+    s.app.memory.write({ agentId: s.agent.id, scope: "person", scopeId: "sam", type: "fact", text: "Sam is between jobs.", visibleToRooms: [samDm.id] });
+    s.app.memory.write({ agentId: s.agent.id, scope: "person", scopeId: "sam", type: "preference", text: "Sam drives Thursdays.", visibleToRooms: [s.room.id] });
+    s.app.memory.write({ agentId: s.agent.id, scope: "person", scopeId: "alex", type: "fact", text: "Alex prefers mornings.", visibleToRooms: [s.ownerDm.id] });
+    s.app.memory.write({ agentId: s.agent.id, scope: "room", scopeId: samDm.id, type: "fact", text: "In Sam's chat.", visibleToRooms: [samDm.id] });
+    const texts = (await (await s.call("alex", "GET", `/api/memory?agentId=${s.agent.id}`)).json()).memories.map((m: { text: string }) => m.text);
+    expect(texts).toContain("Sam drives Thursdays.");
+    expect(texts).toContain("Alex prefers mornings.");
+    expect(texts).not.toContain("Sam is between jobs.");
+    expect(texts).not.toContain("In Sam's chat.");
+  });
+
   test("the owner succeeds, and trust is validated on the way in", async () => {
     const s = up();
     expect((await s.call("alex", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);

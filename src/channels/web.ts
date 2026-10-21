@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newAgent } from "../agent/spec.ts";
 import type { App } from "../app.ts";
-import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
+import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, Memory, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
 import { newId } from "../core/ids.ts";
 import { buildFooter, type Delivery } from "../runtime/runtime.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
@@ -12,6 +12,7 @@ import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
 import { publicUrl } from "../tools/kit.ts";
+import { privateProfileId } from "../memory/consolidate.ts";
 import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
@@ -1113,7 +1114,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/profiles$/,
       access: "agentOwner",
       scope: (c) => agentScope(c.url.searchParams.get("agentId") ?? undefined),
-      handle: ({ url }) => {
+      handle: ({ url, me }) => {
         const agentId = url.searchParams.get("agentId") ?? "";
         const out: Profile[] = [];
         const add = (scope: MemoryScope, scopeId: string) => {
@@ -1121,8 +1122,10 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           if (prof) out.push(prof);
         };
         add("agent", agentId);
-        for (const r of app.store.listRooms(agentId)) add("room", r.id);
+        for (const r of app.store.listRooms(agentId)) if (r.kind === "group") add("room", r.id);
+        // Public person profiles only: what a person told the assistant privately shapes their private profile, which stays theirs.
         for (const person of listPeople(app.store)) add("person", person.id);
+        if (me) add("person", privateProfileId(me));
         return json(out);
       },
     },
@@ -1131,12 +1134,25 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/memory$/,
       access: "agentOwner",
       scope: (c) => agentScope(c.url.searchParams.get("agentId") ?? undefined),
-      handle: ({ url }) => {
+      handle: ({ url, me }) => {
         const agentId = url.searchParams.get("agentId") ?? "";
         // Room visibility (MemoryService.visibleIn) is what the agent sees inside a room. This is the owner's
-        // admin view of their own agent's memory, so it reads the store directly; the policy above limits it to the owner.
+        // admin view, limited to the owner by the policy above, and it keeps one promise: a note another
+        // member made in their own private chat is theirs. Shown: agent and group notes, the owner's own
+        // notes, and notes about people that some group may see.
+        const groupIds = new Set(
+          app.store
+            .listRooms(agentId)
+            .filter((r) => r.kind === "group")
+            .map((r) => r.id),
+        );
+        const ownerDm = me ? app.rooms.dmFor(app.store.getAgent(agentId)!, me).id : undefined;
+        const shownToOwner = (m: Memory) =>
+          m.scope === "agent" ||
+          (m.scope === "room" && groupIds.has(m.scopeId)) ||
+          (m.scope === "person" && (m.scopeId === me || m.visibleToRooms.some((rid) => groupIds.has(rid) || rid === ownerDm)));
         return json({
-          memories: app.store.listMemories(agentId, { includeInactive: url.searchParams.get("all") === "1" }),
+          memories: app.store.listMemories(agentId, { includeInactive: url.searchParams.get("all") === "1" }).filter(shownToOwner),
           consolidatedAt: app.store.getKv(`consolidated:${agentId}`),
         });
       },

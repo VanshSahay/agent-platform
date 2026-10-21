@@ -1,4 +1,5 @@
 import { sha256 } from "../core/ids.ts";
+import { contactKey } from "../tools/kit.ts";
 import { hourIn, type Clock } from "../core/clock.ts";
 import type { AgentSpec, Id, Room, Run } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
@@ -39,8 +40,19 @@ export function decideGate(
   // Scheduled runs carry their own authorisation.
   if (run.scheduleId && g.outreach) {
     const sched = store.getSchedule(run.scheduleId);
-    const disclosed = sched?.authorization.disclosedOutreach.find((d) => d.who.toLowerCase() === g.outreach!.who.toLowerCase() && d.how === g.outreach!.how);
-    if (disclosed) return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
+    const contact = contactKey(g.outreach.contact ?? "");
+    // Name and channel must match, and so must the number or address once one is known: a disclosure
+    // made without one binds to the first contact used, so "Dr. Lee's office" cannot become any number.
+    const disclosed = sched?.authorization.disclosedOutreach.find(
+      (d) => d.who.toLowerCase() === g.outreach!.who.toLowerCase() && d.how === g.outreach!.how && (!d.contact || !contact || d.contact === contact),
+    );
+    if (disclosed && sched) {
+      if (!disclosed.contact && contact) {
+        disclosed.contact = contact;
+        store.putSchedule(sched);
+      }
+      return { granted: true, reason: `disclosed when scheduled: ${disclosed.why}` };
+    }
   }
 
   // An approval is a record bound to this run and to exactly this action (the gate key).

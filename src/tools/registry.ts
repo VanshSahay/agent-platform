@@ -362,7 +362,7 @@ export const CORE_TOOLS: ToolDef[] = [
         kind: "outreach_approval",
         title: `OK to call ${s(input.who)}?`,
         detail: `${ctx.agent.name} wants to call ${s(input.who)} (${to}) by phone to: ${s(input.objective)}`,
-        outreach: { who: s(input.who), how: "phone" },
+        outreach: { who: s(input.who), how: "phone", contact: to },
         key: ["place_call", to],
       });
       if (!gate.granted) {
@@ -395,7 +395,7 @@ export const CORE_TOOLS: ToolDef[] = [
         kind: "outreach_approval",
         title: `OK to text ${s(input.who)}?`,
         detail: `${ctx.agent.name} wants to text ${s(input.who)} (${s(input.to)}): "${s(input.text)}"`,
-        outreach: { who: s(input.who), how: "sms" },
+        outreach: { who: s(input.who), how: "sms", contact: s(input.to) },
         key: ["send_sms", s(input.to), s(input.text)],
       });
       if (!gate.granted) {
@@ -563,7 +563,15 @@ export const CORE_TOOLS: ToolDef[] = [
           premise: str("What must still be true for this to make sense, e.g. 'the reservation is still unconfirmed'."),
           disclosedOutreach: {
             type: "array",
-            items: obj({ who: str("Name"), how: { type: "string", enum: ["phone", "email", "sms", "community_post"] }, why: str("Purpose") }, ["who", "how", "why"]),
+            items: obj(
+              {
+                who: str("Name"),
+                how: { type: "string", enum: ["phone", "email", "sms", "community_post"] },
+                why: str("Purpose"),
+                contact: str("Their number (E.164) or email when known; the first one used is bound otherwise."),
+              },
+              ["who", "how", "why"],
+            ),
           },
         },
         ["title", "prompt", "premise"],
@@ -840,7 +848,15 @@ export const CORE_TOOLS: ToolDef[] = [
           untilDays: num("Stop after this many days (default 14)."),
           disclosedOutreach: {
             type: "array",
-            items: obj({ who: str("Name"), how: { type: "string", enum: ["phone", "email", "sms", "community_post"] }, why: str("Purpose") }, ["who", "how", "why"]),
+            items: obj(
+              {
+                who: str("Name"),
+                how: { type: "string", enum: ["phone", "email", "sms", "community_post"] },
+                why: str("Purpose"),
+                contact: str("Their number (E.164) or email when known; the first one used is bound otherwise."),
+              },
+              ["who", "how", "why"],
+            ),
           },
         },
         ["title", "condition", "action", "everyHours"],

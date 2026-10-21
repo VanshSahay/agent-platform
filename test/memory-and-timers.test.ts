@@ -132,6 +132,43 @@ describe("timers", () => {
     expect(sched.nextRunAt).toBeUndefined();
   });
 
+  test("a disclosure binds to the first number used; the same name at another number asks again", async () => {
+    const phone = new FakePhone(() => ({ summary: "ok" }));
+    const dialed = () => phone.calls.map((c) => c.to);
+    const w = groupWorld(
+      (req, i) => (i % 2 === 0 ? callTool("place_call", { to: i === 0 ? "+14085550100" : "+14085559999", who: "Graciela", objective: "retry" }) : reply("done")),
+      { phone },
+    );
+    const sched = Scheduler.createSchedule(w.app.store, w.clock, {
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      sessionId: w.app.store.latestSessionForRoom(w.room.id)?.id ?? "none",
+      title: "Retry Graciela",
+      prompt: "Call Graciela again.",
+      runAt: w.clock.now() + HOUR,
+      authorization: { basis: "user_requested", disclosedOutreach: [{ who: "Graciela", how: "phone", why: "retry" }], premise: "always" },
+    });
+    w.clock.advance(HOUR + 1);
+    await w.app.scheduler.tick();
+    expect(dialed()).toEqual(["+14085550100"]);
+    expect(w.app.store.getSchedule(sched.id)!.authorization.disclosedOutreach[0]!.contact).toBe("+14085550100");
+    // A second firing reaching a different number under the same name is not covered by the disclosure.
+    const again = Scheduler.createSchedule(w.app.store, w.clock, {
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      sessionId: w.app.store.latestSessionForRoom(w.room.id)?.id ?? "none",
+      title: "Retry Graciela 2",
+      prompt: "Call Graciela again.",
+      runAt: w.clock.now() + HOUR,
+      authorization: { basis: "user_requested", disclosedOutreach: [{ who: "Graciela", how: "phone", why: "retry", contact: "+14085550100" }], premise: "always" },
+    });
+    w.clock.advance(HOUR + 1);
+    await w.app.scheduler.tick();
+    expect(dialed()).toEqual(["+14085550100"]);
+    expect(w.app.store.listAttention({ roomId: w.room.id, status: ["open"] }).some((a) => a.kind === "outreach_approval")).toBe(true);
+    void again;
+  });
+
   test("when the premise no longer holds, the schedule is paused and the agent reports instead of acting", async () => {
     const phone = new FakePhone();
     const w = groupWorld(

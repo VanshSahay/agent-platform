@@ -396,8 +396,12 @@ export interface Calendar {
  */
 export interface Authorization {
   basis: "user_requested" | "standing_rule" | "agent_initiative";
-  /** Third parties the owner was told about: name, how, why. Anyone else needs a fresh yes. */
-  disclosedOutreach: { who: string; how: "phone" | "email" | "sms" | "community_post"; why: string }[];
+  /**
+   * Third parties the owner was told about: name, how, why, and the number or address when known.
+   * A disclosure without a contact binds to the first one used, so a later run cannot reach a
+   * different number under the same name. Anyone else needs a fresh yes.
+   */
+  disclosedOutreach: { who: string; how: "phone" | "email" | "sms" | "community_post"; why: string; contact?: string }[];
   /** What must still be true for the action to make sense. */
   premise: string;
 }

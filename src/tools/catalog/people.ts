@@ -125,7 +125,7 @@ export const PEOPLE_TOOLS: ToolDef[] = [
         kind: "outreach_approval",
         title: `OK to email ${everyone.join(", ")}?`,
         detail: `From ${ctx.hands.email.address()}\nSubject: ${s(input.subject)}${s(input.replyToMessageId) ? " (a reply)" : ""}\n\n${s(input.text).slice(0, 1500)}`,
-        outreach: { who: everyone.join(", "), how: "email" },
+        outreach: { who: everyone.join(", "), how: "email", contact: everyone.join(",") },
         key: ["send_agent_email", to, cc, s(input.subject), s(input.text), s(input.replyToMessageId)],
       });
       if (!gate.granted) {
