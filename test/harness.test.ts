@@ -217,6 +217,13 @@ describe("compaction", () => {
     expect(JSON.stringify(last.messages)).not.toContain("note 0");
     expect(JSON.stringify(last.messages)).toContain("note 35");
     expect(w.app.store.listMemories(w.agent.id, { scope: "room", scopeId: w.room.id }).some((m) => m.text.startsWith("Conversation summary through"))).toBe(true);
+    // The clock is frozen, so every message shares a timestamp: the cut is by position, and the first kept message is still in the prompt.
+    const all = w.app.store.messagesForSession(session.id, 500);
+    const cut = all.findIndex((m) => m.id === session.summaryThroughId);
+    expect(cut).toBeGreaterThan(0);
+    const firstKept = all.slice(cut + 1).find((m) => m.role === "user")!;
+    expect(firstKept.at).toBe(all[cut]!.at);
+    expect(JSON.stringify(last.messages)).toContain(firstKept.text.split("\n")[0]!);
   });
 });
 

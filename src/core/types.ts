@@ -195,6 +195,8 @@ export interface Session {
   /** Compaction: older messages folded into prose so the context stays short. */
   summary?: string;
   summaryThroughAt?: UnixMs;
+  /** The last message folded into the summary; the cut is by position, so two messages in one millisecond cannot straddle it. */
+  summaryThroughId?: Id;
   createdAt: UnixMs;
   lastActivityAt: UnixMs;
 }

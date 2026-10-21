@@ -489,7 +489,7 @@ export class Runtime {
     const { store, clock, model, memory } = this.d;
     const after = this.d.compactAfter ?? COMPACT_AFTER;
     // Owner-only system turns and folded triggers are not part of the room's shared story.
-    const fresh = store.messagesForSession(session.id, 500).filter((m) => m.at > (session.summaryThroughAt ?? 0) && !m.folded && m.visibleTo.length === 0);
+    const fresh = afterSummary(session, store.messagesForSession(session.id, 500)).filter((m) => !m.folded && m.visibleTo.length === 0);
     if (fresh.length <= after) return;
     const old = fresh.slice(0, fresh.length - KEEP_RECENT);
     const lines = old
@@ -516,6 +516,7 @@ export class Runtime {
       summary = `${session.summary ? `${session.summary} ` : ""}(${old.length} earlier messages up to ${new Date(old.at(-1)!.at).toISOString().slice(0, 10)} were not summarised.)`;
     session.summary = summary;
     session.summaryThroughAt = old.at(-1)!.at;
+    session.summaryThroughId = old.at(-1)!.id;
     store.putSession(session);
     memory.write({
       agentId: agent.id,
@@ -585,15 +586,9 @@ export class Runtime {
 
   /** Recent room conversation as model messages: what this room, and this requester, may see. */
   private history(session: Session, requesterId: Id | undefined, excludeMessageId?: Id): Anthropic.MessageParam[] {
-    const msgs = this.d.store
-      .messagesForSession(session.id, 40)
-      .filter(
-        (m) =>
-          m.id !== excludeMessageId &&
-          !m.folded &&
-          m.at > (session.summaryThroughAt ?? 0) &&
-          (m.visibleTo.length === 0 || (requesterId !== undefined && m.visibleTo.includes(requesterId))),
-      );
+    const msgs = afterSummary(session, this.d.store.messagesForSession(session.id, 40)).filter(
+      (m) => m.id !== excludeMessageId && !m.folded && (m.visibleTo.length === 0 || (requesterId !== undefined && m.visibleTo.includes(requesterId))),
+    );
     const out: Anthropic.MessageParam[] = [];
     if (session.summary) out.push({ role: "user", content: `[system:earlier in this chat] ${session.summary}` });
     for (const m of msgs) {
@@ -1144,6 +1139,12 @@ export function buildFooter(calls: ToolCallRecord[]): string {
   const evidence = done.filter((c) => c.evidence).length;
   if (evidence) parts.push(`${evidence} verified`);
   return `— ${parts.join(" · ")}: ${labels.slice(0, 6).join(", ")}${labels.length > 6 ? "…" : ""}`;
+}
+
+/** The messages not yet folded into the session summary: everything after the last folded one, by position when it is in view, by time otherwise. */
+function afterSummary(session: Session, msgs: Message[]): Message[] {
+  const cut = session.summaryThroughId ? msgs.findIndex((m) => m.id === session.summaryThroughId) : -1;
+  return cut >= 0 ? msgs.slice(cut + 1) : msgs.filter((m) => m.at > (session.summaryThroughAt ?? 0));
 }
 
 /** Tools that act on one person's connected account (not the assistant's own inbox, soul or the open web). */
