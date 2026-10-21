@@ -34,8 +34,7 @@ const report = await harnessLoop({
   proposer: modelProposer(model, cfg.model),
   log: (l) => console.log(l),
 });
-console.log(`\nadopted ${report.adopted.length}, rejected ${report.rejected.length}`);
-for (const r of report.rejected) console.log(`  rejected ${r.scenario} / ${r.candidate.kind}: ${r.reason}`);
-for (const a of report.adopted) console.log(`  adopted  ${a.scenario} / ${a.candidate.kind} → skills/${a.candidate.file}`);
+console.log(`\nadopted ${report.adopted.length} of ${report.verdicts.length} candidates; flaky: ${report.flaky.join(", ") || "none"}`);
+for (const v of report.verdicts) console.log(`  ${v.verdict.padEnd(14)} ${v.scenario} / ${v.candidate.kind} → ${v.candidate.file}: ${v.detail}`);
 if (report.adopted.length) console.log("Review with: git diff skills/");
 process.exit(0);

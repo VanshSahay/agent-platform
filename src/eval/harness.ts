@@ -121,6 +121,8 @@ export interface ScenarioResult {
   elapsedMs: number;
   tokens: { input: number; output: number };
   turns: TurnRecord[];
+  /** What happened, run by run, as an editor would read it: [USER] [ACTION] [OBSERVATION] [GATE] [REPLY] [QUIET]. */
+  trace: string[];
   /** Set when the scenario could not finish (model error, timeout). Checks still run on whatever state exists. */
   error?: string;
 }
@@ -313,9 +315,39 @@ function finish(
   turns: TurnRecord[],
   error?: string,
 ): ScenarioResult {
-  const toolCalls = app.store.listRuns({ agentId: world.agent.id, limit: 200 }).reduce((n, r) => n + app.store.toolCallsForRun(r.id).length, 0);
+  const runs = app.store.listRuns({ agentId: world.agent.id, limit: 200 }).reverse();
+  const toolCalls = runs.reduce((n, r) => n + app.store.toolCallsForRun(r.id).length, 0);
+  const clip = (v: unknown, n: number) => {
+    const t = typeof v === "string" ? v : JSON.stringify(v ?? "");
+    return t.length > n ? `${t.slice(0, n)}…` : t;
+  };
+  const trace: string[] = [];
+  for (const run of runs) {
+    const roomName = world.keyOf?.(run.roomId) ?? run.roomId;
+    const ask = app.store
+      .messagesForRoom(run.roomId)
+      .filter((m) => m.role === "user" && m.at <= run.startedAt)
+      .at(-1);
+    trace.push(`[RUN ${run.trigger} in ${roomName}]${ask ? ` [USER] ${clip(ask.text, 240)}` : ""}`);
+    for (const c of app.store.toolCallsForRun(run.id)) {
+      trace.push(`[ACTION] ${c.name}(${clip(c.input, 200)})`);
+      trace.push(`[OBSERVATION] ${c.status}${c.evidence ? " with evidence" : ""}: ${clip(c.result, 300)}`);
+    }
+    for (const e of app.store.eventsForRun(run.id)) {
+      if (e.type === "gate_opened") trace.push(`[GATE] ${String(e.data.kind)} for ${String(e.data.assigneeId)}: ${clip(e.data.title, 120)}`);
+      if (e.type === "gate_resolved") trace.push(`[GATE] resolved: ${clip(e.data.answer ?? e.data.kind, 80)}`);
+    }
+    const reply = app.store
+      .messagesForRoom(run.roomId)
+      .filter((m) => m.runId === run.id && m.role === "assistant" && !m.source)
+      .at(-1);
+    if (run.quiet) trace.push(`[QUIET] ${clip(run.outcome, 120)}`);
+    else if (reply) trace.push(`[REPLY] ${clip(reply.text, 400)}`);
+    else trace.push(`[END] ${run.status}${run.failureReason ? `: ${clip(run.failureReason, 120)}` : ""}`);
+  }
   return {
     name: scenario.name,
+    trace,
     checks,
     passed: checks.filter((c) => c.pass).length,
     total: checks.length,

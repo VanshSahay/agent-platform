@@ -116,6 +116,16 @@ The uncovered categories are mostly the same mechanisms with a different noun (h
 
 Offline: every scenario runs with its script in `bun test` (the suite stays under a second; each world is an in-memory SQLite). Online: `bun run eval` with 15 scenarios is roughly 15 to 25 model turns each on GLM 5.3, well inside the daily cap; `--category` and `--only` keep a single run cheap.
 
-## 7. The harness loop (added 21 Oct 2026)
+## 7. The harness loop (added 21 Oct 2026, reworked the same day after a second read of Harness²)
 
-`bun run harness` is one Harness² step (google-research/harness2) over the agent's markdown harness: `skills/_core-rules.md` plus the procedures. Reference run, two proposed files per failing scenario (an invariant rule and a domain procedure), a probe of that scenario from a temp copy of the folder, then a full-suite confirmation: adopted only when a failed check passes and nothing regresses, one adoption per scenario per step. Adopted files land in `skills/` for review in git; the lesson and its evidence go to `skills/EXPERIENCE.md`, which the next proposal reads. The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/harness-loop.test.ts`.
+`bun run harness` is one Harness² step (google-research/harness2) over the agent's markdown harness: `skills/_core-rules.md` plus the procedures. What it does, in order:
+
+1. **Reference.** The whole suite runs. A scenario that fails is run again; a failure that does not repeat is noise and is listed as flaky, not fixed.
+2. **Propose.** Two scoped editor calls per failing scenario: one owns `_core-rules.md` (at most three added lines, "if you add, consider cutting one"), one owns the matched procedure and its `when:` line. Both see the full trajectory of both reference runs (`[RUN] [ACTION] [OBSERVATION] [GATE] [REPLY]` lines from the store), the failed checks, lessons for this category, and every earlier verdict this step.
+3. **Validate.** Before any run: frontmatter parses, a procedure's `when:` must match the scenario's request under `matchSkills` (Harness²'s most common invalid edit is a procedure that never loads), no scenario name in the text, no guard rule about asking, spending, contacting or accounts dropped, not identical to the current file. One retry with the validator's message.
+4. **Probe.** The scenario replays from a temp copy of the folder. A fix must repeat on a second run.
+5. **Compose.** The whole suite; a regression counts only when it repeats. Adopted only when nothing regresses, one adoption per scenario per step.
+6. **Reflect.** Adopted files land in `skills/` for review in git. `skills/EXPERIENCE.md` gets one block per scenario with a `cue:` line (the request), the lesson if one was adopted, and a row per candidate with its verdict (adopted, invalid, no change, no effect, did not repeat, hurt) and evidence. The next proposal reads these, its own category first, so a rejected idea is not proposed again.
+
+The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/harness-loop.test.ts` (adoption end to end, and the validator refusing an unloadable procedure, a dropped guard rule, an identical file and a test-aware edit).
+

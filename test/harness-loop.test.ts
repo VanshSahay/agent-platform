@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { harnessLoop } from "../src/eval/harness-loop.ts";
+import { harnessLoop, validate } from "../src/eval/harness-loop.ts";
 import { findScenarios } from "../src/eval/scenarios.ts";
 import { callTool, reply, ScriptedModel, toolCallsSoFar } from "../src/model/scripted.ts";
 
@@ -40,14 +40,37 @@ describe("harness loop", () => {
     ];
     const report = await harnessLoop({ scenarios, skillsDir, model, proposer, timeoutMs: 5000, maxAdoptions: 2 });
     expect(report.baseline[0]!.checks.some((c) => !c.pass)).toBe(true);
+    expect(report.flaky).toEqual([]);
     expect(report.adopted.map((a) => a.candidate.kind)).toEqual(["invariant"]);
     expect(report.adopted[0]!.fixed).toContain("a watch was set");
     expect(readFileSync(join(skillsDir, "_core-rules.md"), "utf8")).toContain("ALWAYS SET A WATCH");
     expect(existsSync(join(skillsDir, "pharmacy.md"))).toBe(false);
     const experience = readFileSync(join(skillsDir, "EXPERIENCE.md"), "utf8");
-    expect(experience).toContain("pharmacy-watch · invariant edit to _core-rules.md");
+    expect(experience).toContain("- invariant edit to _core-rules.md: adopted");
     expect(experience).toContain("promised instead of setting a watch");
-    // One adoption per scenario per step: the domain candidate is not probed once the invariant one is in.
-    expect(report.rejected).toEqual([]);
+    // One adoption per scenario per step, and the editor's trace carried the moment the agent went wrong.
+    expect(report.verdicts.map((v) => v.verdict)).toEqual(["adopted"]);
+    expect(report.baseline[0]!.trace.some((l) => l.startsWith("[REPLY] I'll keep an eye out"))).toBe(true);
+    expect(experience).toContain("category: doctor");
+  });
+
+  test("a candidate that would never load, names the test, or drops a guard rule is refused before any run", async () => {
+    const files = {
+      "_core-rules.md": "---\nname: _core-rules\nwhen: core\n---\n- Anything that spends money asks first.\n- Reply in plain words.\n",
+      "find-a-vendor.md": "---\nname: find-a-vendor\nwhen: handyman plumber repair\n---\nsteps\n",
+    };
+    const scenario = findScenarios("pharmacy")[0]!;
+    const names = ["pharmacy-watch"];
+    expect(validate({ kind: "domain", file: "x.md", content: "---\nname: x\nwhen: totally unrelated words\n---\nbody", why: "" }, scenario, files, names)).toContain(
+      "would not match",
+    );
+    expect(
+      validate({ kind: "invariant", file: "_core-rules.md", content: "---\nname: _core-rules\nwhen: core\n---\n- Reply in plain words.\n", why: "" }, scenario, files, names),
+    ).toContain("guard rule");
+    expect(validate({ kind: "invariant", file: "_core-rules.md", content: files["_core-rules.md"], why: "" }, scenario, files, names)).toContain("identical");
+    expect(
+      validate({ kind: "domain", file: "p.md", content: "---\nname: p\nwhen: pharmacy metformin refill\n---\nfor pharmacy-watch do x", why: "" }, scenario, files, names),
+    ).toContain("names the scenario");
+    expect(validate({ kind: "domain", file: "p.md", content: "---\nname: p\nwhen: pharmacy metformin confirmation\n---\nsteps", why: "" }, scenario, files, names)).toBeUndefined();
   });
 });
