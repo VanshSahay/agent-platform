@@ -265,6 +265,7 @@ export type RunEventType =
   | "gate_opened"
   | "gate_resolved"
   | "resumed"
+  | "run_queued"
   | "reply"
   | "error"
   | "done";

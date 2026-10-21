@@ -182,19 +182,25 @@ export class Runtime {
     // 2. Is the agent addressed, by name or by the shape of the request?
     if (!this.addressed(room, agent, input.text) && !(await this.impliedRequest(room, agent, input.text))) return undefined;
 
-    // 3. A run is in flight in this session: steer it, but only one this process is really
-    //    executing for a person (a timer or event run that will stay quiet is not a place to put a question).
+    // 3. A run is in flight in this session. The requester's own message steers it; another
+    //    member's ask is queued to run on its own once this one ends — never folded into
+    //    someone else's run (multiplayer-spec §8.2). Only a run this process is really
+    //    executing takes messages; a timer or event run that will stay quiet is not one.
     const active = store.activeRunForSession(session.id);
     if (active && active.status === "running") {
       if (!this.live.has(active.id)) this.finish(active, "failed", "Interrupted by a restart.");
       else if (active.trigger === "message" || active.trigger === "task") {
-        store.appendEvent({ runId: active.id, sessionId: session.id, type: "steer_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text } });
-        return active;
+        if (input.personId === active.requesterId) {
+          store.appendEvent({ runId: active.id, sessionId: session.id, type: "steer_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text } });
+          return active;
+        }
+        store.appendEvent({ runId: active.id, sessionId: session.id, type: "run_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text, messageId: msg.id } });
+        return undefined;
       }
     }
     // Waiting on someone else, or a timer run: a new ask from this person starts its own run.
 
-    return this.startRun({ room, agent, session, trigger: "message", requesterId: input.personId, text: input.text, dedupKey: input.dedupKey, excludeMessageId: msg.id });
+    return this.startRun({ room, agent, session, trigger: "message", requesterId: input.personId, text: input.text, dedupKey: input.dedupKey, excludeMessageIds: [msg.id] });
   }
 
   /** An approval or answer arrived through the inbox UI rather than chat. */
@@ -278,7 +284,7 @@ export class Runtime {
       text: input.text,
       dedupKey: input.dedupKey,
       scheduleId: input.scheduleId,
-      excludeMessageId: msg.id,
+      excludeMessageIds: [msg.id],
       triggerMessageId: msg.id,
     });
   }
@@ -449,7 +455,8 @@ export class Runtime {
     dedupKey?: string;
     scheduleId?: Id;
     taskId?: Id;
-    excludeMessageId?: Id;
+    /** Inbound messages already stored in the session that this run's text duplicates. */
+    excludeMessageIds?: Id[];
     triggerMessageId?: Id;
   }): Promise<Run> {
     const { store, clock } = this.d;
@@ -480,7 +487,7 @@ export class Runtime {
     // Steers queued from here on (compaction may take a moment) belong to this run.
     const steerFrom = store.lastSeq(run.sessionId);
     await this.compact(input.session, input.agent);
-    const transcript: Anthropic.MessageParam[] = this.history(input.session, input.requesterId, input.excludeMessageId).concat([{ role: "user", content: input.text }]);
+    const transcript: Anthropic.MessageParam[] = this.history(input.session, input.requesterId, input.excludeMessageIds).concat([{ role: "user", content: input.text }]);
     await this.loop(run, transcript, steerFrom);
     this.launchPending(run.id);
     return store.getRun(run.id) ?? run;
@@ -591,12 +598,12 @@ export class Runtime {
   }
 
   /** Recent room conversation as model messages: what this room, and this requester, may see. */
-  private history(session: Session, requesterId: Id | undefined, excludeMessageId?: Id): Anthropic.MessageParam[] {
+  private history(session: Session, requesterId: Id | undefined, excludeMessageIds?: Id[]): Anthropic.MessageParam[] {
     const msgs = this.d.store
       .messagesForSession(session.id, 40)
       .filter(
         (m) =>
-          m.id !== excludeMessageId &&
+          !excludeMessageIds?.includes(m.id) &&
           !m.folded &&
           m.at > (session.summaryThroughAt ?? 0) &&
           (m.visibleTo.length === 0 || (requesterId !== undefined && m.visibleTo.includes(requesterId))),
@@ -940,6 +947,8 @@ export class Runtime {
         setState(paused.kind === "information" || paused.kind === "decision" || paused.kind === "action" ? "waiting" : "blocked");
         if (run.taskId) tasks.update(run.taskId, { status: "waiting", progress: `Waiting on ${nameOf(paused.assigneeId)}: ${paused.title}` });
         this.saveTranscript(run, transcript);
+        // A run paused on a person must not hold other members' queued asks hostage.
+        this.drainQueuedRuns(run.sessionId);
         if (paused.card) {
           // An embedded card: shown inside this chat to the person it is for (and only them), and in their private chat.
           const text = `${KIND_LABEL[paused.kind]}: ${paused.title}\n${paused.detail}`;
@@ -1069,6 +1078,55 @@ export class Runtime {
       at: clock.now(),
       data: { state: status === "done" ? "done" : status === "failed" ? "failed" : "idle" },
     });
+    this.drainQueuedRuns(run.sessionId);
+  }
+
+  /**
+   * Start the next request queued while another run was live (run_queued events),
+   * one run at a time: rapid messages from one person coalesce into one run, and
+   * the rest of the queue drains when this run ends. The cursor advances before
+   * the run starts so a finished queue can never re-drain; the messages stay in
+   * the session history either way, so a crash loses nothing a repeat would not fix.
+   */
+  private drainQueuedRuns(sessionId: Id) {
+    const { store } = this.d;
+    const through = Number(store.getKv(`runqueue:${sessionId}`) ?? 0);
+    const queued = store.eventsAfter(sessionId, through).filter((e) => e.type === "run_queued");
+    if (!queued.length) return;
+    const group = this.coalesceQueued(queued)[0]!;
+    store.setKv(`runqueue:${sessionId}`, String(group.at(-1)!.seq));
+    const p: Promise<void> = (async () => {
+      const session = store.getSession(sessionId);
+      const room = session ? store.getRoom(session.roomId) : undefined;
+      const agent = room ? store.getAgent(room.agentId) : undefined;
+      if (!session || !room || !agent) return;
+      try {
+        await this.startRun({
+          room,
+          agent,
+          session,
+          trigger: "message",
+          requesterId: String(group[0]!.data.personId),
+          text: group.map((q) => String(q.data.text)).join("\n"),
+          excludeMessageIds: group.map((q) => String(q.data.messageId)).filter(Boolean),
+        });
+      } catch (e) {
+        console.error("queued run failed:", (e as Error).message);
+      }
+    })().finally(() => this.inFlight.delete(p));
+    this.inFlight.add(p);
+  }
+
+  /** Consecutive queued messages from one person within COALESCE_MS become one run; different people stay separate. */
+  private coalesceQueued(queued: RunEvent[]): RunEvent[][] {
+    const COALESCE_MS = 3000;
+    const groups: RunEvent[][] = [];
+    for (const q of queued) {
+      const last = groups.at(-1);
+      if (last && String(last[0]!.data.personId) === String(q.data.personId) && q.at - last.at(-1)!.at <= COALESCE_MS) last.push(q);
+      else groups.push([q]);
+    }
+    return groups;
   }
 }
 

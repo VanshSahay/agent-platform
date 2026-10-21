@@ -23,7 +23,7 @@ Not doing: Temporal (the loop is nearly activity-shaped; resume-in-place gives t
 
 Plus, already started: `revise_plan` (the model re-plans from what it learned; the ladder stays as the floor). The working rule from here on: **every bug becomes an eval**; the contract's §6.1 reliability matrix (restarts, duplicates, concurrency, cancellation, expired access) becomes offline tests and eval scenarios.
 
-Shipped so far: items 1–2 (two-block cache + per-run tools; boot resume + side-effect idempotency). Next: item 3.
+Shipped so far: items 1–3 (two-block cache + per-run tools; boot resume + side-effect idempotency; message priority rules). Next: the deploy + real-iMessage track, then items 4–6.
 
 ## The order, mapped to dates
 

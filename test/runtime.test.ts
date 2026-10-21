@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { callTool, callTools, lastToolResult, reply, toolCallsSoFar, ScriptedModel } from "../src/model/scripted.ts";
+import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar, ScriptedModel } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
@@ -522,7 +522,7 @@ describe("hands", () => {
 });
 
 describe("messages that arrive together", () => {
-  test("a second message during the first run's start steers it instead of failing it as a restart", async () => {
+  test("a member's message during another person's run queues its own run instead of steering theirs", async () => {
     const seen: string[] = [];
     const w = groupWorld(
       (req) => {
@@ -533,10 +533,34 @@ describe("messages that arrive together", () => {
     );
     const a = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "Can someone find a plumber for Jo's leaking tap this week?" });
     const b = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "Also ask them about the bathroom fan while they're there." });
-    await Promise.all([a, b]);
-    expect(w.app.store.listRuns({ roomId: w.room.id }).map((r) => r.status)).toEqual(["done"]);
-    expect(seen.some((s) => s.includes("[while you were working] Sam"))).toBe(true);
-    expect(repliesTo(w.deliveries, w.room.id)).toHaveLength(1);
+    expect(await b).toBeUndefined(); // queued behind Riley's run, not folded into it
+    await a;
+    await w.app.runtime.settle();
+    const runs = w.app.store.listRuns({ roomId: w.room.id });
+    expect(runs).toHaveLength(2);
+    expect(runs.every((r) => r.status === "done")).toBe(true);
+    expect(runs[0]!.requesterId).toBe("sam"); // newest first: Sam's ask ran as its own run
+    expect(seen.some((s) => s.includes("[while you were working] Sam"))).toBe(false);
+    expect(repliesTo(w.deliveries, w.room.id)).toHaveLength(2);
+  });
+
+  test("rapid messages from one person during a run coalesce into one queued run", async () => {
+    const seen: string[] = [];
+    const w = groupWorld((req) => {
+      seen.push(lastUserText(req));
+      return reply("On it.");
+    });
+    const a = w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a plumber" });
+    // Jo queues two quick messages while Alex's run is live; both are named, so no classifier call.
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "jo", text: "@pip also ask about rates" });
+    w.clock.advance(1000);
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "jo", text: "@pip prefer someone who speaks Mandarin" });
+    await a;
+    await w.app.runtime.settle();
+    const runs = w.app.store.listRuns({ roomId: w.room.id });
+    expect(runs).toHaveLength(2); // one queued run, not two
+    expect(runs[0]!.requesterId).toBe("jo");
+    expect(seen).toContain("@pip also ask about rates\n@pip prefer someone who speaks Mandarin");
   });
 
   test("un-named group messages are classified at most six times a minute per room", async () => {
