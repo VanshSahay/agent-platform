@@ -275,7 +275,9 @@ function renderNav() {
             `<div class="row"><span class="name">${esc(p.displayName)}${p.id === state.me ? ' <span class="tiny">(you)</span>' : ""}</span>${p.id === state.me ? `<button class="link" data-edit="${esc(p.id)}" type="button">Edit</button>` : `<span class="sub">${esc(p.techComfort ? `${p.techComfort} tech` : "")}</span>`}</div>`,
         )
         .join("")
-    : `<div class="empty">Nobody yet. Add the people in your circle.</div>`;
+    : `<div class="empty">${window.__CLERK_PK ? "Nobody yet. Send a chat's invite link and they appear here." : "Nobody yet. Add the people in your circle."}</div>`;
+  // Signed-in deployments: people join by invite link; a person added by hand would share no chat and never show.
+  $("#newPerson").hidden = !!window.__CLERK_PK;
   $$("#people [data-edit]").forEach((b) => {
     b.onclick = () => personForm(personOf(b.dataset.edit));
   });
@@ -323,7 +325,6 @@ async function renderSearch() {
 }
 $("#newPerson").onclick = () => personForm();
 
-const ROOM_STARTERS = ["Tahoe trip", "Flat 4B", "Family", "Mum's care", "Sunday dinner"];
 /** One field. Members arrive through the invite link, and the assistant learns what the chat is for by reading it. */
 function roomForm() {
   const el = $("#roomForm");
@@ -338,18 +339,26 @@ function roomForm() {
   }
   el.innerHTML = `<form class="form"><h4>New chat</h4>
     <div class="field"><input type="text" name="name" placeholder="What is it for?" required autocomplete="off" maxlength="80" /></div>
-    <div class="chips starters">${ROOM_STARTERS.map((n) => `<button class="chip" type="button" data-starter="${esc(n)}">${esc(n)}</button>`).join("")}</div>
+    <div class="chips starters" id="starters"></div>
     <div class="hint">That is all. You get a link to send; people join when they open it, no app needed. ${esc(agent.name)} picks up what the chat is for as you talk.</div>
     <div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button><span class="note"></span></div></form>`;
   const form = el.querySelector("form");
   const name = form.querySelector("input");
   form.querySelector("[data-cancel]").onclick = () => (el.innerHTML = "");
-  $$("#roomForm [data-starter]").forEach((b) => {
-    b.onclick = () => {
-      name.value = b.dataset.starter;
-      name.focus();
-    };
-  });
+  // Starter chips come from what the assistant knows about this person, so a new account sees none.
+  api(`/api/rooms/starters?agentId=${encodeURIComponent(agent.id)}${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`)
+    .then(({ names }) => {
+      const box = $("#starters");
+      if (!box || !names?.length) return;
+      box.innerHTML = names.map((n) => `<button class="chip" type="button" data-starter="${esc(n)}">${esc(n)}</button>`).join("");
+      $$("#roomForm [data-starter]").forEach((b) => {
+        b.onclick = () => {
+          name.value = b.dataset.starter;
+          name.focus();
+        };
+      });
+    })
+    .catch(() => undefined);
   form.onsubmit = async (e) => {
     e.preventDefault();
     try {

@@ -363,6 +363,17 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
     },
     {
       method: "GET",
+      re: /^\/api\/rooms\/starters$/,
+      access: "signedIn",
+      handle: async ({ me, url }) => {
+        const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
+        const agent = app.store.getAgent(url.searchParams.get("agentId") ?? "") ?? app.store.listAgents()[0];
+        if (!person || !agent) return bad("personId and agentId required");
+        return json({ names: await suggestions.roomStarters(person, agent) });
+      },
+    },
+    {
+      method: "GET",
       re: /^\/api\/suggestions$/,
       access: "agentMember",
       scope: (c) => agentScope(c.url.searchParams.get("agentId") ?? undefined),
