@@ -41,7 +41,7 @@
     <section class="center" id="center">
       <div class="page chat" id="pageChat">
         <div class="thread" id="thread"><div class="inner" id="inner"></div></div>
-        <form class="composer" id="composer"><div class="box"><input id="text" placeholder="Message…" autocomplete="off" /><button aria-label="Send" type="submit">↑</button></div><div class="disclaimer" id="disclaimer"></div></form>
+        <form class="composer" id="composer"><div class="pending" id="pending" hidden></div><div class="box"><button class="attach" id="attach" type="button" aria-label="Attach a photo or file"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 6.5 7.8 12.2a1.8 1.8 0 0 0 2.5 2.5l6-6a3.5 3.5 0 0 0-5-5l-6.2 6.2a5.2 5.2 0 0 0 7.4 7.4l4-4"/></svg></button><input id="file" type="file" multiple hidden accept="image/*,.pdf,.txt,.csv,.md,.doc,.docx,.xls,.xlsx" /><input id="text" placeholder="Message…" autocomplete="off" /><button aria-label="Send" type="submit">↑</button></div><div class="disclaimer" id="disclaimer"></div></form>
       </div>
       <div class="page doc" id="pageSettings" hidden><div class="inner" id="settings"></div></div>
       <div class="page doc" id="pageMemory" hidden><div class="inner" id="memory"></div></div>

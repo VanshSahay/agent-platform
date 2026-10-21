@@ -257,3 +257,24 @@ describe("document pages", () => {
     expect((await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json()).state.checked).toEqual({});
   });
 });
+
+describe("web api: attachments", () => {
+  test("a photo a member attaches becomes an image artifact of the room, served raw to members and refused to a stranger", async () => {
+    const s = up();
+    const fd = new FormData();
+    fd.append("file", new File([Buffer.from("89504e470d0a1a0a", "hex")], "receipt.png", { type: "image/png" }));
+    fd.append("roomId", s.room.id);
+    fd.append("agentId", s.agent.id);
+    const r = await fetch(`${s.base}/api/files`, { method: "POST", body: fd, headers: { authorization: "Bearer as:sam" } });
+    expect(r.status).toBe(200);
+    const { id, url } = (await r.json()) as { id: string; url: string };
+    const art = s.app.store.getArtifact(id)!;
+    expect(art.kind).toBe("image");
+    expect(art.roomId).toBe(s.room.id);
+    expect((art.data as { uploadedBy?: string }).uploadedBy).toBe("sam");
+    const raw = await fetch(`${s.base}${url}?raw=1`, { headers: { authorization: "Bearer as:alex" } });
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get("content-type")).toBe("image/png");
+    expect((await fetch(`${s.base}${url}`, { headers: { authorization: "Bearer as:zed" } })).status).toBe(403);
+  });
+});

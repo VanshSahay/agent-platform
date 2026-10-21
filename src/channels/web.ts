@@ -120,6 +120,8 @@ function snippetAround(text: string, q: string): string {
 
 async function readBody(req: Request): Promise<Body | Response> {
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(req.method)) return {};
+  // Uploads are multipart; the route reads the form itself, so the body must stay unread here.
+  if ((req.headers.get("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")) return {};
   const text = await req.text();
   if (!text.trim()) return {};
   if (!(req.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) return bad("content-type must be application/json", 415);

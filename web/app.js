@@ -64,12 +64,24 @@ async function ensureAuth() {
   await window.Clerk.load();
   if (!window.Clerk.user) {
     // Signed out: the landing page, unless they came from its button or an invite link.
-    if (location.hash !== "#signin" && !location.hash.startsWith("#join=")) {
+    if (!/^#sign(in|up)$/.test(location.hash) && !location.hash.startsWith("#join=")) {
       location.replace("/welcome");
       return false;
     }
-    $("#app").innerHTML = '<div id="signin" style="padding:40px;display:grid;place-items:center"></div>';
-    window.Clerk.mountSignIn(document.getElementById("signin"));
+    // Sign-in and sign-up both live on this page, in the app's own light look, never on Clerk's hosted portal.
+    $("#app").innerHTML = '<div id="signin" style="min-height:100dvh;padding:40px;display:grid;place-items:center"></div>';
+    const opts = {
+      signInUrl: `${location.origin}/#signin`,
+      signUpUrl: `${location.origin}/#signup`,
+      afterSignInUrl: `${location.origin}/`,
+      afterSignUpUrl: `${location.origin}/`,
+      appearance: { variables: { colorPrimary: "#111", colorText: "#111", colorBackground: "#fff", borderRadius: "12px", fontFamily: "Inter, system-ui, sans-serif" } },
+    };
+    if (location.hash === "#signup") window.Clerk.mountSignUp(document.getElementById("signin"), opts);
+    else window.Clerk.mountSignIn(document.getElementById("signin"), opts);
+    addEventListener("hashchange", () => {
+      if (/^#sign(in|up)$/.test(location.hash)) location.reload();
+    });
     window.Clerk.addListener(({ user }) => {
       if (user) location.reload();
     });
@@ -101,7 +113,6 @@ const greeting = () => {
   const h = new Date().getHours();
   return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 };
-const ROLE_WORDS = { owner: "owner", member: "member", guest: "guest" };
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const TECH = ["low", "medium", "high"];
 const AUTO_ALLOW_TOOLS = [
@@ -158,7 +169,9 @@ function route() {
     acceptInvite(h.slice(5)).then(load);
     return;
   }
-  state.page = h === "settings" || h === "memory" ? h : "chat";
+  const [page, sub] = h.split("/");
+  state.page = page === "settings" || page === "memory" ? page : "chat";
+  state.settingsSection = sub;
   $("#pageChat").hidden = state.page !== "chat";
   $("#pageSettings").hidden = state.page !== "settings";
   $("#pageMemory").hidden = state.page !== "memory";
@@ -310,6 +323,8 @@ async function renderSearch() {
 }
 $("#newPerson").onclick = () => personForm();
 
+const ROOM_STARTERS = ["Tahoe trip", "Flat 4B", "Family", "Mum's care", "Sunday dinner"];
+/** One field. Members arrive through the invite link, and the assistant learns what the chat is for by reading it. */
 function roomForm() {
   const el = $("#roomForm");
   if (el.innerHTML) {
@@ -321,43 +336,37 @@ function roomForm() {
     status("Make an agent first.");
     return;
   }
-  el.innerHTML = `<form class="form"><h4>New room</h4>
-    <div class="field"><label>Name</label><input type="text" name="name" placeholder="Tahoe trip, Flat 4B, Sunday dinner…" required /></div>
-    <div class="field"><label>Kind</label><select name="kind"><option value="group">Group chat</option><option value="dm">Private chat</option></select></div>
-    <div class="field"><label>Priorities here (optional)</label><textarea name="focus" placeholder="What this chat mostly needs from it, e.g. the trip: cabin, carpool, splitting costs."></textarea><div class="hint">It stays a general assistant; these come first and it may step in on them without being named.</div></div>
-    <div class="field"><span class="lab">Who is in it</span>${state.people
-      .map(
-        (p) =>
-          `<div class="memberrow"><label class="check"><input type="checkbox" name="m" value="${esc(p.id)}" ${p.id === state.me ? "checked" : ""} /> ${esc(p.displayName)}</label><select name="role:${esc(p.id)}">${Object.entries(
-            ROLE_WORDS,
-          )
-            .map(([k, w]) => `<option value="${k}" ${k === (p.id === state.me ? "owner" : "member") ? "selected" : ""}>${esc(w)}</option>`)
-            .join("")}</select></div>`,
-      )
-      .join("")}
-    <div class="hint">The owner's accounts pay. Someone who can decide may approve care decisions. Guests are served through you.</div></div>
+  el.innerHTML = `<form class="form"><h4>New chat</h4>
+    <div class="field"><input type="text" name="name" placeholder="What is it for?" required autocomplete="off" maxlength="80" /></div>
+    <div class="chips starters">${ROOM_STARTERS.map((n) => `<button class="chip" type="button" data-starter="${esc(n)}">${esc(n)}</button>`).join("")}</div>
+    <div class="hint">That is all. You get a link to send; people join when they open it, no app needed. ${esc(agent.name)} picks up what the chat is for as you talk.</div>
     <div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button><span class="note"></span></div></form>`;
   const form = el.querySelector("form");
+  const name = form.querySelector("input");
   form.querySelector("[data-cancel]").onclick = () => (el.innerHTML = "");
+  $$("#roomForm [data-starter]").forEach((b) => {
+    b.onclick = () => {
+      name.value = b.dataset.starter;
+      name.focus();
+    };
+  });
   form.onsubmit = async (e) => {
     e.preventDefault();
-    const fd = new FormData(form);
-    const members = fd.getAll("m").map((personId) => {
-      const role = fd.get(`role:${personId}`);
-      return { personId, role, consented: role !== "guest" };
-    });
     try {
-      const room = await api("/api/rooms", { agentId: agent.id, name: fd.get("name"), kind: fd.get("kind"), focus: fd.get("focus"), members });
+      const members = state.me ? [{ personId: state.me, role: "owner", consented: true }] : [];
+      const room = await api("/api/rooms", { agentId: agent.id, name: name.value.trim(), kind: "group", members });
       el.innerHTML = "";
       state.room = room.id;
       state.lastMsgCount = -1;
+      if (state.page !== "chat") location.hash = "chat";
+      else setPhoneTab("chat");
       load();
     } catch (err) {
       form.querySelector(".note").textContent = err.message;
       form.querySelector(".note").classList.add("bad");
     }
   };
-  form.querySelector("input").focus();
+  name.focus();
 }
 
 function personForm(person) {
@@ -406,6 +415,10 @@ async function renderInbox() {
     return;
   }
   const inbox = await api(`/api/inbox?personId=${encodeURIComponent(state.me)}&agentId=${encodeURIComponent(agent.id)}`);
+  // Browser notification for a card that landed while this tab was in the background (Settings → Notifications).
+  if (state.seenNeeds && document.hidden && notifyOn() && Notification.permission === "granted")
+    for (const i of inbox.needsYou) if (!state.seenNeeds.has(i.id)) new Notification(`${agent.name} needs you`, { body: i.title, tag: i.id });
+  state.seenNeeds = new Set(inbox.needsYou.map((i) => i.id));
   state.inbox = inbox;
   counts.forEach((c) => {
     c.hidden = !inbox.needsYou.length;
@@ -618,10 +631,11 @@ async function renderThread() {
     }
     const all = state.sugg;
     const picks = all.slice(state.suggOffset, state.suggOffset + 3);
-    el.innerHTML = `<div class="welcome"><h1>${greeting()}${state.me ? `, ${esc(firstName(state.me))}` : ""}.</h1><p>${agent ? `${esc(agent.name)} is in ${esc(room?.name ?? "this room")}. Ask for anything: something to find, book, fix, remind, or sort out.${room?.focus ? ` Priorities here: ${esc(room.focus)}` : ""}` : "No agent in this room yet."}</p><div class="slot" id="slot"></div>${picks.length ? `<div class="sugg">${picks.map((p) => `<button type="button" data-prompt="${esc(p[1])}"><span>${esc(p[0])}</span>${esc(p[2] ?? p[1])}</button>`).join("")}</div>` : ""}${all.length > 3 ? `<button class="another" id="another" type="button">Show others</button>` : ""}</div>`;
+    el.innerHTML = `<div class="welcome"><h1>${greeting()}${state.me ? `, ${esc(firstName(state.me))}` : ""}.</h1><p>${agent ? `${esc(agent.name)} is in ${esc(room?.name ?? "this room")}. Ask for anything: something to find, book, fix, remind, or sort out.${room?.focus ? ` Priorities here: ${esc(room.focus)}` : ""}` : "No agent in this room yet."}</p>${inviteBox(room)}<div class="slot" id="slot"></div>${picks.length ? `<div class="sugg">${picks.map((p) => `<button type="button" data-prompt="${esc(p[1])}"><span>${esc(p[0])}</span>${esc(p[2] ?? p[1])}</button>`).join("")}</div>` : ""}${all.length > 3 ? `<button class="another" id="another" type="button">Show others</button>` : ""}</div>`;
     $$(".sugg button").forEach((b) => {
       b.onclick = () => send(b.dataset.prompt);
     });
+    wireInviteBox(room);
     const another = $("#another");
     if (another)
       another.onclick = () => {
@@ -653,9 +667,10 @@ async function renderThread() {
       } else if (m.role === "assistant") body = m.text;
       // The assistant writes light Markdown; people's own messages stay as typed.
       const rich = m.role === "assistant";
-      body = rich ? md(body) : linkify(esc(m.text));
+      const att = rich ? { text: m.text, atts: [] } : splitAttachments(m.text);
+      body = rich ? md(body) : linkify(esc(att.text));
       const card = m.card ? cardHtml(m.card) : "";
-      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div><div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div></div>`;
+      return `<div class="msg ${cls}"><div class="who">${esc(who)} · ${fmt(m.at)}</div>${attachmentsHtml(att.atts)}${att.text || card || rich ? `<div class="body${rich ? " rich" : ""}">${card ? "" : body}${card}${m.steps?.length ? stepsHtml(m.steps, m.runId) : footer ? `<div class="footer">${esc(footer)}</div>` : ""}</div>` : ""}</div>`;
     })
     .join("");
   if (active && active.status === "running") {
@@ -711,7 +726,7 @@ function docCardHtml(a) {
       : a.summary.sections?.length
         ? esc(a.summary.sections.join(" · "))
         : "";
-  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
+  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener">${a.kind === "image" ? `<img class="thumb" src="/d/${esc(a.id)}?raw=1" alt="" />` : ""}<span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
 }
 async function decorateDocLinks() {
   for (const link of $$("#inner .body a[href*='/d/']")) {
@@ -802,16 +817,106 @@ function cardHtml(c) {
   }</div>`;
 }
 
+// ---------- Attachments: photos and files go up as artifacts; the message carries their links ----------
+const pendingFiles = [];
+function renderPending() {
+  const box = $("#pending");
+  box.hidden = !pendingFiles.length;
+  box.innerHTML = pendingFiles
+    .map(
+      (f, i) =>
+        `<span class="pend">${f.type.startsWith("image/") ? `<img src="${URL.createObjectURL(f)}" alt="" />` : ""}<span class="name">${esc(f.name)}</span><button type="button" data-rm="${i}" aria-label="Remove">×</button></span>`,
+    )
+    .join("");
+  $$("#pending [data-rm]").forEach((b) => {
+    b.onclick = () => {
+      pendingFiles.splice(Number(b.dataset.rm), 1);
+      renderPending();
+    };
+  });
+  placeComposer();
+}
+function addFiles(files) {
+  for (const f of files) {
+    if (f.size > 10 * 1024 * 1024) status(`${f.name} is over 10 MB.`, true);
+    else pendingFiles.push(f);
+  }
+  renderPending();
+}
+$("#attach").onclick = () => $("#file").click();
+$("#file").onchange = () => {
+  addFiles($("#file").files);
+  $("#file").value = "";
+};
+$("#text").addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.files ?? [])];
+  if (files.length) addFiles(files);
+});
+$("#thread").addEventListener("dragover", (e) => e.preventDefault());
+$("#thread").addEventListener("drop", (e) => {
+  e.preventDefault();
+  addFiles(e.dataTransfer?.files ?? []);
+});
+async function uploadFile(f) {
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("roomId", state.room);
+  fd.append("agentId", agentFor(state.room)?.id ?? "");
+  const headers = authToken ? { authorization: `Bearer ${authToken}` } : {};
+  const res = await fetch(`/api/files${state.me ? `?personId=${encodeURIComponent(state.me)}` : ""}`, { method: "POST", body: fd, headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `Upload failed (${res.status})`);
+  return data;
+}
+
+/** An attachment line as send() writes it: "Photo name: <link>" or "File name: <link>". Shown as the thing itself, never as a filename. */
+const ATTACH_LINE = /^(Photo|File) (.+?): https?:\/\/\S+\/d\/([A-Za-z0-9_-]+)$/;
+function splitAttachments(text) {
+  const atts = [];
+  const rest = [];
+  for (const line of (text ?? "").split("\n")) {
+    const m = line.match(ATTACH_LINE);
+    if (m) atts.push({ kind: m[1] === "Photo" ? "image" : "file", name: m[2], id: m[3] });
+    else rest.push(line);
+  }
+  return { text: rest.join("\n").trim(), atts };
+}
+function attachmentsHtml(atts) {
+  if (!atts.length) return "";
+  return `<div class="atts">${atts
+    .map((a) =>
+      a.kind === "image"
+        ? `<a class="att img" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><img src="/d/${esc(a.id)}?raw=1" alt="${esc(a.name)}" /></a>`
+        : `<a class="att file" href="/d/${esc(a.id)}" target="_blank" rel="noopener"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3h7l4 4v10H5z M12 3v4h4"/></svg><span>${esc(a.name)}</span></a>`,
+    )
+    .join("")}</div>`;
+}
+
 async function send(text) {
-  if (!text || !state.room || !state.me) return;
+  if ((!text && !pendingFiles.length) || !state.room || !state.me) return;
   $("#text").value = "";
   status("");
+  if (pendingFiles.length) {
+    const files = pendingFiles.splice(0);
+    renderPending();
+    try {
+      const lines = [];
+      for (const f of files) {
+        const { url } = await uploadFile(f);
+        lines.push(`${f.type.startsWith("image/") ? "Photo" : "File"} ${f.name}: ${location.origin}${url}`);
+      }
+      text = [text, ...lines].filter(Boolean).join("\n");
+    } catch (e) {
+      status(e.message, true);
+      return;
+    }
+  }
   const inner = $("#inner");
   if ($("#composer").classList.contains("centered")) inner.innerHTML = "";
   // Show the message at once; the run follows.
   inner.insertAdjacentHTML(
     "beforeend",
-    `<div class="msg me"><div class="who">${esc(nameOf(state.me))}</div><div class="body">${esc(text)}</div></div><div class="working"><span class="dot"></span><span class="shimmer">${esc(agentFor(state.room)?.name ?? "Agent")} is working…</span></div>`,
+    `<div class="msg me"><div class="who">${esc(nameOf(state.me))}</div>${attachmentsHtml(splitAttachments(text).atts)}${splitAttachments(text).text ? `<div class="body">${esc(splitAttachments(text).text)}</div>` : ""}</div><div class="working"><span class="dot"></span><span class="shimmer">${esc(agentFor(state.room)?.name ?? "Agent")} is working…</span></div>`,
   );
   dropComposer();
   $("#thread").scrollTop = $("#thread").scrollHeight;
@@ -933,61 +1038,249 @@ document.addEventListener("click", (e) => {
 });
 
 // ---------- Settings page ----------
+// Sections follow Fo's /user layout (docs/research/wajo-fo-build.md §8): you first, the assistant last.
+const SETTINGS_SECTIONS = [
+  ["general", "General"],
+  ["address", "Address"],
+  ["spending", "Spending"],
+  ["invites", "Invites"],
+  ["connections", "Connections"],
+  ["permissions", "Permissions"],
+  ["notifications", "Notifications"],
+  ["assistant", "Assistant"],
+];
+const NOTIFY_KEY = "circle.notify";
+const notifyOn = () => {
+  try {
+    return localStorage.getItem(NOTIFY_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const saved = (form, msg) => {
+  const n = form.querySelector(".note");
+  n.classList.remove("bad");
+  n.textContent = msg;
+  setTimeout(() => {
+    if (n.textContent === msg) n.textContent = "";
+  }, 3000);
+};
+const failed = (form, e) => {
+  const n = form.querySelector(".note");
+  n.classList.add("bad");
+  n.textContent = e.message;
+};
+const patchMe = (body) => api(`/api/people/${encodeURIComponent(state.me)}`, body, "PATCH");
+
 function renderSettings() {
   const el = $("#settings");
-  if (el.contains(document.activeElement)) return; // do not clobber what the person is typing
+  const active = document.activeElement;
+  if (el.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return; // do not clobber what the person is typing
   const agent = agentFor(state.room);
-  if (!agent) {
-    el.innerHTML = `<h1>Settings</h1><div class="empty">No agent yet.</div>`;
+  const me = personOf(state.me);
+  const section = SETTINGS_SECTIONS.some(([k]) => k === state.settingsSection) ? state.settingsSection : "general";
+  const render = {
+    general: settingsGeneral,
+    address: settingsAddress,
+    spending: settingsSpending,
+    invites: settingsInvites,
+    connections: settingsConnections,
+    permissions: settingsPermissions,
+    notifications: settingsNotifications,
+    assistant: settingsAssistant,
+  }[section];
+  el.innerHTML = `<h1>Settings</h1><div class="settings"><nav class="subnav">${SETTINGS_SECTIONS.map(([k, w]) => `<a href="#settings/${k}" class="${k === section ? "on" : ""}">${w}</a>`).join("")}</nav><div class="grow" id="settingsBody"></div></div>`;
+  const box = $("#settingsBody");
+  if (!me && section !== "assistant") {
+    box.innerHTML = `<div class="empty">Pick who you are first.</div>`;
     return;
   }
+  if (!agent && (section === "spending" || section === "permissions" || section === "assistant")) {
+    box.innerHTML = `<div class="empty">No agent yet.</div>`;
+    return;
+  }
+  render(box, agent, me);
+}
+
+function settingsGeneral(box, _agent, me) {
+  const zones = Intl.supportedValuesOf?.("timeZone") ?? [];
+  const comfort = [
+    ["medium", "Normal"],
+    ["low", "One step at a time, in plain words"],
+    ["high", "Brief; I know my way around"],
+  ];
+  box.innerHTML = `<form class="section" id="generalForm"><h3>About you</h3><p class="lead">What the assistant knows about you when it speaks for you, fills in a form, or picks a time.</p>
+    <div class="field"><label>Name</label><input type="text" name="displayName" value="${esc(me.displayName)}" required /></div>
+    <div class="field"><label>Pronouns</label><input type="text" name="pronouns" maxlength="40" value="${esc(me.pronouns ?? "")}" placeholder="she/her" /><div class="hint">Used when it refers to you, including to other people.</div></div>
+    <div class="field"><label>Time zone</label><input type="text" name="timezone" value="${esc(me.timezone ?? "")}" list="tzList" required /><datalist id="tzList">${zones.map((z) => `<option value="${esc(z)}"></option>`).join("")}</datalist><div class="hint">Reminders and "tomorrow morning" are in this zone.</div></div>
+    <div class="field"><label>Phone</label><input type="tel" name="phoneE164" value="${esc(me.phoneE164 ?? "")}" placeholder="+1 408 555 0100" /><div class="hint">Texts from this number reach the assistant as you.</div></div>
+    <div class="field"><label>Email</label><input type="text" inputmode="email" name="email" value="${esc(me.email ?? "")}" placeholder="you@example.com" /><div class="hint">Mail you send from here reaches the assistant as you.</div></div>
+    <div class="field"><label>How it talks to you</label><select name="techComfort">${comfort.map(([v, w]) => `<option value="${v}" ${(me.techComfort ?? "medium") === v ? "selected" : ""}>${w}</option>`).join("")}</select></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>`;
+  const form = $("#generalForm");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    try {
+      await patchMe(Object.fromEntries(["displayName", "pronouns", "timezone", "phoneE164", "email", "techComfort"].map((k) => [k, String(fd.get(k) ?? "").trim()])));
+      saved(form, "Saved.");
+      document.activeElement?.blur();
+      load();
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+function settingsAddress(box, _agent, me) {
+  const row = (label, sub, action) => `<div class="connrow"><div><strong>${esc(label)}</strong><div class="tiny">${esc(sub)}</div></div>${action}</div>`;
+  box.innerHTML = `<div class="section"><h3>Addresses</h3><p class="lead">Used to fill in checkout and forms when the assistant shops or books for you. It can save one from the chat too.</p>
+    ${(me.addresses ?? []).map((a) => row(a.label, `${a.line1}${a.line2 ? `, ${a.line2}` : ""}, ${a.city}${a.region ? ` ${a.region}` : ""} ${a.postalCode ?? ""}`, `<button class="btn small" type="button" data-addr="${esc(a.id)}">Remove</button>`)).join("") || `<div class="tiny">None yet.</div>`}
+    <form class="addrow wrap" id="addrForm"><input type="text" name="label" placeholder="Home" required /><input type="text" name="line1" placeholder="Street" required /><input type="text" name="city" placeholder="City" required /><input type="text" name="region" placeholder="State" /><input type="text" name="postalCode" placeholder="Postal code" /><button class="btn small" type="submit">Save address</button></form></div>`;
+  $$("#settingsBody [data-addr]").forEach((b) => {
+    b.onclick = async () => {
+      await patchMe({ addresses: (me.addresses ?? []).filter((a) => a.id !== b.dataset.addr) });
+      await load();
+      renderSettings();
+    };
+  });
+  const af = $("#addrForm");
+  af.onsubmit = async (e) => {
+    e.preventDefault();
+    const a = Object.fromEntries(new FormData(af).entries());
+    await patchMe({ addresses: [...(me.addresses ?? []), { id: `addr_${Date.now().toString(36)}`, country: "US", ...a }] });
+    document.activeElement?.blur();
+    await load();
+    renderSettings();
+  };
+}
+
+function settingsSpending(box, agent) {
   const t = agent.trust ?? {};
-  el.innerHTML = `<div class="headrow"><h1>${esc(agent.name)}</h1><a class="link" href="#memory">What it remembers →</a></div><p class="lead">How your assistant introduces itself, anything it should always keep in mind, and what it may do without asking. Each chat sets its own priorities when you add it.</p>
-  <form class="section" id="aboutForm"><h3>About</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to.</p>
+  box.innerHTML = `<form class="section" id="spendForm"><h3>Spending approvals</h3><p class="lead">Purchases you ask for at or under this amount go through without asking. Anyone else's purchase asks you every time.</p>
+    <div class="field"><label>Ask before purchases over (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="0.01" value="${esc(Number(t.autoApproveUnderUsd ?? 0).toFixed(2))}" /><div class="hint">0 means it asks for every purchase.</div></div>
+    <div class="field inline"><label>Pause agent spending<div class="hint">While paused, it won't buy anything, whatever the amount.</div></label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}"></button></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
+  <div class="section"><h3>How it pays</h3><p class="lead">Each purchase gets a single-use card for exactly that amount at that shop; the card details go to the browser inside the vault and never pass through the chat. The receipt in the chat carries the amount, the shop and the last four digits.</p></div>`;
+  const form = $("#spendForm");
+  const sw = form.querySelector(".switch");
+  sw.onclick = () => sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api(
+        `/api/agents/${encodeURIComponent(agent.id)}`,
+        { trust: { autoApproveUnderUsd: Math.max(0, Number(new FormData(form).get("autoApproveUnderUsd")) || 0), spendingPaused: sw.getAttribute("aria-checked") === "true" } },
+        "PATCH",
+      );
+      saved(form, "Saved.");
+      document.activeElement?.blur();
+      load();
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+function settingsInvites(box) {
+  const rooms = myRooms().filter((r) => r.kind === "group");
+  box.innerHTML = `<div class="section"><h3>Invite people</h3><p class="lead">Each chat has its own link. Whoever opens it joins that chat and can ask the assistant there; anything that spends money or uses an account still asks the owner.</p>
+    ${rooms.map((r) => `<div class="connrow"><div><strong>${esc(r.name)}</strong><div class="tiny">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</div></div><div class="actions" style="margin:0"><button class="btn small" type="button" data-invite="${esc(r.id)}">Copy invite link</button><span class="note"></span></div></div>`).join("") || `<div class="empty">No group chats yet. Make one from the Rooms list.</div>`}
+  </div>`;
+  $$("#settingsBody [data-invite]").forEach((b) => {
+    b.onclick = () => copyInvite(b.dataset.invite, b.closest(".actions").querySelector(".note"));
+  });
+}
+
+function settingsConnections(box) {
+  box.innerHTML = `<div class="section"><h3>Connections</h3><p class="lead">Your own accounts and the services the assistant may reach for your requests. It sees names only; secrets stay in the vault.</p><div id="connections">Loading…</div></div>`;
+  renderConnections();
+}
+
+async function settingsPermissions(box, agent, me) {
+  const t = agent.trust ?? {};
+  let info = { google: false };
+  try {
+    info = await api(`/api/connections/info?personId=${encodeURIComponent(state.me)}`);
+  } catch {}
+  box.innerHTML = `<div class="section"><h3>Send email as you</h3><p class="lead">Let the assistant send from your connected Google account, as you. Each send still needs your go-ahead in the chat. Off until you turn it on; when off it writes from its own address with you in cc.</p>
+    <div class="field inline"><label>Send email from my Gmail${info.google ? "" : `<div class="hint">Connect Google first, under Connections.</div>`}</label><button class="switch" id="sendAsMe" type="button" role="switch" aria-checked="${me.sendAsMe ? "true" : "false"}" ${info.google ? "" : "disabled"}></button></div></div>
+  <form class="section" id="allowForm"><h3>Allowed without asking</h3><p class="lead">Only for your own requests. Everything else that contacts someone asks you first, and outside 8am to 8pm it waits until morning.</p>
+    <div class="field">${AUTO_ALLOW_TOOLS.map(([k, w]) => `<label class="check"><input type="checkbox" name="autoAllow" value="${k}" ${(t.autoAllow ?? []).includes(k) ? "checked" : ""} /> ${esc(w)}</label>`).join("")}</div>
+    <div class="field"><span class="lab">Communities it may post to</span><div class="chips" id="communities">${(t.communityPostingAllowed ?? []).map((c) => `<span class="chip" data-c="${esc(c)}">${esc(c)}<button type="button" aria-label="Remove">×</button></span>`).join("")}</div><div class="addrow"><input type="text" id="newCommunity" placeholder="a subreddit or a Rednote group…" /><button class="btn" type="button" id="addCommunity">Add</button></div><div class="hint">Anywhere else it shows you the exact text and waits for a yes.</div></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>`;
+  const sam = $("#sendAsMe");
+  sam.onclick = async () => {
+    const on = sam.getAttribute("aria-checked") !== "true";
+    sam.setAttribute("aria-checked", on ? "true" : "false");
+    await patchMe({ sendAsMe: on });
+    load();
+  };
+  const form = $("#allowForm");
+  const addCommunity = () => {
+    const i = $("#newCommunity");
+    const v = i.value.trim();
+    if (!v) return;
+    $("#communities").insertAdjacentHTML("beforeend", `<span class="chip" data-c="${esc(v)}">${esc(v)}<button type="button" aria-label="Remove">×</button></span>`);
+    i.value = "";
+  };
+  $("#addCommunity").onclick = addCommunity;
+  $("#newCommunity").onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addCommunity();
+    }
+  };
+  $("#communities").onclick = (e) => {
+    if (e.target.tagName === "BUTTON") e.target.closest(".chip").remove();
+  };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api(
+        `/api/agents/${encodeURIComponent(agent.id)}`,
+        { trust: { autoAllow: new FormData(form).getAll("autoAllow"), communityPostingAllowed: $$("#communities .chip").map((c) => c.dataset.c) } },
+        "PATCH",
+      );
+      saved(form, "Saved.");
+      document.activeElement?.blur();
+      load();
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+function settingsNotifications(box) {
+  const supported = "Notification" in window;
+  box.innerHTML = `<div class="section"><h3>Browser notifications</h3><p class="lead">Get told when the assistant stops and needs you (a purchase approval, a sign-in, a question) while you are in another tab.</p>
+    <div class="field inline"><label>Needs your input${supported ? "" : `<div class="hint">This browser does not support notifications.</div>`}</label><button class="switch" id="notifyToggle" type="button" role="switch" aria-checked="${notifyOn() ? "true" : "false"}" ${supported ? "" : "disabled"}></button></div>
+    <div class="hint" id="notifyNote">${supported && Notification.permission === "denied" ? "Notifications are blocked for this site in your browser settings." : ""}</div></div>`;
+  const sw = $("#notifyToggle");
+  sw.onclick = async () => {
+    const on = sw.getAttribute("aria-checked") !== "true";
+    if (on && Notification.permission !== "granted" && (await Notification.requestPermission()) !== "granted") {
+      $("#notifyNote").textContent = "Notifications are blocked for this site in your browser settings.";
+      return;
+    }
+    sw.setAttribute("aria-checked", on ? "true" : "false");
+    try {
+      localStorage.setItem(NOTIFY_KEY, on ? "1" : "0");
+    } catch {}
+  };
+}
+
+function settingsAssistant(box, agent) {
+  const rooms = state.rooms.filter((r) => r.agentId === agent.id && r.kind === "group");
+  box.innerHTML = `<form class="section" id="aboutForm"><h3>About ${esc(agent.name)}</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to. <a class="link" href="#memory">What it remembers →</a></p>
     <div class="field"><label>Name</label><input type="text" name="name" value="${esc(agent.name)}" required /></div>
-    <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set on that chat.</div></div>
+    <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set below.</div></div>
     <div class="field"><label>Instructions</label><textarea name="instructions" placeholder="Anything it should always keep in mind.">${esc(agent.instructions)}</textarea></div>
     <div class="field"><label>Effort</label><select name="effort">${EFFORTS.map((e) => `<option value="${e}" ${e === agent.effort ? "selected" : ""}>${e}</option>`).join("")}</select><div class="hint">How hard it thinks before acting. Higher is slower and more careful.</div></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
   <div class="section" id="whereForm"><h3>Where it is</h3><p class="lead">Every chat it has been added to, and what that chat mostly needs from it. It stays a general assistant everywhere.</p>
-    ${
-      state.rooms.filter((r) => r.agentId === agent.id && r.kind === "group").length
-        ? state.rooms
-            .filter((r) => r.agentId === agent.id && r.kind === "group")
-            .map(
-              (r) =>
-                `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><button class="btn" type="button" data-invite="${esc(r.id)}">Copy invite link</button><span class="note"></span></div></form>`,
-            )
-            .join("")
-        : `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then copy its invite link for the others.</div>`
-    }
-  </div>
-  <div class="section" id="connForm"><h3>Connections</h3><p class="lead">Your own accounts and the services the assistant may reach for your requests. It sees names only; secrets stay in the vault.</p><div id="connections">Loading…</div></div>
-  <form class="section" id="trustForm"><h3>Trust</h3><p class="lead">Everything else that spends money or contacts someone asks you first.</p>
-    <div class="field"><label>Purchases up to this amount go through without asking (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="1" value="${esc(t.autoApproveUnderUsd ?? 0)}" /><div class="hint">0 means it always asks.</div></div>
-    <div class="field inline"><label>Pause all spending</label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}" data-name="spendingPaused"></button></div>
-    <div class="field"><span class="lab">Allowed without asking</span>${AUTO_ALLOW_TOOLS.map(([k, w]) => `<label class="check"><input type="checkbox" name="autoAllow" value="${k}" ${(t.autoAllow ?? []).includes(k) ? "checked" : ""} /> ${esc(w)}</label>`).join("")}<div class="hint">Only for your own requests. Outside 8am to 8pm it still waits until morning.</div></div>
-    <div class="field"><span class="lab">Communities it may post to</span><div class="chips" id="communities">${(t.communityPostingAllowed ?? []).map((c) => `<span class="chip" data-c="${esc(c)}">${esc(c)}<button type="button" aria-label="Remove">×</button></span>`).join("")}</div><div class="addrow"><input type="text" id="newCommunity" placeholder="a subreddit or a Rednote group…" /><button class="btn" type="button" id="addCommunity">Add</button></div><div class="hint">Anywhere else it shows you the exact text and waits for a yes.</div></div>
-    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
-`;
-
-  renderConnections();
-  const saved = (form, msg) => {
-    const n = form.querySelector(".note");
-    n.classList.remove("bad");
-    n.textContent = msg;
-    setTimeout(() => {
-      if (n.textContent === msg) n.textContent = "";
-    }, 3000);
-  };
-  const failed = (form, e) => {
-    const n = form.querySelector(".note");
-    n.classList.add("bad");
-    n.textContent = e.message;
-  };
-  $$("#whereForm [data-invite]").forEach((b) => {
-    b.onclick = () => copyInvite(b.dataset.invite, b.closest(".actions").querySelector(".note"));
-  });
+    ${rooms.map((r) => `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`).join("") || `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then share its invite link under Invites.</div>`}
+  </div>`;
   $$("#whereForm form.whereroom").forEach((form) => {
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -1017,51 +1310,9 @@ function renderSettings() {
       failed(about, err);
     }
   };
-  const trust = $("#trustForm");
-  trust.querySelector(".switch").onclick = (e) => {
-    const b = e.currentTarget;
-    b.setAttribute("aria-checked", b.getAttribute("aria-checked") === "true" ? "false" : "true");
-  };
-  const addCommunity = () => {
-    const i = $("#newCommunity");
-    const v = i.value.trim();
-    if (!v) return;
-    $("#communities").insertAdjacentHTML("beforeend", `<span class="chip" data-c="${esc(v)}">${esc(v)}<button type="button" aria-label="Remove">×</button></span>`);
-    i.value = "";
-  };
-  $("#addCommunity").onclick = addCommunity;
-  $("#newCommunity").onkeydown = (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addCommunity();
-    }
-  };
-  $("#communities").onclick = (e) => {
-    if (e.target.tagName === "BUTTON") e.target.closest(".chip").remove();
-  };
-  trust.onsubmit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData(trust);
-    const body = {
-      trust: {
-        autoApproveUnderUsd: Math.max(0, Number(fd.get("autoApproveUnderUsd")) || 0),
-        spendingPaused: trust.querySelector(".switch").getAttribute("aria-checked") === "true",
-        autoAllow: fd.getAll("autoAllow"),
-        communityPostingAllowed: $$("#communities .chip").map((c) => c.dataset.c),
-      },
-    };
-    try {
-      await api(`/api/agents/${encodeURIComponent(agent.id)}`, body, "PATCH");
-      saved(trust, "Saved.");
-      document.activeElement?.blur();
-      load();
-    } catch (err) {
-      failed(trust, err);
-    }
-  };
 }
 
-// ---------- Connections (Google, Slack, MCP servers, APIs, addresses, the assistant's email) ----------
+// ---------- Connections (Google, Slack, MCP servers, APIs, the assistant's email) ----------
 async function renderConnections() {
   const box = $("#connections");
   if (!box || !state.me) return;
@@ -1072,12 +1323,10 @@ async function renderConnections() {
     box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     return;
   }
-  const me = personOf(state.me) ?? {};
   const row = (label, sub, action) => `<div class="connrow"><div><strong>${esc(label)}</strong><div class="tiny">${esc(sub)}</div></div>${action}</div>`;
   box.innerHTML = `
     ${row("Assistant's email", info.agentEmail, `<span class="mut">it sends from here</span>`)}
     ${row("Google", info.google ? "Connected: Gmail, Calendar, Drive, Sheets, Forms, Slides" : info.googleConfigured ? "Not connected" : "Not set up on this server (GOOGLE_CLIENT_ID)", info.google ? `<button class="btn small" type="button" data-disconnect="google">Disconnect</button>` : info.googleConfigured ? `<button class="btn small primary" type="button" id="connectGoogle">Connect</button>` : "")}
-    ${info.google ? `<label class="check"><input type="checkbox" id="sendAsMe" ${me.sendAsMe ? "checked" : ""} /> Send email as me <span class="tiny">· off until you turn it on; each send still asks you first. When off, it writes from its own address with you in cc.</span></label>` : ""}
     ${row("Slack", info.slack ? "Token saved" : "Not connected", info.slack ? `<button class="btn small" type="button" data-disconnect="slack">Disconnect</button>` : `<form class="addrow" data-kind="slack"><input type="password" name="token" placeholder="xoxb-… or xoxp-…" /><button class="btn small" type="submit">Save</button></form>`)}
     <h4 class="tiny" style="margin:14px 0 4px">MCP servers</h4>
     ${info.mcp.map((n) => row(n, "MCP", `<button class="btn small" type="button" data-disconnect="mcp:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. Any app with an MCP endpoint: paste its URL (and a token if it needs one).</div>`}
@@ -1086,10 +1335,7 @@ async function renderConnections() {
     ${info.apis.map((n) => row(n, "HTTP API", `<button class="btn small" type="button" data-disconnect="api:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. A base URL, an OpenAPI document if there is one, and a token.</div>`}
     <form class="addrow wrap" data-kind="api"><input type="text" name="name" placeholder="name, e.g. luma" required /><input type="url" name="baseUrl" placeholder="https://api.example.com" required /><input type="url" name="openapiUrl" placeholder="OpenAPI JSON URL (optional)" /><input type="password" name="token" placeholder="token (optional)" /><button class="btn small" type="submit">Add API</button></form>
     <h4 class="tiny" style="margin:14px 0 4px">Site logins</h4>
-    <div class="tiny">${info.sites.length ? `Signed in to: ${info.sites.map(esc).join(", ")}. ` : ""}Sign in to a site inside the chat when the assistant asks (connect_account); passwords never pass through here.</div>
-    <h4 class="tiny" style="margin:14px 0 4px">Addresses</h4>
-    ${(me.addresses ?? []).map((a) => row(a.label, `${a.line1}${a.line2 ? `, ${a.line2}` : ""}, ${a.city}${a.region ? ` ${a.region}` : ""} ${a.postalCode ?? ""}`, `<button class="btn small" type="button" data-addr="${esc(a.id)}">Remove</button>`)).join("") || `<div class="tiny">None yet; for deliveries and forms.</div>`}
-    <form class="addrow wrap" id="addrForm"><input type="text" name="label" placeholder="Home" required /><input type="text" name="line1" placeholder="Street" required /><input type="text" name="city" placeholder="City" required /><input type="text" name="region" placeholder="State" /><input type="text" name="postalCode" placeholder="Postal code" /><button class="btn small" type="submit">Save address</button></form>`;
+    <div class="tiny">${info.sites.length ? `Signed in to: ${info.sites.map(esc).join(", ")}. ` : ""}Sign in to a site inside the chat when the assistant asks (connect_account); passwords never pass through here.</div>`;
   const g = $("#connectGoogle");
   if (g)
     g.onclick = async () => {
@@ -1099,12 +1345,6 @@ async function renderConnections() {
       } catch (e) {
         status(e.message, true);
       }
-    };
-  const sam = $("#sendAsMe");
-  if (sam)
-    sam.onchange = async () => {
-      await api(`/api/people/${encodeURIComponent(state.me)}`, { sendAsMe: sam.checked }, "PATCH");
-      load();
     };
   $$("#connections [data-disconnect]").forEach((b) => {
     b.onclick = async () => {
@@ -1124,24 +1364,6 @@ async function renderConnections() {
       }
     };
   });
-  $$("#connections [data-addr]").forEach((b) => {
-    b.onclick = async () => {
-      const addresses = (me.addresses ?? []).filter((a) => a.id !== b.dataset.addr);
-      await api(`/api/people/${encodeURIComponent(state.me)}`, { addresses }, "PATCH");
-      await load();
-      renderConnections();
-    };
-  });
-  const af = $("#addrForm");
-  if (af)
-    af.onsubmit = async (e) => {
-      e.preventDefault();
-      const a = Object.fromEntries(new FormData(af).entries());
-      const addresses = [...(me.addresses ?? []), { id: `addr_${Date.now().toString(36)}`, country: "US", ...a }];
-      await api(`/api/people/${encodeURIComponent(state.me)}`, { addresses }, "PATCH");
-      await load();
-      renderConnections();
-    };
 }
 
 // ---------- Memory page ----------
@@ -1265,6 +1487,41 @@ async function acceptInvite(token) {
     status(e.message, true);
   }
   location.hash = "chat";
+}
+/** A group chat with nobody else in it yet: the next step is the link, not a form. */
+function inviteBox(room) {
+  if (room?.kind !== "group" || room.members.length > 1) return "";
+  const others = window.__CLERK_PK ? [] : state.people.filter((p) => !room.members.some((m) => m.personId === p.id));
+  return `<div class="invitebox"><strong>Just you here so far.</strong>Send the link to the others; they join when they open it, no app needed.<div class="row"><button class="btn primary" type="button" id="inviteCopy">Copy invite link</button>${navigator.share ? `<button class="btn" type="button" id="inviteShare">Share…</button>` : ""}<span class="note"></span></div>${
+    others.length
+      ? `<div class="row"><span class="note">Or add someone already here:</span>${others.map((p) => `<button class="btn small" type="button" data-addmember="${esc(p.id)}">${esc(p.displayName)}</button>`).join("")}</div>`
+      : ""
+  }</div>`;
+}
+function wireInviteBox(room) {
+  const copy = $("#inviteCopy");
+  if (!copy) return;
+  copy.onclick = () => copyInvite(room.id, copy.parentElement.querySelector(".note"));
+  const share = $("#inviteShare");
+  if (share)
+    share.onclick = async () => {
+      try {
+        const r = await api(`/api/rooms/${encodeURIComponent(room.id)}/invites`, { personId: state.me });
+        await navigator.share({ title: room.name, text: `Join "${room.name}"`, url: r.url });
+      } catch (e) {
+        if (e.name !== "AbortError") status(e.message, true);
+      }
+    };
+  $$("[data-addmember]").forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api(`/api/rooms/${encodeURIComponent(room.id)}/members`, { personId: b.dataset.addmember, role: "member" });
+        load();
+      } catch (e) {
+        status(e.message, true);
+      }
+    };
+  });
 }
 async function copyInvite(roomId, note) {
   try {
