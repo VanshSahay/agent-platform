@@ -433,3 +433,13 @@ h2 { font-weight: 600; color: var(--text-2); letter-spacing: 0.04em; text-transf
 .linkcode .qr svg { width: 180px; height: 180px; display: block; background: #fff; border-radius: 8px }
 .howto { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; list-style: decimal }
 .howto li { line-height: 1.5; display: list-item } .howto .btn { margin-left: 4px }
+
+/* The assistant's own email and number, in the header like Fo. */
+header .reach { color: var(--text-3); font-size: 12px; margin-left: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px }
+header .reach a { color: var(--text-2); text-decoration: none } header .reach a:hover { color: var(--text) }
+@media (max-width: 820px) { header .reach { display: none } }
+/* Getting started: the owner's first steps, under the greeting of their private chat. */
+.gettingstarted { text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 16px; display: flex; flex-direction: column; gap: 4px }
+.gettingstarted strong { font-size: 13px } .gettingstarted .tiny { margin-bottom: 4px }
+.gettingstarted a { display: flex; gap: 8px; align-items: baseline; color: var(--text); text-decoration: none; font-size: 13px; padding: 3px 0 }
+.gettingstarted a .mark { width: 14px; color: var(--text-3) } .gettingstarted a.done { color: var(--text-3) } .gettingstarted a.done .mark { color: #16865a }

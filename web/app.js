@@ -157,7 +157,7 @@ async function load() {
   const agent = agentFor(state.room);
   $("#disclaimer").textContent = agent ? `${agent.name} can make mistakes, so double-check.` : "";
   if (!state.agents.length) status("No agent yet. Start with SEED_DEMO=1 or POST /api/agents.", true);
-  await Promise.all([renderInbox(), renderThread(), renderLedger()]);
+  await Promise.all([renderInbox(), renderThread(), renderLedger(), loadReach()]);
   renderNav();
   if (state.page === "settings") renderSettings();
   if (state.page === "memory") renderMemory();
@@ -1604,6 +1604,39 @@ async function acceptInvite(token) {
   }
   location.hash = "chat";
 }
+// How to reach the assistant, the way Fo shows it: its email and number sit in the header all the time.
+async function loadReach() {
+  if (!state.me) return;
+  try {
+    const [ch, info] = await Promise.all([api(`/api/channels?personId=${encodeURIComponent(state.me)}`), api(`/api/connections/info?personId=${encodeURIComponent(state.me)}`)]);
+    state.reach = { phone: ch.channels.find((c) => c.phone)?.phone ?? null, linkedPhone: ch.linked?.phone ?? null, email: info.agentEmail ?? null, google: !!info.google };
+  } catch {
+    state.reach = state.reach ?? {};
+  }
+  const r = state.reach;
+  $("#start").innerHTML = gettingStarted();
+  $("#reach").innerHTML = [r.email ? `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : "", r.phone ? `<a href="sms:${esc(r.phone)}">${esc(r.phone)}</a>` : ""]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** The owner's first steps, as Fo lists them: each line is done or a link to where it is done. */
+function gettingStarted() {
+  const agent = state.agents[0];
+  if (!agent || state.me !== agent.ownerId) return "";
+  const r = state.reach ?? {};
+  const groups = state.rooms.filter((x) => x.kind === "group");
+  const items = [
+    [`Say hi to ${agent.name}`, state.rooms.some((x) => x.kind === "dm" && (x.lastMessageAt ?? 0) > 0) || (state.lastMsgCount ?? 0) > 0, "#chat"],
+    ["Link your phone, so texts from it are you", !!r.linkedPhone, "#settings/channels"],
+    ["Connect Google for mail and calendar", !!r.google, "#settings/connections"],
+    [`Add ${agent.name} to a group chat`, groups.some((x) => x.channel !== "web" || x.members.length > 1), "#settings/channels"],
+    ["Invite a friend to a chat", groups.some((x) => x.members.length > 1), "#settings/invites"],
+  ];
+  if (items.every((i) => i[1])) return "";
+  return `<div class="gettingstarted"><strong>Getting started</strong><span class="tiny">Optional, in any order.</span>${items.map(([text, done, href]) => `<a class="${done ? "done" : ""}" href="${href}"><span class="mark">${done ? "✓" : "○"}</span>${esc(text)}</a>`).join("")}</div>`;
+}
+
 /** A group chat with nobody else in it yet: the next step is the link, not a form. */
 function inviteBox(room) {
   if (room?.kind !== "group" || room.members.length > 1) return "";
