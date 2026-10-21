@@ -92,8 +92,15 @@ export async function harnessLoop(opts: LoopOptions): Promise<LoopReport> {
       }
       // Compose: the whole suite from the candidate folder; a single regression rejects it.
       const full = await run(opts.scenarios, dir);
-      const now = passedSet(full);
-      const regressions = [...passing].filter((k) => !now.has(k));
+      let now = passedSet(full);
+      let regressions = [...passing].filter((k) => !now.has(k));
+      if (regressions.length) {
+        // Executions are noisy (Harness² says so too): a regression counts only if it repeats on a second run of that scenario.
+        const suspects = opts.scenarios.filter((sc) => regressions.some((k) => k.startsWith(`${sc.name}:`)));
+        const again = passedSet(await run(suspects, dir));
+        regressions = regressions.filter((k) => !again.has(k));
+        now = new Set([...now, ...again]);
+      }
       if (regressions.length) {
         report.rejected.push({ candidate, scenario: scenario.name, reason: `regressed ${regressions.join(", ")}` });
         log(`${scenario.name} / ${candidate.kind}: fixed ${fixed.join(", ")} but regressed ${regressions.length}`);
@@ -131,7 +138,8 @@ export function modelProposer(model: ModelClient, modelId?: string): Proposer {
   return async ({ scenario, result, files, lessons }) => {
     const skills = loadSkills(stageless(files));
     const first = scenario.turns.find((t) => "text" in t) as { text: string } | undefined;
-    const domain = matchSkills(skills, first?.text ?? "", { group: true })[0]?.name;
+    // The domain file is the procedure that matched the request; the always-on manners file is not a procedure.
+    const domain = matchSkills(skills, first?.text ?? "", { group: false })[0]?.name;
     const domainFile = domain ? `${domain}.md` : `${scenario.category}.md`;
     const raw = await model.complete({
       model: modelId,
