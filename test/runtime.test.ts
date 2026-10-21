@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { callTool, callTools, lastToolResult, reply, toolCallsSoFar } from "../src/model/scripted.ts";
+import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
@@ -427,5 +427,23 @@ describe("people the assistant knows", () => {
     const seenByOwner = w.app.store.toolCallsForRun(asOwner!.id)[0]!.result as { phone?: string }[];
     expect(seenByOwner[0]!.phone).toBe("+14085550177");
     expect(w.app.store.toolCallsForRun(asOwner!.id)[0]!.labelDone).toBe("Looked up: sam");
+  });
+});
+
+describe("members from the chat", () => {
+  test("the owner adds and removes people by asking; a member is told to ask the owner", async () => {
+    const w = groupWorld((req) => {
+      const t = lastUserText(req);
+      if (/add my sister/i.test(t)) return toolCallsSoFar(req).length ? reply("Added Mia.") : callTool("add_member", { name: "Mia", phone: "+14155550101" });
+      if (/remove riley/i.test(t)) return toolCallsSoFar(req).length ? reply("Done.") : callTool("remove_member", { name: "Riley" });
+      return reply("ok");
+    });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip add my sister Mia, +1 415 555 0101" });
+    const mia = w.app.store.findPersonByPhone("+14155550101")!;
+    expect(w.app.rooms.role(w.room.id, mia.id)).toBe("member");
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip remove riley from this chat" });
+    expect(w.app.rooms.role(w.room.id, "riley")).toBe("guest"); // Sam may not
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip remove riley from this chat" });
+    expect(w.app.rooms.role(w.room.id, "riley")).toBeUndefined();
   });
 });

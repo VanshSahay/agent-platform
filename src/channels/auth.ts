@@ -1,5 +1,6 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
 import type { App } from "../app.ts";
+import { findPersonByEmail } from "../store/queries.ts";
 import type { Person } from "../core/types.ts";
 
 /**
@@ -97,6 +98,14 @@ export class Auth {
       this.app.store.deleteKv("claim-owner");
       console.log(`Sign-in: ${info.displayName} is now the owner of the seeded circle`);
       return owner;
+    }
+    // Someone added to a chat by email before they ever signed in: that record is theirs.
+    const invited = info.email ? findPersonByEmail(this.app.store, info.email) : undefined;
+    if (invited) {
+      invited.displayName = info.displayName;
+      this.app.store.putPerson(invited);
+      this.app.store.setKv(key, invited.id);
+      return invited;
     }
     const person = this.app.rooms.createPerson({ id: `per_${v.sub.replace(/^user_/, "")}`, displayName: info.displayName, email: info.email, timezone: "UTC" });
     this.app.store.setKv(key, person.id);

@@ -251,10 +251,7 @@ function renderNav() {
         .join("")
     : `<div class="empty">No rooms yet. Make one and add the people in it.</div>`;
   const open = roomOf(state.room);
-  if (open && open.kind === "group" && _roleIn(open.id) === "owner")
-    $("#rooms").insertAdjacentHTML("beforeend", `<button class="link invite" type="button" id="inviteLink">+ Invite people to ${esc(open.name)}</button>`);
-  const inv = $("#inviteLink");
-  if (inv) inv.onclick = () => copyInvite(open.id);
+  if (open && open.kind === "group") renderMembers(open);
   $$("#rooms a").forEach((a) => {
     a.onclick = (e) => {
       e.preventDefault();
@@ -283,6 +280,68 @@ function renderNav() {
   });
 }
 $("#newRoom").onclick = () => roomForm();
+
+// Who is in the open chat, under the rooms list. The owner edits roles, removes people, adds by name with a
+// phone or email (so a text or a sign-in lands on them), or copies the invite link; everyone else just sees the list.
+function renderMembers(room) {
+  const owner = _roleIn(room.id) === "owner";
+  const roleWord = { owner: "owner", member: "member", guest: "guest" };
+  const rows = room.members
+    .map((m) => {
+      const name = esc(m.person?.displayName ?? m.personId);
+      if (!owner || m.role === "owner") return `<div class="memrow"><span class="name">${name}</span><span class="sub">${roleWord[m.role] ?? m.role}</span></div>`;
+      return `<div class="memrow"><span class="name">${name}</span><select data-role="${esc(m.personId)}"><option value="member" ${m.role === "member" ? "selected" : ""}>member</option><option value="guest" ${m.role === "guest" ? "selected" : ""}>guest</option></select><button class="link" data-remove="${esc(m.personId)}" type="button" aria-label="Remove">×</button></div>`;
+    })
+    .join("");
+  $("#rooms").insertAdjacentHTML(
+    "beforeend",
+    `<div class="members" id="members"><h2>In ${esc(room.name)}</h2>${rows}${
+      owner
+        ? `<form class="addrow wrap" id="addMember"><input type="text" name="displayName" placeholder="Name" required /><input type="text" name="contact" placeholder="phone or email" /><button class="btn small" type="submit">Add</button></form>
+      <button class="link invite" type="button" id="inviteLink">+ Invite people to ${esc(room.name)}</button>`
+        : ""
+    }</div>`,
+  );
+  const inv = $("#inviteLink");
+  if (inv) inv.onclick = () => copyInvite(room.id);
+  const member = (id) => `/api/rooms/${encodeURIComponent(room.id)}/members/${encodeURIComponent(id)}`;
+  $$("#members [data-role]").forEach((sel) => {
+    sel.onchange = async () => {
+      try {
+        await api(member(sel.dataset.role), { role: sel.value }, "PATCH");
+        load();
+      } catch (e) {
+        status(e.message, true);
+      }
+    };
+  });
+  $$("#members [data-remove]").forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api(member(b.dataset.remove), undefined, "DELETE");
+        load();
+      } catch (e) {
+        status(e.message, true);
+      }
+    };
+  });
+  const form = $("#addMember");
+  if (form)
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const contact = String(fd.get("contact") ?? "").trim();
+      const body = { displayName: fd.get("displayName"), role: "member" };
+      if (contact.includes("@")) body.email = contact;
+      else if (contact) body.phoneE164 = contact;
+      try {
+        await api(`/api/rooms/${encodeURIComponent(room.id)}/members`, body);
+        load();
+      } catch (err) {
+        status(err.message, true);
+      }
+    };
+}
 
 // Chat search (after Fo's /search): 300 ms debounce, three characters or more, one row per room with a snippet.
 let searchTimer;

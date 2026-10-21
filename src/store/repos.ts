@@ -82,6 +82,9 @@ export class Store {
   putMembership(m: Membership) {
     this.db.run("INSERT OR REPLACE INTO memberships(room_id, person_id, role, data) VALUES (?, ?, ?, ?)", [m.roomId, m.personId, m.role, JSON.stringify(m)]);
   }
+  deleteMembership(roomId: string, personId: string) {
+    this.db.run("DELETE FROM memberships WHERE room_id = ? AND person_id = ?", [roomId, personId]);
+  }
   listMembers(roomId: string) {
     return parseAll<Membership>(this.db.query("SELECT data FROM memberships WHERE room_id = ?").all(roomId) as Row[]);
   }

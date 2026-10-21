@@ -5,14 +5,14 @@ import { reply } from "../src/model/scripted.ts";
 import { groupWorld } from "./helpers.ts";
 
 /** The group world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
-function serve(opts: { eventToken?: string } = {}) {
+function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string> } = {}) {
   const w = groupWorld(() => reply("ok"));
   const zed = w.app.rooms.createPerson({ id: "zed", displayName: "Zed", timezone: "UTC" }); // signed in, in no room
   for (const id of ["alex", "sam", "jo", "riley", zed.id]) w.app.store.setKv(`clerk:${id}`, id);
   const auth = new Auth(
     w.app,
     { secretKey: "sk", publishableKey: "pk_test_x", authorizedParties: [] },
-    { verifier: async (t) => (t.startsWith("as:") ? { sub: t.slice(3) } : undefined), lookup: async (sub) => ({ displayName: sub }) },
+    { verifier: async (t) => (t.startsWith("as:") ? { sub: t.slice(3) } : undefined), lookup: async (sub) => ({ displayName: sub, email: opts.lookupEmail?.[sub] }) },
   );
   const server = startWebServer(w.app, { port: 0, auth, eventToken: opts.eventToken });
   const base = `http://127.0.0.1:${server.port}`;
@@ -26,7 +26,7 @@ function serve(opts: { eventToken?: string } = {}) {
 }
 
 const servers: { stop(): void }[] = [];
-const up = (opts?: { eventToken?: string }) => {
+const up = (opts?: { eventToken?: string; lookupEmail?: Record<string, string> }) => {
   const s = serve(opts);
   servers.push(s.server);
   return s;
@@ -276,5 +276,28 @@ describe("web api: attachments", () => {
     expect(raw.status).toBe(200);
     expect(raw.headers.get("content-type")).toBe("image/png");
     expect((await fetch(`${s.base}${url}`, { headers: { authorization: "Bearer as:zed" } })).status).toBe(403);
+  });
+});
+
+describe("web api: members", () => {
+  test("the owner adds someone by email, changes their role, removes them; a member cannot; the owner cannot be removed", async () => {
+    const s = up();
+    const added = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com", role: "guest" })).json();
+    expect(added.person.email).toBe("mia@example.com");
+    expect(s.app.rooms.role(s.room.id, added.person.id)).toBe("guest");
+    expect((await s.call("alex", "PATCH", `/api/rooms/${s.room.id}/members/${added.person.id}`, { role: "member" })).status).toBe(200);
+    expect(s.app.rooms.role(s.room.id, added.person.id)).toBe("member");
+    expect((await s.call("sam", "DELETE", `/api/rooms/${s.room.id}/members/${added.person.id}`)).status).toBe(403);
+    expect((await s.call("alex", "DELETE", `/api/rooms/${s.room.id}/members/alex`)).status).toBe(404);
+    expect((await s.call("alex", "DELETE", `/api/rooms/${s.room.id}/members/${added.person.id}`)).status).toBe(200);
+    expect(s.app.rooms.role(s.room.id, added.person.id)).toBeUndefined();
+  });
+
+  test("someone added by email before signing in gets that same seat on first sign-in", async () => {
+    const s = up({ lookupEmail: { newbie: "mia@example.com" } });
+    const added = await (await s.call("alex", "POST", `/api/rooms/${s.room.id}/members`, { displayName: "Mia", email: "mia@example.com" })).json();
+    const me = await (await s.call("newbie", "GET", "/api/me")).json();
+    expect(me.id).toBe(added.person.id);
+    expect((await s.call("newbie", "GET", `/api/rooms/${s.room.id}/messages`)).status).toBe(200);
   });
 });

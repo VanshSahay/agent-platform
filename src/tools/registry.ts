@@ -190,6 +190,53 @@ export const CORE_TOOLS: ToolDef[] = [
   },
   {
     spec: {
+      name: "add_member",
+      description:
+        "Add someone to this chat: 'add my sister Mia, +1 415 555 0101' or 'add Sam, sam@example.com'. A phone or email lets their texts or sign-in land on them. Owner only; others are told to ask the owner. Guests are served through the owner; members can be trusted with their own accounts later.",
+      input_schema: obj(
+        { name: str("Their name."), phone: str("Phone in E.164, optional."), email: str("Email, optional."), role: { type: "string", enum: ["member", "guest"] } },
+        ["name"],
+      ),
+    },
+    family: "people",
+    labels: { running: "Adding someone…", done: "Added someone to the chat" },
+    sideEffect: false,
+    async run(input, ctx) {
+      if (ctx.requesterId !== ctx.agent.ownerId && ctx.rooms.role(ctx.room.id, ctx.requesterId ?? "") !== "owner")
+        return { ok: false, content: `Only ${ctx.store.getPerson(ctx.agent.ownerId)?.displayName ?? "the owner"} can add people to this chat; suggest they ask.` };
+      const person = ctx.rooms.findOrCreatePerson({ displayName: s(input.name), email: s(input.email) || undefined, phoneE164: s(input.phone) || undefined });
+      if (!person) return { ok: false, content: "Give a name." };
+      if (ctx.store.getMembership(ctx.room.id, person.id)) return { ok: true, content: `${person.displayName} is already in this chat.` };
+      const role = s(input.role) === "guest" ? "guest" : "member";
+      ctx.rooms.addMember(ctx.room.id, person.id, role);
+      return {
+        ok: true,
+        content: `Added ${person.displayName} as ${role}${person.phoneE164 || person.email ? "" : " (no phone or email yet, so their messages cannot be matched to them until one is added)"}.`,
+        evidence: `member:${person.id}`,
+        label: `Added ${person.displayName}`,
+      };
+    },
+  },
+  {
+    spec: {
+      name: "remove_member",
+      description: "Take someone out of this chat. Owner only. The owner cannot be removed.",
+      input_schema: obj({ name: str("Member name.") }, ["name"]),
+    },
+    family: "people",
+    labels: { running: "Removing someone…", done: "Removed someone from the chat" },
+    sideEffect: false,
+    async run(input, ctx) {
+      if (ctx.requesterId !== ctx.agent.ownerId && ctx.rooms.role(ctx.room.id, ctx.requesterId ?? "") !== "owner")
+        return { ok: false, content: `Only ${ctx.store.getPerson(ctx.agent.ownerId)?.displayName ?? "the owner"} can remove people from this chat.` };
+      const who = ctx.findMember(s(input.name));
+      if (!who) return { ok: false, content: `No member named "${s(input.name)}".` };
+      if (!ctx.rooms.removeMember(ctx.room.id, who.id)) return { ok: false, content: `${who.name} is the owner and stays.` };
+      return { ok: true, content: `Removed ${who.name} from this chat.`, evidence: `member-removed:${who.id}`, label: `Removed ${who.name}` };
+    },
+  },
+  {
+    spec: {
       name: "ask_room",
       description:
         "Ask the whole group a question and wait for an answer (recommendations, availability, who can do what). The run pauses until someone replies. Use before calling strangers.",

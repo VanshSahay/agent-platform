@@ -439,12 +439,35 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       scope: (c) => roomScope(c.params[0]),
       handle: ({ params, body: b }) => {
         if (!app.store.getRoom(params[0]!)) return bad("no such room", 404);
-        const personId = str(b.personId);
         const role = (str(b.role) ?? "member") as MemberRole;
-        if (!personId || !app.store.getPerson(personId)) return bad("no such person", 404);
-        if (!ROLES.includes(role)) return bad(`role must be one of ${ROLES.join(", ")}`);
-        return json(app.rooms.addMember(params[0]!, personId, role, { consented: !!b.consented }));
+        if (!ROLES.includes(role) || role === "owner") return bad("role must be member or guest");
+        // An existing person by id, or someone new by name with a phone or email so a later text or sign-in lands on them.
+        const person = str(b.personId)
+          ? app.store.getPerson(str(b.personId)!)
+          : app.rooms.findOrCreatePerson({ displayName: str(b.displayName), email: str(b.email), phoneE164: str(b.phoneE164) });
+        if (!person) return bad("give a personId, or a displayName with an email or phone");
+        if (app.store.getMembership(params[0]!, person.id)) return json({ membership: app.store.getMembership(params[0]!, person.id), person });
+        return json({ membership: app.rooms.addMember(params[0]!, person.id, role, { consented: !!b.consented }), person });
       },
+    },
+    {
+      method: "PATCH",
+      re: /^\/api\/rooms\/([^/]+)\/members\/([^/]+)$/,
+      access: "roomOwner",
+      scope: (c) => roomScope(c.params[0]),
+      handle: ({ params, body: b }) => {
+        const role = str(b.role) as MemberRole | undefined;
+        if (!role || !ROLES.includes(role) || role === "owner") return bad("role must be member or guest");
+        const m = app.rooms.setRole(params[0]!, params[1]!, role);
+        return m ? json(m) : bad("no such member, or the owner", 404);
+      },
+    },
+    {
+      method: "DELETE",
+      re: /^\/api\/rooms\/([^/]+)\/members\/([^/]+)$/,
+      access: "roomOwner",
+      scope: (c) => roomScope(c.params[0]),
+      handle: ({ params }) => (app.rooms.removeMember(params[0]!, params[1]!) ? json({ ok: true }) : bad("no such member, or the owner", 404)),
     },
 
     // ---- chat
