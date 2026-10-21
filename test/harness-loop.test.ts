@@ -9,25 +9,28 @@ import { callTool, reply, ScriptedModel, toolCallsSoFar } from "../src/model/scr
 
 const repoSkills = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
 
+/** An agent that only sets a watch when the rules say the magic words; otherwise it just talks. */
+const watchAgent = () =>
+  new ScriptedModel(
+    (req) => {
+      if (/heartbeat/i.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing" });
+      if (/pharmacy|metformin/i.test(JSON.stringify(req.messages)) && /ALWAYS SET A WATCH/.test(req.system)) {
+        if (toolCallsSoFar(req).some((c) => c.name === "watch_for")) return reply("Watching.");
+        if (/Check whether this holds/.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing yet" });
+        if (/Event from/.test(JSON.stringify(req.messages))) return reply("Walgreens says Jo's metformin is ready for pickup.");
+        return callTool("watch_for", { title: "Pharmacy", condition: "the pharmacy confirmed", action: "tell the room", everyHours: 6 });
+      }
+      if (/heartbeat|Check whether this holds/i.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing" });
+      return reply("I'll keep an eye out.");
+    },
+    (system) => (system.includes("holds") ? '{"holds": true, "note": "ok"}' : ""),
+  );
+
 describe("harness loop", () => {
   test("a candidate rule that fixes the failing check without regressions is adopted, written to skills/, and recorded as a lesson", async () => {
     const skillsDir = mkdtempSync(join(tmpdir(), "circle-harness-test-"));
     cpSync(repoSkills, skillsDir, { recursive: true });
-    // An agent that only sets a watch when the rules say the magic words; otherwise it just talks.
-    const model = new ScriptedModel(
-      (req) => {
-        if (/heartbeat/i.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing" });
-        if (/pharmacy|metformin/i.test(JSON.stringify(req.messages)) && /ALWAYS SET A WATCH/.test(req.system)) {
-          if (toolCallsSoFar(req).some((c) => c.name === "watch_for")) return reply("Watching.");
-          if (/Check whether this holds/.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing yet" });
-          if (/Event from/.test(JSON.stringify(req.messages))) return reply("Walgreens says Jo's metformin is ready for pickup.");
-          return callTool("watch_for", { title: "Pharmacy", condition: "the pharmacy confirmed", action: "tell the room", everyHours: 6 });
-        }
-        if (/heartbeat|Check whether this holds/i.test(JSON.stringify(req.messages))) return callTool("stay_quiet", { reason: "nothing" });
-        return reply("I'll keep an eye out.");
-      },
-      (system) => (system.includes("holds") ? '{"holds": true, "note": "ok"}' : ""),
-    );
+    const model = watchAgent();
     const scenarios = findScenarios("pharmacy");
     const proposer = async ({ files }: { files: Record<string, string> }) => [
       {
@@ -52,6 +55,31 @@ describe("harness loop", () => {
     expect(report.verdicts.map((v) => v.verdict)).toEqual(["adopted"]);
     expect(report.baseline[0]!.trace.some((l) => l.startsWith("[REPLY] I'll keep an eye out"))).toBe(true);
     expect(experience).toContain("category: doctor");
+  });
+
+  test("the composer's rewrite of the core rules is adopted when the suite still passes and rejected when it drops a guard", async () => {
+    const run = async (composer: NonNullable<Parameters<typeof harnessLoop>[0]["composer"]>) => {
+      const skillsDir = mkdtempSync(join(tmpdir(), "circle-skills-"));
+      cpSync(join(import.meta.dir, "..", "skills"), skillsDir, { recursive: true });
+      const model = watchAgent();
+      const proposer = async () => [
+        {
+          kind: "invariant" as const,
+          file: "_core-rules.md",
+          content: `${readFileSync(join(skillsDir, "_core-rules.md"), "utf8")}\n- ALWAYS SET A WATCH when asked to watch.\n`,
+          why: "promised instead of watching",
+        },
+      ];
+      const report = await harnessLoop({ scenarios: findScenarios("pharmacy-watch"), skillsDir, model, proposer, composer, timeoutMs: 5_000, maxAdoptions: 1 });
+      return { report, core: readFileSync(join(skillsDir, "_core-rules.md"), "utf8") };
+    };
+    const tidy = await run(async (core) =>
+      `${core.trimEnd()}\n`.replace("- ALWAYS SET A WATCH when asked to watch.", "- ALWAYS SET A WATCH when someone asks you to watch for something."),
+    );
+    expect(tidy.report.composed).toBe("adopted");
+    expect(tidy.core).toContain("ALWAYS SET A WATCH when someone asks");
+    const careless = await run(async (core) => core.replace(/^- .*\b(ask|asks|approval|spend|money|contact|account)\b.*\n/m, ""));
+    expect(careless.report.composed).toBe("rejected");
   });
 
   test("a candidate that would never load, names the test, or drops a guard rule is refused before any run", async () => {

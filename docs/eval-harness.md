@@ -125,9 +125,10 @@ Offline: every scenario runs with its script in `bun test` (the suite stays unde
 3. **Validate.** Before any run: frontmatter parses, a procedure's `when:` must match the scenario's request under `matchSkills` (Harness²'s most common invalid edit is a procedure that never loads), no scenario name in the text, no guard rule about asking, spending, contacting or accounts dropped, not identical to the current file. One retry with the validator's message.
 4. **Probe.** The scenario replays from a temp copy of the folder. A fix must repeat on a second run.
 5. **Compose.** The whole suite; a regression counts only when it repeats. Adopted only when nothing regresses, one adoption per scenario per step.
-6. **Reflect.** Adopted files land in `skills/` for review in git. `skills/EXPERIENCE.md` gets one block per scenario with a `cue:` line (the request), the lesson if one was adopted, and a row per candidate with its verdict (adopted, invalid, no change, no effect, did not repeat, hurt) and evidence. The next proposal reads these, its own category first, so a rejected idea is not proposed again.
+6. **Compose.** When a step changed `_core-rules.md`, the composer rewrites it as one rulebook (each rule once, grouped, nothing added or dropped); the rewrite goes through the same validation and a full-suite run and is kept only when nothing regresses. `--steps n` repeats the whole step until one adopts nothing.
+7. **Reflect.** Adopted files land in `skills/` for review in git. `skills/EXPERIENCE.md` gets one block per scenario with a `cue:` line (the request), the lesson if one was adopted, and a row per candidate with its verdict (adopted, invalid, no change, no effect, did not repeat, hurt) and evidence. The next proposal reads these, its own category first, so a rejected idea is not proposed again.
 
-The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/harness-loop.test.ts` (adoption end to end, and the validator refusing an unloadable procedure, a dropped guard rule, an identical file and a test-aware edit).
+The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/harness-loop.test.ts` (adoption end to end; the composer's fold adopted when the suite agrees and rejected when it drops a guard; the validator refusing an unloadable procedure, a dropped guard rule, an identical file and a test-aware edit).
 
 ## 8. Live runs (real model, `bun run eval`)
 

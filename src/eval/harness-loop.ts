@@ -54,6 +54,12 @@ export interface LoopOptions extends RunOptions {
   maxAdoptions?: number;
   /** Proposal rounds per scenario; a second round sees the first round's verdicts. */
   rounds?: number;
+  /**
+   * Harness²'s composer, sized to one file: after a step that changed the core rules, a rewrite of
+   * _core-rules.md as one coherent rulebook (no rule added or dropped). Adopted only when the whole
+   * suite still passes everything it passed before.
+   */
+  composer?: (core: string, adopted: Verdict[]) => Promise<string | undefined>;
   log?: (line: string) => void;
 }
 
@@ -62,6 +68,8 @@ export interface LoopReport {
   flaky: string[];
   verdicts: Verdict[];
   adopted: Verdict[];
+  /** What the composer did with the core rules this step, if it ran. */
+  composed?: "adopted" | "rejected" | "unchanged";
 }
 
 const CORE = "_core-rules.md";
@@ -201,6 +209,32 @@ export async function harnessLoop(opts: LoopOptions): Promise<LoopReport> {
     }
   }
 
+  // Compose: adoptions land as appended lines; the composer folds them into one rulebook, and the suite judges the fold.
+  if (opts.composer && report.adopted.some((a) => a.candidate.file === CORE)) {
+    const current = readFiles(currentDir)[CORE] ?? "";
+    const folded = await opts.composer(current, report.adopted).catch(() => undefined);
+    const problem = folded ? validate({ kind: "invariant", file: CORE, content: folded, why: "composed" }, failing[0]!.scenario, readFiles(currentDir), names) : "no rewrite";
+    if (!folded || problem) {
+      report.composed = folded ? "rejected" : "unchanged";
+      if (folded) log(`compose: ${problem}`);
+    } else {
+      const dir = stage(currentDir, { kind: "invariant", file: CORE, content: folded, why: "composed" });
+      const now = passedSet(await run(opts.scenarios, dir));
+      const regressions = [...passing].filter((k) => !now.has(k));
+      if (regressions.length) {
+        report.composed = "rejected";
+        log(`compose: rejected, regressed ${regressions.join(", ")}`);
+      } else {
+        currentDir = dir;
+        passing = now;
+        report.composed = "adopted";
+        const last = report.adopted.filter((a) => a.candidate.file === CORE).at(-1)!;
+        last.candidate = { ...last.candidate, content: folded };
+        log("compose: the core rules were folded into one rulebook; nothing regressed");
+      }
+    }
+  }
+
   // Reflect: adopted files into the real folder for review; every verdict with its evidence into EXPERIENCE.md.
   if (report.verdicts.length) {
     for (const a of report.adopted) writeFileSync(join(opts.skillsDir, a.candidate.file), a.candidate.content);
@@ -239,6 +273,21 @@ function entry(report: LoopReport, scenarios: Scenario[]): string {
       return `## ${date} · ${name}\ncategory: ${sc.category} · shape: ${sc.shape}\ncue: ${firstAsk(sc).slice(0, 120)}${lesson}\n${rows}\n`;
     })
     .join("\n");
+}
+
+/** The composer for a real model: the same rules, written once, in order, with nothing added or dropped. */
+export function modelComposer(model: ModelClient, modelId?: string): NonNullable<LoopOptions["composer"]> {
+  return async (core, adopted) => {
+    const out = await model.complete({
+      model: modelId,
+      system:
+        "You edit a rulebook an assistant reads before every chat. Rewrite it so each rule appears once, grouped by topic, in the same plain register. Keep the frontmatter exactly. Do not add a rule, drop a rule, or weaken a rule about asking before spending, contacting anyone or using an account. Return only the file.",
+      prompt: `${core}\n\nLines adopted this step (keep their meaning):\n${adopted.map((a) => a.candidate.why).join("\n")}`,
+      maxTokens: 4000,
+    });
+    const text = out.trim();
+    return text.startsWith("---") && text !== core.trim() ? `${text}\n` : undefined;
+  };
 }
 
 /** Two scoped editors for a real model: each owns one file and is told what the other owns. */
