@@ -47,3 +47,19 @@ What the sample shows, with its limits stated:
 - Taxes: Booking's card total is what it labels "Price"; GetOffers's total is `cheapest_rate_total_amount`. Whether both include Barcelona's tourist tax was not verified, so treat differences under about 10% as noise.
 
 Reading for Circle: wholesale wins on sold-out dates and on refundable rates, and loses to the retail cheapest on quiet dates once a margin is on top. A fair comparison needs the same cancellation terms and the net rate before margin, which only an own supplier account gives. Sample: 4 priced pairs, 1 city, 2 date pairs.
+
+## 7. Where leaked wholesale rates surface (checked 21 Oct 2026)
+
+Method: Google Hotels' "All options" list for five Barcelona hotels, default dates 12–13 Nov 2026, nightly price in USD, read in the built-in browser. Google lists the official site first, then the cheapest seller, then "view more"; the expanded list did not render into the page text, so only the top undercutter per hotel is recorded. Agoda redirected the headless browser to its home page and could not be read.
+
+| Hotel | Official site | Cheapest other seller | Gap to direct |
+|---|---|---|---|
+| Hotel Nouvel | $138, free cancellation | **Super.com** $133 | −4% |
+| Hotel Catalonia Avinyó | $138, free cancellation | **Priceline** $124, free cancellation | −10% |
+| Hotel Vincci Mae | $202 public, $178 member rate | **Hotels.com** $162, free cancellation | −20% vs public, −9% vs member |
+| H10 Racó del Pi | $145 public, $131 member rate | Priceline $145 | parity (member rate wins) |
+| Hotel Lloret Ramblas | $107 | Wego $138 | direct is cheapest |
+
+What this says: on 3 of 5 hotels a third-party seller undercut the hotel's own site by 4 to 20%, and the undercutters were a wholesale reseller (Super.com, which buys bedbank rates) and the big OTAs' own discounting (Priceline, Hotels.com), not an obscure site. Hotels that answer with a member rate (H10, Vincci) close most of the gap, which is the "dynamic wholesale" remedy in practice. Five hotels, one date, one city: enough to show the pattern, not to size it.
+
+Where to look, in order of how often leaks surface: Google Hotels' seller list (the metasearch aggregator every leak reaches), then Trivago and Kayak, then the resellers themselves: Super.com, Traveluro, Algotels, Hotelsone, ZenHotels/Ostrovok, Prestigia, getaroom/Hotelplanner, Trip.com and Agoda (both also buy from bedbanks), and Expedia/Booking package rates. Opaque channels (Priceline Express Deals, Hotwire) hide the hotel name and are leak-proof by design but cheap.
