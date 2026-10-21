@@ -75,12 +75,31 @@ export class Runtime {
   private inFlight = new Set<Promise<void>>();
   private impliedChecks = new Map<Id, number[]>();
 
-  /** At boot: a run left "running" by a crash would swallow every later message as a steer. */
+  /**
+   * At boot: a run left "running" by a crash would swallow every later message as a steer.
+   * A delegated task that was mid-work is started again with its own progress notes, after
+   * the listeners have attached, so a redeploy does not quietly lose a promised report.
+   */
   private reconcile() {
+    const resume: Task[] = [];
     for (const run of this.d.store.unfinishedRuns()) {
       if (run.status !== "running") continue;
+      // Read the task before finishing the run: finishing marks it failed, and the notes it wrote survive.
+      const task = run.taskId ? this.d.store.getTask(run.taskId) : undefined;
+      const progress = task?.progress ?? "";
       this.finish(run, "failed", "Interrupted by a restart.");
+      if (task && task.status === "running") resume.push({ ...this.d.tasks.update(task.id, { status: "running", progress })!, progress });
     }
+    if (resume.length)
+      setTimeout(() => {
+        for (const task of resume) {
+          const p: Promise<void> = this.runTask(
+            task,
+            `This task was interrupted by a restart. Your progress notes so far: ${task.progress || "(none)"}. Continue from there; do not repeat what is done.`,
+          ).finally(() => this.inFlight.delete(p));
+          this.inFlight.add(p);
+        }
+      }, 0);
   }
 
   /** Dismissed or expired: the run that waited on it ends, so the room is not stuck. */
@@ -321,13 +340,13 @@ export class Runtime {
     }
   }
 
-  private async runTask(task: Task) {
+  private async runTask(task: Task, note?: string) {
     const { store } = this.d;
     const room = store.getRoom(task.roomId);
     const agent = store.getAgent(task.agentId);
     const session = store.getSession(task.sessionId);
     if (!room || !agent || !session) return;
-    const text = `You are the task agent for "${task.title}" [${task.id}], delegated from the room ${room.name}. Brief:\n${task.instructions}\n\nWork it through here. Record milestones with update_task (tellRoom only for real milestones). When you are done, your final reply goes to the room once; make it the complete result. If you need a person, ask with the usual tools and the run waits.`;
+    const text = `You are the task agent for "${task.title}" [${task.id}], delegated from the room ${room.name}. Brief:\n${task.instructions}\n\nWork it through here. Record milestones with update_task (tellRoom only for real milestones). When you are done, your final reply goes to the room once; make it the complete result. If you need a person, ask with the usual tools and the run waits.${note ? `\n\n${note}` : ""}`;
     try {
       await this.startRun({ room, agent, session, trigger: "task", requesterId: task.requesterId, text, taskId: task.id });
     } catch (e) {
