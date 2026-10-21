@@ -12,9 +12,9 @@ import type { Store } from "../store/repos.ts";
  *
  * Default ladder for "find someone / find out something" tasks, cheapest and
  * least intrusive first:
- *   search -> ask_room -> call -> community_post (needs a yes) -> ask_person
+ *   search -> browse -> ask_room -> call -> community_post (needs a yes) -> ask_person
  */
-export const DEFAULT_LADDER: ApproachKind[] = ["search", "ask_room", "call", "community_post", "ask_person"];
+export const DEFAULT_LADDER: ApproachKind[] = ["search", "browse", "ask_room", "call", "community_post", "ask_person"];
 
 export const APPROACH_LABEL: Record<ApproachKind, string> = {
   search: "search the web",
@@ -34,12 +34,13 @@ export class Planner {
     private clock: Clock,
   ) {}
 
-  create(runId: Id, goal: string, steps: { text: string; approach: ApproachKind; alternatives?: ApproachKind[] }[]): Plan {
+  create(runId: Id, goal: string, steps: { text: string; approach: ApproachKind; alternatives?: ApproachKind[] }[], opts: { auto?: boolean } = {}): Plan {
     const now = this.clock.now();
     const plan: Plan = {
       id: newId("plan"),
       runId,
       goal,
+      auto: opts.auto || undefined,
       steps: steps.map((s, i) => ({
         id: `s${i + 1}`,
         text: s.text,
@@ -64,6 +65,8 @@ export class Planner {
   complete(runId: Id, evidence: string): Plan | undefined {
     const plan = this.get(runId);
     if (!plan) return;
+    // An automatic plan has one step, "do what was asked"; a good search result does not finish it, the reply does.
+    if (plan.auto) return plan;
     const step = plan.steps[plan.cursor];
     if (!step) return plan;
     step.status = "done";

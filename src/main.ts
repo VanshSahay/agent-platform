@@ -10,7 +10,7 @@ import { startWebServer } from "./channels/web.ts";
 import { SPECTRUM_CHANNELS, type SpectrumChannel, startChannel } from "./channels/imessage.ts";
 import { newAgent } from "./agent/spec.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
-import { BrowserbaseBrowser } from "./tools/browser.ts";
+import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } from "./tools/browser.ts";
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
 import { GoogleApi } from "./tools/providers/google.ts";
@@ -77,16 +77,30 @@ function pickHands(): Hands {
   console.log(
     `Phone: ${env.VAPI_API_KEY ? "Vapi calls" : "no calls"}, ${twilio ? "Twilio SMS" : "no SMS"}; speech: ${env.ELEVENLABS_API_KEY ? "ElevenLabs" : "fake"}; images: ${env.OPENROUTER_API_KEY ? "OpenRouter" : "fake"}; cards: ${env.STRIPE_SECRET_KEY ? "Stripe Issuing" : "fake"}`,
   );
-  if (process.env.BROWSERBASE_API_KEY) {
-    hands.browser = new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID });
-    console.log("Browser: Browserbase");
-  } else {
-    hands.browser = new JinaReader();
-    console.log("Browser: Jina Reader (read-only pages; set BROWSERBASE_API_KEY for a real browser)");
-  }
+  // Browsers in the order to try: a local Chrome first when developing (free, instant), Browserbase for
+  // signed-in contexts and the live sign-in view, Jina as the read-only floor so a page is never unreadable.
+  const browsers: { name: string; browser: import("./tools/browser.ts").BrowserProvider }[] = [];
+  const chrome = localChromePath();
+  if (chrome && process.env.LOCAL === "1") browsers.push({ name: "chrome", browser: new LocalBrowser(chrome) });
+  if (process.env.BROWSERBASE_API_KEY)
+    browsers.push({ name: "browserbase", browser: new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID }) });
+  if (chrome && process.env.LOCAL !== "1") browsers.push({ name: "chrome", browser: new LocalBrowser(chrome) });
+  browsers.push({ name: "jina", browser: new JinaReader() });
+  hands.browser = browsers.length === 1 ? browsers[0]!.browser : new FallbackBrowser(browsers);
+  console.log(`Browser: ${browsers.map((b) => b.name).join(" → ")}${browsers.some((b) => b.name === "browserbase") ? "" : " (set BROWSERBASE_API_KEY for sign-in cards)"}`);
   const search = createSearch(process.env);
   hands.search = search;
-  console.log(`Search: ${search.name === "brave" ? "Brave" : search.name === "exa" ? "Exa (keyless, via the Agent Reach channel)" : "DuckDuckGo (keyless)"}`);
+  console.log(
+    `Search: ${
+      search.name === "brave"
+        ? "Brave"
+        : search.name.startsWith("browserbase")
+          ? `Browserbase Search (Parallel, ${process.env.BROWSERBASE_SEARCH_MODE === "fast" ? "fast" : "advanced"}) with Exa behind it`
+          : search.name === "exa"
+            ? "Exa (keyless, via the Agent Reach channel)"
+            : "DuckDuckGo (keyless)"
+    }`,
+  );
   console.log("Community posting: fake (adapter in src/tools/hands.ts)");
   return hands;
 }

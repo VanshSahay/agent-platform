@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BraveSearch, createSearch, DuckDuckGoSearch, parseDuckDuckGo } from "../src/tools/search.ts";
+import { BraveSearch, BrowserbaseSearch, createSearch, DuckDuckGoSearch, parseDuckDuckGo, SearchChain } from "../src/tools/search.ts";
 import { ExaSearch } from "../src/tools/reach.ts";
 
 const fakeFetch = (status: number, body: string, calls: { url: string; init?: RequestInit }[] = []) => {
@@ -107,5 +107,53 @@ describe("createSearch", () => {
     expect(createSearch({ BRAVE_API_KEY: "k" })).toBeInstanceOf(BraveSearch);
     expect(createSearch({})).toBeInstanceOf(ExaSearch);
     expect(createSearch({ SEARCH: "duckduckgo" })).toBeInstanceOf(DuckDuckGoSearch);
+  });
+});
+
+describe("Browserbase search", () => {
+  test("posts the query to /v1/search with the key and the Parallel provider, and maps results to title, url and a date snippet", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const bb = new BrowserbaseSearch("bb_test", {
+      mode: "fast",
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return new Response(
+          JSON.stringify({
+            requestId: "req_1",
+            results: [
+              { id: "r1", url: "https://shop.example/zalto", title: "Zalto Gravitas", publishedDate: "2026-09-01T00:00:00Z" },
+              { id: "r2", title: "no url" },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+    const r = await bb.search("Zalto Gravitas Omega", { near: "San Jose", limit: 3 });
+    expect(calls[0]!.url).toBe("https://api.browserbase.com/v1/search");
+    expect((calls[0]!.init!.headers as Record<string, string>)["x-bb-api-key"]).toBe("bb_test");
+    expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ query: "Zalto Gravitas Omega San Jose", numResults: 3, provider: "parallel", mode: "fast" });
+    expect(r.results).toEqual([{ title: "Zalto Gravitas", url: "https://shop.example/zalto", snippet: "2026-09-01" }]);
+    expect(r.evidence).toBe("bb-search:req_1");
+  });
+
+  test("a 403 or a network error gives no results and no throw, and the chain falls through to the next engine", async () => {
+    const denied = new BrowserbaseSearch("k", { fetchImpl: async () => new Response("{}", { status: 403 }) });
+    expect((await denied.search("x")).results).toEqual([]);
+    const broken = new BrowserbaseSearch("k", {
+      fetchImpl: async () => {
+        throw new Error("down");
+      },
+    });
+    expect((await broken.search("x")).evidence).toContain(":failed");
+    const chain = new SearchChain([denied, { search: async () => ({ results: [{ title: "t", url: "https://u", snippet: "" }], evidence: "second" }) }]);
+    expect((await chain.search("x")).evidence).toBe("second");
+    expect(chain.name).toBe("browserbase+search");
+  });
+
+  test("createSearch picks Browserbase with Exa behind it when the browser key is set, and Exa alone when SEARCH=exa", () => {
+    expect(createSearch({ BROWSERBASE_API_KEY: "k" }).name).toBe("browserbase+exa");
+    expect(createSearch({ BROWSERBASE_API_KEY: "k", SEARCH: "exa" }).name).toBe("exa");
+    expect(createSearch({}).name).toBe("exa");
   });
 });

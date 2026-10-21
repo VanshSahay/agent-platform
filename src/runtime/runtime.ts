@@ -678,6 +678,11 @@ export class Runtime {
     let turns = 0;
     let lastText = "";
     let quiet: string | undefined;
+    // Resourcefulness guards: searching in circles is a stall, long work belongs in a task, a reply must cover the ask.
+    let searchesInARow = 0;
+    let toolCalls = 0;
+    let nudgedToDelegate = false;
+    let replyChecked = false;
     let steerCursor = steerFrom ?? store.lastSeq(run.sessionId);
     // Steering: messages that arrived while we were working. Drained at the start of a turn
     // and again before any exit, so a message during the final turn is never lost.
@@ -777,6 +782,16 @@ export class Runtime {
         // Final reply, unless someone spoke while we were composing it.
         if (drainSteers()) continue;
         const reply = turn.text.trim() || lastText.trim() || "(no reply)";
+        // After real work, one cheap check that the reply honours the request's constraints, and one chance to fix it.
+        if (!replyChecked && run.trigger === "message" && toolCalls >= 3) {
+          replyChecked = true;
+          const missing = await this.missingFromReply(requestText, reply);
+          if (missing) {
+            emit("progress", { text: `Checking the answer against the ask: ${missing}` });
+            transcript.push({ role: "user", content: `[check] Your reply does not cover: ${missing}. Fix that, or say plainly in one line that you could not.` });
+            continue;
+          }
+        }
         this.saveTranscript(run, transcript);
         this.sendReply(run, room, agent, reply);
         return;
@@ -827,13 +842,28 @@ export class Runtime {
         store.putToolCall(rec);
         emit("tool_end", { id: rec.id, tool: use.name, status: rec.status, label: rec.labelDone, evidence: result.evidence ?? null, fingerprint: rec.fingerprint });
 
-        // Plan bookkeeping.
-        if (result.approach && plan) {
+        // Plan bookkeeping. The first approach-shaped call opens a plan when the model wrote none, so
+        // stalls are counted and the ladder moves whether or not the model planned.
+        toolCalls += 1;
+        if (result.approach === "search") {
+          searchesInARow += 1;
+          if (searchesInARow > 3 && !result.stall) result.stall = "searching again instead of acting on what was found";
+        } else if (result.approach) searchesInARow = 0;
+        const livePlan =
+          planner.get(run.id) ??
+          (result.approach && run.trigger === "message"
+            ? planner.create(run.id, requestText.slice(0, 240), [{ text: "Do what was asked", approach: result.approach }], { auto: true })
+            : undefined);
+        if (result.approach && livePlan) {
           if (result.stall) {
             const st = planner.stall(run.id, result.stall);
             if (st?.switchedTo) notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that.`);
             else if (st?.exhausted)
               notes.push(`All approaches for that step failed; the plan moved to the next step. If nothing is left, tell the room what you tried and what you need.`);
+            else if (result.approach === "call")
+              notes.push(
+                `The call did not connect (${result.stall}). Do not redial now: the yes was for one call. Say so in one line and schedule_action a retry (two hours later, or next morning if it is late), naming them as disclosed outreach.`,
+              );
             else notes.push(`That approach stalled (${result.stall}). You may try once more or switch.`);
           } else if (result.ok && !result.waitingOn && !result.held && result.approach !== "wait") {
             planner.complete(run.id, result.evidence ?? "result");
@@ -873,6 +903,12 @@ export class Runtime {
         this.saveTranscript(run, transcript);
         this.finish(run, "done", undefined, `Stayed quiet: ${quiet}`, true);
         return;
+      }
+      if (run.trigger === "message" && !run.taskId && toolCalls >= 8 && !nudgedToDelegate) {
+        nudgedToDelegate = true;
+        notes.push(
+          "Eight tool calls in: this is long work. Hand the rest to delegate_task with a brief that lists what you found and what is still open, tell the room in one line, and stop.",
+        );
       }
       if (notes.length) transcript.push({ role: "user", content: `[planner] ${notes.join(" ")}` });
 
@@ -932,6 +968,27 @@ export class Runtime {
 
     this.saveTranscript(run, transcript);
     this.sendReply(run, room, agent, lastText.trim() || "I ran out of steps on this one. Tell me what matters most and I'll pick it up from there.");
+  }
+
+  /** The constraint the reply dropped, or undefined when it answers the ask. Fails open: no model, no JSON, no complaint. */
+  private async missingFromReply(request: string, reply: string): Promise<string | undefined> {
+    if (!request.trim()) return undefined;
+    try {
+      const raw = await this.d.model.complete({
+        system:
+          'Return JSON only. {"ok": true} when the reply answers the request and honours every constraint in it (who, where, budget, shipping, language, when). ' +
+          'A reply that plainly says it could not meet a constraint counts as ok. Otherwise {"ok": false, "missing": "<the dropped constraint, a few words>"}.',
+        prompt: `Request:\n${request.slice(0, 2000)}\n\nReply:\n${reply.slice(0, 3000)}`,
+        effort: "low",
+        maxTokens: 120,
+      });
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) return undefined;
+      const v = JSON.parse(m[0]) as { ok?: boolean; missing?: string };
+      return v.ok === false && typeof v.missing === "string" && v.missing.trim() ? v.missing.trim().slice(0, 120) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private sendReply(run: Run, room: Room, agent: AgentSpec, text: string) {

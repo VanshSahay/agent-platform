@@ -204,3 +204,44 @@ describe("timers", () => {
     expect(w.app.store.getAttention(item.id)!.status).toBe("expired");
   });
 });
+
+describe("memory mining", () => {
+  test("the consolidator reads a chat the agent took no notes in, and a private chat's notes stay private", async () => {
+    const completer = (system: string, prompt: string) => {
+      if (system.startsWith("Read a chat")) {
+        if (prompt.includes("private chat")) return JSON.stringify([{ type: "fact", text: "Sam is between jobs and money is tight this month." }]);
+        return JSON.stringify([
+          { type: "person", text: "Sam drives and lives in Brooklyn.", about: "Sam" },
+          { type: "decision", text: "The hike is Doodletown on Saturday, on the trail by 10am." },
+        ]);
+      }
+      return "";
+    };
+    const w = groupWorld(() => reply("ok"), { completer });
+    const say = (roomId: string, authorId: string, text: string) => {
+      const session = { id: `ses_${roomId}`, roomId, agentId: w.agent.id, kind: "room" as const, createdAt: w.clock.now(), lastActivityAt: w.clock.now() };
+      w.app.store.putSession(session);
+      w.app.store.putMessage({ id: `msg_${Math.random().toString(36).slice(2)}`, sessionId: session.id, roomId, role: "user", authorId, text, visibleTo: [], at: w.clock.now() });
+      w.clock.advance(1000);
+    };
+    say(w.room.id, "alex", "Doodletown on Saturday, three of us. Sam drives from Brooklyn, on the trail by 10.");
+    say(w.samDm.id, "sam", "Between us: I'm between jobs and money is tight this month.");
+    const stats = await w.app.consolidator.runFor(w.agent);
+    expect(stats.mined).toBe(3);
+    expect(stats.promoted).toBe(3);
+    const sam = w.app.store.listMemories(w.agent.id, { scope: "person", scopeId: "sam" }).filter((m) => m.type !== "observation");
+    expect(sam.map((m) => [m.type, m.text]).sort()).toEqual([
+      ["fact", "Sam is between jobs and money is tight this month."],
+      ["person", "Sam drives and lives in Brooklyn."],
+    ]);
+    const roomNotes = w.app.store.listMemories(w.agent.id, { scope: "room", scopeId: w.room.id }).filter((m) => m.type !== "observation");
+    expect(roomNotes.map((m) => m.type)).toEqual(["decision"]);
+    // What Sam said privately is scoped to his chat and never visible in the group.
+    const inGroup = w.app.memory.visibleIn(w.agent.id, w.room, ["alex", "sam", "jo", "riley"]).map((m) => m.text);
+    expect(inGroup).toContain("Sam drives and lives in Brooklyn.");
+    expect(inGroup.some((t) => t.includes("money is tight"))).toBe(false);
+    // The second pass starts where the first stopped: nothing new, nothing re-mined.
+    const again = await w.app.consolidator.runFor(w.agent);
+    expect(again.mined).toBe(0);
+  });
+});

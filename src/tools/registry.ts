@@ -44,7 +44,8 @@ export const CORE_TOOLS: ToolDef[] = [
   {
     spec: {
       name: "web_search",
-      description: "Search the web. Use for businesses, hours, prices, how-tos and anything public. Returns titles, URLs and snippets.",
+      description:
+        "Search the web. Use for businesses, hours, prices, how-tos and anything public. Returns titles and URLs, with a snippet when the engine has one; read the page with browse_page before repeating a price, an hour or a number.",
       input_schema: obj({ query: str("Search query."), near: str("Optional place to bias results, e.g. a city.") }, ["query"]),
     },
     family: "search",
@@ -667,7 +668,9 @@ export const CORE_TOOLS: ToolDef[] = [
         title: `OK to spend $${amount.toFixed(2)}?`,
         detail: `${ctx.agent.name} wants to pay $${amount.toFixed(2)} at ${s(input.where)} for: ${s(input.what)}`,
         money: amount,
-        key: ["request_purchase", amount.toFixed(2), s(input.where), s(input.what)],
+        // The yes covers the money (to the next $10) and the merchant; the item's wording lives in the card, so a
+        // re-issue that says "$79.99" or paraphrases "what" after the yes does not open a second card.
+        key: ["request_purchase", Math.ceil(amount / 10) * 10, s(input.where).toLowerCase()],
       });
       if (!gate.granted) {
         if ("held" in gate) return { ok: true, content: gate.held, held: true };
@@ -675,7 +678,7 @@ export const CORE_TOOLS: ToolDef[] = [
       }
       return {
         ok: true,
-        content: `Approved: ${gate.reason}. The budget is cleared. No ordering tool is connected yet, so reply in one line that it is approved and that the order itself still has to be placed by hand, then stop. Do not ask anyone anything else and do not browse shops.`,
+        content: `Approved: ${gate.reason}. The budget is cleared for $${amount.toFixed(2)} at ${s(input.where)}. Now place it: search_products, add_to_cart, then checkout_cart (it mints a single-use card for the exact amount; you never see card numbers). If the shop needs the person's login, connect_account first.`,
         evidence: `purchase-approved:${amount}`,
       };
     },
@@ -777,7 +780,7 @@ export const CORE_TOOLS: ToolDef[] = [
     spec: {
       name: "watch_for",
       description:
-        "Set an alert rule: check a condition every few hours and act only when it holds, otherwise stay quiet. For 'tell me when the pharmacy confirms', 'if the price drops under $100', 'once Ben replies'. Name any third party you would contact.",
+        "Set an alert rule: check a condition every few hours and act only when it holds, otherwise stay quiet. For 'tell me when the pharmacy confirms', 'if the price drops under $100', 'once Ben replies'. Needs no connection: each check can read your own inbox (email_load_unprocessed), your notes, the ledger, a page or a search. Name any third party you would contact.",
       input_schema: obj(
         {
           title: str("Short title."),

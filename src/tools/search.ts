@@ -8,6 +8,8 @@
 
 import { sha256 } from "../core/ids.ts";
 import { ExaSearch } from "./reach.ts";
+
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 import type { SearchProvider, SearchResult } from "./hands.ts";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -163,10 +165,68 @@ function decodeEntities(s: string) {
     .replace(/&amp;/g, "&");
 }
 
-/** Brave when a key is configured, otherwise the keyless DuckDuckGo scrape. */
-export function createSearch(env: Record<string, string | undefined> = process.env): BraveSearch | DuckDuckGoSearch | ExaSearch {
+/**
+ * Browserbase Search (docs.browserbase.com/platform/search): POST /v1/search with the
+ * same key as the browser. The "parallel" provider answers in well under a second with
+ * titles and links; its results carry no snippet, so the page is what the agent reads.
+ * Modes: fast ($1 per 1,000) or advanced ($5, the provider's default). 120 requests a minute.
+ */
+export class BrowserbaseSearch implements SearchProvider {
+  readonly name = "browserbase";
+  constructor(
+    private apiKey: string,
+    private opts: { mode?: "fast" | "advanced"; fetchImpl?: Fetch; timeoutMs?: number } = {},
+  ) {}
+
+  async search(query: string, opts: { near?: string; limit?: number } = {}): Promise<{ results: SearchResult[]; evidence: string }> {
+    const q = (opts.near ? `${query} ${opts.near}` : query).slice(0, 200);
+    const evidence = `bb-search:${sha256([q]).slice(0, 12)}`;
+    try {
+      const res = await (this.opts.fetchImpl ?? fetch)("https://api.browserbase.com/v1/search", {
+        method: "POST",
+        headers: { "x-bb-api-key": this.apiKey, "content-type": "application/json" },
+        body: JSON.stringify({ query: q, numResults: Math.min(Math.max(opts.limit ?? 8, 1), 25), provider: "parallel", mode: this.opts.mode ?? "advanced" }),
+        signal: AbortSignal.timeout(this.opts.timeoutMs ?? 20_000),
+      });
+      if (!res.ok) return { results: [], evidence: `${evidence}:http-${res.status}` };
+      const j = (await res.json()) as { requestId?: string; results?: { url?: string; title?: string; author?: string; publishedDate?: string }[] };
+      const results = (j.results ?? [])
+        .filter((r) => typeof r.url === "string" && r.url)
+        .map((r) => ({ title: r.title?.trim() || r.url!, url: r.url!, snippet: [r.author, r.publishedDate?.slice(0, 10)].filter(Boolean).join(" · ") }));
+      return { results, evidence: j.requestId ? `bb-search:${j.requestId}` : evidence };
+    } catch {
+      return { results: [], evidence: `${evidence}:failed` };
+    }
+  }
+}
+
+/** Providers in order; the first with results answers, so a quota or an outage never means "nothing found". */
+export class SearchChain implements SearchProvider {
+  readonly name: string;
+  constructor(private chain: SearchProvider[]) {
+    this.name = chain.map((c) => (c as { name?: string }).name ?? "search").join("+");
+  }
+  async search(query: string, opts: { near?: string; limit?: number } = {}): Promise<{ results: SearchResult[]; evidence: string }> {
+    let last = { results: [] as SearchResult[], evidence: "search:none" };
+    for (const p of this.chain) {
+      last = await p.search(query, opts);
+      if (last.results.length) return last;
+    }
+    return last;
+  }
+}
+
+/**
+ * Brave when keyed; else Browserbase Search (Parallel) when the browser key is there, with
+ * Exa behind it; else Exa, which needs no key and answers local-business queries with names
+ * and phone numbers. SEARCH=exa or SEARCH=duckduckgo forces one.
+ */
+export function createSearch(env: Record<string, string | undefined> = process.env): SearchProvider & { name: string } {
   if (env.BRAVE_API_KEY) return new BraveSearch(env.BRAVE_API_KEY);
-  // Exa's public endpoint needs no key and answers local-business queries with names and phone numbers.
   if (env.SEARCH === "duckduckgo") return new DuckDuckGoSearch();
+  if (env.BROWSERBASE_API_KEY && env.SEARCH !== "exa") {
+    const mode = env.BROWSERBASE_SEARCH_MODE === "fast" ? "fast" : "advanced";
+    return new SearchChain([new BrowserbaseSearch(env.BROWSERBASE_API_KEY, { mode }), new ExaSearch()]);
+  }
   return new ExaSearch();
 }

@@ -272,14 +272,14 @@ describe("planner", () => {
         if (i === 0) return callTool("plan", { goal: "Find a Mandarin-speaking handyman", steps: [{ text: "Find candidates", approach: "search" }] });
         if (i === 1 || i === 2) return callTool("web_search", { query: "handyman mandarin" });
         const t = JSON.stringify(req.messages);
-        expect(t).toContain('the plan now tries "ask_room"');
+        expect(t).toContain('the plan now tries "browse"');
         return reply("Nothing online; I'll ask the group next.");
       },
       { search },
     );
     const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a mandarin handyman" });
     const plan = w.app.planner.get(run!.id)!;
-    expect(plan.steps[0]!.approach).toBe("ask_room");
+    expect(plan.steps[0]!.approach).toBe("browse");
     expect(plan.steps[0]!.attempts).toBe(0);
     expect(
       w.app.store

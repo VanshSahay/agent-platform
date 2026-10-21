@@ -47,14 +47,18 @@ export function normalizeModelId(id: string, provider: ModelConfig["provider"]):
 
 export function createModel(cfg: ModelConfig, env: Record<string, string | undefined> = process.env): ModelClient | undefined {
   if (cfg.provider === "openrouter") {
+    // A hung upstream call must not hold a run for twenty minutes: three minutes, then the SDK retries twice.
     const client = new Anthropic({
       authToken: env.OPENROUTER_API_KEY,
       apiKey: null,
       baseURL: "https://openrouter.ai/api",
+      timeout: 180_000,
+      maxRetries: 2,
       defaultHeaders: { "HTTP-Referer": env.PUBLIC_URL ?? "http://localhost:3000", "X-Title": "Circle" },
     });
     return new AnthropicModel(client, { smallModel: cfg.smallModel, mapModel: (id) => normalizeModelId(id, "openrouter") });
   }
-  if (cfg.provider === "anthropic") return new AnthropicModel(new Anthropic(), { smallModel: cfg.smallModel, mapModel: (id) => normalizeModelId(id, "anthropic") });
+  if (cfg.provider === "anthropic")
+    return new AnthropicModel(new Anthropic({ timeout: 180_000, maxRetries: 2 }), { smallModel: cfg.smallModel, mapModel: (id) => normalizeModelId(id, "anthropic") });
   return undefined;
 }

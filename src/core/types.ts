@@ -500,6 +500,8 @@ export interface Plan {
   id: Id;
   runId: Id;
   goal: string;
+  /** Opened by the runtime on the first approach-shaped tool call, not by the model. */
+  auto?: boolean;
   steps: PlanStep[];
   /** Index of the active step. */
   cursor: number;

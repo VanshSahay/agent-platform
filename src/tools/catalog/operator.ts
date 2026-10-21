@@ -348,7 +348,8 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     sideEffect: false,
     async run(input, ctx) {
       const ref = s(input.url);
-      const art = ctx.store.getArtifact(ref);
+      // An attachment arrives in the chat as a link like https://host/d/art_x; the id inside it is the image.
+      const art = ctx.store.getArtifact(ref.match(/\/d\/([A-Za-z0-9_-]+)/)?.[1] ?? ref);
       const image: ModelImage | undefined =
         art && art.kind === "image"
           ? { base64: (art.data as { base64: string }).base64, mediaType: ((art.data as { mimeType?: string }).mimeType ?? "image/png") as "image/png" }
@@ -432,16 +433,25 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     spec: {
       name: "get_connect_link",
       description:
-        "A link the person opens to connect a service in Settings (Google, an MCP server, an API, a site login). Give it to them when a tool says something is not connected.",
+        "A link the person opens to connect a service in Settings: Google, Slack, an MCP server or an API. Not for website logins (a gym, a shop, a portal): those use connect_account, which opens the sign-in inside the chat.",
       input_schema: obj({ service: str("What to connect, e.g. google, slack, an MCP server, ubereats.com.") }, ["service"]),
     },
     family: "operator",
     labels: { running: "Making a connect link…", done: "Made a connect link" },
     sideEffect: false,
     async run(input, ctx) {
+      const service = s(input.service).trim().toLowerCase();
+      // Settings connects Google, Slack, MCP servers and APIs. Anything else is a website login, which happens
+      // inside the chat: do what connect_account does, guessing the domain from a plain name ("Planet Fitness").
+      if (service && !/^(google|gmail|calendar|drive|slack|mcp|api)\b|mcp|api\b/.test(service)) {
+        const site = /\.[a-z]{2,}$/.test(service) ? service : `${service.replace(/[^a-z0-9]+/g, "")}.com`;
+        const { TOOL_INDEX } = await import("../registry.ts");
+        const connect = TOOL_INDEX.get("connect_account");
+        if (connect) return connect.run({ site, why: `use ${site} for this request` }, ctx);
+      }
       return {
         ok: true,
-        content: { url: `${ctx.publicUrl}/#settings`, note: `Open Settings → Connections and connect ${s(input.service) || "the service"}; then say "done" here.` },
+        content: { url: `${ctx.publicUrl}/#settings/connections`, note: `Open Settings → Connections and connect ${service || "the service"}; then say "done" here.` },
       };
     },
   },
