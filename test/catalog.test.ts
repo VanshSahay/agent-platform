@@ -130,6 +130,11 @@ describe("the catalogue", () => {
     ]);
     expect(data.nights).toBe(2);
     expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+    // A second ask for the same stay within twelve hours reuses the public prices instead of paying Google again.
+    const again = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip compare hotels in Barcelona Dec 1-3 for 2" });
+    const second = w.app.store.toolCallsForRun(again!.id)[0]!;
+    expect(second.evidence).toBe("fake-hotels:2+fake-public-rates:1:cached");
+    expect((w.app.hands.publicRates as FakePublicRates).queries).toHaveLength(1);
     delete process.env.HOTEL_MARKUP_PCT;
     delete process.env.HOTEL_SITE_URL;
   });

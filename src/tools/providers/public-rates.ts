@@ -109,11 +109,12 @@ export class ApifyHotels implements PublicRatesProvider {
       currency: "USD",
       country: "us",
       language: "en",
-      maxHotels: 30,
+      maxHotels: 25,
       ...(classes.length ? { hotelClass: classes.map(String) } : {}),
       includeOffers: true,
       offerLevel: "sources",
-      maxOffersPerHotel: 6,
+      // Offer rows are the cost ($0.002 each against $0.004 a hotel); four is enough to reach an all-in seller behind the discounters.
+      maxOffersPerHotel: 4,
       sortBy: "lowest_price",
     };
     const res = await fetch(`https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?timeout=240&format=json`, {

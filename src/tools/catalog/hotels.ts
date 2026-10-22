@@ -20,6 +20,8 @@ export const sameHotel = (a: string, b: string) => {
   return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x));
 };
 
+const PUBLIC_CACHE_MS = 12 * 60 * 60 * 1000;
+
 interface Row {
   hotel: HotelOffer;
   oursUsd: number;
@@ -85,9 +87,16 @@ export const HOTEL_TOOLS: ToolDef[] = [
           .slice(0, limit);
         if (!rows.length) return { ok: true, content: "No hotels for those dates.", evidence: ours.evidence, stall: `no hotels for ${q.city} ${checkIn}` };
         // The public side is asked for the star classes we are about to show, so Google's list covers these hotels.
-        const pub = await ctx.hands.publicRates
-          .search({ ...q, classes: [...new Set(rows.map((r) => r.hotel.stars).filter((x): x is number => !!x))] })
-          .catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
+        // One Google run costs about $0.17, so a city's public prices for the same stay are kept twelve hours:
+        // a rerun, a second member asking, or a tweak to the shortlist does not pay again.
+        const classes = [...new Set(rows.map((r) => r.hotel.stars).filter((x): x is number => !!x))].sort();
+        const cacheKey = `pubrates:${q.city.toLowerCase()}:${q.countryCode}:${checkIn}:${checkOut}:${q.adults}:${classes.join("")}`;
+        const cached = JSON.parse(ctx.store.getKv(cacheKey) ?? "null") as { at: number; pub: Awaited<ReturnType<typeof ctx.hands.publicRates.search>> } | null;
+        const pub =
+          cached && ctx.clock.now() - cached.at < PUBLIC_CACHE_MS
+            ? { ...cached.pub, evidence: `${cached.pub.evidence}:cached` }
+            : await ctx.hands.publicRates.search({ ...q, classes }).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
+        if (pub.offers.length && !pub.evidence.endsWith(":cached")) ctx.store.setKv(cacheKey, JSON.stringify({ at: ctx.clock.now(), pub }));
         for (const r of rows) r.pub = pub.offers.find((p) => sameHotel(p.name, r.hotel.name));
         // Savings first, then price; hotels without a public match go last.
         rows.sort((a, b) => (b.pub ? b.pub.totalUsd - b.oursUsd : -1e9) - (a.pub ? a.pub.totalUsd - a.oursUsd : -1e9) || a.oursUsd - b.oursUsd);
