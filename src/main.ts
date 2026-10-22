@@ -15,8 +15,8 @@ import { fakeHands, type Hands } from "./tools/hands.ts";
 import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } from "./tools/browser.ts";
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
-import { LiteApi } from "./tools/providers/liteapi.ts";
-import { ApifyHotels, BookingPublicRates } from "./tools/providers/public-rates.ts";
+import { LiteApi, LiteApiFlights } from "./tools/providers/liteapi.ts";
+import { ApifyFlights, ApifyHotels, BookingPublicRates } from "./tools/providers/public-rates.ts";
 import { GoogleApi } from "./tools/providers/google.ts";
 import { AgentMail, ResendMail } from "./tools/providers/email.ts";
 import { ElevenLabsSpeech, OpenRouterImages, SlackApi, SmsOnlyPhone, StripeIssuing, TwilioSms, VapiPhone } from "./tools/providers/misc.ts";
@@ -93,10 +93,12 @@ function pickHands(): Hands {
   console.log(`Browser: ${browsers.map((b) => b.name).join(" → ")}${browsers.some((b) => b.name === "browserbase") ? "" : " (set BROWSERBASE_API_KEY for sign-in cards)"}`);
   if (env.LITEAPI_API_KEY) {
     hands.hotels = new LiteApi(env.LITEAPI_API_KEY);
+    hands.flights = new LiteApiFlights(env.LITEAPI_API_KEY);
     console.log(`Hotels: LiteAPI${env.LITEAPI_API_KEY.startsWith("sand_") ? " sandbox (live rates, no booking)" : ""}`);
   } else console.log("Hotels: fake (set LITEAPI_API_KEY)");
   // Public prices to compare against: Google Hotels through Apify when keyed, else Booking.com read through the browser hand.
   hands.publicRates = env.APIFY_TOKEN ? new ApifyHotels(env.APIFY_TOKEN) : new BookingPublicRates(hands.browser);
+  if (env.APIFY_TOKEN) hands.publicFlights = new ApifyFlights(env.APIFY_TOKEN);
   console.log(
     `Public hotel prices: ${env.APIFY_TOKEN ? "Google Hotels (Apify)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 12}%`,
   );

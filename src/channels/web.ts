@@ -17,7 +17,7 @@ import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
-import { artifactPage, type DocState, emptyState, type HotelsData, parseDocument } from "./artifacts.ts";
+import { artifactPage, type DocState, emptyState, type FlightsData, type HotelsData, parseDocument } from "./artifacts.ts";
 
 /**
  * The web channel: a JSON API and one page for the owner. The API shape is
@@ -702,6 +702,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         // A glance for the chat's preview card: how many items, how many done, or the first line of a note.
         const sections = art.kind === "document" ? parseDocument(d.markdown ?? "", art.title) : [];
         const items = sections.reduce((n, s) => n + s.items.length, 0) + Object.values(state.added).reduce((n, l) => n + l.length, 0);
+        const flightRows = art.kind === "flights" ? ((art.data as FlightsData).rows ?? []) : [];
         const excerpt =
           art.kind === "document"
             ? sections
@@ -712,7 +713,19 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
               ? d.subtitle
               : art.kind === "hotels"
                 ? `${(d.rows ?? []).length} hotels, ${(d.rows ?? []).filter((r) => r.pub && r.pub.totalUsd > r.oursUsd).length} cheaper through us`
-                : undefined;
+                : art.kind === "flights"
+                  ? `${flightRows.length} itineraries, ${flightRows.filter((r) => r.ours && r.pub && r.pub.totalUsd > r.ours.totalUsd + 1).length} cheaper through us`
+                  : undefined;
+        // The chat card shows the first three itineraries as one line each.
+        const flights =
+          art.kind === "flights"
+            ? flightRows.slice(0, 3).map((r) => ({
+                name: `${r.airline} ${r.flights.join(" › ")} · ${r.departAt.slice(11, 16)}–${r.arriveAt.slice(11, 16)}${r.stops ? ` · ${r.stops} stop` : " · nonstop"}`,
+                oursUsd: r.ours?.totalUsd,
+                pubUsd: r.pub?.totalUsd,
+                seller: r.pub?.seller,
+              }))
+            : undefined;
         // The chat card shows the first three hotels: name, our price, the public one.
         const hotels =
           art.kind === "hotels"
@@ -736,6 +749,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
             done: Object.keys(state.checked).length,
             excerpt,
             hotels,
+            flights,
             sections: sections
               .filter((s) => s.title)
               .map((s) => s.title)

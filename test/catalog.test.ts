@@ -165,6 +165,24 @@ describe("the catalogue", () => {
     expect(hotelKey("Hôtel Le K2 Altitude")).toBe(hotelKey("Hotel Le K2 Altitude"));
   });
 
+  test("flight_compare matches itineraries by flight numbers and says where each side wins or is missing", async () => {
+    const w = groupWorld(once("flight_compare", { origin: "lax", destination: "JFK", date: "2026-12-06", cabin: "business" }, "AA3177 is the same price both ways."));
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip business class LAX to JFK Dec 6" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    expect(call.status).toBe("done");
+    expect(call.evidence).toBe("fake-flights:1+fake-public-flights:1");
+    expect(w.hands.flights.queries[0]).toMatchObject({ origin: "LAX", destination: "JFK", cabin: "business", adults: 1 });
+    const r = call.result as { rows: string[]; matched: number; oursOnly: number; publicOnly: number };
+    expect(r.matched).toBe(2);
+    expect(r.publicOnly).toBe(1);
+    expect(r.rows[0]).toBe("American AA3177 > AA1796 · 23:55–10:09 · 7h14 · 1 stop · through us $787 (First, bag included) · public $788 on American · same price");
+    expect(r.rows[1]).toContain("AA4 · 06:30–14:59 · 5h29 · nonstop · through us $1,950 (First, bag included) · public $2,099 on American · save $149 with us");
+    expect(r.rows[2]).toContain("Delta DL1 · 06:15–14:31 · 5h16 · nonstop · not in our inventory · public $3,849 on Delta");
+    const page = w.app.store.listArtifacts(w.app.store.listAgents("alex")[0]!.id, { roomId: w.room.id }).find((a) => a.kind === "flights")!;
+    expect(page.title).toBe("Flights: LAX to JFK, 2026-12-06");
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+  });
+
   test("hotel_rates lists the wholesale source's offers cheapest first, net next to public, with evidence and no gate", async () => {
     const w = groupWorld(once("hotel_rates", { city: "Barcelona", countryCode: "es", checkIn: "2026-12-01", checkOut: "2026-12-03" }, "Hotel Nouvel is $240 net vs $275 public."));
     const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hotel in Barcelona Dec 1-3?" });

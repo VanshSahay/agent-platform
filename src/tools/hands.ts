@@ -133,10 +133,56 @@ export interface PublicRatesProvider {
   search(q: PublicRatesQuery): Promise<{ offers: PublicOffer[]; source: string; evidence: string }>;
 }
 
+/** Flights: our wholesale side (LiteAPI) and the public side (Google Flights), matched by flight numbers. */
+export type Cabin = "economy" | "premium_economy" | "business" | "first";
+export interface FlightQuery {
+  origin: string;
+  destination: string;
+  date: string;
+  returnDate?: string;
+  adults: number;
+  cabin: Cabin;
+  maxStops?: number;
+}
+export interface FlightOffer {
+  /** The flight numbers in order, e.g. ["AA3177", "AA1796"]; the match key across sources. */
+  flights: string[];
+  airline: string;
+  departAt: string;
+  arriveAt: string;
+  durationMin: number;
+  stops: number;
+  cabin: string;
+  totalUsd: number;
+  refundable: boolean;
+  changeable: boolean;
+  checkedBag: boolean;
+  offerId?: string;
+}
+export interface FlightProvider {
+  search(q: FlightQuery): Promise<{ offers: FlightOffer[]; evidence: string }>;
+}
+export interface PublicFlightOffer {
+  flights: string[];
+  airline: string;
+  departAt: string;
+  arriveAt: string;
+  durationMin: number;
+  stops: number;
+  totalUsd: number;
+  seller: string;
+  url: string;
+}
+export interface PublicFlightsProvider {
+  search(q: FlightQuery): Promise<{ offers: PublicFlightOffer[]; source: string; evidence: string }>;
+}
+
 export interface Hands {
   search: SearchProvider;
   hotels: HotelProvider;
   publicRates: PublicRatesProvider;
+  flights: FlightProvider;
+  publicFlights: PublicFlightsProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
   browser: BrowserProvider;
@@ -324,6 +370,91 @@ export class FakeHotels implements HotelProvider {
   }
 }
 
+export class FakeFlights implements FlightProvider {
+  public queries: FlightQuery[] = [];
+  constructor(
+    public offers: FlightOffer[] = [
+      {
+        flights: ["AA3177", "AA1796"],
+        airline: "American",
+        departAt: "2026-12-06T23:55:00",
+        arriveAt: "2026-12-07T10:09:00",
+        durationMin: 434,
+        stops: 1,
+        cabin: "First",
+        totalUsd: 787.2,
+        refundable: false,
+        changeable: true,
+        checkedBag: true,
+        offerId: "off_1",
+      },
+      {
+        flights: ["AA4"],
+        airline: "American",
+        departAt: "2026-12-06T06:30:00",
+        arriveAt: "2026-12-06T14:59:00",
+        durationMin: 329,
+        stops: 0,
+        cabin: "First",
+        totalUsd: 1950,
+        refundable: false,
+        changeable: true,
+        checkedBag: true,
+        offerId: "off_2",
+      },
+    ],
+  ) {}
+  async search(q: FlightQuery) {
+    this.queries.push(q);
+    return { offers: this.offers, evidence: `fake-flights:${this.queries.length}` };
+  }
+}
+
+export class FakePublicFlights implements PublicFlightsProvider {
+  public queries: FlightQuery[] = [];
+  constructor(
+    public offers: PublicFlightOffer[] = [
+      {
+        flights: ["AA3177", "AA1796"],
+        airline: "American",
+        departAt: "2026-12-06T23:55:00-08:00",
+        arriveAt: "2026-12-07T10:09:00-05:00",
+        durationMin: 434,
+        stops: 1,
+        totalUsd: 788,
+        seller: "American",
+        url: "https://www.google.com/travel/flights",
+      },
+      {
+        flights: ["AA4"],
+        airline: "American",
+        departAt: "2026-12-06T06:30:00-08:00",
+        arriveAt: "2026-12-06T14:59:00-05:00",
+        durationMin: 329,
+        stops: 0,
+        totalUsd: 2099,
+        seller: "American",
+        url: "https://www.google.com/travel/flights",
+      },
+      {
+        flights: ["DL1"],
+        airline: "Delta",
+        departAt: "2026-12-06T06:15:00-08:00",
+        arriveAt: "2026-12-06T14:31:00-05:00",
+        durationMin: 316,
+        stops: 0,
+        totalUsd: 3849,
+        seller: "Delta",
+        url: "https://www.google.com/travel/flights",
+      },
+    ],
+  ) {}
+  async search(q: FlightQuery) {
+    this.queries.push(q);
+    return { offers: this.offers, source: "Google Flights", evidence: `fake-public-flights:${this.queries.length}` };
+  }
+}
+
 export class FakePublicRates implements PublicRatesProvider {
   public queries: PublicRatesQuery[] = [];
   constructor(
@@ -342,6 +473,8 @@ export interface FakeHands extends Hands {
   search: FakeSearch;
   hotels: FakeHotels;
   publicRates: FakePublicRates;
+  flights: FakeFlights;
+  publicFlights: FakePublicFlights;
   phone: FakePhone;
   community: FakeCommunity;
   browser: FakeBrowser;
@@ -358,6 +491,8 @@ export function fakeHands(opts: Partial<FakeHands> = {}): FakeHands {
     search: opts.search ?? new FakeSearch(),
     hotels: opts.hotels ?? new FakeHotels(),
     publicRates: opts.publicRates ?? new FakePublicRates(),
+    flights: opts.flights ?? new FakeFlights(),
+    publicFlights: opts.publicFlights ?? new FakePublicFlights(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
     browser: opts.browser ?? new FakeBrowser(),

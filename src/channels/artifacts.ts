@@ -137,6 +137,7 @@ export function artifactPage(a: Artifact, raw: boolean): Response {
     return html(documentApp(a));
   }
   if (a.kind === "hotels") return html(hotelsPage(a));
+  if (a.kind === "flights") return html(flightsPage(a));
   if (a.kind === "dashboard") {
     const spec = d as unknown as Dash;
     const kpis = (spec.kpis ?? [])
@@ -347,5 +348,52 @@ function hotelsPage(a: Artifact): string {
     a.title,
     `<h1>${esc(d.city)}</h1><p class="sub">${esc(d.checkIn)} to ${esc(d.checkOut)} · ${d.nights} nights · ${d.adults} adults${d.stars ? ` · ${d.stars}★` : ""}</p><p class="summary">${summary}</p>${d.bookUrl ? "" : `<p class="note">Booking through us is not set up on this server yet, so this page compares only.</p>`}${cards}<p class="foot">Made by the assistant on ${new Date(a.createdAt).toISOString().slice(0, 10)}. "Through us" is our price for the whole stay with taxes included; the public price is the lowest total found on ${esc(d.publicSource)} for the same hotel and dates.</p>
 <style>.summary{font-weight:600;margin:0 0 18px}.note{color:#8a4b00;background:#fff4e0;border-radius:10px;padding:8px 12px}.hotel{display:grid;grid-template-columns:200px 1fr;gap:0;background:#fff;border:2px solid #111;border-radius:16px;box-shadow:3px 3px 0 #111;margin:16px 0;overflow:hidden}.hotel img,.nophoto{width:100%;height:100%;min-height:170px;object-fit:cover;background:#eee}.hotel .body{padding:14px 18px 16px;position:relative}.hotel h2{margin:0 0 2px;font-size:20px}.hotel .meta,.hotel .room{margin:0;color:#55554f;font-size:13px}.hotel .room{margin:6px 0 10px;color:#111}.prices{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 0}.prices .l{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#55554f}.prices .v{display:block;font:800 26px/1.1 Rubik,Inter,sans-serif}.prices .v.dim{color:#aaa}.prices .n{display:block;font-size:12px;color:#55554f}.ours{border-left:4px solid #16865a;padding-left:10px}.badge{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:3px 10px;margin:4px 0}.badge.save{background:#e2f7ec;color:#16865a}.badge.lose{background:#fde8e6;color:#c3352b}.badge.none{background:#f3f3ee;color:#55554f}.book{display:inline-block;margin:6px 0 0 8px;background:#111;color:#fff;text-decoration:none;font-weight:600;font-size:13px;border-radius:999px;padding:7px 14px}@media(max-width:600px){.hotel{grid-template-columns:1fr}.hotel img,.nophoto{max-height:180px}}</style>`,
+  );
+}
+
+/** The flight comparison: one card per itinerary, our fare against the public one, matched by flight numbers. */
+export interface FlightsData {
+  origin: string;
+  destination: string;
+  date: string;
+  returnDate?: string;
+  adults: number;
+  cabin: string;
+  publicSource: string;
+  rows: {
+    airline: string;
+    flights: string[];
+    departAt: string;
+    arriveAt: string;
+    durationMin: number;
+    stops: number;
+    ours?: { totalUsd: number; cabin: string; refundable: boolean; changeable: boolean; checkedBag: boolean };
+    pub?: { totalUsd: number; seller: string; url: string };
+  }[];
+}
+function flightsPage(a: Artifact): string {
+  const d = a.data as FlightsData;
+  const hhmm = (iso: string) => iso.slice(11, 16);
+  const dur = (m: number) => `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+  const cheaper = d.rows.filter((r) => r.ours && r.pub && r.pub.totalUsd > r.ours.totalUsd + 1).length;
+  const cards = d.rows
+    .map((r) => {
+      const badge = !r.ours
+        ? `<span class="badge none">not in our inventory</span>`
+        : !r.pub
+          ? `<span class="badge none">no public price</span>`
+          : r.pub.totalUsd > r.ours.totalUsd + 1
+            ? `<span class="badge save">save ${money(r.pub.totalUsd - r.ours.totalUsd)} with us</span>`
+            : r.ours.totalUsd > r.pub.totalUsd + 1
+              ? `<span class="badge lose">${money(r.ours.totalUsd - r.pub.totalUsd)} cheaper on ${esc(r.pub.seller)}</span>`
+              : `<span class="badge none">same price</span>`;
+      return `<article class="hotel flight"><div class="body"><h2>${esc(r.airline)} <small>${esc(r.flights.join(" › "))}</small></h2><p class="meta">${esc(d.origin)} ${hhmm(r.departAt)} → ${esc(d.destination)} ${hhmm(r.arriveAt)} · ${dur(r.durationMin)} · ${r.stops ? `${r.stops} stop${r.stops > 1 ? "s" : ""}` : "nonstop"}${r.ours ? ` · ${esc(r.ours.cabin)}${r.ours.refundable ? " · refundable" : ""}${r.ours.checkedBag ? " · bag included" : ""}` : ""}</p><div class="prices"><div class="ours"><span class="l">Through us</span>${r.ours ? `<span class="v">${money(r.ours.totalUsd)}</span><span class="n">all in, ${d.adults} adult${d.adults > 1 ? "s" : ""}</span>` : `<span class="v dim">—</span><span class="n">not offered by our source</span>`}</div><div class="pub"><span class="l">Public</span>${r.pub ? `<span class="v">${money(r.pub.totalUsd)}</span><span class="n">on <a href="${esc(r.pub.url)}" rel="noopener" target="_blank">${esc(r.pub.seller)}</a></span>` : `<span class="v dim">—</span><span class="n">not listed</span>`}</div></div>${badge}</div></article>`;
+    })
+    .join("");
+  const summary = `${d.rows.length} itineraries · ${cheaper} cheaper through us · public prices from ${esc(d.publicSource)}`;
+  return SHELL(
+    a.title,
+    `<h1>${esc(d.origin)} → ${esc(d.destination)}</h1><p class="sub">${esc(d.date)}${d.returnDate ? ` to ${esc(d.returnDate)}` : ", one way"} · ${d.adults} adult${d.adults > 1 ? "s" : ""} · ${esc(d.cabin.replace("_", " "))}</p><p class="summary">${summary}</p><p class="note">Booking through us is not set up on this server yet, so this page compares only.</p>${cards}<p class="foot">Made by the assistant on ${new Date(a.createdAt).toISOString().slice(0, 10)}. "Through us" is our fare with taxes and fees; the public price is the lowest total found on ${esc(d.publicSource)} for the same flights.</p>
+<style>.summary{font-weight:600;margin:0 0 18px}.note{color:#8a4b00;background:#fff4e0;border-radius:10px;padding:8px 12px}.hotel{background:#fff;border:2px solid #111;border-radius:16px;box-shadow:3px 3px 0 #111;margin:16px 0;overflow:hidden}.hotel .body{padding:14px 18px 16px}.hotel h2{margin:0 0 2px;font-size:20px}.hotel h2 small{font-weight:500;color:#55554f;font-size:13px;margin-left:6px}.hotel .meta{margin:0 0 8px;color:#55554f;font-size:13px}.prices{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 0}.prices .l{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#55554f}.prices .v{display:block;font:800 26px/1.1 Rubik,Inter,sans-serif}.prices .v.dim{color:#aaa}.prices .n{display:block;font-size:12px;color:#55554f}.ours{border-left:4px solid #16865a;padding-left:10px}.badge{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:3px 10px;margin:4px 0}.badge.save{background:#e2f7ec;color:#16865a}.badge.lose{background:#fde8e6;color:#c3352b}.badge.none{background:#f3f3ee;color:#55554f}</style>`,
   );
 }

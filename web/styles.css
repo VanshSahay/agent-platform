@@ -382,7 +382,9 @@ form.composer .pending { max-width: 720px; margin: 0 auto 8px; display: flex; ga
 .doccard .hotel .n { font: 600 13px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .doccard .hotel .p { font-size: 12px; color: var(--text-2) }
 .doccard .hotel .save { grid-column: 3; grid-row: 1 / span 2; font: 600 12px var(--sans); color: var(--ok, #16865a); background: oklch(0.95 0.06 160); border-radius: 999px; padding: 2px 8px }
-.doccard.hotels .open { grid-row: 1 / span 2 }
+.doccard.hotels .open, .doccard.flights .open { grid-row: 1 / span 2 }
+.doccard .hotel.flight { grid-template-columns: 1fr auto }
+.doccard .hotel.flight .n { white-space: normal }
 
 /* ---------- Character: the pen-and-paper palette on the quiet structure. Ink, one lime, one tangerine; hard shadows only on things you press. ---------- */
 :root { --ink: #111; --lime: #c6f432; --lime-2: #e4f9a2; --tang: #ff7a45; --accent: #111; --accent-fg: #fff; --attn: #ff7a45; --display: "Rubik", "Inter", sans-serif; --hand: "Caveat", cursive }
