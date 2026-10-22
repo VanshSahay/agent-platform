@@ -16,7 +16,7 @@ import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } fr
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
 import { LiteApi } from "./tools/providers/liteapi.ts";
-import { BookingPublicRates, SerpApiHotels } from "./tools/providers/public-rates.ts";
+import { ApifyHotels, BookingPublicRates } from "./tools/providers/public-rates.ts";
 import { GoogleApi } from "./tools/providers/google.ts";
 import { AgentMail, ResendMail } from "./tools/providers/email.ts";
 import { ElevenLabsSpeech, OpenRouterImages, SlackApi, SmsOnlyPhone, StripeIssuing, TwilioSms, VapiPhone } from "./tools/providers/misc.ts";
@@ -95,10 +95,10 @@ function pickHands(): Hands {
     hands.hotels = new LiteApi(env.LITEAPI_API_KEY);
     console.log(`Hotels: LiteAPI${env.LITEAPI_API_KEY.startsWith("sand_") ? " sandbox (live rates, no booking)" : ""}`);
   } else console.log("Hotels: fake (set LITEAPI_API_KEY)");
-  // Public prices to compare against: Google Hotels through SerpApi when keyed, else Booking.com read through the browser hand.
-  hands.publicRates = env.SERPAPI_KEY ? new SerpApiHotels(env.SERPAPI_KEY) : new BookingPublicRates(hands.browser);
+  // Public prices to compare against: Google Hotels through Apify when keyed, else Booking.com read through the browser hand.
+  hands.publicRates = env.APIFY_TOKEN ? new ApifyHotels(env.APIFY_TOKEN) : new BookingPublicRates(hands.browser);
   console.log(
-    `Public hotel prices: ${env.SERPAPI_KEY ? "Google Hotels (SerpApi)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set SERPAPI_KEY for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 12}%`,
+    `Public hotel prices: ${env.APIFY_TOKEN ? "Google Hotels (Apify)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 12}%`,
   );
   const search = createSearch(process.env);
   hands.search = search;

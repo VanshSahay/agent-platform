@@ -6,7 +6,7 @@ const ymdOk = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d);
 /**
  * Booking.com's results page for a city and dates, read through the browser hand: one page, every hotel's total
  * for the stay. Booking serves headless Chrome an empty list with default dates, so this only works through a
- * browser the site does not detect (a visible Chrome, Browserbase); SerpApi is the dependable source.
+ * browser the site does not detect (a visible Chrome, Browserbase); Apify's Google Hotels actor is the dependable source.
  */
 export class BookingPublicRates implements PublicRatesProvider {
   constructor(private browser: BrowserProvider) {}
@@ -54,47 +54,79 @@ export function parseBooking(text: string, url = "https://www.booking.com"): Pub
   return offers;
 }
 
-/** Google Hotels through SerpApi: the cheapest seller per hotel across Booking, Agoda, Expedia and the rest. SERPAPI_KEY. */
-export class SerpApiHotels implements PublicRatesProvider {
-  constructor(private apiKey: string) {}
+/**
+ * Google Hotels through Apify's factden/google-hotels-scraper: per hotel, every seller's total for the stay
+ * (Booking.com, Agoda, Expedia, Hotels.com, the hotel's own site) with a booking link. APIFY_TOKEN; pay per
+ * hotel priced (about half a cent each). The actor writes hotel rows to its run's dataset and to a named
+ * `hotels` dataset; the run's dataset is read first.
+ */
+export class ApifyHotels implements PublicRatesProvider {
+  constructor(
+    private token: string,
+    private actor = "factden~google-hotels-scraper",
+  ) {}
   async search(q: PublicRatesQuery) {
-    const url = new URL("https://serpapi.com/search.json");
-    url.searchParams.set("engine", "google_hotels");
-    url.searchParams.set("q", `${q.city} hotels`);
-    url.searchParams.set("check_in_date", q.checkIn);
-    url.searchParams.set("check_out_date", q.checkOut);
-    url.searchParams.set("adults", String(q.adults));
-    url.searchParams.set("currency", "USD");
-    url.searchParams.set("gl", "us");
-    url.searchParams.set("hl", "en");
-    if (q.stars) url.searchParams.set("hotel_class", String(q.stars));
-    url.searchParams.set("api_key", this.apiKey);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`SerpApi ${res.status}`);
-    const body = (await res.json()) as {
-      properties?: {
-        name: string;
-        link?: string;
-        total_rate?: { extracted_lowest?: number };
-        prices?: { source?: string; total_rate?: { extracted_lowest?: number }; rate_per_night?: { extracted_lowest?: number } }[];
-        free_cancellation?: boolean;
-      }[];
-      search_metadata?: { id?: string };
+    const input = {
+      searchQueries: [`${q.stars ? `${q.stars} star ` : ""}hotels in ${q.city}`],
+      checkInDate: q.checkIn,
+      checkOutDate: q.checkOut,
+      adults: q.adults,
+      children: 0,
+      rooms: 1,
+      currency: "USD",
+      countryCode: "us",
+      languageCode: "en",
+      includePrices: true,
+      includeReviews: false,
+      minStars: q.stars ?? 0,
+      maxResults: 25,
     };
-    const nights = Math.max(1, Math.round((Date.parse(q.checkOut) - Date.parse(q.checkIn)) / 86_400_000));
+    const res = await fetch(`https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?timeout=240&format=json`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(250_000),
+    });
+    if (!res.ok) throw new Error(`Apify ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    let rows = (await res.json()) as ApifyHotel[];
+    const runId = res.headers.get("x-apify-run-id") ?? "?";
+    if (!rows.some((r) => r?.name)) rows = await this.namedDataset(q);
     const offers: PublicOffer[] = [];
-    for (const p of body.properties ?? []) {
-      const sellers = (p.prices ?? [])
-        .map((x) => ({
-          seller: x.source ?? "Google",
-          total: x.total_rate?.extracted_lowest ?? (x.rate_per_night?.extracted_lowest ? x.rate_per_night.extracted_lowest * nights : undefined),
-        }))
-        .filter((x): x is { seller: string; total: number } => typeof x.total === "number")
-        .sort((a, b) => a.total - b.total);
-      const best = sellers[0] ?? (p.total_rate?.extracted_lowest ? { seller: "Google", total: p.total_rate.extracted_lowest } : undefined);
-      if (!best) continue;
-      offers.push({ name: p.name, totalUsd: best.total, seller: best.seller, refundable: !!p.free_cancellation, url: p.link ?? "https://www.google.com/travel/hotels" });
+    for (const h of rows) {
+      if (!h?.name) continue;
+      const best = (h.offers ?? []).filter((o) => typeof o.total === "number" && o.total > 0).sort((a, b) => a.total! - b.total!)[0];
+      const total = best?.total ?? h.leadPriceTotal;
+      if (typeof total !== "number" || total <= 0) continue;
+      offers.push({
+        name: h.name,
+        totalUsd: total,
+        seller: best?.source ?? "Google Hotels",
+        refundable: false, // the ladder carries no cancellation terms
+        url: best?.bookingLink || h.hotelUrl || "https://www.google.com/travel/hotels",
+      });
     }
-    return { offers, source: "Google Hotels", evidence: `serpapi:${body.search_metadata?.id ?? "?"}` };
+    return { offers, source: "Google Hotels", evidence: `apify:${runId}:${offers.length}` };
   }
+  /** The actor's named `hotels` dataset, newest first, kept to rows for these dates. */
+  private async namedDataset(q: PublicRatesQuery): Promise<ApifyHotel[]> {
+    const me = await fetch("https://api.apify.com/v2/users/me", { headers: { authorization: `Bearer ${this.token}` } });
+    if (!me.ok) return [];
+    const { data } = (await me.json()) as { data: { username: string } };
+    const res = await fetch(`https://api.apify.com/v2/datasets/${data.username}~hotels/items?desc=true&limit=200&format=json`, {
+      headers: { authorization: `Bearer ${this.token}` },
+    });
+    if (!res.ok) return [];
+    const rows = (await res.json()) as ApifyHotel[];
+    return rows.filter((r) => r.checkInDate === q.checkIn && r.checkOutDate === q.checkOut);
+  }
+}
+interface ApifyHotel {
+  name?: string;
+  starClass?: number;
+  rating?: number;
+  checkInDate?: string;
+  checkOutDate?: string;
+  leadPriceTotal?: number;
+  hotelUrl?: string;
+  offers?: { source?: string; total?: number; bookingLink?: string; official?: boolean }[];
 }
