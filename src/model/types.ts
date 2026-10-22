@@ -15,6 +15,8 @@ export interface ModelRequest {
   messages: Anthropic.MessageParam[];
   tools: ToolSpec[];
   maxTokens?: number;
+  /** The run this call serves, so its cost can be charged to it. */
+  runId?: string;
 }
 
 /** One assistant turn: text plus zero or more tool calls, plus why it stopped. */
@@ -33,5 +35,5 @@ export type ModelImage = { url: string } | { base64: string; mediaType: "image/p
 export interface ModelClient {
   turn(req: ModelRequest): Promise<ModelTurn>;
   /** Small structured call used by consolidation, premise checks and labels. With `images`, the model looks at them too. */
-  complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string; images?: ModelImage[] }): Promise<string>;
+  complete(opts: { system: string; prompt: string; effort?: Effort; maxTokens?: number; model?: string; images?: ModelImage[]; runId?: string }): Promise<string>;
 }

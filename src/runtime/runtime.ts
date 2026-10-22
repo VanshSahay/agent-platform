@@ -769,7 +769,7 @@ export class Runtime {
 
       let turn: Awaited<ReturnType<ModelClient["turn"]>>;
       try {
-        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools: toolSpecs() });
+        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools: toolSpecs(), runId: run.id });
       } catch (e) {
         emit("error", { message: String((e as Error).message) });
         this.saveTranscript(run, transcript);

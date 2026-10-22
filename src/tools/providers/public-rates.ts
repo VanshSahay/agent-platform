@@ -1,5 +1,33 @@
+import type { SpendLog } from "../../runtime/spend.ts";
 import type { BrowserProvider } from "../browser.ts";
 import type { FlightQuery, PublicFlightOffer, PublicFlightsProvider, PublicOffer, PublicRatesProvider, PublicRatesQuery } from "../hands.ts";
+
+/**
+ * What the run just made cost. The run-sync endpoint answers with dataset items only (no run id in body or
+ * headers), so this asks for the actor's last successful run and records its usageTotalUsd. Two runs of the
+ * same actor finishing at once could swap figures; the run id in the units says which was charged.
+ */
+async function recordApifyRun(spend: SpendLog | undefined, token: string, actor: string, note: string) {
+  if (!spend) return;
+  try {
+    const res = await fetch(`https://api.apify.com/v2/acts/${actor}/runs/last?status=SUCCEEDED`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return;
+    const { data } = (await res.json()) as { data?: { id?: string; usageTotalUsd?: number; usage?: { ACTOR_COMPUTE_UNITS?: number } } };
+    const cu = data?.usage?.ACTOR_COMPUTE_UNITS;
+    const usd = data?.usageTotalUsd;
+    spend.record({
+      provider: "apify",
+      usd: usd ?? 0,
+      units: `apify run ${data?.id ?? "?"}${typeof cu === "number" ? ` ${cu.toFixed(3)} CU` : ""}`,
+      note: usd === undefined ? `${note}; no usageTotalUsd in run` : note,
+    });
+  } catch {
+    /* a missing figure is not a failed search */
+  }
+}
 
 const ymdOk = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d);
 
@@ -67,6 +95,7 @@ export class ApifyHotels implements PublicRatesProvider {
   constructor(
     private token: string,
     private actor = "kestrel~google-hotels-prices",
+    private spend?: SpendLog,
   ) {}
   async search(q: PublicRatesQuery) {
     const input = {
@@ -94,6 +123,7 @@ export class ApifyHotels implements PublicRatesProvider {
     const rows = (await res.json()) as KestrelRow[];
     const status = rows.find((r) => r.type === "status");
     if (status?.error) throw new Error(`Google Hotels: ${status.error}`);
+    await recordApifyRun(this.spend, this.token, this.actor, `hotels ${q.city} ${q.checkIn}`);
     const offers = parseKestrel(rows);
     return { offers, source: "Google Hotels", evidence: `apify:${this.actor}:${q.checkIn}:${status?.fetched_at ?? new Date().toISOString()}:${offers.length}` };
   }
@@ -167,6 +197,7 @@ export class ApifyFlights implements PublicFlightsProvider {
   constructor(
     private token: string,
     private actor = "kaix~google-flights-scraper",
+    private spend?: SpendLog,
   ) {}
   async search(q: FlightQuery) {
     const input = {
@@ -189,6 +220,7 @@ export class ApifyFlights implements PublicFlightsProvider {
     });
     if (!res.ok) throw new Error(`Apify flights ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const rows = (await res.json()) as KaixRow[];
+    await recordApifyRun(this.spend, this.token, this.actor, `flights ${q.origin}-${q.destination} ${q.date}`);
     const offers: PublicFlightOffer[] = [];
     for (const r of rows) {
       const segs = [...(r.outbound?.segments ?? []), ...(r.return?.segments ?? [])];

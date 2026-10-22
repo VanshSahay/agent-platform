@@ -6,6 +6,8 @@ import { createApp } from "./app.ts";
 import type { ModelClient } from "./model/types.ts";
 import { reply, ScriptedModel } from "./model/scripted.ts";
 import { createModel, modelConfig } from "./model/config.ts";
+import { AnthropicModel } from "./model/anthropic.ts";
+import { SpendLog } from "./runtime/spend.ts";
 import { authConfig } from "./channels/auth.ts";
 import { startWebServer } from "./channels/web.ts";
 import { SPECTRUM_CHANNELS, type SpectrumChannel, startChannel } from "./channels/imessage.ts";
@@ -37,12 +39,24 @@ if (process.env.LOCAL === "1") {
   console.log("LOCAL=1: sign-in and iMessage off, listening on loopback with the You picker");
 }
 
+// What each run costs: model calls, Apify runs, browser seconds. Hands are built before the database opens, so the log attaches later.
+const spend = new SpendLog();
+
 function pickModel(): ModelClient {
   const env = { ...process.env, ANTHROPIC_PROFILE_PRESENT: existsSync(join(homedir(), ".config", "anthropic")) ? "1" : "" };
   const cfg = modelConfig(env);
   const m = createModel(cfg, env);
   if (m) {
     console.log(`Model: ${cfg.model} (small: ${cfg.smallModel}) via ${cfg.provider}`);
+    if (m instanceof AnthropicModel)
+      m.onUsage = (u) =>
+        spend.record({
+          provider: "openrouter",
+          usd: u.usd ?? 0,
+          units: `${u.input} in / ${u.output} out tokens`,
+          runId: u.runId,
+          note: u.usd === undefined ? `${u.model}; no cost in response` : u.model,
+        });
     return m;
   }
   console.warn("No model credentials found. Running offline: the agent will only acknowledge messages. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY, then restart.");
@@ -86,19 +100,19 @@ function pickHands(): Hands {
   const chrome = localChromePath();
   if (chrome && process.env.LOCAL === "1") browsers.push({ name: "chrome", browser: new LocalBrowser(chrome) });
   if (process.env.BROWSERBASE_API_KEY)
-    browsers.push({ name: "browserbase", browser: new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID }) });
+    browsers.push({ name: "browserbase", browser: new BrowserbaseBrowser(process.env.BROWSERBASE_API_KEY, { projectId: process.env.BROWSERBASE_PROJECT_ID, spend }) });
   if (chrome && process.env.LOCAL !== "1") browsers.push({ name: "chrome", browser: new LocalBrowser(chrome) });
   browsers.push({ name: "jina", browser: new JinaReader() });
   hands.browser = browsers.length === 1 ? browsers[0]!.browser : new FallbackBrowser(browsers);
   console.log(`Browser: ${browsers.map((b) => b.name).join(" → ")}${browsers.some((b) => b.name === "browserbase") ? "" : " (set BROWSERBASE_API_KEY for sign-in cards)"}`);
   if (env.LITEAPI_API_KEY) {
-    hands.hotels = new LiteApi(env.LITEAPI_API_KEY);
+    hands.hotels = new LiteApi(env.LITEAPI_API_KEY, spend);
     hands.flights = new LiteApiFlights(env.LITEAPI_API_KEY);
     console.log(`Hotels: LiteAPI${env.LITEAPI_API_KEY.startsWith("sand_") ? " sandbox (live rates, no booking)" : ""}`);
   } else console.log("Hotels: fake (set LITEAPI_API_KEY)");
   // Public prices to compare against: Google Hotels through Apify when keyed, else Booking.com read through the browser hand.
-  hands.publicRates = env.APIFY_TOKEN ? new ApifyHotels(env.APIFY_TOKEN) : new BookingPublicRates(hands.browser);
-  if (env.APIFY_TOKEN) hands.publicFlights = new ApifyFlights(env.APIFY_TOKEN);
+  hands.publicRates = env.APIFY_TOKEN ? new ApifyHotels(env.APIFY_TOKEN, undefined, spend) : new BookingPublicRates(hands.browser);
+  if (env.APIFY_TOKEN) hands.publicFlights = new ApifyFlights(env.APIFY_TOKEN, undefined, spend);
   console.log(
     `Public hotel prices: ${env.APIFY_TOKEN ? "Google Hotels (Apify)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 0}%`,
   );
@@ -129,6 +143,7 @@ const app = createApp({
   masterKey: process.env.MASTER_KEY,
   publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 3000}`,
 });
+spend.attach(app.store.db);
 
 // First run: one assistant and the seat of its owner. With sign-in on, the first person to sign in takes the seat;
 // without it, the seat is "You" in the picker. Everyone else arrives through an invite link or "+ Add".

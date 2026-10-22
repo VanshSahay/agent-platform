@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { SpendLog } from "../runtime/spend.ts";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 /**
@@ -238,6 +239,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
   async run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun> {
     const projectId = await this.project();
     const session = await this.createSession(projectId, input.contextId ? { browserSettings: { context: { id: input.contextId, persist: true } } } : {});
+    const startedAt = Date.now();
     let browser: Browser | undefined;
     try {
       browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
@@ -250,17 +252,38 @@ export class BrowserbaseBrowser implements BrowserProvider {
     } finally {
       await browser?.close().catch(() => undefined);
       await this.release(projectId, session.id);
+      this.charge(session.id, startedAt, "run");
     }
   }
 
   private projectId?: string;
   /** Sign-in sessions stay open (CDP connection held) until the person presses Done or Cancel. */
-  private live = new Map<string, { browser: Browser; projectId: string }>();
+  private live = new Map<string, { browser: Browser; projectId: string; startedAt: number }>();
+  private spend?: SpendLog;
   constructor(
     private apiKey: string,
-    opts: { projectId?: string } = {},
+    opts: { projectId?: string; spend?: SpendLog } = {},
   ) {
     this.projectId = opts.projectId;
+    this.spend = opts.spend;
+  }
+
+  /**
+   * Browser time is billed by the hour of session life. Each session is timed from creation to the release
+   * request; BROWSERBASE_USD_PER_HOUR prices it (default 0.10, the Startup plan's overage on browserbase.com/pricing,
+   * read 22 Oct 2026; the Developer plan's is 0.12, and hours inside a plan's allowance are already paid for).
+   * A session Browserbase keeps alive after release, or a minimum billed length, is not counted.
+   */
+  private charge(sessionId: string, startedAt: number, what: string) {
+    if (!this.spend) return;
+    const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const perHour = Number(process.env.BROWSERBASE_USD_PER_HOUR ?? 0.1);
+    this.spend.record({
+      provider: "browserbase",
+      usd: (seconds / 3600) * (Number.isFinite(perHour) ? perHour : 0.1),
+      units: `browserbase ${seconds} s`,
+      note: `${what} ${sessionId}`,
+    });
   }
 
   private headers() {
@@ -318,7 +341,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     if (!debugRes.ok) throw new Error(`Browserbase live view: ${debugRes.status}`);
     const debug = (await debugRes.json()) as { debuggerFullscreenUrl: string };
     const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
-    this.live.set(session.id, { browser, projectId });
+    this.live.set(session.id, { browser, projectId, startedAt: Date.now() });
     try {
       const ctx = browser.contexts()[0] ?? (await browser.newContext());
       const page: Page = ctx.pages()[0] ?? (await ctx.newPage());
@@ -335,6 +358,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     this.live.delete(sessionId);
     await l?.browser.close().catch(() => undefined);
     await this.release(l?.projectId ?? (await this.project()), sessionId);
+    if (l) this.charge(sessionId, l.startedAt, "sign-in");
   }
 
   private async project(): Promise<string> {
@@ -352,6 +376,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     const projectId = await this.project();
     // With a context, the page loads with the person's signed-in cookies and keeps any it sets.
     const session = await this.createSession(projectId, input.contextId ? { browserSettings: { context: { id: input.contextId, persist: true } } } : {});
+    const startedAt = Date.now();
     let browser: Browser | undefined;
     try {
       browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
@@ -363,6 +388,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     } finally {
       await browser?.close().catch(() => undefined);
       await this.release(projectId, session.id);
+      this.charge(session.id, startedAt, "read");
     }
   }
 }

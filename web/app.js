@@ -1377,7 +1377,9 @@ function settingsSpending(box, agent) {
     <div class="field"><label>Ask before purchases over (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="0.01" value="${esc(Number(t.autoApproveUnderUsd ?? 0).toFixed(2))}" /><div class="hint">0 means it asks for every purchase.</div></div>
     <div class="field inline"><label>Pause agent spending<div class="hint">While paused, it won't buy anything, whatever the amount.</div></label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}"></button></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
-  <div class="section"><h3>How it pays</h3><p class="lead">Each purchase gets a single-use card for exactly that amount at that shop; the card details go to the browser inside the vault and never pass through the chat. The receipt in the chat carries the amount, the shop and the last four digits.</p></div>`;
+  <div class="section"><h3>How it pays</h3><p class="lead">Each purchase gets a single-use card for exactly that amount at that shop; the card details go to the browser inside the vault and never pass through the chat. The receipt in the chat carries the amount, the shop and the last four digits.</p></div>
+  <div class="section"><h3>What it costs to run</h3><p class="lead">Model calls, Apify runs, browser time and hosting, as the providers report them.</p><div id="spendReport" class="tiny">Loading…</div></div>`;
+  renderSpendReport();
   const form = $("#spendForm");
   const sw = form.querySelector(".switch");
   sw.onclick = () => sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
@@ -1396,6 +1398,26 @@ function settingsSpending(box, agent) {
       failed(form, err);
     }
   };
+}
+
+/** Today's and the week's bill per provider, from /api/spend (owner only; anyone else sees nothing here). */
+async function renderSpendReport() {
+  const el = $("#spendReport");
+  if (!el) return;
+  const usd = (n) => `$${Number(n ?? 0).toFixed(2)}`;
+  try {
+    const [day, week] = await Promise.all([api("/api/spend"), api("/api/spend?since=week")]);
+    const providers = [...new Set([...Object.keys(day.byProvider), ...Object.keys(week.byProvider)])].sort();
+    if (!providers.length) {
+      el.textContent = "Nothing recorded yet.";
+      return;
+    }
+    el.innerHTML = `<table class="spend"><tr><th></th><th>Today</th><th>7 days</th></tr>${providers
+      .map((p) => `<tr><td>${esc(p)}</td><td>${esc(usd(day.byProvider[p]?.usd))}</td><td>${esc(usd(week.byProvider[p]?.usd))}</td></tr>`)
+      .join("")}<tr><td><strong>Total</strong></td><td><strong>${esc(usd(day.totalUsd))}</strong></td><td><strong>${esc(usd(week.totalUsd))}</strong></td></tr></table>`;
+  } catch {
+    el.textContent = "";
+  }
 }
 
 function settingsInvites(box) {

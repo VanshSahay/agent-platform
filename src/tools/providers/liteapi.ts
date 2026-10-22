@@ -1,3 +1,4 @@
+import type { SpendLog } from "../../runtime/spend.ts";
 import type { FlightOffer, FlightProvider, FlightQuery, HotelOffer, HotelProvider } from "../hands.ts";
 
 /**
@@ -6,8 +7,13 @@ import type { FlightOffer, FlightProvider, FlightQuery, HotelOffer, HotelProvide
  * LITEAPI_API_KEY; a sand_ key answers with live content but cannot book.
  */
 export class LiteApi implements HotelProvider {
-  constructor(private apiKey: string) {}
+  constructor(
+    private apiKey: string,
+    private spend?: SpendLog,
+  ) {}
   async rates(input: { city: string; countryCode: string; checkIn: string; checkOut: string; adults: number; limit?: number }) {
+    // Free on the account in use: counted, not priced.
+    this.spend?.record({ provider: "liteapi", usd: 0, units: "1 rates search", note: `${input.city} ${input.checkIn}` });
     const res = await fetch("https://api.liteapi.travel/v3.0/hotels/rates", {
       method: "POST",
       headers: { "X-API-Key": this.apiKey, "content-type": "application/json" },

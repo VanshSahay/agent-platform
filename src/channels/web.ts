@@ -7,6 +7,7 @@ import type { App } from "../app.ts";
 import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, Memory, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
 import { newId } from "../core/ids.ts";
 import { buildFooter, type Delivery } from "../runtime/runtime.ts";
+import { daysAgoIso, spendSummary, startOfDayIso } from "../runtime/spend.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
@@ -1256,6 +1257,18 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
     { method: "POST", re: /^\/api\/tick$/, access: "anyAgentOwner", orToken: true, handle: async () => json(await app.scheduler.tick()) },
+    // What the deployment has cost: per provider and per run since a time (default today; `since=week` for seven days).
+    {
+      method: "GET",
+      re: /^\/api\/spend$/,
+      access: "anyAgentOwner",
+      handle: (c) => {
+        const now = app.clock.now();
+        const raw = c.url.searchParams.get("since");
+        const since = raw === "week" ? daysAgoIso(7, now) : raw && !Number.isNaN(Date.parse(raw)) ? new Date(Date.parse(raw)).toISOString() : startOfDayIso(now);
+        return json(spendSummary(app.store.db, { since, until: new Date(now).toISOString(), flyUsdPerMonth: Number(process.env.FLY_USD_PER_MONTH ?? 0) || 0 }));
+      },
+    },
   ];
 
   const server = Bun.serve({

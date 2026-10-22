@@ -2,6 +2,7 @@ import type { ApproachKind, AttentionKind, Id, Task } from "../core/types.ts";
 import type { ToolSpec } from "../model/types.ts";
 import { askFirst, describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
 import { CATALOG_TOOLS } from "./catalog/index.ts";
+import { daysAgoIso, spendSummary, startOfDayIso } from "../runtime/spend.ts";
 
 export type { GateDecision, ToolContext, ToolDef, ToolFamily, ToolResult } from "./kit.ts";
 export { siteOf } from "./kit.ts";
@@ -889,6 +890,33 @@ export const CORE_TOOLS: ToolDef[] = [
         ok: true,
         content: { scheduleId: sched.id, everyHours: every, firstCheck: sched.nextRunAt ? new Date(sched.nextRunAt).toISOString() : null },
         evidence: `schedule:${sched.id}`,
+      };
+    },
+  },
+  {
+    spec: {
+      name: "spend_report",
+      description:
+        "What running the assistant has cost, in USD, per provider (model calls, Apify runs, browser time, hosting) and per run. Owner only. Period: today (default), week, or an ISO time to count from.",
+      input_schema: obj({ period: str("today, week, or an ISO date-time to count from.") }),
+    },
+    family: "ledger",
+    labels: { running: "Adding up the bill…", done: "Reported spend" },
+    sideEffect: false,
+    async run(input, ctx) {
+      if (ctx.requesterId && ctx.requesterId !== ctx.agent.ownerId) return { ok: false, content: "Only the owner can see what the assistant costs." };
+      const now = ctx.clock.now();
+      const p = s(input.period).trim();
+      const since = p === "week" ? daysAgoIso(7, now) : p && p !== "today" && !Number.isNaN(Date.parse(p)) ? new Date(Date.parse(p)).toISOString() : startOfDayIso(now);
+      const sum = spendSummary(ctx.store.db, { since, until: new Date(now).toISOString(), flyUsdPerMonth: Number(process.env.FLY_USD_PER_MONTH ?? 0) || 0 });
+      return {
+        ok: true,
+        content: {
+          ...sum,
+          byRun: sum.byRun.slice(0, 20),
+          note: "Model cost is what OpenRouter charged; Apify is each run's usageTotalUsd; browser time is seconds × BROWSERBASE_USD_PER_HOUR; hosting is FLY_USD_PER_MONTH prorated.",
+        },
+        label: "Added up the bill",
       };
     },
   },
