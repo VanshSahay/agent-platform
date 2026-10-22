@@ -53,6 +53,8 @@ export interface RuntimeDeps {
 }
 
 const MAX_TURNS = 24;
+/** Tools that may still run after the budget has answered a purchase in this run: the checkout path, recording, and stopping. */
+const AFTER_BUDGET_TOOLS = new Set(["checkout_cart", "add_to_cart", "view_cart", "save_address", "update_task", "remember", "stay_quiet"]);
 const IMPLIED_PER_MINUTE = 6; // ponytail: a busier chat says the agent's name; raise or make per-agent if that pinches
 const COMPACT_AFTER = 30;
 const KEEP_RECENT = 12;
@@ -835,6 +837,13 @@ export class Runtime {
     let turns = 0;
     let lastText = "";
     let quiet: string | undefined;
+    // The budget fence: once request_purchase has answered in this run (evidence, or a decline
+    // the gate closed), only checkout-shaped tools may still run. Recomputed on entry so a
+    // resumed run is fenced from its records; set again the moment a verdict lands mid-loop,
+    // which is what stops the rest of a parallel tool batch.
+    let budgetAnswered = store
+      .toolCallsForRun(run.id)
+      .some((c) => c.name === "request_purchase" && c.status === "done" && (!!c.evidence || /declined/i.test(c.labelDone)));
     // Resourcefulness guards: searching in circles is a stall, long work belongs in a task, a reply must cover the ask.
     let searchesInARow = 0;
     let toolCalls = 0;
@@ -1009,6 +1018,12 @@ export class Runtime {
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
         else if (stopped()) result = { ok: false, content: "Skipped: the run was stopped." };
         else if (foreignRead && !readOk(def.family)) result = foreignReadResult(def.family);
+        else if (budgetAnswered && !AFTER_BUDGET_TOOLS.has(use.name))
+          result = {
+            ok: false,
+            content:
+              "The budget already answered this errand (approved or declined). Reply the verdict in one line and stop — the fence has refused further shopping, searching or questions. Only a connected checkout tool may still run.",
+          };
         else {
           // A side effect must not happen twice in one run: the same tool with the same input returns
           // the first result instead of acting again (a resumed run re-issues its last action).
@@ -1033,6 +1048,7 @@ export class Runtime {
         rec.evidence = result.evidence;
         rec.endedAt = result.waitingOn ? undefined : clock.now();
         rec.fingerprint = sha256([use.name, input, result.content]);
+        if (use.name === "request_purchase" && rec.status === "done" && (!!rec.evidence || /declined/i.test(rec.labelDone))) budgetAnswered = true;
         if (result.label) rec.labelDone = result.label;
         if (result.stall && def) rec.labelDone = def.labels.failed ?? `${result.label ?? def.labels.done} (nothing yet)`;
         store.putToolCall(rec);

@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar, ScriptedModel } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
-import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
+import { FakePayments, FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
 import { TOOLS, toolsForRun } from "../src/tools/registry.ts";
 import { createApp } from "../src/app.ts";
@@ -484,6 +484,83 @@ describe("group join", () => {
     expect(run?.status).toBe("done");
     expect(run?.quiet).toBe(true); // silence is an outcome, even on a join
     expect(repliesTo(w.deliveries, street.id)).toHaveLength(0);
+  });
+});
+
+describe("the budget fence", () => {
+  test("after the budget answers, shopping tools are refused even in the same parallel batch", async () => {
+    const w = groupWorld(
+      (req, i) => {
+        if (i === 0)
+          return callTools([
+            { name: "request_purchase", input: { amountUsd: 12, what: "AA batteries", where: "Walgreens" } },
+            { name: "search_products", input: { query: "AA batteries" } },
+          ]);
+        const t = JSON.stringify(req.messages);
+        expect(t).toContain("The budget already answered");
+        return reply("Cleared for $12 — the order itself has to be placed by hand.");
+      },
+      { completer: () => "no" },
+    );
+    w.agent.trust.autoApproveUnderUsd = 25;
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip order Jo batteries, about $12" });
+    const calls = w.app.store.toolCallsForRun(run!.id);
+    const buy = calls.find((c) => c.name === "request_purchase")!;
+    expect(buy.status).toBe("done");
+    expect(buy.evidence).toContain("purchase-approved");
+    const shop = calls.filter((c) => c.name === "search_products");
+    expect(shop).toHaveLength(1);
+    expect(shop[0]!.status).toBe("failed");
+    expect(String(shop[0]!.result)).toContain("budget already answered");
+    expect(run?.status).toBe("done");
+    expect(repliesTo(w.deliveries, w.room.id)).toHaveLength(1);
+  });
+
+  test("a connected checkout still runs after the verdict", async () => {
+    const w = groupWorld(
+      (req, i) => {
+        if (i === 0) return callTool("request_purchase", { amountUsd: 12, what: "AA batteries", where: "Walgreens" });
+        if (i === 1) return callTools([{ name: "add_to_cart", input: { title: "AA batteries 12-pack", url: "https://www.walgreens.com/batteries", priceUsd: 11.99, quantity: 1 } }, { name: "checkout_cart", input: {} }]);
+        const last = lastToolResult(req) ?? "";
+        expect(last).not.toContain("budget already answered");
+        return reply("Budget cleared at Walgreens: $11.99. Nothing was ordered — here are the links to finish.");
+      },
+      {},
+    );
+    w.agent.trust.autoApproveUnderUsd = 25;
+    w.alex.addresses = [{ id: "addr1", label: "Home", line1: "1 Maple St", city: "San Jose", region: "CA", postalCode: "95101", country: "US" }];
+    w.app.store.putPerson(w.alex);
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip order Jo batteries, about $12" });
+    const calls = w.app.store.toolCallsForRun(run!.id).filter((c) => ["checkout_cart", "add_to_cart"].includes(c.name));
+    expect(calls.length).toBe(2);
+    expect(calls.every((c) => !String(c.result).includes("budget already answered"))).toBe(true);
+    const checkout = calls.find((c) => c.name === "checkout_cart")!;
+    expect(checkout.status).toBe("done");
+    expect(String((checkout.result as { note?: string }).note)).toContain("NOT placed"); // an approval is not a purchase
+    expect(run?.status).toBe("done");
+  });
+
+  test("a declined budget fences too, including after the resume", async () => {
+    const w = groupWorld(
+      (req, i) => {
+        const t = JSON.stringify(req.messages);
+        if (i === 0) return callTool("request_purchase", { amountUsd: 80, what: "blood pressure monitor", where: "Walgreens" });
+        if (t.includes("[DECLINED]")) return callTool("web_search", { query: "cheaper blood pressure monitors" });
+        return reply("Waiting for the OK on $80.");
+      },
+      { completer: () => "no" },
+    );
+    const first = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip buy Jo the $80 monitor" });
+    expect(first?.status).toBe("waiting");
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "no" });
+    await w.app.runtime.settle();
+    const run = w.app.store.listRuns({ roomId: w.room.id })[0]!;
+    expect(run.status).toBe("done");
+    const search = w.app.store.toolCallsForRun(run.id).find((c) => c.name === "web_search");
+    expect(search?.status).toBe("failed");
+    expect(String(search?.result)).toContain("budget already answered");
   });
 });
 
