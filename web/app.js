@@ -716,6 +716,9 @@ async function renderThread() {
   // Timer and answer prompts are the agent's own notes; the Why? drawer shows them, the thread does not.
   const msgs = (data.messages ?? data).filter((m) => m.role !== "system");
   const active = data.activeRun;
+  // Nothing is delivered while a run works, so the "working…" line would never show the current step: re-read every few seconds.
+  clearTimeout(state.activePoll);
+  if (active && active.status === "running") state.activePoll = setTimeout(() => renderThread(), 3000);
   if (!msgs.length) {
     // "Want me to…" cards: what the circle actually has open first, the stock ideas after.
     if (!state.suggFor || state.suggFor !== state.room) {

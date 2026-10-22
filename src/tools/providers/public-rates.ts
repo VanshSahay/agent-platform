@@ -97,12 +97,13 @@ export class ApifyHotels implements PublicRatesProvider {
       const best = (h.offers ?? []).filter((o) => typeof o.total === "number" && o.total > 0).sort((a, b) => a.total! - b.total!)[0];
       const total = best?.total ?? h.leadPriceTotal;
       if (typeof total !== "number" || total <= 0) continue;
+      const seller = best?.source ?? "Google Hotels";
       offers.push({
         name: h.name,
         totalUsd: total,
-        seller: best?.source ?? "Google Hotels",
+        seller,
         refundable: false, // the ladder carries no cancellation terms
-        url: best?.bookingLink || h.hotelUrl || "https://www.google.com/travel/hotels",
+        url: /^https?:\/\//.test(best?.bookingLink ?? "") ? best!.bookingLink! : (sellerSearchUrl(seller, h.name, q) ?? h.hotelUrl ?? "https://www.google.com/travel/hotels"),
       });
     }
     return { offers, source: "Google Hotels", evidence: `apify:${this.actor}:${q.checkIn}:${scrapedAt}:${offers.length}` };
@@ -195,4 +196,20 @@ interface KaixSeg {
   flightNumber?: string;
   departureTime?: string;
   arrivalTime?: string;
+}
+
+/**
+ * A seller's own search for this hotel with the dates filled in. Google's hotel pages ignore date parameters,
+ * so a Google link would open without the stay; the sellers below honour them in the URL.
+ */
+export function sellerSearchUrl(seller: string, hotel: string, q: PublicRatesQuery): string | undefined {
+  const s = seller.toLowerCase();
+  const name = encodeURIComponent(`${hotel}, ${q.city}`);
+  if (s.includes("booking"))
+    return `https://www.booking.com/searchresults.html?ss=${name}&checkin=${q.checkIn}&checkout=${q.checkOut}&group_adults=${q.adults}&no_rooms=1&group_children=0&selected_currency=USD`;
+  if (s.includes("expedia")) return `https://www.expedia.com/Hotel-Search?destination=${name}&startDate=${q.checkIn}&endDate=${q.checkOut}&adults=${q.adults}&rooms=1`;
+  if (s.includes("hotels.com")) return `https://www.hotels.com/Hotel-Search?destination=${name}&startDate=${q.checkIn}&endDate=${q.checkOut}&adults=${q.adults}&rooms=1`;
+  if (s.includes("agoda")) return `https://www.agoda.com/search?textToSearch=${name}&checkIn=${q.checkIn}&checkOut=${q.checkOut}&adults=${q.adults}&rooms=1&currency=USD`;
+  if (s.includes("priceline")) return `https://www.priceline.com/relax/in/${q.checkIn}/${q.checkOut}/rooms/1/adults/${q.adults}?search-text=${name}`;
+  return undefined;
 }

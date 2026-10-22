@@ -4,7 +4,7 @@ import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
 import { TOOLS } from "../src/tools/registry.ts";
-import { parseBooking } from "../src/tools/providers/public-rates.ts";
+import { parseBooking, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
 import { hotelKey } from "../src/tools/catalog/hotels.ts";
 
 /** A scripted model that calls one tool once, then replies. */
@@ -128,6 +128,15 @@ describe("the catalogue", () => {
     expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
     delete process.env.HOTEL_MARKUP_PCT;
     delete process.env.HOTEL_SITE_URL;
+  });
+
+  test("public hotel links carry the dates on sellers that take them in the URL", () => {
+    const q = { city: "Courchevel", countryCode: "FR", checkIn: "2027-01-13", checkOut: "2027-01-17", adults: 2 };
+    expect(sellerSearchUrl("Booking.com", "Le Saint Joseph", q)).toBe(
+      "https://www.booking.com/searchresults.html?ss=Le%20Saint%20Joseph%2C%20Courchevel&checkin=2027-01-13&checkout=2027-01-17&group_adults=2&no_rooms=1&group_children=0&selected_currency=USD",
+    );
+    expect(sellerSearchUrl("Expedia.com", "Le Lana", q)).toContain("startDate=2027-01-13&endDate=2027-01-17&adults=2");
+    expect(sellerSearchUrl("Super.com", "Le Lana", q)).toBeUndefined();
   });
 
   test("Booking.com's results page parses into one total per hotel, in-area only", () => {

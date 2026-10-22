@@ -3,7 +3,7 @@ import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFa
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
-import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
+import { buildFooter, estimateFor, integrityNote } from "../src/runtime/runtime.ts";
 import { parseDecision } from "../src/runtime/decide.ts";
 import { e164 } from "../src/tools/registry.ts";
 
@@ -18,6 +18,18 @@ describe("run loop", () => {
     expect(events[0]).toBe("started");
     expect(events).toContain("reply");
     expect(events.at(-2)).toBe("done");
+  });
+
+  test("a chat in Messages gets an 'on it' with an estimate at the first tool call; the web chat does not", async () => {
+    const search = new FakeSearch(() => [{ title: "Lee's Repairs", url: "https://x", snippet: "handyman" }]);
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("web_search", { query: "handyman" }) : reply("Found Lee's Repairs.")), { search });
+    w.app.store.putRoom({ ...w.room, channel: "imessage" });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a handyman" });
+    const kinds = w.deliveries.filter((d) => d.roomId === w.room.id).map((d) => [d.kind, d.text.split("\n")[0]]);
+    expect(kinds[0]).toEqual(["ack", "On it — about a minute."]);
+    expect(kinds.at(-1)![0]).toBe("reply");
+    expect(estimateFor("hotel_compare", {})).toBe("give me 2 or 3 minutes");
+    expect(estimateFor("plan", { steps: [{ text: "compare hotels" }, { text: "compare flights" }] })).toBe("give me 3 to 5 minutes");
   });
 
   test("tool calls are recorded with labels and evidence, and the footer is built from records", async () => {

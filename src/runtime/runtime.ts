@@ -25,7 +25,8 @@ export interface Delivery {
   text: string;
   /** Empty means everyone in the room. */
   visibleTo?: Id[];
-  kind: "reply" | "notice" | "card" | "progress";
+  /** An ack is the "on it" text a chat outside the web gets before the work starts, with a rough estimate. */
+  kind: "reply" | "notice" | "card" | "progress" | "ack";
 }
 
 export interface RuntimeDeps {
@@ -730,6 +731,7 @@ export class Runtime {
     };
     const stopped = () => this.cancelled.has(run.id) || store.getRun(run.id)?.status === "stopped";
 
+    let acked = false;
     while (turns < maxTurns) {
       turns += 1;
       drainSteers();
@@ -857,6 +859,13 @@ export class Runtime {
       for (const use of turn.toolUses) {
         const def = TOOL_INDEX.get(use.name);
         const input = (use.input && typeof use.input === "object" ? use.input : {}) as Record<string, unknown>;
+        // Messages has no "working…" line, so the first tool call of a request texts an "on it" with an estimate.
+        if (!acked && run.trigger === "message" && TEXTING.has(room.channel)) {
+          acked = true;
+          const text = `On it — ${estimateFor(use.name, input)}.`;
+          emit("progress", { text });
+          void this.d.deliver({ roomId: room.id, text, kind: "ack" });
+        }
         const rec: ToolCallRecord = {
           id: newId("tc"),
           runId: run.id,
@@ -1207,4 +1216,20 @@ function collapse(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
     } else out.push({ ...m });
   }
   return out;
+}
+
+/** Chats that live in a messaging app: no live "working…" line, so they get an "on it" text. */
+const TEXTING = new Set(["imessage", "sms", "whatsapp", "telegram", "slack"]);
+
+/** A rough time for the "on it" text: from the plan's steps when the first call is the plan, else from the tool. */
+export function estimateFor(tool: string, input: Record<string, unknown>): string {
+  const slow = /compare|browser_use|connect_account|delegate_task|place_call|watch_for/;
+  if (tool === "plan") {
+    const steps = Array.isArray(input.steps) ? (input.steps as unknown[]) : [];
+    const text = JSON.stringify(steps).toLowerCase();
+    if (steps.length >= 5 || /hotel|flight|browser|call/.test(text)) return "give me 3 to 5 minutes";
+    if (steps.length >= 3) return "a couple of minutes";
+    return "about a minute";
+  }
+  return slow.test(tool) ? "give me 2 or 3 minutes" : "about a minute";
 }
