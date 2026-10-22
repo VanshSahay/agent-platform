@@ -92,8 +92,37 @@ export interface PaymentProvider {
   cancelCard(cardId: string): Promise<void>;
 }
 
+/** A wholesale marketplace (Faire) reached through one shop account held by the deployment, used for every chat's group orders. */
+export interface WholesaleBrand {
+  id: string;
+  name: string;
+  category: string;
+  /** First order and reorder minimums in USD; 0 when the brand has none. */
+  minimumUsd: number;
+  reorderMinimumUsd: number;
+  rating?: number;
+  topShop?: boolean;
+  url?: string;
+}
+export interface WholesaleProduct {
+  id: string;
+  brandId: string;
+  name: string;
+  wholesaleUsd: number;
+  retailUsd?: number;
+  /** Units per wholesale case, when sold by the case. */
+  caseSize?: number;
+  inStock: boolean;
+}
+export interface WholesaleProvider {
+  findBrands(query: string, opts?: { category?: string; limit?: number }): Promise<WholesaleBrand[]>;
+  brand(brandId: string): Promise<{ brand: WholesaleBrand; products: WholesaleProduct[] } | undefined>;
+  placeOrder(input: { brandId: string; lines: { productId: string; quantity: number }[]; note?: string }): Promise<{ orderId: string; totalUsd: number; evidence: string }>;
+}
+
 export interface Hands {
   search: SearchProvider;
+  wholesale: WholesaleProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
   browser: BrowserProvider;
@@ -231,8 +260,43 @@ export class FakePayments implements PaymentProvider {
   }
 }
 
+export class FakeWholesale implements WholesaleProvider {
+  public orders: { brandId: string; lines: { productId: string; quantity: number }[]; totalUsd: number }[] = [];
+  constructor(
+    public brands: WholesaleBrand[] = [
+      { id: "b_candyclub", name: "Candy Club", category: "food", minimumUsd: 150, reorderMinimumUsd: 100, rating: 4.8, topShop: true },
+      { id: "b_frenchsquirrel", name: "French Squirrel", category: "food", minimumUsd: 200, reorderMinimumUsd: 100, rating: 4.9, topShop: true },
+      { id: "b_kimono", name: "KIM+ONO", category: "apparel", minimumUsd: 300, reorderMinimumUsd: 150, rating: 4.7, topShop: true },
+    ],
+    public products: WholesaleProduct[] = [
+      { id: "p_holiday", brandId: "b_candyclub", name: "Holiday Candy Bundle", wholesaleUsd: 24, retailUsd: 48, inStock: true },
+      { id: "p_sour", brandId: "b_candyclub", name: "Sour Belts (12 pack)", wholesaleUsd: 12, retailUsd: 24, caseSize: 12, inStock: true },
+      { id: "p_gummy", brandId: "b_candyclub", name: "Gummy Bears Jar", wholesaleUsd: 9, retailUsd: 18, inStock: true },
+      { id: "p_choc", brandId: "b_frenchsquirrel", name: "Hazelnut Chocolate Bites", wholesaleUsd: 18, retailUsd: 36, inStock: true },
+      { id: "p_robe", brandId: "b_kimono", name: "Silk Kimono Robe", wholesaleUsd: 60, retailUsd: 120, inStock: true },
+    ],
+  ) {}
+  async findBrands(query: string, opts: { category?: string; limit?: number } = {}) {
+    const q = query.toLowerCase();
+    return this.brands
+      .filter((b) => (!opts.category || b.category === opts.category) && (!q || b.name.toLowerCase().includes(q) || b.category.includes(q)))
+      .slice(0, opts.limit ?? 10);
+  }
+  async brand(brandId: string) {
+    const brand = this.brands.find((b) => b.id === brandId);
+    return brand ? { brand, products: this.products.filter((p) => p.brandId === brandId) } : undefined;
+  }
+  async placeOrder(input: { brandId: string; lines: { productId: string; quantity: number }[]; note?: string }) {
+    const totalUsd = input.lines.reduce((t, l) => t + (this.products.find((p) => p.id === l.productId)?.wholesaleUsd ?? 0) * l.quantity, 0);
+    this.orders.push({ brandId: input.brandId, lines: input.lines, totalUsd });
+    const orderId = `fo_${this.orders.length}`;
+    return { orderId, totalUsd, evidence: `fake-wholesale:${orderId}` };
+  }
+}
+
 export interface FakeHands extends Hands {
   search: FakeSearch;
+  wholesale: FakeWholesale;
   phone: FakePhone;
   community: FakeCommunity;
   browser: FakeBrowser;
@@ -247,6 +311,7 @@ export interface FakeHands extends Hands {
 export function fakeHands(opts: Partial<FakeHands> = {}): FakeHands {
   return {
     search: opts.search ?? new FakeSearch(),
+    wholesale: opts.wholesale ?? new FakeWholesale(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
     browser: opts.browser ?? new FakeBrowser(),

@@ -25,6 +25,7 @@ export type ToolFamily =
   | "knowledge"
   | "operator"
   | "shopping"
+  | "wholesale"
   | "voice"
   | "contacts"
   | "email"

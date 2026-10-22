@@ -9,6 +9,7 @@ import { createModel, modelConfig } from "./model/config.ts";
 import { authConfig } from "./channels/auth.ts";
 import { startWebServer } from "./channels/web.ts";
 import { SPECTRUM_CHANNELS, type SpectrumChannel, startChannel } from "./channels/imessage.ts";
+import { FaireRetailer, faireApp } from "./tools/providers/faire.ts";
 import type { ChannelInfo } from "./channels/web.ts";
 import { newAgent } from "./agent/spec.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
@@ -58,7 +59,12 @@ function pickHands(): Hands {
     hands.google = new GoogleApi({ clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET });
     console.log("Google: OAuth app configured (people connect under Settings)");
   } else console.log("Google: off (set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)");
-  // The assistant's own mailbox.
+  // Faire: one shop for the deployment; the owner authorises once and the token sits in kv (never in a prompt).
+  const faire = faireApp(env);
+  if (faire) {
+    hands.wholesale = new FaireRetailer(faire, () => env.FAIRE_ACCESS_TOKEN || app.store.getKv("faire:access_token"));
+    console.log("Faire: app configured; the shop owner connects it once under Settings → Connections, then every chat can order");
+  } else console.log("Faire: off (set FAIRE_APP_ID and FAIRE_APP_SECRET); group orders use the fake");
   if (env.AGENTMAIL_API_KEY && env.AGENTMAIL_INBOX) {
     hands.email = new AgentMail(env.AGENTMAIL_API_KEY, env.AGENTMAIL_INBOX);
     console.log(`Email: AgentMail inbox ${env.AGENTMAIL_INBOX} (send and receive)`);

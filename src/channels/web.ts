@@ -627,6 +627,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           google: services.includes("google"),
           faireConfigured: !!faireApp(),
           faire: services.includes("faire"),
+          faireShared: !!app.store.getKv("faire:access_token"),
           slack: services.includes("slack"),
           mcp: services.filter((x) => x.startsWith("mcp:")).map((x) => x.slice(4)),
           apis: services.filter((x) => x.startsWith("api:")).map((x) => x.slice(4)),
@@ -1298,6 +1299,8 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const redirectUrl = `${process.env.PUBLIC_URL ?? url.origin}/oauth/faire/callback`;
         const tok = await faireExchange(app_, redirectUrl, code);
         app.vault.put(personId, "faire", JSON.stringify({ access_token: tok.access_token, scope: tok.scope, at: app.clock.now() }));
+        // The shop owner's authorisation is the deployment's shop: every chat's group orders go through it.
+        if (app.store.listAgents(personId).length) app.store.setKv("faire:access_token", tok.access_token);
         return new Response(null, { status: 302, headers: { location: "/#settings/connections" } });
       }
       if (p.startsWith("/d/")) {
