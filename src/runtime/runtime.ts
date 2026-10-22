@@ -52,6 +52,9 @@ export interface RuntimeDeps {
 }
 
 const MAX_TURNS = 24;
+// A reply's tool budget: nudged to answer at the first number, refused more tools at the second. Tasks get double.
+const REPLY_NUDGE_AT = 14;
+const TOOL_BUDGET = 18;
 const IMPLIED_PER_MINUTE = 6; // ponytail: a busier chat says the agent's name; raise or make per-agent if that pinches
 const COMPACT_AFTER = 30;
 const KEEP_RECENT = 12;
@@ -859,6 +862,16 @@ export class Runtime {
       for (const use of turn.toolUses) {
         const def = TOOL_INDEX.get(use.name);
         const input = (use.input && typeof use.input === "object" ? use.input : {}) as Record<string, unknown>;
+        // Past the budget nothing runs: the person has waited long enough, and the reply must come from what is already in hand.
+        if (toolCalls >= (run.taskId ? TOOL_BUDGET * 2 : TOOL_BUDGET)) {
+          results.push({
+            type: "tool_result",
+            tool_use_id: use.id,
+            content: `Tool budget for this reply is used up (${toolCalls} calls). Reply now with what you have and what is still open; no more tools.`,
+            is_error: true,
+          });
+          continue;
+        }
         // Messages has no "working…" line, so the first tool call of a request texts an "on it" with an estimate.
         if (!acked && run.trigger === "message" && TEXTING.has(room.channel)) {
           acked = true;
@@ -976,10 +989,10 @@ export class Runtime {
         this.finish(run, "done", undefined, `Stayed quiet: ${quiet}`, true);
         return;
       }
-      if (run.trigger === "message" && !run.taskId && toolCalls >= 8 && !nudgedToDelegate) {
+      if (run.trigger === "message" && !run.taskId && toolCalls >= REPLY_NUDGE_AT && !nudgedToDelegate) {
         nudgedToDelegate = true;
         notes.push(
-          "Eight tool calls in: this is long work. Hand the rest to delegate_task with a brief that lists what you found and what is still open, tell the room in one line, and stop.",
+          `${REPLY_NUDGE_AT} tool calls in: reply now with what you have and what is still open; never re-run a tool that already answered. Only work that genuinely needs many more minutes goes to delegate_task, with a brief of what you found.`,
         );
       }
       if (notes.length) transcript.push({ role: "user", content: `[planner] ${notes.join(" ")}` });

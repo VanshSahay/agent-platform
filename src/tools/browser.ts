@@ -267,13 +267,33 @@ export class BrowserbaseBrowser implements BrowserProvider {
     return { "X-BB-API-Key": this.apiKey, "content-type": "application/json" };
   }
 
+  // ponytail: the plan allows a few concurrent sessions; two runs browsing at once hit 429. Hold the rest in line and retry once.
+  private inFlight = 0;
+  private waiters: (() => void)[] = [];
   private async createSession(projectId: string, extra: Record<string, unknown> = {}): Promise<{ id: string; connectUrl: string }> {
-    const res = await fetch("https://api.browserbase.com/v1/sessions", { method: "POST", headers: this.headers(), body: JSON.stringify({ projectId, ...extra }) });
-    if (!res.ok) throw new Error(`Browserbase session: ${res.status} ${await res.text()}`);
-    return (await res.json()) as { id: string; connectUrl: string };
+    while (this.inFlight >= 2) await new Promise<void>((r) => this.waiters.push(r));
+    this.inFlight++;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const res = await fetch("https://api.browserbase.com/v1/sessions", { method: "POST", headers: this.headers(), body: JSON.stringify({ projectId, ...extra }) });
+        if (res.ok) return (await res.json()) as { id: string; connectUrl: string };
+        const text = await res.text();
+        if (res.status === 429 && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 8_000));
+          continue;
+        }
+        throw new Error(`Browserbase session: ${res.status} ${text}`);
+      }
+    } catch (e) {
+      this.inFlight--;
+      this.waiters.shift()?.();
+      throw e;
+    }
   }
-
+  /** Pairs with createSession: a slot opens when the session is released. */
   private async release(projectId: string, sessionId: string) {
+    this.inFlight = Math.max(0, this.inFlight - 1);
+    this.waiters.shift()?.();
     await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}`, {
       method: "POST",
       headers: this.headers(),
