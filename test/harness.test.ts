@@ -456,6 +456,11 @@ describe("signing in inside the chat", () => {
     expect(inRoom.visibleTo).toEqual(["alex"]);
     expect(w.hands.browser.signIns[0]!.site).toBe("ubereats.com");
     expect(JSON.stringify(w.model.calls)).not.toContain(w.hands.browser.signIns[0]!.sessionId);
+    // A message written while the card is open is a new request, not an answer: the card stays open.
+    const dm = w.app.rooms.dmFor(w.app.store.listAgents("alex")[0]!, "alex");
+    const other = await w.app.runtime.handleMessage({ roomId: dm.id, personId: "alex", text: "book me a flight to NYC on Dec 6" });
+    expect(other?.id).not.toBe(run!.id);
+    expect(w.app.store.getAttention(item.id)!.status).toBe("open");
     await w.app.runtime.answerAttention(item.id, "done", "alex");
     expect(w.app.vault.has("alex", "browser:ubereats.com")).toBe(true);
     expect(w.hands.browser.signIns[0]!.kept).toBe(true);

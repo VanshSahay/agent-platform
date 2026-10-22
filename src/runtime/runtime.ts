@@ -380,7 +380,9 @@ export class Runtime {
     // the newest card assigned to this person; for an approval it must also read as one
     // (a yes, a no or an option), so chatter cannot decline a purchase.
     const named = this.named(agent, text);
-    const mine = this.d.attention.openFor(personId).filter((a) => a.roomId === room.id || room.kind === "dm");
+    // A sign-in card is answered by its Done or Cancel button, never by a message: a bare message
+    // written while one is open is a new request, and the card stays open.
+    const mine = this.d.attention.openFor(personId).filter((a) => (a.roomId === room.id || room.kind === "dm") && a.kind !== "connect_account");
     const hit = mine[mine.length - 1];
     if (hit && !named && (!hit.gateKey || answers(text, hit.options))) return hit;
     if (hit) return undefined;

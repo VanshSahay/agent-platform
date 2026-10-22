@@ -75,13 +75,13 @@ export const GROUP_ORDER_TOOLS: ToolDef[] = [
       input_schema: obj(
         {
           brand: str("Brand name as on faire.com, e.g. 'Candy Club'."),
-          minimumUsd: num("The brand's first-order minimum in USD; required the first time, ignored after."),
+          minimumUsd: num("The brand's first-order minimum in USD, from its faire.com page. Pass it on every call; the first call sets it."),
           person: str("Who the line is for: 'me' or a first name from this chat."),
           item: str("Product name as on the brand's page."),
           unitUsd: num("Wholesale price per unit in USD."),
           quantity: num("How many; 0 removes the line."),
         },
-        ["brand", "person", "item", "unitUsd", "quantity"],
+        ["brand", "minimumUsd", "person", "item", "unitUsd", "quantity"],
       ),
     },
     family: "wholesale",
