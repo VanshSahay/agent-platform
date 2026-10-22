@@ -88,7 +88,7 @@ export const WHOLESALE_TOOLS: ToolDef[] = [
         if (!brands.length) return { ok: true, content: "No brands matched.", stall: `no brands for ${s(input.query)}` };
         return { ok: true, content: brands.map(brandLine).join("\n"), evidence: `wholesale:brands:${s(input.query)}` };
       } catch (e) {
-        return { ok: false, content: `Could not reach the marketplace: ${String((e as Error).message).slice(0, 200)}` };
+        return { ok: false, content: `Could not reach the marketplace: ${String((e as Error).message).slice(0, 400)}`, stall: "the marketplace is unavailable" };
       }
     },
   },
@@ -107,7 +107,7 @@ export const WHOLESALE_TOOLS: ToolDef[] = [
         if (!r) return { ok: false, content: "No such brand." };
         return { ok: true, content: `${brandLine(r.brand)}\n${r.products.map(productLine).join("\n")}`, evidence: `wholesale:brand:${r.brand.id}` };
       } catch (e) {
-        return { ok: false, content: `Could not read the brand: ${String((e as Error).message).slice(0, 200)}` };
+        return { ok: false, content: `Could not read the brand: ${String((e as Error).message).slice(0, 400)}`, stall: "the marketplace is unavailable" };
       }
     },
   },

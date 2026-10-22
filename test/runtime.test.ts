@@ -292,6 +292,25 @@ describe("chatter is not an answer", () => {
     expect(e164("555-0100")).toBeUndefined();
   });
 
+  test("a tool that fails twice the same way earns a note telling the model to stop calling it", async () => {
+    const w = groupWorld(
+      (req, i) => {
+        if (i < 3) return callTool("browse_page", { url: "https://down.example/" });
+        const t = JSON.stringify(req.messages);
+        expect(t).toContain("failed twice in a row");
+        return reply("The page is down; I'll try later.");
+      },
+      {
+        browser: new FakeBrowser(() => {
+          throw new Error("connectOverCDP: Timeout 30000ms exceeded");
+        }),
+      },
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip read down.example" });
+    expect(run?.status).toBe("done");
+    expect(w.app.store.toolCallsForRun(run!.id).filter((c) => c.status === "failed").length).toBeGreaterThanOrEqual(2);
+  });
+
   test("a soft opener on a long message is not a yes", () => {
     expect(parseDecision("ok")).toEqual({ kind: "yes" });
     expect(parseDecision("ok, go ahead")).toEqual({ kind: "yes" });

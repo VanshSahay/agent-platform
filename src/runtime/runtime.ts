@@ -708,6 +708,9 @@ export class Runtime {
     let quiet: string | undefined;
     // Resourcefulness guards: searching in circles is a stall, long work belongs in a task, a reply must cover the ask.
     let searchesInARow = 0;
+    // The same tool failing the same way twice is not going to work a third time; the model is told to stop.
+    let lastFailure = "";
+    let failuresInARow = 0;
     let toolCalls = 0;
     let nudgedToDelegate = false;
     let replyChecked = false;
@@ -902,6 +905,11 @@ export class Runtime {
           searchesInARow += 1;
           if (searchesInARow > 3 && !result.stall) result.stall = "searching again instead of acting on what was found";
         } else if (result.approach) searchesInARow = 0;
+        const failure = result.ok ? "" : `${use.name}:${String(typeof result.content === "string" ? result.content : JSON.stringify(result.content)).slice(0, 60)}`;
+        failuresInARow = failure && failure === lastFailure ? failuresInARow + 1 : failure ? 1 : 0;
+        lastFailure = failure;
+        if (failuresInARow === 2)
+          notes.push(`${use.name} failed twice in a row with the same error. Do not call it again in this run: tell the person what happened and what they can do instead.`);
         const livePlan =
           planner.get(run.id) ??
           (result.approach && run.trigger === "message"

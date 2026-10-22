@@ -92,7 +92,10 @@ export class FaireRetailer implements WholesaleProvider {
   ) {}
   private call<T>(req: { method?: string; path: string; query?: Record<string, string>; body?: unknown }): Promise<T> {
     const t = this.token();
-    if (!t) throw new Error("Faire is not authorised yet: the shop owner connects it once under Settings → Connections");
+    if (!t)
+      throw new Error(
+        "Faire is not authorised yet. Tell the person the shop owner has to connect Faire once under Settings → Connections (one click), and that ordering works for every chat after that. Do not try to sign in to faire.com with connect_account or get_connect_link; the marketplace is reached through the shop account, not a browser.",
+      );
     return faireRequest<T>(this.app, t, req);
   }
   async findBrands(query: string, opts: { category?: string; limit?: number } = {}): Promise<WholesaleBrand[]> {
