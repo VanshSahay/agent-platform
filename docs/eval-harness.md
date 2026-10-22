@@ -135,5 +135,5 @@ The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/ha
 | Date | Result | Notes |
 |---|---|---|
 | 19 Oct 2026, runs 1–5 | 3 → 9 of 16 scenarios; best 79/87 checks | before the harness loop and the audit |
-| 22 Oct 2026, group-order only | 6/6 on DeepSeek V4.1 Flash, 14 turns, 27s | the new Faire group-order scenario: the model looked the brand up once per run, one update per person, asked the owner at the minimum, placed after the yes |
+| 22 Oct 2026, group-order only | 6/6 on DeepSeek V4.1 Flash, 14 turns, 27s | the Faire group-order scenario as first built (API provider, since removed: Faire's API is brand-side only); the model looked the brand up once per run, one update per person, asked the owner at the minimum, placed after the yes |
 | 21 Oct 2026, run 6 | 12 of 16 scenarios, 77/87 checks | after the audit fixes; the four misses are purchase-threshold (the model re-asked after the yes), oven-repair and meal-plan (both delegated to a task and the DM-level checks could not see the task's calls), packing-list (one run still waiting). place_call now normalises "(408) 555-0100" to E.164 after this run showed the vendor snippet's format. |

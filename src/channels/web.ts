@@ -12,7 +12,6 @@ import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
 import { publicUrl } from "../tools/kit.ts";
-import { faireApp, faireAuthUrl, faireExchange } from "../tools/providers/faire.ts";
 import { privateProfileId } from "../memory/consolidate.ts";
 import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
@@ -649,23 +648,6 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
     {
-      // Faire is a backend source, not a per-person connection: the operator (an agent owner) authorises the
-      // deployment's shop once; the token lands in kv and every chat orders through it.
-      method: "GET",
-      re: /^\/api\/connections\/faire\/link$/,
-      access: "anyAgentOwner",
-      handle: ({ url, me, req }) => {
-        const personId = me ?? url.searchParams.get("personId");
-        if (!personId) return bad("personId required");
-        const app_ = faireApp();
-        if (!app_) return bad("Faire is not configured on this server (FAIRE_APP_ID, FAIRE_APP_SECRET)", 503);
-        const state = randomBytes(12).toString("base64url");
-        app.store.setKv(`oauth:faire:${state}`, JSON.stringify({ personId, at: app.clock.now() }));
-        const redirectUrl = `${process.env.PUBLIC_URL ?? new URL(req.url).origin}/oauth/faire/callback`;
-        return json({ url: faireAuthUrl(app_, redirectUrl, state) });
-      },
-    },
-    {
       method: "POST",
       re: /^\/api\/people\/([^/]+)\/connections$/,
       access: "self",
@@ -1286,21 +1268,6 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           app.store.putPerson(person);
         }
         return new Response(null, { status: 302, headers: { location: "/#settings" } });
-      }
-      if (p === "/oauth/faire/callback") {
-        const state = url.searchParams.get("state") ?? "";
-        const code = url.searchParams.get("code") ?? url.searchParams.get("authorization_code") ?? "";
-        const raw = app.store.getKv(`oauth:faire:${state}`);
-        const app_ = faireApp();
-        if (!raw || !code || !app_) return bad(`that Faire link is not valid any more${url.searchParams.get("error") ? ` (${url.searchParams.get("error")})` : ""}`, 400);
-        app.store.deleteKv(`oauth:faire:${state}`);
-        const { personId } = JSON.parse(raw) as { personId: string };
-        const redirectUrl = `${process.env.PUBLIC_URL ?? url.origin}/oauth/faire/callback`;
-        const tok = await faireExchange(app_, redirectUrl, code);
-        if (!app.store.listAgents(personId).length) return bad("only the operator may authorise the shop", 403);
-        app.store.setKv("faire:access_token", tok.access_token);
-        console.log("Faire: the shop is authorised; group orders are live for every chat (token kept in the database; set FAIRE_ACCESS_TOKEN to carry it between databases)");
-        return new Response("Faire is set up for this server. Every chat can order now; close this tab.", { status: 200, headers: { "content-type": "text/plain" } });
       }
       if (p.startsWith("/d/")) {
         const art = app.store.getArtifact(p.slice(3).split("/")[0] ?? "");
