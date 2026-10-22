@@ -1562,7 +1562,6 @@ async function renderConnections() {
   box.innerHTML = `
     ${row("Assistant's email", info.agentEmail, `<span class="mut">it sends from here</span>`)}
     ${row("Google", info.google ? "Connected: Gmail, Calendar, Drive, Sheets, Forms, Slides" : info.googleConfigured ? "Not connected" : "Not set up on this server (GOOGLE_CLIENT_ID)", info.google ? `<button class="btn small" type="button" data-disconnect="google">Disconnect</button>` : info.googleConfigured ? `<button class="btn small primary" type="button" id="connectGoogle">Connect</button>` : "")}
-    ${row("Faire", info.faire ? "Connected: wholesale catalogue and orders as your shop" : info.faireConfigured ? "Not connected" : "Not set up on this server (FAIRE_APP_ID)", info.faire ? `<button class="btn small" type="button" data-disconnect="faire">Disconnect</button>` : info.faireConfigured ? `<button class="btn small primary" type="button" id="connectFaire">Connect Faire</button>` : `<span class="mut">off</span>`)}
     ${row("Slack", info.slack ? "Token saved" : "Not connected", info.slack ? `<button class="btn small" type="button" data-disconnect="slack">Disconnect</button>` : `<form class="addrow" data-kind="slack"><input type="password" name="token" placeholder="xoxb-… or xoxp-…" /><button class="btn small" type="submit">Save</button></form>`)}
     <h4 class="tiny" style="margin:14px 0 4px">MCP servers</h4>
     ${info.mcp.map((n) => row(n, "MCP", `<button class="btn small" type="button" data-disconnect="mcp:${esc(n)}">Remove</button>`)).join("") || `<div class="tiny">None yet. Any app with an MCP endpoint: paste its URL (and a token if it needs one).</div>`}
@@ -1577,16 +1576,6 @@ async function renderConnections() {
     g.onclick = async () => {
       try {
         const r = await api(`/api/connections/google/link?personId=${encodeURIComponent(state.me)}`);
-        location.href = r.url;
-      } catch (e) {
-        status(e.message, true);
-      }
-    };
-  const fa = $("#connectFaire");
-  if (fa)
-    fa.onclick = async () => {
-      try {
-        const r = await api(`/api/connections/faire/link?personId=${encodeURIComponent(state.me)}`);
         location.href = r.url;
       } catch (e) {
         status(e.message, true);

@@ -625,9 +625,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           googleConfigured: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
           agentEmail: app.hands.email.address(),
           google: services.includes("google"),
-          faireConfigured: !!faireApp(),
-          faire: services.includes("faire"),
-          faireShared: !!app.store.getKv("faire:access_token"),
+
           slack: services.includes("slack"),
           mcp: services.filter((x) => x.startsWith("mcp:")).map((x) => x.slice(4)),
           apis: services.filter((x) => x.startsWith("api:")).map((x) => x.slice(4)),
@@ -651,10 +649,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
     {
-      // Faire: the person authorises the app on faire.com; the token lands in their vault as "faire".
+      // Faire is a backend source, not a per-person connection: the operator (an agent owner) authorises the
+      // deployment's shop once; the token lands in kv and every chat orders through it.
       method: "GET",
       re: /^\/api\/connections\/faire\/link$/,
-      access: "signedIn",
+      access: "anyAgentOwner",
       handle: ({ url, me, req }) => {
         const personId = me ?? url.searchParams.get("personId");
         if (!personId) return bad("personId required");
@@ -1298,10 +1297,10 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const { personId } = JSON.parse(raw) as { personId: string };
         const redirectUrl = `${process.env.PUBLIC_URL ?? url.origin}/oauth/faire/callback`;
         const tok = await faireExchange(app_, redirectUrl, code);
-        app.vault.put(personId, "faire", JSON.stringify({ access_token: tok.access_token, scope: tok.scope, at: app.clock.now() }));
-        // The shop owner's authorisation is the deployment's shop: every chat's group orders go through it.
-        if (app.store.listAgents(personId).length) app.store.setKv("faire:access_token", tok.access_token);
-        return new Response(null, { status: 302, headers: { location: "/#settings/connections" } });
+        if (!app.store.listAgents(personId).length) return bad("only the operator may authorise the shop", 403);
+        app.store.setKv("faire:access_token", tok.access_token);
+        console.log("Faire: the shop is authorised; group orders are live for every chat (token kept in the database; set FAIRE_ACCESS_TOKEN to carry it between databases)");
+        return new Response("Faire is set up for this server. Every chat can order now; close this tab.", { status: 200, headers: { "content-type": "text/plain" } });
       }
       if (p.startsWith("/d/")) {
         const art = app.store.getArtifact(p.slice(3).split("/")[0] ?? "");

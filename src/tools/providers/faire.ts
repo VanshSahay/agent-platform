@@ -81,7 +81,8 @@ export async function faireRequest<T = unknown>(app: FaireApp, token: string, re
 }
 
 /**
- * The deployment's one Faire shop, used for every chat's group orders. Paths follow Faire's retailer
+ * The deployment's one Faire shop, a backend source every chat orders through: the operator authorises it
+ * once (FAIRE_ACCESS_TOKEN, or the callback's kv entry) and no person ever connects anything. Paths follow Faire's retailer
  * endpoints as far as they are known; each is marked with how sure it is, and an unknown path fails
  * closed with Faire's own error text so the agent says what it could not read.
  */
@@ -94,7 +95,7 @@ export class FaireRetailer implements WholesaleProvider {
     const t = this.token();
     if (!t)
       throw new Error(
-        "Faire is not authorised yet. Tell the person the shop owner has to connect Faire once under Settings → Connections (one click), and that ordering works for every chat after that. Do not try to sign in to faire.com with connect_account or get_connect_link; the marketplace is reached through the shop account, not a browser.",
+        "The wholesale marketplace is not set up on this server yet (the operator has not authorised the shop). Tell the person group ordering is not available here yet; nobody in the chat needs to connect anything. Do not try to sign in to faire.com with connect_account or get_connect_link.",
       );
     return faireRequest<T>(this.app, t, req);
   }
