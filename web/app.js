@@ -1377,7 +1377,7 @@ function settingsSpending(box, agent) {
     <div class="field"><label>Ask before purchases over (USD)</label><input type="number" name="autoApproveUnderUsd" min="0" step="0.01" value="${esc(Number(t.autoApproveUnderUsd ?? 0).toFixed(2))}" /><div class="hint">0 means it asks for every purchase.</div></div>
     <div class="field inline"><label>Pause agent spending<div class="hint">While paused, it won't buy anything, whatever the amount.</div></label><button class="switch" type="button" role="switch" aria-checked="${t.spendingPaused ? "true" : "false"}"></button></div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
-  <div class="section"><h3>How it pays</h3><p class="lead">Each purchase gets a single-use card for exactly that amount at that shop; the card details go to the browser inside the vault and never pass through the chat. The receipt in the chat carries the amount, the shop and the last four digits.</p></div>
+  <div class="section"><h3>How it pays</h3><p class="lead">Each purchase gets a single-use card for exactly that amount at that shop; the card details go to the browser inside the vault and never pass through the chat. The receipt in the chat carries the amount, the shop and the last four digits.</p></div>`;
   const form = $("#spendForm");
   const sw = form.querySelector(".switch");
   sw.onclick = () => sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
@@ -1385,7 +1385,7 @@ function settingsSpending(box, agent) {
     e.preventDefault();
     try {
       await api(
-        `/api/agents/$encodeURIComponent(agent.id)`,
+        `/api/agents/${encodeURIComponent(agent.id)}`,
         { trust: { autoApproveUnderUsd: Math.max(0, Number(new FormData(form).get("autoApproveUnderUsd")) || 0), spendingPaused: sw.getAttribute("aria-checked") === "true" } },
         "PATCH",
       );
