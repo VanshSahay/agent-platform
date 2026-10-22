@@ -78,8 +78,10 @@ export class Auth {
     const h = req.headers.get("authorization") ?? "";
     let token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
     // <img src="/d/…"> and "Open →" links cannot send a header; Clerk keeps the same JWT in a
-    // same-origin cookie, accepted for reads only so a cross-site form cannot change anything.
-    if (!token && req.method === "GET") token = /(?:^|;\s*)__session=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1]?.trim() ?? "";
+    // same-origin cookie, accepted for reads, and for writes only with a custom header: a cross-site
+    // form cannot set one, and a cross-site fetch that tries gets a preflight this server never answers.
+    if (!token && (req.method === "GET" || req.headers.get("x-requested-with") === "circle"))
+      token = /(?:^|;\s*)__session=([^;]+)/.exec(req.headers.get("cookie") ?? "")?.[1]?.trim() ?? "";
     if (!token) return undefined;
     const v = await this.verifier(token);
     if (!v) return undefined;

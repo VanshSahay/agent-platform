@@ -147,7 +147,7 @@ function shareBar(a: Artifact, viewer: Viewer): string {
     return `<aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`;
   const open = a.share === "link";
   return `<aside class="sharebar"><span id="shareNote">${open ? "Anyone with the link can open this page." : "Only members of the chat can open this page."}</span><button class="sharebtn" id="shareBtn" type="button">${open ? "Copy link" : "Share this page"}</button></aside><style>${SHARE_CSS}</style>
-<script>(()=>{const b=document.getElementById("shareBtn"),n=document.getElementById("shareNote");let open=${open};b.onclick=async()=>{try{if(!open){const r=await fetch("/api/artifacts/${a.id}/share",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({share:"link"})});if(!r.ok)throw new Error();open=true;n.textContent="Anyone with the link can open this page.";}
+<script>(()=>{const b=document.getElementById("shareBtn"),n=document.getElementById("shareNote");let open=${open};b.onclick=async()=>{try{if(!open){const r=await fetch("/api/artifacts/${a.id}/share",{method:"PATCH",headers:{"content-type":"application/json","x-requested-with":"circle"},body:JSON.stringify({share:"link"})});if(!r.ok)throw new Error();open=true;n.textContent="Anyone with the link can open this page.";}
 await navigator.clipboard.writeText(location.origin+location.pathname);b.textContent="Link copied";}catch{b.textContent="Could not share";}};})();</script>`;
 }
 const SHARE_CSS =

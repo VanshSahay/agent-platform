@@ -312,7 +312,11 @@ describe("document pages", () => {
     expect(await closed.text()).toContain("This page is private");
     expect(await (await s.call("sam", "GET", `/d/${id}`)).text()).toContain("Share this page");
     expect((await s.call("zed", "PATCH", `/api/artifacts/${id}/share`, { share: "link" })).status).toBe(403);
-    expect(await (await s.call("sam", "PATCH", `/api/artifacts/${id}/share`, { share: "link" })).json()).toEqual({ share: "link" });
+    // The page itself has only the session cookie: a write with it needs the custom header a cross-site form cannot send.
+    expect((await s.call(undefined, "PATCH", `/api/artifacts/${id}/share`, { share: "link" }, { cookie: "__session=as:sam" })).status).toBe(403);
+    expect(await (await s.call(undefined, "PATCH", `/api/artifacts/${id}/share`, { share: "link" }, { cookie: "__session=as:sam", "x-requested-with": "circle" })).json()).toEqual({
+      share: "link",
+    });
     const open = await s.call("zed", "GET", `/d/${id}`);
     expect(open.status).toBe(200);
     const page = await open.text();
