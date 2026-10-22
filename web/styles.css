@@ -472,6 +472,3 @@ header .reach a { color: var(--text-2); text-decoration: none } header .reach a:
 .rich table { border-collapse: collapse; margin: 8px 0; font-size: 13px; display: block; max-width: 100%; overflow-x: auto }
 .rich th, .rich td { border: 1px solid var(--line-2); padding: 4px 8px; text-align: left; vertical-align: top; white-space: nowrap }
 .rich th { background: var(--bg-2); font-weight: 600 }
-table.spend { border-collapse: collapse; margin-top: 6px; font-size: 13px }
-table.spend th, table.spend td { padding: 3px 12px 3px 0; text-align: left }
-table.spend th { font-weight: 500; opacity: 0.7 }

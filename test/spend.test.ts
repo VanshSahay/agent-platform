@@ -1,11 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, test } from "bun:test";
 import { AnthropicModel } from "../src/model/anthropic.ts";
-import { callTool, lastToolResult, reply } from "../src/model/scripted.ts";
 import { daysAgoIso, recordSpend, SpendLog, spendSummary, startOfDayIso } from "../src/runtime/spend.ts";
 import { openDb } from "../src/store/db.ts";
 import { ApifyHotels } from "../src/tools/providers/public-rates.ts";
-import { groupWorld } from "./helpers.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -107,20 +105,5 @@ describe("spend monitor", () => {
     ]);
     expect(startOfDayIso(Date.parse("2026-10-13T17:00:00Z"))).toBe(since);
     expect(daysAgoIso(7, Date.parse("2026-10-13T17:00:00Z"))).toBe("2026-10-06T17:00:00.000Z");
-  });
-
-  test("spend_report answers the owner and refuses a member", async () => {
-    const results: string[] = [];
-    const w = groupWorld((req) => {
-      const r = lastToolResult(req);
-      if (r === undefined) return callTool("spend_report", { period: "today" });
-      results.push(r);
-      return reply("Here is the bill.");
-    });
-    recordSpend(w.app.store.db, { provider: "openrouter", usd: 0.03, units: "9000 in / 400 out tokens", runId: "r1", at: new Date(w.clock.now()).toISOString() });
-    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "what did we spend today" });
-    expect(JSON.parse(results[0]!).byProvider.openrouter).toEqual({ usd: 0.03, count: 1 });
-    await w.app.runtime.handleMessage({ roomId: w.samDm.id, personId: "sam", text: "@pip what did we spend today" });
-    expect(results[1]).toContain("Only the owner");
   });
 });

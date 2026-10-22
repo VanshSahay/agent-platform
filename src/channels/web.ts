@@ -53,7 +53,8 @@ type Access =
   | "agentOwner" // agent.ownerId is me
   | "agentMember" // agent owner, or a member of one of its rooms
   | "assignee" // the attention item is addressed to me
-  | "anyAgentOwner"; // I own at least one agent
+  | "anyAgentOwner" // I own at least one agent
+  | "token"; // the operator's EVENT_TOKEN only; no signed-in person, owner included
 interface Route {
   method: string;
   re: RegExp;
@@ -229,14 +230,15 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
   function permit(route: Route, c: Ctx): Response | undefined {
     if (route.access === "public") return;
     const bearer = bearerOf(c.req);
-    if (route.orToken && eventToken && bearer && sameSecret(bearer, eventToken)) return;
+    if ((route.orToken || route.access === "token") && eventToken && bearer && sameSecret(bearer, eventToken)) return;
+    if (route.access === "token") return eventToken ? bad("not found", 404) : bad("EVENT_TOKEN is not configured", 503);
     if (!auth) return;
     if (!c.me) return route.orToken && !eventToken ? bad("EVENT_TOKEN is not configured", 503) : bad("sign in required", 401);
     const me = c.me;
     if (route.access === "signedIn") return;
     const s = route.scope ? route.scope(c) : {};
     if (!s) return bad("not found", 404);
-    const ok: Record<Exclude<Access, "public" | "signedIn">, () => boolean> = {
+    const ok: Record<Exclude<Access, "public" | "signedIn" | "token">, () => boolean> = {
       self: () => s.personId === me,
       roomMember: () => !!s.room && isMember(s.room.id, me),
       roomOwner: () => !!s.room && ownsRoom(s.room, me),
@@ -1257,11 +1259,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
     { method: "POST", re: /^\/api\/tick$/, access: "anyAgentOwner", orToken: true, handle: async () => json(await app.scheduler.tick()) },
-    // What the deployment has cost: per provider and per run since a time (default today; `since=week` for seven days).
+    // What the deployment has cost, for the operator only (EVENT_TOKEN; `bun run spend`), never for a signed-in person.
     {
       method: "GET",
       re: /^\/api\/spend$/,
-      access: "anyAgentOwner",
+      access: "token",
       handle: (c) => {
         const now = app.clock.now();
         const raw = c.url.searchParams.get("since");
