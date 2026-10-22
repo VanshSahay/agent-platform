@@ -69,21 +69,31 @@ export function decideGate(
     return { granted: false, held: `${who} declined this. Do not retry it; tell the room and try another approach or stop.` };
   }
 
-  const requesterIsOwner = run.requesterId === agent.ownerId;
+  // Whose money and whose trust (multiplayer-spec §7.3): a room owner is the payer of their
+  // own purchases, with their per-person trust over the agent's default; everyone else spends
+  // from the owner's side, and the owner answers. Per-person payment sources land with Stripe.
+  const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
+  const requesterIsAnOwner = run.requesterId === agent.ownerId || requesterRole === "owner";
+  const payerIsRequester = g.kind === "purchase_approval" && requesterIsAnOwner && !!run.requesterId;
+  const payer = payerIsRequester ? store.getPerson(run.requesterId!) : undefined;
+  const payerTrust = payer?.trust ?? agent.trust;
+  const requesterTrust = (run.requesterId && requesterIsAnOwner ? store.getPerson(run.requesterId)?.trust : undefined) ?? agent.trust;
   const money = g.money ?? 0;
-  if (g.kind === "purchase_approval" && agent.trust.spendingPaused) return { granted: false, held: "Spending is paused by the owner. Do not buy; tell them." };
-  if (g.kind === "purchase_approval" && requesterIsOwner && money > 0 && money <= agent.trust.autoApproveUnderUsd) {
-    return { granted: true, reason: `under the $${agent.trust.autoApproveUnderUsd} threshold` };
+  if (g.kind === "purchase_approval" && payerTrust.spendingPaused) return { granted: false, held: "Spending is paused. Do not buy; tell them." };
+  if (g.kind === "purchase_approval" && payerIsRequester && money > 0 && money <= payerTrust.autoApproveUnderUsd) {
+    return { granted: true, reason: `under ${payer?.displayName ?? "the payer"}'s $${payerTrust.autoApproveUnderUsd} threshold` };
   }
-  if (g.kind === "community_post_approval" && g.outreach && agent.trust.communityPostingAllowed.some((c) => c.toLowerCase() === g.outreach!.who.toLowerCase())) {
+  if (g.kind === "community_post_approval" && g.outreach && requesterTrust.communityPostingAllowed.some((c) => c.toLowerCase() === g.outreach!.who.toLowerCase())) {
     return { granted: true, reason: "community pre-approved by the owner" };
   }
   // The owner's trust list names tools that may run for the owner without asking; the key's first part is the tool.
   const tool = Array.isArray(g.key) ? String(g.key[0] ?? "") : "";
-  if (requesterIsOwner && tool && agent.trust.autoAllow.includes(tool)) return { granted: true, reason: `${tool} is on the owner's trust list` };
+  if (requesterIsAnOwner && tool && requesterTrust.autoAllow.includes(tool))
+    return { granted: true, reason: `${tool} is on ${store.getPerson(run.requesterId!)?.displayName ?? "the owner"}'s trust list` };
 
-  // Who answers: the owner, whose money and accounts are at stake.
-  const assignee = rooms.approversFor(room)[0] ?? owner;
+  // Who answers: the payer for their own purchase; the first owner otherwise, whose money and
+  // accounts are at stake. For a co-owner the card goes to their own DM, not their partner's.
+  const assignee = payerIsRequester ? payer! : (rooms.approversFor(room)[0] ?? owner);
   if (!assignee) throw new Error("no approver");
   const kind = run.requesterId && run.requesterId !== assignee.id && accounts.needsApproval ? "guest_request" : g.kind;
   const requesterName = run.requesterId ? (store.getPerson(run.requesterId)?.displayName ?? "someone") : agent.name;

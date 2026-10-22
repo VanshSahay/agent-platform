@@ -22,6 +22,8 @@ export interface Person {
   sendAsMe?: boolean;
   /** Two records were one human (multiplayer-spec §11): this record's data moved to the id it names. */
   mergedInto?: Id;
+  /** Per-person trust for an owner (multiplayer-spec §7.3): their own threshold, pause and allow list. The agent's policy is the default. */
+  trust?: TrustPolicy;
   /** Records merged INTO this one; their old messages still point at them. */
   mergedFrom?: Id[];
   createdAt: UnixMs;

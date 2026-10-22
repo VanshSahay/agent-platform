@@ -59,6 +59,8 @@ People join a room through an invite link the owner mints (`POST /api/rooms/:id/
 
 **One human, one record (identity merge, multiplayer-spec §11).** A stranger who texts from iMessage gets a derived record; when the same number links by code — or its handle is claimed by a signed-in person — `rooms.mergePeople` folds the derived record into the surviving one: memberships move (a guest becomes a member — they signed up), person-scoped memories and profiles follow (including private-profile ids), the dropped record stays queryable for old messages but is marked `mergedInto`, and phone lookups follow the pointer. Nothing merges on a display name alone.
 
+**Co-owners and per-person trust (multiplayer-spec §7.3).** A room owner may promote a member to co-owner; each owner carries their own `TrustPolicy` (`Person.trust`, the agent's being the default), and a purchase is routed by payer: a co-owner's buy follows their own threshold and the card goes to their own DM, not their partner's. Shared payment sources and member-owned cards land with the payments provider.
+
 **Low tech comfort.** When the requester is marked as not comfortable with technology the prompt switches to one step at a time, no jargon, their words for things, "ask what they see before saying what to tap", and anything needing a password, a code or money goes to a named person.
 
 ## 5. A run

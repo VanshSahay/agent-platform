@@ -73,6 +73,15 @@ export class RoomService {
     return m;
   }
 
+  /** Co-owners (multiplayer-spec §6.4/§7.3): a room owner promotes a member; a guest becomes a member first. */
+  promoteOwner(roomId: Id, personId: Id): Membership | undefined {
+    const m = this.store.getMembership(roomId, personId);
+    if (!m || m.role !== "member") return undefined;
+    m.role = "owner";
+    this.store.putMembership(m);
+    return m;
+  }
+
   /**
    * Someone named by a person in the circle: an existing record by phone or email, or a new one.
    * A phone or email is what lets a text or a sign-in later land on the same person.

@@ -552,9 +552,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       scope: (c) => roomScope(c.params[0]),
       handle: ({ params, body: b }) => {
         const role = str(b.role) as MemberRole | undefined;
-        if (!role || !ROLES.includes(role) || role === "owner") return bad("role must be member or guest");
-        const m = app.rooms.setRole(params[0]!, params[1]!, role);
-        return m ? json(m) : bad("no such member, or the owner", 404);
+        if (!role || !ROLES.includes(role)) return bad("role must be member, guest or owner");
+        // A member may be promoted to co-owner; a guest first becomes a member. An existing owner cannot be changed here.
+        const current = app.store.getMembership(params[0]!, params[1]!);
+        if (!current || current.role === "owner") return bad("no such member, or the owner", 404);
+        const m = role === "owner" ? app.rooms.promoteOwner(params[0]!, params[1]!) : app.rooms.setRole(params[0]!, params[1]!, role);
+        return m ? json(m) : bad("only a member can be promoted", 400);
       },
     },
     {

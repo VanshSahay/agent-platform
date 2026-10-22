@@ -619,6 +619,61 @@ describe("identity merge", () => {
   });
 });
 
+describe("co-owners", () => {
+  const trustOf = (autoApproveUnderUsd: number) => ({ autoApproveUnderUsd, spendingPaused: false, autoAllow: [], communityPostingAllowed: [] });
+
+  test("a room owner promotes a member to co-owner; guests and owners are refused", () => {
+    const w = groupWorld(() => reply("ok"));
+    expect(w.app.rooms.promoteOwner(w.room.id, "sam")!.role).toBe("owner");
+    expect(w.app.rooms.promoteOwner(w.room.id, "sam")).toBeUndefined(); // already an owner
+    expect(w.app.rooms.promoteOwner(w.room.id, "riley")).toBeUndefined(); // a guest becomes a member first
+    expect(w.app.rooms.promoteOwner(w.room.id, "alex")).toBeUndefined(); // the owner seat is not demotable here
+    expect(w.app.rooms.role(w.room.id, "sam")).toBe("owner");
+  });
+
+  test("a co-owner's purchase above their own threshold cards them, not the other owner", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 12, what: "batteries", where: "Walgreens" }) : reply("ok")));
+    w.app.rooms.promoteOwner(w.room.id, "sam");
+    w.app.store.putPerson({ ...w.app.store.getPerson("sam")!, trust: trustOf(10) });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip buy Jo the $12 batteries" });
+    const item = w.app.store.listAttention({ roomId: w.room.id }).find((a) => a.kind === "purchase_approval");
+    expect(item?.assigneeId).toBe("sam"); // Sam's card goes to Sam's own DM
+    expect(run?.status).toBe("waiting");
+    const calls = w.app.store.toolCallsForRun(run!.id).filter((c) => c.name === "request_purchase");
+    expect(calls.every((c) => !c.evidence)).toBe(true); // nothing bought before the yes
+  });
+
+  test("a co-owner's small purchase passes under their own threshold, whatever the other owner allows", async () => {
+    const w = groupWorld((req, i) => {
+      if (i === 0) return callTool("request_purchase", { amountUsd: 8, what: "AA batteries", where: "Walgreens" });
+      return reply("Cleared for $8 — the order has to be placed by hand.");
+    });
+    w.app.rooms.promoteOwner(w.room.id, "sam");
+    w.app.store.putPerson({ ...w.app.store.getPerson("sam")!, trust: trustOf(10) });
+    w.agent.trust.autoApproveUnderUsd = 5; // Alex allows less; Sam's own trust is what counts for Sam
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip buy Jo batteries, about $8" });
+    expect(run?.status).toBe("done");
+    const buy = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "request_purchase")!;
+    expect(buy.evidence).toContain("purchase-approved");
+    expect(String(buy.result)).toContain("under Sam's $10 threshold"); // Sam's trust, not Alex's
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+  });
+
+  test("the agent owner's own purchases still follow the agent trust", async () => {
+    const w = groupWorld((req, i) => {
+      if (i === 0) return callTool("request_purchase", { amountUsd: 12, what: "AA batteries", where: "Walgreens" });
+      return reply("Cleared for $12.");
+    });
+    w.agent.trust.autoApproveUnderUsd = 25;
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip order Jo batteries, about $12" });
+    const buy = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "request_purchase")!;
+    expect(buy.evidence).toContain("purchase-approved");
+    expect(String(buy.result)).toContain("under Alex's $25 threshold");
+  });
+});
+
 describe("planner", () => {
   test("a stalled approach switches to the next rung after two attempts and the model is told", async () => {
     const search = new FakeSearch(() => []);
