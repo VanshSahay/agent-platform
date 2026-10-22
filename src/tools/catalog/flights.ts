@@ -15,7 +15,9 @@ interface Row {
 }
 const line = (r: Row) => {
   const f = r.ours ?? r.pub!;
-  const head = `${f.airline} ${f.flights.join(" > ")} · ${hhmm(f.departAt)}–${hhmm(f.arriveAt)} · ${dur(f.durationMin)} · ${f.stops ? `${f.stops} stop${f.stops > 1 ? "s" : ""}` : "nonstop"}`;
+  const legs = f.returnDurationMin !== undefined ? `${dur(f.durationMin)} out, ${dur(f.returnDurationMin)} back` : dur(f.durationMin);
+  const stops = f.stops ? `${f.stops} stop${f.stops > 1 ? "s" : ""}${f.returnDurationMin !== undefined ? " each way at most" : ""}` : "nonstop";
+  const head = `${f.airline} ${f.flights.join(" > ")} · ${hhmm(f.departAt)}–${hhmm(f.arriveAt)} · ${legs} · ${stops}`;
   const ours = r.ours
     ? `through us ${usd(r.ours.totalUsd)} (${r.ours.cabin}${r.ours.refundable ? ", refundable" : ""}${r.ours.checkedBag ? ", bag included" : ""})`
     : "not in our inventory";
@@ -91,9 +93,16 @@ export const FLIGHT_TOOLS: ToolDef[] = [
           if (r) r.pub ??= p;
           else byKey.set(k, { pub: p });
         }
-        const rows = [...byKey.values()]
-          .sort((a, b) => Math.min(a.ours?.totalUsd ?? 1e9, a.pub?.totalUsd ?? 1e9) - Math.min(b.ours?.totalUsd ?? 1e9, b.pub?.totalUsd ?? 1e9))
-          .slice(0, limit);
+        const price = (r: Row) => Math.min(r.ours?.totalUsd ?? 1e9, r.pub?.totalUsd ?? 1e9);
+        const all = [...byKey.values()].sort((a, b) => price(a) - price(b));
+        // The cap must not hide what only the public market has: matched rows first, then a few from each side.
+        const matched = all.filter((r) => r.ours && r.pub);
+        const oursOnly = all.filter((r) => r.ours && !r.pub);
+        const pubOnly = all.filter((r) => !r.ours && r.pub);
+        const rest = Math.max(0, limit - matched.length);
+        const rows = [...matched.slice(0, limit), ...oursOnly.slice(0, Math.ceil(rest / 2)), ...pubOnly.slice(0, Math.max(Math.floor(rest / 2), rest ? 1 : 0))].sort(
+          (a, b) => price(a) - price(b),
+        );
         const page = saveArtifact(ctx, {
           kind: "flights",
           title: `Flights: ${origin} to ${destination}, ${date}${returnDate ? ` to ${returnDate}` : ""}`,
@@ -113,6 +122,7 @@ export const FLIGHT_TOOLS: ToolDef[] = [
                 departAt: f.departAt,
                 arriveAt: f.arriveAt,
                 durationMin: f.durationMin,
+                returnDurationMin: f.returnDurationMin,
                 stops: f.stops,
                 ours: r.ours
                   ? { totalUsd: r.ours.totalUsd, cabin: r.ours.cabin, refundable: r.ours.refundable, changeable: r.ours.changeable, checkedBag: r.ours.checkedBag }

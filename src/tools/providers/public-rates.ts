@@ -167,13 +167,15 @@ export class ApifyFlights implements PublicFlightsProvider {
       // Google's list price is the fare for the cabin asked. Booking options also carry cheaper fare brands on
       // the same flight (economy next to Mint), so an option only names the seller when it matches the list price.
       const seller = (r.bookingDetails?.bookingOptions ?? []).find((o) => typeof o.price === "number" && Math.abs(o.price - r.price!) <= 1)?.provider;
+      const out = r.outbound?.segments ?? [];
       offers.push({
         flights: segs.map((s) => (s.flightNumber ?? "").replace(/\s+/g, "")),
         airline: r.airlines?.[0] ?? segs[0]!.airline ?? "",
-        departAt: segs[0]!.departureTime ?? "",
-        arriveAt: segs[segs.length - 1]!.arrivalTime ?? "",
-        durationMin: r.totalDuration ?? 0,
-        stops: r.stops ?? Math.max(0, segs.length - 1),
+        departAt: out[0]?.departureTime ?? segs[0]!.departureTime ?? "",
+        arriveAt: out[out.length - 1]?.arrivalTime ?? segs[segs.length - 1]!.arrivalTime ?? "",
+        durationMin: r.outbound?.duration ?? r.totalDuration ?? 0,
+        returnDurationMin: r.return?.duration,
+        stops: Math.max(r.outbound?.stops ?? 0, r.return?.stops ?? 0),
         totalUsd: r.price,
         seller: seller ?? "Google Flights",
         url: `https://www.google.com/travel/flights?q=Flights%20from%20${q.origin}%20to%20${q.destination}%20on%20${q.date}`,
@@ -187,8 +189,8 @@ interface KaixRow {
   totalDuration?: number;
   stops?: number;
   airlines?: string[];
-  outbound?: { segments?: KaixSeg[] };
-  return?: { segments?: KaixSeg[] };
+  outbound?: { segments?: KaixSeg[]; duration?: number; stops?: number };
+  return?: { segments?: KaixSeg[]; duration?: number; stops?: number };
   bookingDetails?: { bookingOptions?: { provider?: string; price?: number }[] };
 }
 interface KaixSeg {

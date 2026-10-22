@@ -106,13 +106,17 @@ export class LiteApiFlights implements FlightProvider {
       const segs = j.segments ?? [];
       const total = o?.pricing?.display?.total;
       if (!o || !segs.length || typeof total !== "number") continue;
+      const out = segs.filter((s) => s.direction !== "INBOUND");
+      const back = segs.filter((s) => s.direction === "INBOUND");
+      const legMin = (dir: string) => j.legDurations?.find((l) => l.direction === dir)?.duration?.minutes;
       offers.push({
         flights: segs.map((s) => `${s.carrier?.marketingCode ?? ""}${s.flight?.marketingNumber ?? ""}`),
         airline: segs[0]!.carrier?.marketingName ?? segs[0]!.carrier?.marketingCode ?? "",
-        departAt: segs[0]!.departureTime ?? "",
-        arriveAt: segs[segs.length - 1]!.arrivalTime ?? "",
-        durationMin: j.totalDuration?.minutes ?? 0,
-        stops: Math.max(0, segs.length - 1),
+        departAt: out[0]?.departureTime ?? "",
+        arriveAt: out[out.length - 1]?.arrivalTime ?? "",
+        durationMin: legMin("OUTBOUND") ?? (back.length ? 0 : (j.totalDuration?.minutes ?? 0)),
+        returnDurationMin: back.length ? legMin("INBOUND") : undefined,
+        stops: Math.max(out.length - 1, back.length ? back.length - 1 : 0, 0),
         cabin: o.segmentFares?.[0]?.cabin ?? o.fare?.family ?? q.cabin,
         totalUsd: total,
         refundable: !!o.terms?.refundable,
@@ -128,8 +132,15 @@ export class LiteApiFlights implements FlightProvider {
 interface Journey {
   cheapestOffer?: Offer;
   offers?: Offer[];
-  segments?: { carrier?: { marketingCode?: string; marketingName?: string }; flight?: { marketingNumber?: string }; departureTime?: string; arrivalTime?: string }[];
+  segments?: {
+    carrier?: { marketingCode?: string; marketingName?: string };
+    flight?: { marketingNumber?: string };
+    departureTime?: string;
+    arrivalTime?: string;
+    direction?: string;
+  }[];
   totalDuration?: { minutes?: number };
+  legDurations?: { direction?: string; duration?: { minutes?: number } }[];
 }
 interface Offer {
   offerId?: string;

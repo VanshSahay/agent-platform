@@ -366,6 +366,7 @@ export interface FlightsData {
     departAt: string;
     arriveAt: string;
     durationMin: number;
+    returnDurationMin?: number;
     stops: number;
     ours?: { totalUsd: number; cabin: string; refundable: boolean; changeable: boolean; checkedBag: boolean };
     pub?: { totalUsd: number; seller: string; url: string };
@@ -387,7 +388,7 @@ function flightsPage(a: Artifact): string {
             : r.ours.totalUsd > r.pub.totalUsd + 1
               ? `<span class="badge lose">${money(r.ours.totalUsd - r.pub.totalUsd)} cheaper on ${esc(r.pub.seller)}</span>`
               : `<span class="badge none">same price</span>`;
-      return `<article class="hotel flight"><div class="body"><h2>${esc(r.airline)} <small>${esc(r.flights.join(" › "))}</small></h2><p class="meta">${esc(d.origin)} ${hhmm(r.departAt)} → ${esc(d.destination)} ${hhmm(r.arriveAt)} · ${dur(r.durationMin)} · ${r.stops ? `${r.stops} stop${r.stops > 1 ? "s" : ""}` : "nonstop"}${r.ours ? ` · ${esc(r.ours.cabin)}${r.ours.refundable ? " · refundable" : ""}${r.ours.checkedBag ? " · bag included" : ""}` : ""}</p><div class="prices"><div class="ours"><span class="l">Through us</span>${r.ours ? `<span class="v">${money(r.ours.totalUsd)}</span><span class="n">all in, ${d.adults} adult${d.adults > 1 ? "s" : ""}</span>` : `<span class="v dim">—</span><span class="n">not offered by our source</span>`}</div><div class="pub"><span class="l">Public</span>${r.pub ? `<span class="v">${money(r.pub.totalUsd)}</span><span class="n">on <a href="${esc(r.pub.url)}" rel="noopener" target="_blank">${esc(r.pub.seller)}</a></span>` : `<span class="v dim">—</span><span class="n">not listed</span>`}</div></div>${badge}</div></article>`;
+      return `<article class="hotel flight"><div class="body"><h2>${esc(r.airline)} <small>${esc(r.flights.join(" › "))}</small></h2><p class="meta">${esc(d.origin)} ${hhmm(r.departAt)} → ${esc(d.destination)} ${hhmm(r.arriveAt)} · ${r.returnDurationMin !== undefined ? `${dur(r.durationMin)} out, ${dur(r.returnDurationMin)} back` : dur(r.durationMin)} · ${r.stops ? `${r.stops} stop${r.stops > 1 ? "s" : ""}${r.returnDurationMin !== undefined ? " each way at most" : ""}` : "nonstop"}${r.ours ? ` · ${esc(r.ours.cabin)}${r.ours.refundable ? " · refundable" : ""}${r.ours.checkedBag ? " · bag included" : ""}` : ""}</p><div class="prices"><div class="ours"><span class="l">Through us</span>${r.ours ? `<span class="v">${money(r.ours.totalUsd)}</span><span class="n">all in, ${d.adults} adult${d.adults > 1 ? "s" : ""}</span>` : `<span class="v dim">—</span><span class="n">not offered by our source</span>`}</div><div class="pub"><span class="l">Public</span>${r.pub ? `<span class="v">${money(r.pub.totalUsd)}</span><span class="n">on <a href="${esc(r.pub.url)}" rel="noopener" target="_blank">${esc(r.pub.seller)}</a></span>` : `<span class="v dim">—</span><span class="n">not listed</span>`}</div></div>${badge}</div></article>`;
     })
     .join("");
   const summary = `${d.rows.length} itineraries · ${cheaper} cheaper through us · public prices from ${esc(d.publicSource)}`;

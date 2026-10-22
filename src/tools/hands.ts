@@ -150,7 +150,9 @@ export interface FlightOffer {
   airline: string;
   departAt: string;
   arriveAt: string;
+  /** Outbound leg; a round trip carries the return leg in returnDurationMin, and stops is the most on either leg. */
   durationMin: number;
+  returnDurationMin?: number;
   stops: number;
   cabin: string;
   totalUsd: number;
@@ -168,6 +170,7 @@ export interface PublicFlightOffer {
   departAt: string;
   arriveAt: string;
   durationMin: number;
+  returnDurationMin?: number;
   stops: number;
   totalUsd: number;
   seller: string;
