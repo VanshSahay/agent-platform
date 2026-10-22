@@ -210,6 +210,16 @@ describe("web api: deny by default", () => {
   });
 
   test("POST /api/events needs the event token or the agent owner", async () => {
+    // A local .env leaks EVENT_TOKEN into the test process (bun loads it); the deny-by-default
+    // assertions need the ambient token gone, so this test owns the variable.
+    const ambient = process.env.EVENT_TOKEN;
+    process.env.EVENT_TOKEN = "";
+    try {
+      await eventsTest();
+    } finally {
+      process.env.EVENT_TOKEN = ambient;
+    }
+    async function eventsTest() {
     const s = up({ eventToken: "hook-secret" });
     const ev = { agentId: s.agent.id, source: "calendar", summary: "Jo's appointment moved" };
     expect((await s.call(undefined, "POST", `/api/events`, ev)).status).toBe(401);
@@ -220,6 +230,7 @@ describe("web api: deny by default", () => {
     expect((await s.call(undefined, "POST", `/api/tick`, undefined, { authorization: "Bearer hook-secret" })).status).toBe(200);
     const unset = up();
     expect((await unset.call(undefined, "POST", `/api/events`, ev)).status).toBe(503);
+    }
   });
 
   test("the deliveries stream shows a member only their rooms", async () => {

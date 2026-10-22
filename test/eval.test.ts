@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, lastToolResult, lastUserText, reply, ScriptedModel, toolCallsSoFar, transcriptHas } from "../src/model/scripted.ts";
 import { coverage, runScenario, runScenarios } from "../src/eval/harness.ts";
-import { findScenarios, SCENARIOS } from "../src/eval/scenarios.ts";
+import { after, findScenarios, SCENARIOS } from "../src/eval/scenarios.ts";
+import { groupWorld } from "./helpers.ts";
+import type { RunEvent } from "../src/core/types.ts";
 
 /** A model that behaves: pays under the threshold, asks over it, re-issues after a yes; searches twice then asks the group. */
 const wellBehaved = new ScriptedModel((req) => {
@@ -60,6 +62,21 @@ describe("eval harness", () => {
       expect(r.error, s.name).toBeUndefined();
       expect(r.checks.filter((c) => !c.pass).map((c) => `${s.name}: ${c.name} — ${c.detail}${c.error ? ` (${c.error})` : ""}`)).toEqual([]);
     }
+  });
+
+  test("ordering crosses from a delegating session into the task's session", async () => {
+    const w = groupWorld((req, i) => {
+      if (lastUserText(req).includes("You are the task agent")) return reply("Done: Lin Home Repair, (408) 555-0100.");
+      if (i === 0) return callTool("delegate_task", { title: "Find a repairer", instructions: "Search and report one name." });
+      return reply("On it. I'll report back when I have a name.");
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a repairer for Jo's oven" });
+    await w.app.runtime.settle();
+    const taskRunId = w.app.store.getTask(w.app.store.listTasks({ roomId: w.room.id })[0]!.id)!.runId!;
+    const roomReply = w.app.store.eventsForRun(run!.id).find((e: RunEvent) => e.type === "reply")!;
+    const taskReply = w.app.store.eventsForRun(taskRunId).find((e: RunEvent) => e.type === "reply")!;
+    expect(after(w.app, w.world, taskReply, roomReply)).toBe(true); // the task reported after the room was answered
+    expect(after(w.app, w.world, roomReply, taskReply)).toBe(false);
   });
 
   test("the do-nothing model fails every scenario, and each check's noOpPasses label is right", async () => {

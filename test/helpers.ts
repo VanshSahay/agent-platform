@@ -9,7 +9,7 @@ export function groupWorld(script: Script, opts: { completer?: (system: string, 
   const model = new ScriptedModel(script, completer);
   const w = evalWorld({ model, hands: fakes, providers });
   const { app, clock, hands, deliveries, agent, room, ownerDm, samDm, alex, sam, jo, riley } = w;
-  return { app, clock, model, hands, deliveries, agent, room, ownerDm, samDm, alex, sam, jo, riley };
+  return { app, clock, model, hands, deliveries, agent, room, ownerDm, samDm, alex, sam, jo, riley, world: w };
 }
 
 /** The whole system prompt (both blocks) of a recorded model call, for assertions that do not care where text was split. */
