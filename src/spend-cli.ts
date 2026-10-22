@@ -11,6 +11,10 @@ if (!path || !existsSync(path)) {
   process.exit(0);
 }
 const db = new Database(path, { readonly: true });
+if (!db.query("SELECT name FROM sqlite_master WHERE name = 'spend'").get()) {
+  console.log("No spend table yet (the app creates it on start); nothing recorded.");
+  process.exit(0);
+}
 const fly = Number(process.env.FLY_USD_PER_MONTH ?? 0) || 0;
 const usd = (n: number) => `$${n.toFixed(4)}`;
 for (const [label, since] of [
