@@ -1107,6 +1107,53 @@ export const SCENARIOS: Scenario[] = [
       },
     ],
   },
+
+  {
+    name: "group-join-intro",
+    description:
+      "The agent is added to an existing iMessage group: it introduces itself once in the group thread and the owner is told where to set the group's priorities.",
+    category: "events",
+    shape: "friends",
+    setup(app, w) {
+      const street = app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Maple Street" });
+      const newcomer = app.rooms.createPerson({ id: "newcomer", displayName: "Riley", timezone: "UTC" });
+      void app.runtime.groupJoined(street, newcomer);
+    },
+    turns: [],
+    script: () => reply("Hi, I'm Pip — Alex's assistant for finding, booking and reminders. I ask before contacting anyone or spending money."),
+    checks: [
+      {
+        name: "the group heard one introduction",
+        detail: "Exactly one run in the new group room, done, with one delivered reply.",
+        noOpPasses: true,
+        pass: (app, w) => {
+          const street = app.store.listRooms(w.agent.id).find((r) => r.name === "Maple Street");
+          if (!street) return false;
+          const runs = runsIn(app, street.id);
+          return runs.length === 1 && runs.every((r) => r.status === "done") && w.deliveries.filter((d) => d.roomId === street.id && d.kind === "reply").length === 1;
+        },
+      },
+      {
+        name: "the introduction follows the manners",
+        detail: "The intro says what it is and that it asks before contacting anyone or spending money.",
+        pass: (app, w) => {
+          const street = app.store.listRooms(w.agent.id).find((r) => r.name === "Maple Street");
+          const replyText = w.deliveries.find((d) => d.roomId === street?.id && d.kind === "reply")?.text ?? "";
+          return /ask/i.test(replyText) && /(assistant|help)/i.test(replyText);
+        },
+      },
+      {
+        name: "the owner was told where to set priorities",
+        detail: "A notice in the owner's DM names the group and who added it.",
+        noOpPasses: true,
+        pass: (app, w) =>
+          app.store
+            .messagesForRoom(w.ownerDm.id)
+            .some((m) => m.source === "notice" && /Maple Street/.test(m.text) && /Riley/.test(m.text)),
+      },
+      noOutreachCheck("An introduction contacts nobody."),
+    ],
+  },
 ];
 
 export function findScenarios(only?: string, filter: { category?: string; shape?: string } = {}): Scenario[] {

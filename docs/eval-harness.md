@@ -135,4 +135,5 @@ The eval is the judge, so no LLM judge sits in the gate. Offline proof: `test/ha
 | Date | Result | Notes |
 |---|---|---|
 | 19 Oct 2026, runs 1–5 | 3 → 9 of 16 scenarios; best 79/87 checks | before the harness loop and the audit |
+| 22 Oct 2026, run 7 (Vansh, merged branch) | 12 of 17 scenarios fully passed; misses: purchase-threshold 1/5 (the model shopped and opened cards after the budget verdict — the core rule from harness-lessons did not hold, a runtime guard is next), oven-repair 1/6, search-stall-ladder 3/5, meal-plan 4/5, packing-list 4/5. stall-revise-course passed 4/4 live. | after the merge of the strong-brain work; ~950k tokens for the full run |
 | 21 Oct 2026, run 6 | 12 of 16 scenarios, 77/87 checks | after the audit fixes; the four misses are purchase-threshold (the model re-asked after the yes), oven-repair and meal-plan (both delegated to a task and the DM-level checks could not see the task's calls), packing-list (one run still waiting). place_call now normalises "(408) 555-0100" to E.164 after this run showed the vendor snippet's format. |

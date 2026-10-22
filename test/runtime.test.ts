@@ -444,6 +444,49 @@ describe("durable execution", () => {
   });
 });
 
+describe("group join", () => {
+  test("first contact with a group introduces the agent once and notices the owner", async () => {
+    const w = groupWorld(
+      (req, i) => {
+        if (i === 0) {
+          expect(lastUserText(req)).toContain("Introduce yourself");
+          return reply("Hi, I'm Pip — Alex's assistant for finding, booking and reminders. I ask before contacting anyone or spending money.");
+        }
+        return reply("ok");
+      },
+      { completer: () => "no" },
+    );
+    const street = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Maple Street" });
+    const riley = w.app.rooms.createPerson({ id: "newcomer", displayName: "Riley", timezone: "UTC" });
+    const run = await w.app.runtime.groupJoined(street, riley);
+    await w.app.runtime.settle();
+    expect(run?.status).toBe("done");
+    // The introduction was delivered to the group exactly once.
+    expect(repliesTo(w.deliveries, street.id)).toHaveLength(1);
+    const events = w.app.store.eventsForRun(run!.id).map((e) => e.type);
+    expect(events[0]).toBe("started");
+    // The owner heard about it deterministically: no model call involved in the notice.
+    const notice = w.app.store.messagesForRoom(w.ownerDm.id).find((m) => m.source === "notice");
+    expect(notice?.text).toContain("Maple Street");
+    expect(notice?.text).toContain("Riley");
+    // Second contact (a redeployed channel, a replay) starts no second introduction.
+    const again = await w.app.runtime.groupJoined(street, riley);
+    expect(again).toBeUndefined();
+    expect(w.app.store.listRuns({ roomId: street.id })).toHaveLength(1);
+  });
+
+  test("the introduction is a request to the model, but silence on it would be recorded, not crash", async () => {
+    const w = groupWorld(() => reply("(nothing to report)"), { completer: () => "no" });
+    const street = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Maple Street" });
+    const riley = w.app.rooms.createPerson({ id: "newcomer", displayName: "Riley", timezone: "UTC" });
+    const run = await w.app.runtime.groupJoined(street, riley);
+    await w.app.runtime.settle();
+    expect(run?.status).toBe("done");
+    expect(run?.quiet).toBe(true); // silence is an outcome, even on a join
+    expect(repliesTo(w.deliveries, street.id)).toHaveLength(0);
+  });
+});
+
 describe("planner", () => {
   test("a stalled approach switches to the next rung after two attempts and the model is told", async () => {
     const search = new FakeSearch(() => []);

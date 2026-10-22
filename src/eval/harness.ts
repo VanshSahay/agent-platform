@@ -278,6 +278,8 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
   } finally {
     clearTimeout(timer);
   }
+  // Setup may launch work of its own (a group-join introduction); let it finish before grading.
+  await app.runtime.settle();
 
   const checks = grade(scenario.checks, app, world);
   if (scenario.expects) {

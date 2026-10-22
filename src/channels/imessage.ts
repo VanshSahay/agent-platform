@@ -107,9 +107,9 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
     return app.rooms.createPerson({ id, displayName: h, timezone: "UTC", phoneE164: h.startsWith("+") ? h : undefined, email: h.includes("@") ? h : undefined });
   };
 
-  const roomFor = (space: { id: string; type?: "dm" | "group" }, person: Person): Room | undefined => {
+  const roomFor = (space: { id: string; type?: "dm" | "group" }, person: Person): { room: Room; created: boolean } | undefined => {
     const existing = app.store.findRoomByExternal(channel, space.id);
-    if (existing) return existing;
+    if (existing) return { room: existing, created: false };
     const agent = agentFor();
     if (!agent) return undefined;
     const kind = space.type === "group" ? "group" : "dm";
@@ -122,7 +122,7 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
       name: kind === "dm" ? `${agent.name} & ${person.displayName}` : groupRoomName(channel, [person.displayName]),
     });
     app.rooms.addMember(room.id, person.id, roleForNewcomer({ isOwner, kind }), { consented: isOwner });
-    return room;
+    return { room, created: true };
   };
 
   // Outbound: deliveries addressed to an iMessage room go back to its space.
@@ -165,8 +165,9 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
           continue;
         }
         const person = personFor(senderId);
-        const room = roomFor(space as { id: string; type?: "dm" | "group" }, person);
-        if (!room) continue;
+        const found = roomFor(space as { id: string; type?: "dm" | "group" }, person);
+        if (!found) continue;
+        const { room, created } = found;
         if (!app.store.getMembership(room.id, person.id)) {
           app.rooms.addMember(room.id, person.id, "guest");
           // Until the owner names the group, its name is who is in it.
@@ -177,6 +178,10 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
             );
             app.store.putRoom(room);
           }
+        }
+        // First contact with a new group: introduce the agent once and tell the owner.
+        if (created && room.kind === "group") {
+          void app.runtime.groupJoined(room, person).catch((e) => console.error(`${channel} group join failed`, (e as Error).message));
         }
         // Not awaited: a run can take minutes, and the next text (another chat, or a steer
         // for this one) must be read while it runs.

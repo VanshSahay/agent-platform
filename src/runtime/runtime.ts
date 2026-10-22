@@ -332,6 +332,47 @@ export class Runtime {
   }
 
   /**
+   * The agent just appeared in a group chat (the channel saw a brand-new group room).
+   * The owner is told deterministically — who added it, where to set priorities — and
+   * the agent introduces itself to the group exactly once (dedupKey intro:<roomId>),
+   * following the group-manners procedure. Trigger is an event, so if the model
+   * says nothing, silence is a legal outcome.
+   */
+  async groupJoined(room: Room, addedBy: Person): Promise<Run | undefined> {
+    const { store, clock } = this.d;
+    const agent = store.getAgent(room.agentId);
+    if (!agent) return undefined;
+    const dm = this.d.rooms.dmFor(agent, agent.ownerId);
+    const text = `${agent.name} was added to "${room.name}" on ${room.channel} by ${addedBy.displayName}. Set what it is for there in Settings: ${this.d.publicUrl}/#room=${room.id}`;
+    store.putMessage({
+      id: newId("msg"),
+      sessionId: this.sessionFor(dm, agent).id,
+      roomId: dm.id,
+      role: "assistant",
+      authorId: agent.id,
+      source: "notice",
+      text,
+      visibleTo: [],
+      at: clock.now(),
+    });
+    void this.d.deliver({ roomId: dm.id, text, kind: "notice" });
+    const p = this.startSystemRun({
+      roomId: room.id,
+      trigger: "event",
+      source: "group_join",
+      dedupKey: `intro:${room.id}`,
+      text: `You were just added to this group chat by ${addedBy.displayName}. Introduce yourself to the group in one short message: who you work for, what you can do here, and that you ask before contacting anyone or spending money. Then stop; do nothing else.`,
+    });
+    const tracked: Promise<void> = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    void tracked.finally(() => this.inFlight.delete(tracked));
+    this.inFlight.add(tracked);
+    return p;
+  }
+
+  /**
    * Something happened in a connected app (an email from the clinic, a calendar
    * change, a webhook). It enters like a message: the agent reads it against the
    * ledger, the tasks and the schedules, acts if it concerns them, else stays quiet.
