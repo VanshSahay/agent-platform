@@ -89,8 +89,8 @@ export class ApifyHotels implements PublicRatesProvider {
     });
     if (!res.ok) throw new Error(`Apify ${res.status}: ${(await res.text()).slice(0, 200)}`);
     let rows = (await res.json()) as ApifyHotel[];
-    const runId = res.headers.get("x-apify-run-id") ?? "?";
     if (!rows.some((r) => r?.name)) rows = await this.namedDataset(q);
+    const scrapedAt = rows.find((r) => r?.scrapedAt)?.scrapedAt ?? new Date().toISOString();
     const offers: PublicOffer[] = [];
     for (const h of rows) {
       if (!h?.name) continue;
@@ -105,7 +105,7 @@ export class ApifyHotels implements PublicRatesProvider {
         url: best?.bookingLink || h.hotelUrl || "https://www.google.com/travel/hotels",
       });
     }
-    return { offers, source: "Google Hotels", evidence: `apify:${runId}:${offers.length}` };
+    return { offers, source: "Google Hotels", evidence: `apify:${this.actor}:${q.checkIn}:${scrapedAt}:${offers.length}` };
   }
   /** The actor's named `hotels` dataset, newest first, kept to rows for these dates. */
   private async namedDataset(q: PublicRatesQuery): Promise<ApifyHotel[]> {
@@ -128,5 +128,6 @@ interface ApifyHotel {
   checkOutDate?: string;
   leadPriceTotal?: number;
   hotelUrl?: string;
+  scrapedAt?: string;
   offers?: { source?: string; total?: number; bookingLink?: string; official?: boolean }[];
 }
