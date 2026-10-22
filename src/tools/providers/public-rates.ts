@@ -113,8 +113,9 @@ export class ApifyHotels implements PublicRatesProvider {
       ...(classes.length ? { hotelClass: classes.map(String) } : {}),
       includeOffers: true,
       offerLevel: "sources",
-      // Offer rows are the cost ($0.002 each against $0.004 a hotel); four is enough to reach an all-in seller behind the discounters.
-      maxOffersPerHotel: 4,
+      // Offer rows are the cost ($0.002 each against $0.004 a hotel). Google sorts the ladder by price with the discounters
+      // first, and four rows cut off the major sellers on two of nine Courchevel hotels; six reached them on every run.
+      maxOffersPerHotel: 6,
       sortBy: "lowest_price",
     };
     const res = await fetch(`https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?timeout=240&format=json`, {
