@@ -112,9 +112,30 @@ export interface HotelProvider {
   rates(input: { city: string; countryCode: string; checkIn: string; checkOut: string; adults: number; limit?: number }): Promise<{ offers: HotelOffer[]; evidence: string }>;
 }
 
+/** What the public pays for the same hotel and dates, from one public source, matched to our offers by name. */
+export interface PublicOffer {
+  name: string;
+  totalUsd: number;
+  seller: string;
+  refundable: boolean;
+  url: string;
+}
+export interface PublicRatesQuery {
+  city: string;
+  countryCode: string;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  stars?: number;
+}
+export interface PublicRatesProvider {
+  search(q: PublicRatesQuery): Promise<{ offers: PublicOffer[]; source: string; evidence: string }>;
+}
+
 export interface Hands {
   search: SearchProvider;
   hotels: HotelProvider;
+  publicRates: PublicRatesProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
   browser: BrowserProvider;
@@ -302,9 +323,24 @@ export class FakeHotels implements HotelProvider {
   }
 }
 
+export class FakePublicRates implements PublicRatesProvider {
+  public queries: PublicRatesQuery[] = [];
+  constructor(
+    public offers: PublicOffer[] = [
+      { name: "Hotel Nouvel", totalUsd: 343, seller: "Booking.com", refundable: true, url: "https://www.booking.com" },
+      { name: "Catalonia Avinyo", totalUsd: 290, seller: "Agoda", refundable: false, url: "https://www.agoda.com" },
+    ],
+  ) {}
+  async search(q: PublicRatesQuery) {
+    this.queries.push(q);
+    return { offers: this.offers, source: "Booking.com", evidence: `fake-public-rates:${this.queries.length}` };
+  }
+}
+
 export interface FakeHands extends Hands {
   search: FakeSearch;
   hotels: FakeHotels;
+  publicRates: FakePublicRates;
   phone: FakePhone;
   community: FakeCommunity;
   browser: FakeBrowser;
@@ -320,6 +356,7 @@ export function fakeHands(opts: Partial<FakeHands> = {}): FakeHands {
   return {
     search: opts.search ?? new FakeSearch(),
     hotels: opts.hotels ?? new FakeHotels(),
+    publicRates: opts.publicRates ?? new FakePublicRates(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
     browser: opts.browser ?? new FakeBrowser(),

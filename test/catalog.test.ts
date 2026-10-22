@@ -4,6 +4,8 @@ import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
 import { TOOLS } from "../src/tools/registry.ts";
+import { parseBooking } from "../src/tools/providers/public-rates.ts";
+import { hotelKey } from "../src/tools/catalog/hotels.ts";
 
 /** A scripted model that calls one tool once, then replies. */
 const once =
@@ -95,6 +97,65 @@ describe("the catalogue", () => {
     expect(names.has("send_agent_email")).toBe(true); // Fo's send_wajo_email
     expect(fo.length + 1).toBe(75);
     expect(new Set(TOOLS.map((t) => t.spec.name)).size).toBe(TOOLS.length); // no duplicate names
+  });
+
+  test("hotel_compare puts our price next to the cheapest public one per hotel, savings first, on a shared page", async () => {
+    process.env.HOTEL_MARKUP_PCT = "10";
+    process.env.HOTEL_SITE_URL = "https://shop.example";
+    const w = groupWorld(
+      once("hotel_compare", { city: "Barcelona", countryCode: "ES", checkIn: "2026-12-01", checkOut: "2026-12-03", limit: 5 }, "Nouvel is $264 with us vs $343 on Booking."),
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip compare hotels in Barcelona Dec 1-3 for 2" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    expect(call.status).toBe("done");
+    expect(call.evidence).toBe("fake-hotels:1+fake-public-rates:1");
+    const r = call.result as { rows: string[]; matched: number; bookThroughUs: string; page: string };
+    // Nouvel: $239.55 net + 10% = $264 against $343 on Booking; Catalonia (accent and no "Avinyó" in the public name) still matches at $292 vs $290 on Agoda.
+    expect(r.rows[0]).toContain("Hotel Nouvel 3★: through us $264 (refundable) · cheapest public $343 on Booking.com (refundable) · save $79 (23%) with us");
+    expect(r.rows[1]).toContain("Catalonia Avinyó 4★: through us $292 · cheapest public $290 on Agoda · $2 cheaper there");
+    expect(r.rows[2]).toContain("no public price found");
+    expect(r.matched).toBe(2);
+    expect(r.bookThroughUs).toBe("https://shop.example/hotels?name=Barcelona&checkin=2026-12-01&checkout=2026-12-03&rooms=1&adults=2&currency=USD");
+    const page = w.app.store.listArtifacts(w.app.store.listAgents("alex")[0]!.id, { roomId: w.room.id }).find((a) => a.title === "Hotels: Barcelona 2026-12-01")!;
+    expect(String((page.data as { markdown: string }).markdown)).toContain("## Hotel Nouvel 3★");
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+    delete process.env.HOTEL_MARKUP_PCT;
+    delete process.env.HOTEL_SITE_URL;
+  });
+
+  test("Booking.com's results page parses into one total per hotel, in-area only", () => {
+    const text = [
+      "Courchevel: 13 properties found",
+      "Le Saint Joseph",
+      "Opens in new window",
+      "Courchevel 1850",
+      "Breakfast included",
+      "Free cancellation",
+      "Per night$1,336",
+      "$6,678",
+      "Price $6,678",
+      "5 nights, 2 adults",
+      "See availability",
+      "Hotel Le Carlina Courchevel 1850",
+      "Opens in new window",
+      "Superior Queen Room",
+      "Per night$1,504",
+      "$8,082$7,521",
+      "Original price $8,082. Current price $7,521.",
+      "Price $7,521",
+      "5 nights, 2 adults",
+      "Looking for more options?",
+      "Hotel Le Coucou Méribel",
+      "Opens in new window",
+      "Méribel",
+      "Price $6,384",
+      "5 nights, 2 adults",
+    ].join("\n");
+    expect(parseBooking(text)).toEqual([
+      { name: "Le Saint Joseph", totalUsd: 6678, seller: "Booking.com", refundable: true, url: "https://www.booking.com" },
+      { name: "Hotel Le Carlina Courchevel 1850", totalUsd: 7521, seller: "Booking.com", refundable: false, url: "https://www.booking.com" },
+    ]);
+    expect(hotelKey("Hôtel Le K2 Altitude")).toBe(hotelKey("Hotel Le K2 Altitude"));
   });
 
   test("hotel_rates lists the wholesale source's offers cheapest first, net next to public, with evidence and no gate", async () => {

@@ -1,9 +1,117 @@
+import type { HotelOffer, PublicOffer } from "../hands.ts";
 import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
+import { saveArtifact } from "./shared.ts";
 
 const usd = (v: number) => `$${v.toFixed(0)}`;
 const ymd = /^\d{4}-\d{2}-\d{2}$/;
 
+/** "Hôtel Le K2 Altitude" and "Hotel Le K2 Altitude" are one hotel: accents, "hotel" words and punctuation do not count. */
+export const hotelKey = (name: string) =>
+  name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\b(hotel|hôtel|residence|residences|and|the|le|la|les|spa)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+const sameHotel = (a: string, b: string) => {
+  const x = hotelKey(a);
+  const y = hotelKey(b);
+  return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x));
+};
+
+interface Row {
+  hotel: HotelOffer;
+  oursUsd: number;
+  pub?: PublicOffer;
+}
+const markup = () => Math.max(0, Number(process.env.HOTEL_MARKUP_PCT ?? 12)) / 100;
+const siteLink = (q: { city: string; checkIn: string; checkOut: string; adults: number }) => {
+  const base = process.env.HOTEL_SITE_URL;
+  if (!base) return undefined;
+  return `${base.replace(/\/$/, "")}/hotels?name=${encodeURIComponent(q.city)}&checkin=${q.checkIn}&checkout=${q.checkOut}&rooms=1&adults=${q.adults}&currency=USD`;
+};
+const rowLine = (r: Row) =>
+  `${r.hotel.name}${r.hotel.stars ? ` ${r.hotel.stars}★` : ""}: through us ${usd(r.oursUsd)}${r.hotel.refundable ? " (refundable)" : ""}${
+    r.pub
+      ? ` · cheapest public ${usd(r.pub.totalUsd)} on ${r.pub.seller}${r.pub.refundable ? " (refundable)" : ""} · ${r.pub.totalUsd > r.oursUsd ? `save ${usd(r.pub.totalUsd - r.oursUsd)} (${Math.round(((r.pub.totalUsd - r.oursUsd) / r.pub.totalUsd) * 100)}%) with us` : `${usd(r.oursUsd - r.pub.totalUsd)} cheaper there`}`
+      : " · no public price found"
+  } · ${r.hotel.room}${r.hotel.board ? `, ${r.hotel.board}` : ""}`;
+
 export const HOTEL_TOOLS: ToolDef[] = [
+  {
+    spec: {
+      name: "hotel_compare",
+      description:
+        "Compare booking through us with the cheapest public price for the same hotels and dates: our price (wholesale net plus our margin) next to the lowest public total found, per hotel, with the saving. Writes a shared page. Ask for dates, city, guests and what they want (stars, budget, area) first if any is missing. Read-only; it books nothing.",
+      input_schema: obj(
+        {
+          city: str("City name, e.g. 'Courchevel'."),
+          countryCode: str("Two-letter country code, e.g. 'FR'."),
+          checkIn: str("YYYY-MM-DD."),
+          checkOut: str("YYYY-MM-DD."),
+          adults: num("Adults in one room; default 2."),
+          stars: num("Optional: only hotels of this star rating, e.g. 5."),
+          maxTotalUsd: num("Optional: drop hotels whose price through us is above this for the whole stay."),
+          limit: num("How many hotels to compare; default 8, at most 15."),
+        },
+        ["city", "countryCode", "checkIn", "checkOut"],
+      ),
+    },
+    family: "search",
+    labels: { running: "Comparing hotel prices…", done: "Compared hotel prices", failed: "Couldn't compare hotel prices" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const checkIn = s(input.checkIn);
+      const checkOut = s(input.checkOut);
+      if (!ymd.test(checkIn) || !ymd.test(checkOut) || checkOut <= checkIn) return { ok: false, content: "Dates must be YYYY-MM-DD with check-out after check-in." };
+      const q = {
+        city: s(input.city).trim(),
+        countryCode: s(input.countryCode).trim().toUpperCase(),
+        checkIn,
+        checkOut,
+        adults: Math.max(1, Math.floor(n(input.adults) ?? 2)),
+        stars: n(input.stars),
+      };
+      const limit = Math.min(15, Math.max(1, Math.floor(n(input.limit) ?? 8)));
+      try {
+        const [ours, pub] = await Promise.all([
+          ctx.hands.hotels.rates({ ...q, limit: 20 }),
+          ctx.hands.publicRates.search(q).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message })),
+        ]);
+        const max = n(input.maxTotalUsd);
+        const rows: Row[] = ours.offers
+          .filter((h) => !q.stars || !h.stars || h.stars === q.stars)
+          .map((hotel) => ({ hotel, oursUsd: Math.round(hotel.netUsd * (1 + markup())), pub: pub.offers.find((p) => sameHotel(p.name, hotel.name)) }))
+          .filter((r) => max === undefined || r.oursUsd <= max)
+          .slice(0, limit);
+        if (!rows.length) return { ok: true, content: "No hotels for those dates.", evidence: ours.evidence, stall: `no hotels for ${q.city} ${checkIn}` };
+        // Savings first, then price; hotels without a public match go last.
+        rows.sort((a, b) => (b.pub ? b.pub.totalUsd - b.oursUsd : -1e9) - (a.pub ? a.pub.totalUsd - a.oursUsd : -1e9) || a.oursUsd - b.oursUsd);
+        const link = siteLink(q);
+        const nights = Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000);
+        const head = `# Hotels in ${q.city}, ${checkIn} to ${checkOut}\n\n${nights} nights, ${q.adults} adults${q.stars ? `, ${q.stars}★` : ""}. "Through us" is our price for the whole stay, taxes in. "Public" is the lowest total ${pub.source === "none" ? "(no public source answered)" : `found on ${pub.source}`} for the same hotel and dates.${link ? `\n\nBook through us: ${link}` : ""}\n`;
+        const body = rows.map((r) => `\n## ${r.hotel.name}${r.hotel.stars ? ` ${r.hotel.stars}★` : ""}\n${rowLine(r).replace(/^[^:]+: /, "")}`).join("\n");
+        const page = saveArtifact(ctx, { kind: "document", title: `Hotels: ${q.city} ${checkIn}`, data: { markdown: `${head}${body}\n` } });
+        const matched = rows.filter((r) => r.pub).length;
+        return {
+          ok: true,
+          content: {
+            page: page.url,
+            publicSource: pub.source,
+            matched,
+            rows: rows.map(rowLine),
+            ...("error" in pub ? { publicError: pub.error } : {}),
+            bookThroughUs: link ?? "not configured: tell the owner to set HOTEL_SITE_URL",
+          },
+          evidence: [ours.evidence, pub.evidence].filter(Boolean).join("+"),
+          label: `Compared ${rows.length} hotels in ${q.city}, ${matched} with a public price`,
+        };
+      } catch (e) {
+        return { ok: false, content: `The hotel sources did not answer: ${String((e as Error).message).slice(0, 200)}` };
+      }
+    },
+  },
   {
     spec: {
       name: "hotel_rates",
