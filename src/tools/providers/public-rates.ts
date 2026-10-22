@@ -98,16 +98,19 @@ export class ApifyHotels implements PublicRatesProvider {
     private spend?: SpendLog,
   ) {}
   async search(q: PublicRatesQuery) {
+    // One Google query per hotel we are about to show: a city query returns Google's cheapest twenty, which misses the
+    // dearer hotels, and the public column then reads "no public price found" for exactly the rooms people ask about.
+    const byName = (q.names ?? []).filter(Boolean).slice(0, 15);
     const input = {
-      queries: [`${q.stars ? `${q.stars}-star ` : ""}hotels in ${q.city}`],
+      queries: byName.length ? byName.map((name) => `${name}, ${q.city}`) : [`${q.stars ? `${q.stars}-star ` : ""}hotels in ${q.city}`],
       checkIn: q.checkIn,
       checkOut: q.checkOut,
       adults: q.adults,
       currency: "USD",
       country: "us",
       language: "en",
-      maxHotels: 20,
-      ...(q.stars ? { hotelClass: [String(q.stars)] } : {}),
+      maxHotels: byName.length ? 2 : 20,
+      ...(q.stars && !byName.length ? { hotelClass: [String(q.stars)] } : {}),
       includeOffers: true,
       offerLevel: "sources",
       maxOffersPerHotel: 8,

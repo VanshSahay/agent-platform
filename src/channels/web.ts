@@ -18,7 +18,7 @@ import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
-import { artifactPage, type DocState, emptyState, type FlightsData, type HotelsData, parseDocument } from "./artifacts.ts";
+import { artifactPage, type DocState, emptyState, type FlightsData, type HotelsData, parseDocument, privatePage } from "./artifacts.ts";
 
 /**
  * The web channel: a JSON API and one page for the owner. The API shape is
@@ -761,6 +761,21 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         });
       },
     },
+    // ---- a member opens a page to anyone with the link (or closes it again)
+    {
+      method: "PATCH",
+      re: /^\/api\/artifacts\/([^/]+)\/share$/,
+      access: "public",
+      handle: ({ params, me, body: b }) => {
+        const art = app.store.getArtifact(params[0]!);
+        if (!art) return bad("not found", 404);
+        if (auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
+        if (b.share !== "link" && b.share !== "room") return bad("share must be link or room");
+        art.share = b.share;
+        app.store.putArtifact(art);
+        return json({ share: art.share });
+      },
+    },
     {
       method: "PATCH",
       re: /^\/api\/artifacts\/([^/]+)\/state$/,
@@ -1315,11 +1330,10 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       if (p.startsWith("/d/")) {
         const art = app.store.getArtifact(p.slice(3).split("/")[0] ?? "");
         if (!art) return bad("not found", 404);
-        if (art.share !== "link" && auth && art.roomId) {
-          const me = (await auth.personFor(req))?.id;
-          if (!me || !app.store.getMembership(art.roomId, me)) return bad("sign in as a member of that chat to open this", 403);
-        }
-        return artifactPage(art, url.searchParams.has("raw"));
+        const me = auth ? (await auth.personFor(req))?.id : undefined;
+        const member = !auth || !art.roomId || (!!me && !!app.store.getMembership(art.roomId, me));
+        if (art.share !== "link" && !member) return privatePage();
+        return artifactPage(art, url.searchParams.has("raw"), { member });
       }
       if (!p.startsWith("/api/")) return bad("not found", 404);
 

@@ -129,15 +129,50 @@ const SHELL = (
 <style>body{margin:0;background:#fbfbf8;color:#111;font:15.5px/1.6 Inter,system-ui,sans-serif}main{max-width:760px;margin:0 auto;padding:40px 20px 80px}h1{font:800 32px/1.1 Rubik,Inter,sans-serif;letter-spacing:-.03em;margin:0 0 6px}h2{font-size:20px;margin:28px 0 8px}h3{font-size:17px}.sub{color:#55554f;margin:0 0 24px}.card{background:#fff;border:2px solid #111;border-radius:16px;box-shadow:3px 3px 0 #111;padding:16px 18px;margin:14px 0}.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.kpi .v{font:800 28px/1 Rubik,Inter,sans-serif}.kpi .l{color:#55554f;font-size:13px}.kpi .d{font-size:12px}.up{color:#16865a}.down{color:#c3352b}code{background:#f3f3ee;padding:1px 5px;border-radius:5px}img,audio{max-width:100%}a{color:#111}.foot{color:#8a8a83;font-size:12px;margin-top:40px}</style></head><body><main>${body}</main></body></html>`;
 
 /** The page at /d/:id for whatever the agent made. */
-export function artifactPage(a: Artifact, raw: boolean): Response {
+/** Who is looking: a member of the chat may share the page; anyone else came in by a shared link. */
+export interface Viewer {
+  member: boolean;
+}
+
+export function artifactPage(a: Artifact, raw: boolean, viewer: Viewer = { member: true }): Response {
+  const res = render(a, raw);
+  if (typeof res !== "string") return res;
+  // ponytail: the bar is spliced in before </main>, which every page shell has exactly once
+  return html(res.replace("</main>", `${shareBar(a, viewer)}</main>`));
+}
+
+/** A member can open the page to anyone with the link; a visitor sees who made it and where to get one. */
+function shareBar(a: Artifact, viewer: Viewer): string {
+  if (!viewer.member)
+    return `<aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`;
+  const open = a.share === "link";
+  return `<aside class="sharebar"><span id="shareNote">${open ? "Anyone with the link can open this page." : "Only members of the chat can open this page."}</span><button class="sharebtn" id="shareBtn" type="button">${open ? "Copy link" : "Share this page"}</button></aside><style>${SHARE_CSS}</style>
+<script>(()=>{const b=document.getElementById("shareBtn"),n=document.getElementById("shareNote");let open=${open};b.onclick=async()=>{try{if(!open){const r=await fetch("/api/artifacts/${a.id}/share",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({share:"link"})});if(!r.ok)throw new Error();open=true;n.textContent="Anyone with the link can open this page.";}
+await navigator.clipboard.writeText(location.origin+location.pathname);b.textContent="Link copied";}catch{b.textContent="Could not share";}};})();</script>`;
+}
+const SHARE_CSS =
+  ".sharebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:28px 0 0;padding:12px 16px;border:2px solid #111;border-radius:14px;background:#fff;font-size:14px}.sharebar.cta{background:#fff7d6}.sharebtn{font:600 14px Inter,system-ui,sans-serif;color:#fff;background:#111;border:0;border-radius:999px;padding:8px 14px;text-decoration:none;white-space:nowrap;cursor:pointer}";
+
+/** The 403 for a page that is not shared: a page, not JSON, since the link was tapped by a person. */
+export function privatePage(): Response {
+  return new Response(
+    SHELL(
+      "Private page",
+      `<h1>This page is private</h1><p class="sub">It was made inside a chat. Sign in as a member of that chat to open it, or ask whoever sent it to share the page.</p><p><a class="sharebtn" href="/#signin">Sign in</a></p><aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`,
+    ),
+    { status: 403, headers: { "content-type": "text/html; charset=utf-8", "x-frame-options": "DENY" } },
+  );
+}
+
+function render(a: Artifact, raw: boolean): Response | string {
   const d = a.data as Record<string, unknown>;
   const made = `<p class="foot">Made by the assistant on ${new Date(a.createdAt).toISOString().slice(0, 10)}.</p>`;
   if (a.kind === "document") {
     if (raw) return new Response(String(d.markdown ?? ""), { headers: { "content-type": "text/markdown; charset=utf-8" } });
-    return html(documentApp(a));
+    return documentApp(a);
   }
-  if (a.kind === "hotels") return html(hotelsPage(a));
-  if (a.kind === "flights") return html(flightsPage(a));
+  if (a.kind === "hotels") return hotelsPage(a);
+  if (a.kind === "flights") return flightsPage(a);
   if (a.kind === "dashboard") {
     const spec = d as unknown as Dash;
     const kpis = (spec.kpis ?? [])
@@ -147,7 +182,7 @@ export function artifactPage(a: Artifact, raw: boolean): Response {
       )
       .join("");
     const charts = (spec.charts ?? []).map((c) => `<div class="card"><h3>${esc(c.title)}</h3>${chartSvg(c)}</div>`).join("");
-    return html(SHELL(a.title, `<h1>${esc(spec.title)}</h1>${spec.subtitle ? `<p class="sub">${esc(spec.subtitle)}</p>` : ""}<div class="kpis">${kpis}</div>${charts}${made}`));
+    return SHELL(a.title, `<h1>${esc(spec.title)}</h1>${spec.subtitle ? `<p class="sub">${esc(spec.subtitle)}</p>` : ""}<div class="kpis">${kpis}</div>${charts}${made}`);
   }
   const mime = String(d.mimeType ?? "application/octet-stream");
   const bytes = Buffer.from(String(d.base64 ?? ""), "base64");
@@ -156,11 +191,9 @@ export function artifactPage(a: Artifact, raw: boolean): Response {
       headers: { "content-type": mime, "content-disposition": a.kind === "file" ? `attachment; filename="${a.title.replace(/[^\w.-]+/g, "_")}"` : "inline" },
     });
   const media = a.kind === "image" ? `<img src="?raw=1" alt="${esc(a.title)}">` : `<audio controls src="?raw=1"></audio>`;
-  return html(
-    SHELL(
-      a.title,
-      `<h1>${esc(a.title)}</h1><div class="card">${media}</div>${d.prompt ? `<p class="sub">${esc(String(d.prompt))}</p>` : ""}${d.text ? `<p>${esc(String(d.text))}</p>` : ""}${made}`,
-    ),
+  return SHELL(
+    a.title,
+    `<h1>${esc(a.title)}</h1><div class="card">${media}</div>${d.prompt ? `<p class="sub">${esc(String(d.prompt))}</p>` : ""}${d.text ? `<p>${esc(String(d.text))}</p>` : ""}${made}`,
   );
 }
 

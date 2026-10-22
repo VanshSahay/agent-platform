@@ -132,6 +132,8 @@ export interface PublicRatesQuery {
   checkOut: string;
   adults: number;
   stars?: number;
+  /** Hotels to price by name; without it the search is the city, which Google caps at its cheapest twenty. */
+  names?: string[];
 }
 export interface PublicRatesProvider {
   search(q: PublicRatesQuery): Promise<{ offers: PublicOffer[]; source: string; evidence: string }>;

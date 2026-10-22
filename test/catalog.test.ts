@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, reply, toolCallsSoFar } from "../src/model/scripted.ts";
 import { groupWorld, repliesTo } from "./helpers.ts";
-import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";
+import { FakeGoogle, type FakePublicRates, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
 import { TOOLS } from "../src/tools/registry.ts";
 import { type KestrelRow, parseBooking, parseKestrel, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
@@ -109,6 +109,8 @@ describe("the catalogue", () => {
     const call = w.app.store.toolCallsForRun(run!.id)[0]!;
     expect(call.status).toBe("done");
     expect(call.evidence).toBe("fake-hotels:1+fake-public-rates:1");
+    // The public side is asked about the hotels we are about to show, by name, not about the city.
+    expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.names).toEqual(["Hotel Nouvel", "Catalonia Avinyó", "Leonardo Las Ramblas"]);
     const r = call.result as { rows: string[]; matched: number; bookThroughUs: string; page: string };
     // Nouvel: $239.55 net + 10% = $264 against $343 on Booking; Catalonia (accent and no "Avinyó" in the public name) still matches at $292 vs $290 on Agoda.
     expect(r.rows[0]).toContain(

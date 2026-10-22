@@ -76,17 +76,19 @@ export const HOTEL_TOOLS: ToolDef[] = [
       };
       const limit = Math.min(15, Math.max(1, Math.floor(n(input.limit) ?? 8)));
       try {
-        const [ours, pub] = await Promise.all([
-          ctx.hands.hotels.rates({ ...q, limit: 20 }),
-          ctx.hands.publicRates.search(q).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message })),
-        ]);
+        const ours = await ctx.hands.hotels.rates({ ...q, limit: 20 });
         const max = n(input.maxTotalUsd);
         const rows: Row[] = ours.offers
           .filter((h) => !q.stars || !h.stars || h.stars === q.stars)
-          .map((hotel) => ({ hotel, oursUsd: Math.round(hotel.netUsd * (1 + markup())), pub: pub.offers.find((p) => sameHotel(p.name, hotel.name)) }))
+          .map((hotel) => ({ hotel, oursUsd: Math.round(hotel.netUsd * (1 + markup())) }))
           .filter((r) => max === undefined || r.oursUsd <= max)
           .slice(0, limit);
         if (!rows.length) return { ok: true, content: "No hotels for those dates.", evidence: ours.evidence, stall: `no hotels for ${q.city} ${checkIn}` };
+        // The public side is asked about these hotels by name, so every row we show gets looked up.
+        const pub = await ctx.hands.publicRates
+          .search({ ...q, names: rows.map((r) => r.hotel.name) })
+          .catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
+        for (const r of rows) r.pub = pub.offers.find((p) => sameHotel(p.name, r.hotel.name));
         // Savings first, then price; hotels without a public match go last.
         rows.sort((a, b) => (b.pub ? b.pub.totalUsd - b.oursUsd : -1e9) - (a.pub ? a.pub.totalUsd - a.oursUsd : -1e9) || a.oursUsd - b.oursUsd);
         const link = siteLink(q);
