@@ -26,7 +26,8 @@ describe("run loop", () => {
       (req, i) => {
         if (i === 0) return callTool("web_search", { query: "Mandarin speaking handyman San Jose" });
         expect(lastToolResult(req)).toContain("Lee's Repairs");
-        return reply("Found Lee's Repairs. Want me to call them?");
+        // A footer the model copied from an earlier reply is dropped; only the records' footer stays.
+        return reply("Found Lee's Repairs. Want me to call them?\n— 3 steps · 2 verified: Made a call");
       },
       { search },
     );
@@ -40,6 +41,8 @@ describe("run loop", () => {
     const text = repliesTo(w.deliveries, w.room.id)[0]!;
     expect(text).toContain("Found Lee's Repairs.");
     expect(text).toContain("— 1 step · 1 verified: Searched: ");
+    expect(text).not.toContain("Made a call");
+    expect(text.split("\n").filter((l) => l.startsWith("— "))).toHaveLength(1);
   });
 
   test("a reply that claims an action with no side-effect record is corrected", () => {

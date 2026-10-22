@@ -1061,6 +1061,8 @@ export class Runtime {
     }
     if (run.taskId) this.d.tasks.delivered(run.taskId, text);
     const calls = store.toolCallsForRun(run.id);
+    // The model sees earlier footers in the transcript and sometimes copies one; only the records' footer is kept.
+    text = text.replace(/(?:^|\n)— \d+ steps?(?: · [^\n]*)?: [^\n]*/g, "").trim();
     const footer = buildFooter(calls);
     const integrity = integrityNote(text, calls);
     const full = [text, integrity, footer].filter(Boolean).join("\n");

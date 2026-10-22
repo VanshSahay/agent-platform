@@ -50,7 +50,8 @@ function page(ctx: ToolContext, o: GroupOrder): string {
       ? `${usd(t)} of the ${usd(o.minimumUsd)} minimum so far; ${usd(short)} to go.`
       : `${usd(t)} in, minimum ${usd(o.minimumUsd)} met. Ready for the owner to place.`;
   const body = shares(ctx, o)
-    .map((sh) => `\n## ${sh.name} · ${usd(sh.goods)}\n${sh.items.map((i) => `- ${i}`).join("\n")}`)
+    // Plain lines, not bullets: a bulleted page becomes a tickable list, and an order is not a checklist.
+    .map((sh) => `\n## ${sh.name} · ${usd(sh.goods)}\n${sh.items.join("\n\n")}`)
     .join("\n");
   const markdown = `# Group order: ${o.brand}\n\n${status}\n${body}\n`;
   if (o.documentId) {

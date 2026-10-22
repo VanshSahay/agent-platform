@@ -820,7 +820,8 @@ function patchThread(el, html) {
     el.replaceChildren(...next);
     return;
   }
-  el.querySelector('[data-id="working"]')?.remove();
+  // The sender's optimistic bubble and its "working…" line carry no id; the stored copies replace them.
+  for (const c of [...el.children]) if (!c.dataset.id || c.dataset.id === "working") c.remove();
   for (const c of next.slice(have.length)) el.appendChild(c);
 }
 
