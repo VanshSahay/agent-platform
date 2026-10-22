@@ -20,6 +20,10 @@ export interface Person {
   addresses?: Address[];
   /** May the agent send email from this person's own Gmail? Off until they turn it on; each send still asks. */
   sendAsMe?: boolean;
+  /** Two records were one human (multiplayer-spec §11): this record's data moved to the id it names. */
+  mergedInto?: Id;
+  /** Records merged INTO this one; their old messages still point at them. */
+  mergedFrom?: Id[];
   createdAt: UnixMs;
 }
 

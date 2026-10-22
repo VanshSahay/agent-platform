@@ -159,6 +159,10 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
         // A six-digit code from Settings links this handle to the signed-in person; no run starts.
         const linked = claimLinkCode(app.store, text, senderId, app.clock.now());
         if (linked) {
+          // The handle's derived record (a stranger who texted before signing up) is the same
+          // human: memberships, memories and profiles move onto the signed-in person.
+          const derived = app.store.getPerson(personIdForHandle(normaliseHandle(senderId)));
+          if (derived && derived.id !== linked.id && !derived.mergedInto) app.rooms.mergePeople(linked.id, derived.id);
           await spectrum
             .send(space, plainText(`Linked: this number is now ${linked.displayName}'s. Text me here any time, or add me to a group chat and I'll be there too.`))
             .catch(() => undefined);

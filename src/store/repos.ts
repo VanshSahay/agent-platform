@@ -40,7 +40,9 @@ export class Store {
   }
   findPersonByPhone(phone: string) {
     // ponytail: a json_extract scan; add a phone column and index if the people table ever gets big
-    return parse<Person>(this.db.query("SELECT data FROM persons WHERE json_extract(data, '$.phoneE164') = ?").get(phone) as Row | null);
+    const p = parse<Person>(this.db.query("SELECT data FROM persons WHERE json_extract(data, '$.phoneE164') = ?").get(phone) as Row | null);
+    // A merged record is an alias for history: the human lives at the record it points to.
+    return p?.mergedInto ? this.getPerson(p.mergedInto) : p;
   }
 
   // ----- agents -----
@@ -295,6 +297,9 @@ export class Store {
   }
   putProfile(p: Profile) {
     this.db.run("INSERT OR REPLACE INTO profiles(agent_id, scope, scope_id, text, derived_at) VALUES (?, ?, ?, ?, ?)", [p.agentId, p.scope, p.scopeId, p.text, p.derivedAt]);
+  }
+  deleteProfile(agentId: string, scope: MemoryScope, scopeId: string) {
+    this.db.run("DELETE FROM profiles WHERE agent_id = ? AND scope = ? AND scope_id = ?", [agentId, scope, scopeId]);
   }
   getProfile(agentId: string, scope: MemoryScope, scopeId: string): Profile | undefined {
     const r = this.db.query("SELECT * FROM profiles WHERE agent_id = ? AND scope = ? AND scope_id = ?").get(agentId, scope, scopeId) as Row | null;

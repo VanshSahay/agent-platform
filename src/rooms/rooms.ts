@@ -3,6 +3,7 @@ import type { Clock } from "../core/clock.ts";
 import type { AgentSpec, ChannelKind, Id, Membership, MemberRole, Person, Room, RoomKind } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 import { findPersonByEmail } from "../store/queries.ts";
+import { privateProfileId } from "../memory/consolidate.ts";
 
 /**
  * Rooms are the chats the agent is deployed into. The agent is one identity
@@ -84,6 +85,58 @@ export class RoomService {
     const displayName = input.displayName?.trim() || email?.split("@")[0] || phone;
     if (!displayName) return undefined;
     return this.createPerson({ displayName: displayName.slice(0, 80), email, phoneE164: phone, timezone: input.timezone ?? "UTC" });
+  }
+
+  /**
+   * Two records are one human (multiplayer-spec §11): memberships, person memories and
+   * profiles move onto the kept record; a guest membership becomes member, because the
+   * dropped side is the one that signed up. The dropped record stays queryable — old
+   * messages point at it — but marked merged, and phone lookups follow the pointer.
+   * Nothing merges on a display name alone: callers match on handle, phone or email.
+   */
+  mergePeople(keepId: Id, dropId: Id): Person | undefined {
+    if (keepId === dropId) return this.store.getPerson(keepId);
+    const keep = this.store.getPerson(keepId);
+    const drop = this.store.getPerson(dropId);
+    if (!keep || !drop || drop.mergedInto) return undefined;
+    // The kept record should reach the human by every handle they used.
+    if (!keep.phoneE164 && drop.phoneE164) keep.phoneE164 = drop.phoneE164;
+    if (!keep.email && drop.email) keep.email = drop.email;
+    keep.mergedFrom = [...(keep.mergedFrom ?? []), dropId];
+    this.store.putPerson(keep);
+    for (const roomId of this.store.roomsForPerson(dropId)) {
+      const m = this.store.getMembership(roomId, dropId);
+      if (!m) continue;
+      this.store.deleteMembership(roomId, dropId);
+      const existing = this.store.getMembership(roomId, keepId);
+      if (existing) {
+        if (existing.role === "guest" && m.role !== "guest") {
+          existing.role = m.role;
+          existing.consentedAt = existing.consentedAt ?? m.consentedAt;
+          this.store.putMembership(existing);
+        }
+      } else {
+        this.store.putMembership({ ...m, personId: keepId, role: m.role === "guest" ? "member" : m.role, joinedAt: this.clock.now() });
+      }
+    }
+    for (const a of this.store.listAgents()) {
+      for (const m of this.store.listMemories(a.id)) {
+        if (m.scope === "person" && m.scopeId === dropId) {
+          this.store.putMemory({ ...m, scopeId: keepId });
+        } else if (m.subjectPersonId === dropId) {
+          this.store.putMemory({ ...m, subjectPersonId: keepId });
+        }
+      }
+      for (const scopeId of [dropId, privateProfileId(dropId)]) {
+        const profile = this.store.getProfile(a.id, "person", scopeId);
+        if (profile) {
+          this.store.putProfile({ ...profile, scopeId: scopeId === dropId ? keepId : privateProfileId(keepId) });
+          this.store.deleteProfile(a.id, "person", scopeId);
+        }
+      }
+    }
+    this.store.putPerson({ ...drop, mergedInto: keepId });
+    return this.store.getPerson(keepId);
   }
 
   consent(roomId: Id, personId: Id) {

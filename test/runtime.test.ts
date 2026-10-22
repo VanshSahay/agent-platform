@@ -4,6 +4,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar, ScriptedModel } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
+import { claimLinkCode, mintLinkCode, personIdForHandle } from "../src/channels/handles.ts";
 import { FakePayments, FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
 import { TOOLS, toolsForRun } from "../src/tools/registry.ts";
@@ -561,6 +562,60 @@ describe("the budget fence", () => {
     const search = w.app.store.toolCallsForRun(run.id).find((c) => c.name === "web_search");
     expect(search?.status).toBe("failed");
     expect(String(search?.result)).toContain("budget already answered");
+  });
+});
+
+describe("identity merge", () => {
+  test("a stranger who later signs up becomes one person: memberships move, the guest becomes a member, history stays attributed", async () => {
+    const w = groupWorld(() => reply("ok"));
+    const handle = "+14085550123";
+    const derivedId = personIdForHandle(handle);
+    // The stranger texted first: a derived record with their phone, a guest membership, a message, a memory about them.
+    w.app.rooms.createPerson({ id: derivedId, displayName: handle, timezone: "UTC", phoneE164: handle });
+    w.app.rooms.addMember(w.room.id, derivedId, "guest");
+    w.app.memory.write({
+      agentId: w.agent.id,
+      scope: "person",
+      scopeId: derivedId,
+      type: "observation",
+      text: "Speaks Mandarin with the plumber",
+      subjectPersonId: derivedId,
+      visibleToRooms: [w.room.id],
+    });
+    const signedUp = w.app.rooms.createPerson({ displayName: "Riley", timezone: "UTC", email: "riley@example.com" });
+    // They sign up; the merge folds the derived record into the signed-up one.
+    const kept = w.app.rooms.mergePeople(signedUp.id, derivedId)!;
+    expect(kept.id).toBe(signedUp.id);
+    expect(kept.mergedFrom).toContain(derivedId);
+    // The room membership moved and became a member; the old record is out of the room.
+    expect(w.app.rooms.memberIds(w.room.id)).toContain(signedUp.id);
+    expect(w.app.rooms.memberIds(w.room.id)).not.toContain(derivedId);
+    expect(w.app.rooms.role(w.room.id, signedUp.id)).toBe("member");
+    // The dropped record still answers for history, and points at the survivor.
+    const old = w.app.store.getPerson(derivedId)!;
+    expect(old.mergedInto).toBe(signedUp.id);
+    // Phone lookups follow the pointer: the next text lands on the signed-up person.
+    expect(w.app.store.findPersonByPhone(handle)?.id).toBe(signedUp.id);
+    // The memory about them followed, and recall for the new person finds it.
+    const recalled = w.app.memory.recall(w.agent.id, w.room, w.app.rooms.memberIds(w.room.id), "Mandarin plumber");
+    expect(recalled.some((m) => m.text.includes("Mandarin") && m.scopeId === signedUp.id)).toBe(true);
+  });
+
+  test("the link-code flow merges the derived record into the signed-in person", async () => {
+    const w = groupWorld(() => reply("ok"));
+    const handle = "+14085550187";
+    const derivedId = personIdForHandle(handle);
+    w.app.rooms.createPerson({ id: derivedId, displayName: handle, timezone: "UTC", phoneE164: handle });
+    w.app.rooms.addMember(w.room.id, derivedId, "guest");
+    const signedIn = w.app.rooms.createPerson({ displayName: "Riley", timezone: "UTC" });
+    const code = mintLinkCode(w.app.store, signedIn.id, w.clock.now());
+    const linked = claimLinkCode(w.app.store, code, handle, w.clock.now())!;
+    expect(linked.id).toBe(signedIn.id);
+    // The caller's merge (as the channel does it) folds the stranger record in.
+    const derived = w.app.store.getPerson(derivedId)!;
+    if (derived.id !== linked.id && !derived.mergedInto) w.app.rooms.mergePeople(linked.id, derived.id);
+    expect(w.app.rooms.role(w.room.id, signedIn.id)).toBe("member");
+    expect(w.app.store.getPerson(derivedId)!.mergedInto).toBe(signedIn.id);
   });
 });
 
