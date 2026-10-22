@@ -885,7 +885,35 @@ async function decorateDocLinks() {
 }
 const linkify = (escaped) => escaped.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
 /** Light Markdown for the assistant's replies: bold, italics, code, links, bullets, numbered lists, headings. Escaped first. */
+// A ```cards block is a shortlist: the agent gives options as data, the chat shows them as cards.
+function cardsHtml(json) {
+  let items;
+  try {
+    items = JSON.parse(json);
+  } catch {
+    return `<pre>${esc(json)}</pre>`;
+  }
+  if (!Array.isArray(items)) return "";
+  const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//.test(u) ? u : "");
+  return `<div class="cards">${items
+    .slice(0, 6)
+    .map((c) => {
+      const url = safeUrl(c.url);
+      const img = safeUrl(c.image);
+      const body = `${img ? `<img src="${esc(img)}" alt="" loading="lazy" />` : ""}<span class="t"><strong>${esc(c.title ?? "")}</strong>${c.subtitle ? `<span class="sub">${esc(c.subtitle)}</span>` : ""}${c.note ? `<span class="note">${esc(c.note)}</span>` : ""}</span><span class="side">${c.price ? `<b class="price">${esc(c.price)}</b>` : ""}${c.tag ? `<span class="tag">${esc(c.tag)}</span>` : ""}${url ? `<span class="open">Open →</span>` : ""}</span>`;
+      return url
+        ? `<a class="optcard${c.tag === "pick" ? " pick" : ""}" href="${esc(url)}" target="_blank" rel="noopener">${body}</a>`
+        : `<span class="optcard${c.tag === "pick" ? " pick" : ""}">${body}</span>`;
+    })
+    .join("")}</div>`;
+}
 function md(text) {
+  // Cards are rendered as data; everything around them is ordinary Markdown.
+  const parts = text.split(/```cards\s*\n([\s\S]*?)\n\s*```/);
+  if (parts.length > 1) return parts.map((p, i) => (i % 2 ? cardsHtml(p) : mdText(p))).join("");
+  return mdText(text);
+}
+function mdText(text) {
   const inline = (t) =>
     esc(t)
       .replace(/`([^`]+)`/g, "<code>$1</code>")

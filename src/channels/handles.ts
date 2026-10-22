@@ -58,6 +58,7 @@ export class HandleRateLimit {
 /** Markdown the model wrote, flattened for a text channel: bold and italics dropped, headings plain, links as their URL, bullets kept. */
 export function plainText(md: string): string {
   return md
+    .replace(/```cards\s*\n([\s\S]*?)\n\s*```/g, (_m, json: string) => cardsAsLines(json))
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1$2")
     .replace(/`([^`]+)`/g, "$1")
@@ -107,3 +108,20 @@ export function groupRoomName(channel: string, names: string[]): string {
   return `${label} · ${shown}${more > 0 ? ` & ${more} more` : ""}`;
 }
 export const isDefaultRoomName = (name: string) => /^(imessage|whatsapp|telegram|slack) (group|·)/i.test(name);
+
+/** A cards block in Messages: one numbered line per option, the pick marked. */
+export function cardsAsLines(json: string): string {
+  try {
+    const items = JSON.parse(json) as { title?: string; price?: string; note?: string; url?: string; tag?: string }[];
+    if (!Array.isArray(items)) return json;
+    return items
+      .slice(0, 6)
+      .map(
+        (c, i) =>
+          `${i + 1}. ${c.title ?? ""}${c.price ? ` — ${c.price}` : ""}${c.note ? ` · ${c.note}` : ""}${c.tag === "pick" ? " · my pick" : ""}${c.url ? `\n   ${c.url}` : ""}`,
+      )
+      .join("\n");
+  } catch {
+    return json;
+  }
+}

@@ -383,6 +383,19 @@ form.composer .pending { max-width: 720px; margin: 0 auto 8px; display: flex; ga
 .doccard .hotel .p { font-size: 12px; color: var(--text-2) }
 .doccard .hotel .save { grid-column: 3; grid-row: 1 / span 2; font: 600 12px var(--sans); color: var(--ok, #16865a); background: oklch(0.95 0.06 160); border-radius: 999px; padding: 2px 8px }
 .doccard.hotels .open, .doccard.flights .open { grid-row: 1 / span 2 }
+.cards { display: grid; gap: 8px; margin: 10px 0 4px; max-width: 520px }
+.optcard { display: grid; grid-template-columns: auto 1fr auto; gap: 0 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--paper); color: var(--text); text-decoration: none !important; box-shadow: 0 1px 2px oklch(0 0 0 / 4%) }
+a.optcard:hover { transform: translateY(-1px); box-shadow: 0 6px 18px oklch(0 0 0 / 6%) }
+.optcard.pick { border-color: var(--accent); box-shadow: 2px 2px 0 var(--lime-2) }
+.optcard img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; background: var(--bg-2) }
+.optcard .t { display: grid; gap: 2px; min-width: 0 }
+.optcard .t strong { font: 600 14px var(--sans); line-height: 1.25 }
+.optcard .sub, .optcard .note { font-size: 13px; color: var(--text-2) }
+.optcard .note { color: var(--text-3) }
+.optcard .side { display: grid; justify-items: end; gap: 4px }
+.optcard .price { font: 700 16px var(--sans) }
+.optcard .tag { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: 0.04em; color: var(--ok, #16865a); background: oklch(0.95 0.06 160); border-radius: 999px; padding: 2px 8px }
+.optcard .open { font: 500 12px var(--sans); border: 1px solid var(--line-2); border-radius: 999px; padding: 4px 9px; white-space: nowrap }
 .doccard .hotel.flight { grid-template-columns: 1fr auto }
 .doccard .hotel.flight .n { white-space: normal }
 

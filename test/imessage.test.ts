@@ -57,6 +57,11 @@ describe("imessage handles", () => {
 
 describe("text channels get plain text", () => {
   test("markdown is flattened before it goes out to iMessage or WhatsApp", () => {
+    expect(
+      plainText(
+        'Two decks:\n```cards\n[{"title":"Dalí set","price":"$60","note":"in stock","url":"https://m.example/d","tag":"pick"},{"title":"Hermès deck","price":"€165"}]\n```\nThe Dalí set is the real deck.',
+      ),
+    ).toBe("Two decks:\n1. Dalí set — $60 · in stock · my pick\n   https://m.example/d\n2. Hermès deck — €165\nThe Dalí set is the real deck.");
     expect(plainText("**Classics:**\n- **Loop** — 3.8 mi, *hard*.\n\n\n## Easy\nSee [the map](https://example.com/map.pdf) or `signage`.")).toBe(
       "Classics:\n- Loop — 3.8 mi, hard.\n\nEasy\nSee the map https://example.com/map.pdf or signage.",
     );
