@@ -27,7 +27,13 @@ Shipped so far: items 1–3 (two-block cache + per-run tools; boot resume + side
 
 **Ellie's sweep (2026-10-21, merged 1ab1278)** absorbed and superseded parts of this plan: her Harness² loop over `skills/_core-rules.md` with the suite as judge is items 5 and 7's mechanism, built; her browser chain (Chrome → Browserbase → Jina) and task-note restarts extend item 2; DeepSeek V4.1 Flash is the default model; 18 eval scenarios with a strict contract (per-scenario script, noOpPasses labels, category/shape/cases) are the flywheel; her security audit fixed the privacy and authorisation holes with `docs/research/codebase-review-2026-10-21.md` recording what is left open on purpose.
 
-**Open now, per Ellie:** the adding-to-a-group flow (design), group coordination/orchestration + tool calling (the spec's "new" list: polls with tally, split artifact, find_time, page-edit events, photo-to-dates), then voice / calendar / payments — which are written and waiting only on the provisioning list (`provisioning.md`) being filled by the Company.
+**Open now, after the 22 October research verdict (three-agent audit: thesis, evidence-of-use, competitive):** on-thesis but misordered — the differentiators (identity, pages→ledger, couples) are spec'd, cheap, and unbuilt, while 5 of 7 flagship items were generic-agent infrastructure. The competitive window is ~one product cycle (OpenAI has committed to group chats for 2026; nobody verified does roles/consent/ledger inside an existing chat — Circle's room-scoped memory is a genuine differentiator vs Meta AI's non-E2E memory). Two docs premises drifted: Fo's group chats are now free (invite-only), not paid-tier; and "iMessage first" is the biggest execution risk (no bot API; every verified player went own-app or own-number) — a strategic bet Ellie owns knowingly, with the contract still pinning iMessage for M1.
+
+**The reordered roadmap:**
+1. **Oct 23–25 — the differentiators**: page-claim → commitment event (both auditors' #1; 37 use cases; ~80% of plumbing ships), identity merge (§11), co-owners / per-person money (§7.3).
+2. **Oct 26 – Nov 2 — coordination set + M1 closeout**: find_time + polls with tally/deadline (calendar fixture added to the eval world), admin-surface audit against the M1 list, runbook assembly, real-group testing *gated on Ellie's Spectrum Business decision*.
+3. **Nov 3–9 — live providers as keys arrive**: Google OAuth, Vapi/Twilio, AgentMail, Stripe (adapters written); webhooks → `handleEvent`; photo→dates; over-searching guard if traces show the budget-rule gap again.
+4. **Nov 10–16 — handover**: split artifact + settle-up, eval expansion across all six families, reliability matrix, architecture overview, cost notes, walkthrough; then the 14-day defect window.
 
 ## The order, mapped to dates
 
