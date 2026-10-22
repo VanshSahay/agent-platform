@@ -163,9 +163,9 @@ export class ApifyFlights implements PublicFlightsProvider {
     for (const r of rows) {
       const segs = [...(r.outbound?.segments ?? []), ...(r.return?.segments ?? [])];
       if (!segs.length || typeof r.price !== "number") continue;
-      const opts = (r.bookingDetails?.bookingOptions ?? []).filter((o) => typeof o.price === "number").sort((a, b) => a.price! - b.price!);
-      // Google's list price is the one people see; a booking option is a seller's quote for the same seats.
-      const best = opts[0];
+      // Google's list price is the fare for the cabin asked. Booking options also carry cheaper fare brands on
+      // the same flight (economy next to Mint), so an option only names the seller when it matches the list price.
+      const seller = (r.bookingDetails?.bookingOptions ?? []).find((o) => typeof o.price === "number" && Math.abs(o.price - r.price!) <= 1)?.provider;
       offers.push({
         flights: segs.map((s) => (s.flightNumber ?? "").replace(/\s+/g, "")),
         airline: r.airlines?.[0] ?? segs[0]!.airline ?? "",
@@ -173,8 +173,8 @@ export class ApifyFlights implements PublicFlightsProvider {
         arriveAt: segs[segs.length - 1]!.arrivalTime ?? "",
         durationMin: r.totalDuration ?? 0,
         stops: r.stops ?? Math.max(0, segs.length - 1),
-        totalUsd: best && best.price! < r.price ? best.price! : r.price,
-        seller: best && best.price! < r.price ? (best.provider ?? "Google Flights") : "Google Flights",
+        totalUsd: r.price,
+        seller: seller ?? "Google Flights",
         url: `https://www.google.com/travel/flights?q=Flights%20from%20${q.origin}%20to%20${q.destination}%20on%20${q.date}`,
       });
     }
