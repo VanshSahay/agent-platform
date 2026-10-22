@@ -75,6 +75,9 @@ async function ensureAuth() {
     // Sign-in and sign-up both live on this page, in the app's own light look, never on Clerk's hosted portal.
     $("#app").innerHTML = '<div id="signin" style="min-height:100dvh;padding:40px;display:grid;place-items:center"></div>';
     const opts = {
+      // Virtual routing: Clerk keeps its steps (password, code) in memory instead of rewriting the hash,
+      // which the app's own router would otherwise read as "signed out somewhere else" and bounce to /welcome.
+      routing: "virtual",
       signInUrl: `${location.origin}/#signin`,
       signUpUrl: `${location.origin}/#signup`,
       afterSignInUrl: `${location.origin}/`,
@@ -183,7 +186,8 @@ function route() {
     return;
   }
   if (!$("#pageChat")) {
-    location.reload(); // signed out: the page holds only the sign-in form, and #signup needs the other one
+    // Signed out: the page holds only the sign-in form. Reload only to swap sign-in for sign-up; any other hash is Clerk's own.
+    if (/^#sign(in|up)\/?$/.test(location.hash)) location.reload();
     return;
   }
   const [page, sub] = h.split("/");
