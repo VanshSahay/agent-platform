@@ -109,8 +109,8 @@ describe("the catalogue", () => {
     const call = w.app.store.toolCallsForRun(run!.id)[0]!;
     expect(call.status).toBe("done");
     expect(call.evidence).toBe("fake-hotels:1+fake-public-rates:1");
-    // The public side is asked about the hotels we are about to show, by name, not about the city.
-    expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.names).toEqual(["Hotel Nouvel", "Catalonia Avinyó", "Leonardo Las Ramblas"]);
+    // The public side is asked for the star classes of the hotels we are about to show, so Google's list covers them.
+    expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.classes).toEqual([3, 4]);
     const r = call.result as { rows: string[]; matched: number; bookThroughUs: string; page: string };
     // Nouvel: $239.55 net + 10% = $264 against $343 on Booking; Catalonia (accent and no "Avinyó" in the public name) still matches at $292 vs $290 on Agoda.
     expect(r.rows[0]).toContain(

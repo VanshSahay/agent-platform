@@ -13,6 +13,7 @@
     "eval": "bun run src/eval/run.ts",
     "harness": "bun run src/eval/harness-run.ts",
     "spend": "bun run src/spend-cli.ts",
+    "smoke:hotels": "bun run scripts/smoke-hotels.ts",
     "spend:prod": "fly ssh console --app circle-agent -C \"bun run src/spend-cli.ts\"",
     "lint": "biome check src test web/app.js",
     "format": "biome format --write src test web/app.js"

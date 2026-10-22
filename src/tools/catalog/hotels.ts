@@ -14,7 +14,7 @@ export const hotelKey = (name: string) =>
     .replace(/\b(hotel|hôtel|residence|residences|and|the|le|la|les|spa)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
-const sameHotel = (a: string, b: string) => {
+export const sameHotel = (a: string, b: string) => {
   const x = hotelKey(a);
   const y = hotelKey(b);
   return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x));
@@ -84,9 +84,9 @@ export const HOTEL_TOOLS: ToolDef[] = [
           .filter((r) => max === undefined || r.oursUsd <= max)
           .slice(0, limit);
         if (!rows.length) return { ok: true, content: "No hotels for those dates.", evidence: ours.evidence, stall: `no hotels for ${q.city} ${checkIn}` };
-        // The public side is asked about these hotels by name, so every row we show gets looked up.
+        // The public side is asked for the star classes we are about to show, so Google's list covers these hotels.
         const pub = await ctx.hands.publicRates
-          .search({ ...q, names: rows.map((r) => r.hotel.name) })
+          .search({ ...q, classes: [...new Set(rows.map((r) => r.hotel.stars).filter((x): x is number => !!x))] })
           .catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
         for (const r of rows) r.pub = pub.offers.find((p) => sameHotel(p.name, r.hotel.name));
         // Savings first, then price; hotels without a public match go last.
