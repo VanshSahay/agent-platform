@@ -139,7 +139,7 @@ describe("the catalogue", () => {
     delete process.env.HOTEL_SITE_URL;
   });
 
-  test("Google Hotels rows become one public offer per hotel: the cheapest all-in seller, with a discount reseller's lower before-tax figure noted", () => {
+  test("Google Hotels rows become one public offer per hotel: the cheapest major seller made all-in with Google's tax estimate, a discount reseller's lower before-tax figure noted", () => {
     const rows: KestrelRow[] = [
       {
         type: "hotel",
@@ -174,12 +174,14 @@ describe("the catalogue", () => {
     ];
     expect(parseKestrel(rows)).toEqual([
       {
+        // Google's estimate for this hotel is 10% tax plus $44.60 fees: the official site's 7,883 before tax is 8,716 all-in, still under Booking's listed 8,926.
         name: "Alpes Hôtel du Pralong",
-        totalUsd: 7883,
+        totalUsd: 8716,
         seller: "Official site",
         refundable: false,
         url: "https://www.google.com/travel/lodging/clk?a",
         allIn: true,
+        taxesEstimated: true,
         listedBelow: { seller: "Super.com", totalUsd: 5911, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
       },
     ]);

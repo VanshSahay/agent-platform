@@ -120,8 +120,10 @@ export interface PublicOffer {
   seller: string;
   refundable: boolean;
   url: string;
-  /** The seller quotes the stay with taxes and fees in (hotel's own site, Booking.com, Expedia, Hotels.com); false means a before-tax figure. */
+  /** The figure is the stay with taxes and fees in; false means a before-tax figure from a seller nobody trusted. */
   allIn: boolean;
+  /** The seller listed before tax and Google's tax-and-fee estimate for the hotel was added (within $11 of Expedia's checkout when measured). */
+  taxesEstimated?: boolean;
   /** A discount reseller listing a lower before-tax figure for the same room; its checkout adds taxes and fees. */
   listedBelow?: { seller: string; totalUsd: number; url: string };
 }

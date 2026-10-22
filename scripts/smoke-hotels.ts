@@ -22,7 +22,7 @@ let matched = 0;
 for (const h of rows) {
   const p = pub.offers.find((o) => sameHotel(o.name, h.name));
   if (p) matched++;
-  console.log(`${p ? "✓" : "✗"} ${h.name}${h.stars ? ` ${h.stars}★` : ""}: us $${Math.round(h.netUsd)}${p ? ` · public $${p.totalUsd} on ${p.seller}${p.allIn ? "" : " (before taxes & fees)"}${p.listedBelow ? ` · ${p.listedBelow.seller} lists $${p.listedBelow.totalUsd} before taxes & fees` : ""}` : " · no public price"}`);
+  console.log(`${p ? "✓" : "✗"} ${h.name}${h.stars ? ` ${h.stars}★` : ""}: us $${Math.round(h.netUsd)}${p ? ` · public $${p.totalUsd} on ${p.seller}${p.allIn ? (p.taxesEstimated ? " (taxes est.)" : "") : " (before taxes & fees)"}${p.listedBelow ? ` · ${p.listedBelow.seller} lists $${p.listedBelow.totalUsd} before taxes & fees` : ""}` : " · no public price"}`);
 }
 console.log(`\n${matched}/${rows.length} matched · ${pub.offers.length} public hotels from ${pub.source} · classes ${classes.join(",") || "any"} · ${Math.round((Date.now() - t0) / 1000)} s`);
 if (matched < rows.length / 2) process.exit(1);

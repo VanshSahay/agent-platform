@@ -37,7 +37,7 @@ const siteLink = (q: { city: string; checkIn: string; checkOut: string; adults: 
 const rowLine = (r: Row) =>
   `${r.hotel.name}${r.hotel.stars ? ` ${r.hotel.stars}★` : ""}: through us ${usd(r.oursUsd)}${r.hotel.refundable ? " (refundable)" : ""}${
     r.pub
-      ? ` · public ${usd(r.pub.totalUsd)} on ${r.pub.seller} (${r.pub.allIn ? "all-in" : "before taxes & fees"}${r.pub.refundable ? ", refundable" : ""}) · ${r.pub.totalUsd > r.oursUsd ? `save ${usd(r.pub.totalUsd - r.oursUsd)} (${Math.round(((r.pub.totalUsd - r.oursUsd) / r.pub.totalUsd) * 100)}%) with us` : `${usd(r.oursUsd - r.pub.totalUsd)} cheaper there`}${r.pub.listedBelow ? ` · ${r.pub.listedBelow.seller} lists ${usd(r.pub.listedBelow.totalUsd)} before taxes & fees` : ""}`
+      ? ` · public ${usd(r.pub.totalUsd)} on ${r.pub.seller} (${r.pub.allIn ? (r.pub.taxesEstimated ? "all-in, taxes estimated" : "all-in") : "before taxes & fees"}${r.pub.refundable ? ", refundable" : ""}) · ${r.pub.totalUsd > r.oursUsd ? `save ${usd(r.pub.totalUsd - r.oursUsd)} (${Math.round(((r.pub.totalUsd - r.oursUsd) / r.pub.totalUsd) * 100)}%) with us` : `${usd(r.oursUsd - r.pub.totalUsd)} cheaper there`}${r.pub.listedBelow ? ` · ${r.pub.listedBelow.seller} lists ${usd(r.pub.listedBelow.totalUsd)} before taxes & fees` : ""}`
       : " · no public price found"
   } · ${r.hotel.room}${r.hotel.board ? `, ${r.hotel.board}` : ""}`;
 
@@ -126,7 +126,15 @@ export const HOTEL_TOOLS: ToolDef[] = [
               feesAtHotelUsd: r.hotel.excludedFeesUsd,
               oursUsd: r.oursUsd,
               pub: r.pub
-                ? { totalUsd: r.pub.totalUsd, seller: r.pub.seller, refundable: r.pub.refundable, url: r.pub.url, allIn: r.pub.allIn, listedBelow: r.pub.listedBelow }
+                ? {
+                    totalUsd: r.pub.totalUsd,
+                    seller: r.pub.seller,
+                    refundable: r.pub.refundable,
+                    url: r.pub.url,
+                    allIn: r.pub.allIn,
+                    taxesEstimated: r.pub.taxesEstimated,
+                    listedBelow: r.pub.listedBelow,
+                  }
                 : undefined,
             })),
           },

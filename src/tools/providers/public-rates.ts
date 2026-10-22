@@ -151,42 +151,49 @@ export interface KestrelRow {
   fetched_at?: string;
 }
 /**
- * Sellers whose figure on Google's ladder is the stay with taxes and fees in. Measured on Courchevel: Booking.com's
- * ladder figure matched its own site within $3, while a discount reseller's was a before-tax figure its checkout
- * raised by 18%. Comparing against these keeps the saving honest without scraping any seller.
+ * Google's ladder lists most sellers before taxes. Measured on Courchevel, 22 Oct 2026: Expedia's ladder figure plus
+ * Google's own tax-and-fee estimate for that hotel landed within $11 of Expedia's checkout; Booking.com's figure was
+ * already the all-in total; a discount reseller's checkout ran 18% over its figure, more than taxes. So: Booking.com
+ * is taken as listed, the big sellers get Google's estimate added, and discount resellers are shown but not counted.
  */
-const ALL_IN_SELLERS = /booking\.com|expedia|hotels\.com/i;
-export const quotesAllIn = (seller: string, official = false) => official || ALL_IN_SELLERS.test(seller);
+const INCLUSIVE_SELLERS = /booking\.com/i;
+const TRUSTED_SELLERS = /expedia|hotels\.com|orbitz|travelocity|agoda|priceline/i;
 
-/** Per hotel: the cheapest all-in seller as the public price, plus any discount reseller listing a lower before-tax figure. */
+/** Per hotel: the cheapest trusted seller as the public price, all-in, plus any discount reseller listing a lower before-tax figure. */
 export function parseKestrel(rows: KestrelRow[]): PublicOffer[] {
   const hotels = new Map<string, KestrelRow>();
   for (const r of rows) if (r.type === "hotel" && r.hotel_id) hotels.set(r.hotel_id, r);
-  const byHotel = new Map<string, { allIn: KestrelRow[]; other: KestrelRow[] }>();
+  const byHotel = new Map<string, { trusted: KestrelRow[]; other: KestrelRow[] }>();
   for (const o of rows) {
     if (o.type !== "offer" || !o.hotel_id || typeof o.total !== "number" || o.total <= 0) continue;
-    const g = byHotel.get(o.hotel_id) ?? { allIn: [], other: [] };
-    (quotesAllIn(o.source ?? "", !!o.official) ? g.allIn : g.other).push(o);
+    const g = byHotel.get(o.hotel_id) ?? { trusted: [], other: [] };
+    const src = o.source ?? "";
+    (o.official || INCLUSIVE_SELLERS.test(src) || TRUSTED_SELLERS.test(src) ? g.trusted : g.other).push(o);
     byHotel.set(o.hotel_id, g);
   }
-  const cheapest = (xs: KestrelRow[]) => xs.slice().sort((a, b) => a.total! - b.total!)[0];
   const sellerOf = (o: KestrelRow) => (o.official ? "Official site" : (o.source ?? "Google Hotels"));
   const urlOf = (o: KestrelRow, h?: KestrelRow) => o.partner_url || o.link || h?.website || "https://www.google.com/travel/hotels";
   const offers: PublicOffer[] = [];
   for (const [id, g] of byHotel) {
     const h = hotels.get(id);
-    const name = h?.name ?? g.allIn[0]?.name ?? g.other[0]?.name ?? "";
+    const name = h?.name ?? g.trusted[0]?.name ?? g.other[0]?.name ?? "";
     if (!name) continue;
-    const best = cheapest(g.allIn);
-    const low = cheapest(g.other);
+    // Google's tax estimate for the lead rate, as a rate, applied to every seller that lists before tax.
+    const rate = h?.total_base && h.taxes ? h.taxes / h.total_base : 0;
+    const fees = h?.fees ?? 0;
+    const allIn = (o: KestrelRow) => (INCLUSIVE_SELLERS.test(o.source ?? "") ? o.total! : o.total! * (1 + rate) + fees);
+    const best = g.trusted.slice().sort((a, b) => allIn(a) - allIn(b))[0];
+    const low = g.other.slice().sort((a, b) => a.total! - b.total!)[0];
     if (best) {
+      const estimated = !INCLUSIVE_SELLERS.test(best.source ?? "") && rate > 0;
       offers.push({
         name,
-        totalUsd: Math.round(best.total!),
+        totalUsd: Math.round(allIn(best)),
         seller: sellerOf(best),
         refundable: !!best.free_cancel,
         url: urlOf(best, h),
         allIn: true,
+        ...(estimated ? { taxesEstimated: true } : {}),
         ...(low && low.total! < best.total! ? { listedBelow: { seller: sellerOf(low), totalUsd: Math.round(low.total!), url: urlOf(low, h) } } : {}),
       });
     } else if (low) {
