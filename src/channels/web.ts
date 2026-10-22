@@ -12,6 +12,7 @@ import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
 import { publicUrl } from "../tools/kit.ts";
+import { faireApp, faireAuthUrl, faireExchange } from "../tools/providers/faire.ts";
 import { privateProfileId } from "../memory/consolidate.ts";
 import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
@@ -624,6 +625,8 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           googleConfigured: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
           agentEmail: app.hands.email.address(),
           google: services.includes("google"),
+          faireConfigured: !!faireApp(),
+          faire: services.includes("faire"),
           slack: services.includes("slack"),
           mcp: services.filter((x) => x.startsWith("mcp:")).map((x) => x.slice(4)),
           apis: services.filter((x) => x.startsWith("api:")).map((x) => x.slice(4)),
@@ -644,6 +647,22 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         app.store.setKv(`oauth:google:${state}`, JSON.stringify({ personId, at: app.clock.now() }));
         const redirectUri = `${process.env.PUBLIC_URL ?? new URL(req.url).origin}/oauth/google/callback`;
         return json({ url: googleAuthUrl({ clientId: GOOGLE_CLIENT_ID, redirectUri }, state) });
+      },
+    },
+    {
+      // Faire: the person authorises the app on faire.com; the token lands in their vault as "faire".
+      method: "GET",
+      re: /^\/api\/connections\/faire\/link$/,
+      access: "signedIn",
+      handle: ({ url, me, req }) => {
+        const personId = me ?? url.searchParams.get("personId");
+        if (!personId) return bad("personId required");
+        const app_ = faireApp();
+        if (!app_) return bad("Faire is not configured on this server (FAIRE_APP_ID, FAIRE_APP_SECRET)", 503);
+        const state = randomBytes(12).toString("base64url");
+        app.store.setKv(`oauth:faire:${state}`, JSON.stringify({ personId, at: app.clock.now() }));
+        const redirectUrl = `${process.env.PUBLIC_URL ?? new URL(req.url).origin}/oauth/faire/callback`;
+        return json({ url: faireAuthUrl(app_, redirectUrl, state) });
       },
     },
     {
@@ -1267,6 +1286,19 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           app.store.putPerson(person);
         }
         return new Response(null, { status: 302, headers: { location: "/#settings" } });
+      }
+      if (p === "/oauth/faire/callback") {
+        const state = url.searchParams.get("state") ?? "";
+        const code = url.searchParams.get("code") ?? url.searchParams.get("authorization_code") ?? "";
+        const raw = app.store.getKv(`oauth:faire:${state}`);
+        const app_ = faireApp();
+        if (!raw || !code || !app_) return bad(`that Faire link is not valid any more${url.searchParams.get("error") ? ` (${url.searchParams.get("error")})` : ""}`, 400);
+        app.store.deleteKv(`oauth:faire:${state}`);
+        const { personId } = JSON.parse(raw) as { personId: string };
+        const redirectUrl = `${process.env.PUBLIC_URL ?? url.origin}/oauth/faire/callback`;
+        const tok = await faireExchange(app_, redirectUrl, code);
+        app.vault.put(personId, "faire", JSON.stringify({ access_token: tok.access_token, scope: tok.scope, at: app.clock.now() }));
+        return new Response(null, { status: 302, headers: { location: "/#settings/connections" } });
       }
       if (p.startsWith("/d/")) {
         const art = app.store.getArtifact(p.slice(3).split("/")[0] ?? "");
