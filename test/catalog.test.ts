@@ -4,7 +4,7 @@ import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
 import { TOOLS } from "../src/tools/registry.ts";
-import { parseBooking, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
+import { type KestrelRow, parseBooking, parseKestrel, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
 import { hotelKey } from "../src/tools/catalog/hotels.ts";
 
 /** A scripted model that calls one tool once, then replies. */
@@ -128,6 +128,44 @@ describe("the catalogue", () => {
     expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
     delete process.env.HOTEL_MARKUP_PCT;
     delete process.env.HOTEL_SITE_URL;
+  });
+
+  test("Google Hotels rows become one all-in offer per hotel: the cheapest seller, pre-tax total scaled by the hotel's tax rate plus fees", () => {
+    const rows: KestrelRow[] = [
+      {
+        type: "hotel",
+        hotel_id: "h1",
+        name: "Alpes Hôtel du Pralong",
+        total_base: 5866.68,
+        taxes: 586.53,
+        fees: 44.6,
+        total_with_taxes: 6497.81,
+        website: "https://alpeshoteldupralong.com/",
+      },
+      {
+        type: "offer",
+        hotel_id: "h1",
+        name: "Alpes Hôtel du Pralong",
+        source: "Alpes Hôtel du Pralong",
+        official: true,
+        total: 7883.21,
+        link: "https://www.google.com/travel/lodging/clk?a",
+      },
+      {
+        type: "offer",
+        hotel_id: "h1",
+        name: "Alpes Hôtel du Pralong",
+        source: "Super.com",
+        official: false,
+        total: 5911.28,
+        partner_url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13",
+      },
+      { type: "offer", hotel_id: "h1", name: "Alpes Hôtel du Pralong", source: "Booking.com", official: false, total: 8925.83, free_cancel: true },
+      { type: "status", hotels: 1 } as KestrelRow,
+    ];
+    expect(parseKestrel(rows)).toEqual([
+      { name: "Alpes Hôtel du Pralong", totalUsd: 6547, seller: "Super.com", refundable: false, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
+    ]);
   });
 
   test("public hotel links carry the dates on sellers that take them in the URL", () => {

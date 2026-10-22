@@ -55,31 +55,33 @@ export function parseBooking(text: string, url = "https://www.booking.com"): Pub
 }
 
 /**
- * Google Hotels through Apify's factden/google-hotels-scraper: per hotel, every seller's total for the stay
- * (Booking.com, Agoda, Expedia, Hotels.com, the hotel's own site) with a booking link. APIFY_TOKEN; pay per
- * hotel priced (about half a cent each). The actor writes hotel rows to its run's dataset and to a named
- * `hotels` dataset; the run's dataset is read first.
+ * Google Hotels through Apify's kestrel/google-hotels-prices: one hotel row with Google's taxes-and-fees
+ * estimate for the lead rate, plus one offer row per seller (Booking.com, Agoda, Expedia, Super.com, the
+ * hotel's own site) at the pre-tax total. Each seller's all-in total is its pre-tax total scaled by the
+ * hotel's tax rate plus fees, which is what Google shows as the price with taxes. A seller's checkout can
+ * still add its own fees on top (Super.com charged $7,008 where Google estimated $6,498). APIFY_TOKEN;
+ * about $0.004 a hotel and $0.002 an offer row.
  */
 export class ApifyHotels implements PublicRatesProvider {
   constructor(
     private token: string,
-    private actor = "factden~google-hotels-scraper",
+    private actor = "kestrel~google-hotels-prices",
   ) {}
   async search(q: PublicRatesQuery) {
     const input = {
-      searchQueries: [`${q.stars ? `${q.stars} star ` : ""}hotels in ${q.city}`],
-      checkInDate: q.checkIn,
-      checkOutDate: q.checkOut,
+      queries: [`${q.stars ? `${q.stars}-star ` : ""}hotels in ${q.city}`],
+      checkIn: q.checkIn,
+      checkOut: q.checkOut,
       adults: q.adults,
-      children: 0,
-      rooms: 1,
       currency: "USD",
-      countryCode: "us",
-      languageCode: "en",
-      includePrices: true,
-      includeReviews: false,
-      minStars: q.stars ?? 0,
-      maxResults: 25,
+      country: "us",
+      language: "en",
+      maxHotels: 20,
+      ...(q.stars ? { hotelClass: [String(q.stars)] } : {}),
+      includeOffers: true,
+      offerLevel: "sources",
+      maxOffersPerHotel: 8,
+      sortBy: "lowest_price",
     };
     const res = await fetch(`https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?timeout=240&format=json`, {
       method: "POST",
@@ -88,49 +90,52 @@ export class ApifyHotels implements PublicRatesProvider {
       signal: AbortSignal.timeout(250_000),
     });
     if (!res.ok) throw new Error(`Apify ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    let rows = (await res.json()) as ApifyHotel[];
-    if (!rows.some((r) => r?.name)) rows = await this.namedDataset(q);
-    const scrapedAt = rows.find((r) => r?.scrapedAt)?.scrapedAt ?? new Date().toISOString();
-    const offers: PublicOffer[] = [];
-    for (const h of rows) {
-      if (!h?.name) continue;
-      const best = (h.offers ?? []).filter((o) => typeof o.total === "number" && o.total > 0).sort((a, b) => a.total! - b.total!)[0];
-      const total = best?.total ?? h.leadPriceTotal;
-      if (typeof total !== "number" || total <= 0) continue;
-      const seller = best?.source ?? "Google Hotels";
-      offers.push({
-        name: h.name,
-        totalUsd: total,
-        seller,
-        refundable: false, // the ladder carries no cancellation terms
-        url: /^https?:\/\//.test(best?.bookingLink ?? "") ? best!.bookingLink! : (sellerSearchUrl(seller, h.name, q) ?? h.hotelUrl ?? "https://www.google.com/travel/hotels"),
-      });
-    }
-    return { offers, source: "Google Hotels", evidence: `apify:${this.actor}:${q.checkIn}:${scrapedAt}:${offers.length}` };
-  }
-  /** The actor's named `hotels` dataset, newest first, kept to rows for these dates. */
-  private async namedDataset(q: PublicRatesQuery): Promise<ApifyHotel[]> {
-    const me = await fetch("https://api.apify.com/v2/users/me", { headers: { authorization: `Bearer ${this.token}` } });
-    if (!me.ok) return [];
-    const { data } = (await me.json()) as { data: { username: string } };
-    const res = await fetch(`https://api.apify.com/v2/datasets/${data.username}~hotels/items?desc=true&limit=200&format=json`, {
-      headers: { authorization: `Bearer ${this.token}` },
-    });
-    if (!res.ok) return [];
-    const rows = (await res.json()) as ApifyHotel[];
-    return rows.filter((r) => r.checkInDate === q.checkIn && r.checkOutDate === q.checkOut);
+    const rows = (await res.json()) as KestrelRow[];
+    const status = rows.find((r) => r.type === "status");
+    if (status?.error) throw new Error(`Google Hotels: ${status.error}`);
+    const offers = parseKestrel(rows);
+    return { offers, source: "Google Hotels", evidence: `apify:${this.actor}:${q.checkIn}:${status?.fetched_at ?? new Date().toISOString()}:${offers.length}` };
   }
 }
-interface ApifyHotel {
+export interface KestrelRow {
+  type?: "hotel" | "offer" | "status";
+  hotel_id?: string;
   name?: string;
-  starClass?: number;
-  rating?: number;
-  checkInDate?: string;
-  checkOutDate?: string;
-  leadPriceTotal?: number;
-  hotelUrl?: string;
-  scrapedAt?: string;
-  offers?: { source?: string; total?: number; bookingLink?: string; official?: boolean }[];
+  source?: string;
+  official?: boolean;
+  total?: number;
+  total_base?: number;
+  taxes?: number;
+  fees?: number;
+  total_with_taxes?: number;
+  free_cancel?: boolean | null;
+  link?: string;
+  partner_url?: string;
+  website?: string;
+  error?: string | null;
+  fetched_at?: string;
+}
+/** The cheapest seller per hotel, all in: the seller's pre-tax total scaled by the hotel's tax rate, plus fees. */
+export function parseKestrel(rows: KestrelRow[]): PublicOffer[] {
+  const hotels = new Map<string, KestrelRow>();
+  for (const r of rows) if (r.type === "hotel" && r.hotel_id) hotels.set(r.hotel_id, r);
+  const best = new Map<string, PublicOffer>();
+  for (const o of rows) {
+    if (o.type !== "offer" || !o.hotel_id || typeof o.total !== "number" || o.total <= 0) continue;
+    const h = hotels.get(o.hotel_id);
+    const rate = h && typeof h.total_base === "number" && h.total_base > 0 && typeof h.taxes === "number" ? h.taxes / h.total_base : 0;
+    const allIn = Math.round(o.total * (1 + rate) + (h?.fees ?? 0));
+    const cur = best.get(o.hotel_id);
+    if (cur && cur.totalUsd <= allIn) continue;
+    best.set(o.hotel_id, {
+      name: h?.name ?? o.name ?? "",
+      totalUsd: allIn,
+      seller: o.official ? "Official site" : (o.source ?? "Google Hotels"),
+      refundable: !!o.free_cancel,
+      url: o.partner_url || o.link || h?.website || "https://www.google.com/travel/hotels",
+    });
+  }
+  return [...best.values()].filter((o) => o.name);
 }
 
 /** Google Flights through Apify's kaix/google-flights-scraper: every airline and the big OTAs, about $0.003 a search. APIFY_TOKEN. */
