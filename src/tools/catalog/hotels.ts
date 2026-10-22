@@ -25,7 +25,8 @@ interface Row {
   oursUsd: number;
   pub?: PublicOffer;
 }
-const markup = () => Math.max(0, Number(process.env.HOTEL_MARKUP_PCT ?? 12)) / 100;
+// No upcharge unless the operator sets one: "through us" is the net rate.
+const markup = () => Math.max(0, Number(process.env.HOTEL_MARKUP_PCT ?? 0)) / 100;
 const siteLink = (q: { city: string; checkIn: string; checkOut: string; adults: number }) => {
   const base = process.env.HOTEL_SITE_URL;
   if (!base) return undefined;

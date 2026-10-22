@@ -100,7 +100,7 @@ function pickHands(): Hands {
   hands.publicRates = env.APIFY_TOKEN ? new ApifyHotels(env.APIFY_TOKEN) : new BookingPublicRates(hands.browser);
   if (env.APIFY_TOKEN) hands.publicFlights = new ApifyFlights(env.APIFY_TOKEN);
   console.log(
-    `Public hotel prices: ${env.APIFY_TOKEN ? "Google Hotels (Apify)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 12}%`,
+    `Public hotel prices: ${env.APIFY_TOKEN ? "Google Hotels (Apify)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 0}%`,
   );
   const search = createSearch(process.env);
   hands.search = search;
