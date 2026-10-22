@@ -4,8 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP=${APP:-circle-agent}
 REGION=${REGION:-sjc}
-fly apps create "$APP" --org personal 2>/dev/null || true
-fly volumes create data --app "$APP" --region "$REGION" --size 1 --yes 2>/dev/null || true
+# Real errors (no card on the account, name taken by someone else) stop the script; "already exists" is fine.
+fly apps list | grep -q "^$APP " || fly apps create "$APP" --org personal
+fly volumes list --app "$APP" | grep -q " data " || fly volumes create data --app "$APP" --region "$REGION" --size 1 --yes
 # Every secret production needs, read from .env without printing; MASTER_KEY is minted fresh for the new database.
 vars=()
 for k in OPENROUTER_API_KEY BROWSERBASE_API_KEY BROWSERBASE_PROJECT_ID CLERK_PUBLISHABLE_KEY CLERK_SECRET_KEY CLERK_AUTHORIZED_PARTIES PROJECT_ID PROJECT_SECRET LITEAPI_API_KEY APIFY_TOKEN HOTEL_MARKUP_PCT HOTEL_SITE_URL; do
