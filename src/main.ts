@@ -18,7 +18,7 @@ import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } fr
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
 import { LiteApi, LiteApiFlights } from "./tools/providers/liteapi.ts";
-import { ApifyFlights, ApifyHotels, BookingPublicRates } from "./tools/providers/public-rates.ts";
+import { ApifyFlights, publicRatesFrom } from "./tools/providers/public-rates.ts";
 import { GoogleApi } from "./tools/providers/google.ts";
 import { AgentMail, ResendMail } from "./tools/providers/email.ts";
 import { ElevenLabsSpeech, OpenRouterImages, SlackApi, SmsOnlyPhone, StripeIssuing, TwilioSms, VapiPhone } from "./tools/providers/misc.ts";
@@ -110,12 +110,11 @@ function pickHands(): Hands {
     hands.flights = new LiteApiFlights(env.LITEAPI_API_KEY);
     console.log(`Hotels: LiteAPI${env.LITEAPI_API_KEY.startsWith("sand_") ? " sandbox (live rates, no booking)" : ""}`);
   } else console.log("Hotels: fake (set LITEAPI_API_KEY)");
-  // Public prices to compare against: Google Hotels through Apify when keyed, else Booking.com read through the browser hand.
-  hands.publicRates = env.APIFY_TOKEN ? new ApifyHotels(env.APIFY_TOKEN, undefined, spend) : new BookingPublicRates(hands.browser);
+  // Public prices to compare against: Booking.com by hotel name through Apify when keyed (PUBLIC_RATES=google for Google's ladder).
+  const pubRates = publicRatesFrom(env, hands.browser, spend);
+  hands.publicRates = pubRates.hand;
   if (env.APIFY_TOKEN) hands.publicFlights = new ApifyFlights(env.APIFY_TOKEN, undefined, spend);
-  console.log(
-    `Public hotel prices: ${env.APIFY_TOKEN ? "Google Hotels (Apify)" : "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN for Google Hotels)"}; margin ${process.env.HOTEL_MARKUP_PCT ?? 0}%`,
-  );
+  console.log(`Public hotel prices: ${pubRates.label}; margin ${process.env.HOTEL_MARKUP_PCT ?? 0}%`);
   const search = createSearch(process.env);
   hands.search = search;
   console.log(

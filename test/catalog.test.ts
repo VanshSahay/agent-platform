@@ -4,7 +4,7 @@ import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, type FakePublicRates, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
 import { TOOLS } from "../src/tools/registry.ts";
-import { type KestrelRow, parseBooking, parseKestrel, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
+import { type BookingRow, type KestrelRow, parseBooking, parseBookingRows, parseKestrel, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
 import { hotelKey } from "../src/tools/catalog/hotels.ts";
 
 /** A scripted model that calls one tool once, then replies. */
@@ -111,6 +111,7 @@ describe("the catalogue", () => {
     expect(call.evidence).toBe("fake-hotels:1+fake-public-rates:1");
     // The public side is asked for the star classes of the hotels we are about to show, so Google's list covers them.
     expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.classes).toEqual([3, 4]);
+    expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.names).toEqual(["Hotel Nouvel", "Catalonia Avinyó", "Leonardo Las Ramblas"]);
     const r = call.result as { rows: string[]; matched: number; bookThroughUs: string; page: string };
     // Nouvel: $239.55 net + 10% = $264 against $343 on Booking; Catalonia (accent and no "Avinyó" in the public name) still matches at $292 vs $290 on Agoda.
     expect(r.rows[0]).toContain(
@@ -183,6 +184,34 @@ describe("the catalogue", () => {
         allIn: true,
         taxesEstimated: true,
         listedBelow: { seller: "Super.com", totalUsd: 5911, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
+      },
+    ]);
+  });
+
+  test("Booking.com rows become all-in offers: the stay total plus what Booking lists as paid on top; unknown names and sold-out rooms are skipped", () => {
+    const rows: BookingRow[] = [
+      {
+        type: "hotel",
+        name: "Snow Lodge Hotel Courchevel 1850",
+        url: "https://www.booking.com/hotel/fr/snow-lodge.html",
+        room_name: "Suite 303",
+        price_total: 12899.52,
+        taxes_fees_excluded: 34.49,
+        free_cancellation: true,
+      },
+      { type: "status", hotel_name: "Snow Lodge Hotel Courchevel 1850", error: null },
+      { type: "status", hotel_name: null, error: "ValueError: Booking.com autocomplete has no hotel named 'Les 3 Vallées'" },
+      { type: "hotel", name: "Le Lana", price_total: 30233.25, taxes_fees_excluded: 35.47, sold_out: true },
+    ];
+    expect(parseBookingRows(rows)).toEqual([
+      {
+        name: "Snow Lodge Hotel Courchevel 1850",
+        totalUsd: 12934,
+        seller: "Booking.com",
+        refundable: true,
+        url: "https://www.booking.com/hotel/fr/snow-lodge.html",
+        allIn: true,
+        room: "Suite 303",
       },
     ]);
   });

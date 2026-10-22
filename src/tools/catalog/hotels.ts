@@ -87,15 +87,16 @@ export const HOTEL_TOOLS: ToolDef[] = [
           .slice(0, limit);
         if (!rows.length) return { ok: true, content: "No hotels for those dates.", evidence: ours.evidence, stall: `no hotels for ${q.city} ${checkIn}` };
         // The public side is asked for the star classes we are about to show, so Google's list covers these hotels.
-        // One Google run costs about $0.17, so a city's public prices for the same stay are kept twelve hours:
+        // A public run costs money ($0.04 on Booking.com, $0.20 on Google), so the prices for the same hotels and stay are kept twelve hours:
         // a rerun, a second member asking, or a tweak to the shortlist does not pay again.
         const classes = [...new Set(rows.map((r) => r.hotel.stars).filter((x): x is number => !!x))].sort();
-        const cacheKey = `pubrates:${q.city.toLowerCase()}:${q.countryCode}:${checkIn}:${checkOut}:${q.adults}:${classes.join("")}`;
+        const names = rows.map((r) => r.hotel.name);
+        const cacheKey = `pubrates:${q.city.toLowerCase()}:${q.countryCode}:${checkIn}:${checkOut}:${q.adults}:${classes.join("")}:${names.slice().sort().join("|").toLowerCase()}`;
         const cached = JSON.parse(ctx.store.getKv(cacheKey) ?? "null") as { at: number; pub: Awaited<ReturnType<typeof ctx.hands.publicRates.search>> } | null;
         const pub =
           cached && ctx.clock.now() - cached.at < PUBLIC_CACHE_MS
             ? { ...cached.pub, evidence: `${cached.pub.evidence}:cached` }
-            : await ctx.hands.publicRates.search({ ...q, classes }).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
+            : await ctx.hands.publicRates.search({ ...q, classes, names }).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
         if (pub.offers.length && !pub.evidence.endsWith(":cached")) ctx.store.setKv(cacheKey, JSON.stringify({ at: ctx.clock.now(), pub }));
         for (const r of rows) r.pub = pub.offers.find((p) => sameHotel(p.name, r.hotel.name));
         // Savings first, then price; hotels without a public match go last.
@@ -133,6 +134,7 @@ export const HOTEL_TOOLS: ToolDef[] = [
                     url: r.pub.url,
                     allIn: r.pub.allIn,
                     taxesEstimated: r.pub.taxesEstimated,
+                    room: r.pub.room,
                     listedBelow: r.pub.listedBelow,
                   }
                 : undefined,

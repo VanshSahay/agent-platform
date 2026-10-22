@@ -124,6 +124,8 @@ export interface PublicOffer {
   allIn: boolean;
   /** The seller listed before tax and Google's tax-and-fee estimate for the hotel was added (within $11 of Expedia's checkout when measured). */
   taxesEstimated?: boolean;
+  /** The seller's cheapest room for the dates, when it names one; ours may be a different room. */
+  room?: string;
   /** A discount reseller listing a lower before-tax figure for the same room; its checkout adds taxes and fees. */
   listedBelow?: { seller: string; totalUsd: number; url: string };
 }
@@ -136,6 +138,8 @@ export interface PublicRatesQuery {
   stars?: number;
   /** Star classes of the hotels we are about to show, so Google's list covers them rather than its cheapest twenty. */
   classes?: number[];
+  /** The hotels we are about to show, by name: Booking.com is asked about each one. */
+  names?: string[];
 }
 export interface PublicRatesProvider {
   search(q: PublicRatesQuery): Promise<{ offers: PublicOffer[]; source: string; evidence: string }>;

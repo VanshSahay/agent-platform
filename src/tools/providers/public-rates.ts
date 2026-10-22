@@ -204,6 +204,84 @@ export function parseKestrel(rows: KestrelRow[]): PublicOffer[] {
   return offers;
 }
 
+/** One row of kestrel/booking-prices-scraper: a priced property, or a status row per name looked up. */
+export interface BookingRow {
+  type?: "hotel" | "status";
+  name?: string;
+  url?: string;
+  room_name?: string;
+  price_total?: number | null;
+  /** Taxes and fees Booking lists as paid on top of price_total, in the run's currency. */
+  taxes_fees_excluded?: number | null;
+  free_cancellation?: boolean;
+  sold_out?: boolean;
+  error?: string | null;
+  hotel_name?: string | null;
+}
+
+/** Booking's total for its cheapest room plus whatever Booking says is paid on top: the checkout figure (within $3 when measured). */
+export function parseBookingRows(rows: BookingRow[]): PublicOffer[] {
+  const out: PublicOffer[] = [];
+  for (const r of rows) {
+    if (r.type !== "hotel" || !r.name || typeof r.price_total !== "number" || r.price_total <= 0 || r.sold_out) continue;
+    out.push({
+      name: r.name,
+      totalUsd: Math.round(r.price_total + (r.taxes_fees_excluded ?? 0)),
+      seller: "Booking.com",
+      refundable: !!r.free_cancellation,
+      url: r.url || "https://www.booking.com",
+      allIn: true,
+      ...(r.room_name ? { room: r.room_name } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Booking.com by hotel name through Apify's kestrel/booking-prices-scraper: $0.004 a priced hotel, so a ten-hotel
+ * comparison is about $0.04 (Google's ladder was $0.20). The only public source measured against a seller's own
+ * checkout. APIFY_TOKEN. A hotel Booking's autocomplete does not know comes back as a status row with an error.
+ */
+export class ApifyBooking implements PublicRatesProvider {
+  constructor(
+    private token: string,
+    private actor = "kestrel~booking-prices-scraper",
+    private spend?: SpendLog,
+  ) {}
+  async search(q: PublicRatesQuery) {
+    const names = (q.names ?? []).filter(Boolean).slice(0, 15);
+    if (!names.length) return { offers: [], source: "Booking.com", evidence: `apify:${this.actor}:no-names` };
+    const nights = Math.max(1, Math.round((Date.parse(q.checkOut) - Date.parse(q.checkIn)) / 86_400_000));
+    const city = q.city.toLowerCase();
+    const input = {
+      hotelNames: names.map((n) => (n.toLowerCase().includes(city) ? n : `${n} ${q.city}`)),
+      checkIn: q.checkIn,
+      nights,
+      adults: q.adults,
+      rooms: 1,
+      currency: "USD",
+    };
+    const res = await fetch(`https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?timeout=240&format=json`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(250_000),
+    });
+    if (!res.ok) throw new Error(`Apify ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const rows = (await res.json()) as BookingRow[];
+    await recordApifyRun(this.spend, this.token, this.actor, `booking ${q.city} ${q.checkIn} ${names.length} names`);
+    const offers = parseBookingRows(rows);
+    return { offers, source: "Booking.com", evidence: `apify:${this.actor}:${q.checkIn}:${new Date().toISOString()}:${offers.length}/${names.length}` };
+  }
+}
+
+/** The public-price hand for this deployment: Booking.com by name when Apify is keyed (PUBLIC_RATES=google for Google's ladder), else the browser read. */
+export function publicRatesFrom(env: NodeJS.ProcessEnv, browser: import("../browser.ts").BrowserProvider, spend?: SpendLog): { hand: PublicRatesProvider; label: string } {
+  if (!env.APIFY_TOKEN) return { hand: new BookingPublicRates(browser), label: "Booking.com via the browser, which Booking blocks for headless Chrome (set APIFY_TOKEN)" };
+  if (env.PUBLIC_RATES === "google") return { hand: new ApifyHotels(env.APIFY_TOKEN, undefined, spend), label: "Google Hotels (Apify)" };
+  return { hand: new ApifyBooking(env.APIFY_TOKEN, undefined, spend), label: "Booking.com by hotel name (Apify)" };
+}
+
 /** Google Flights through Apify's kaix/google-flights-scraper: every airline and the big OTAs, about $0.003 a search. APIFY_TOKEN. */
 export class ApifyFlights implements PublicFlightsProvider {
   constructor(
