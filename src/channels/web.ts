@@ -173,7 +173,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
     ["connect-src 'self'", ...clerkHosts].join(" "),
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
-    ["img-src 'self' data:", cfg && "https://img.clerk.com"].filter(Boolean).join(" "),
+    ["img-src 'self' data: https:"].filter(Boolean).join(" "),
     // Sign-in cards embed the Browserbase live view.
     `frame-src https://www.browserbase.com https://*.browserbase.com${cfg ? " https://challenges.cloudflare.com" : ""}`,
     "worker-src 'self' blob:",
