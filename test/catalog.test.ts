@@ -111,8 +111,10 @@ describe("the catalogue", () => {
     expect(call.evidence).toBe("fake-hotels:1+fake-public-rates:1");
     const r = call.result as { rows: string[]; matched: number; bookThroughUs: string; page: string };
     // Nouvel: $239.55 net + 10% = $264 against $343 on Booking; Catalonia (accent and no "Avinyó" in the public name) still matches at $292 vs $290 on Agoda.
-    expect(r.rows[0]).toContain("Hotel Nouvel 3★: through us $264 (refundable) · cheapest public $343 on Booking.com (refundable) · save $79 (23%) with us");
-    expect(r.rows[1]).toContain("Catalonia Avinyó 4★: through us $292 · cheapest public $290 on Agoda · $2 cheaper there");
+    expect(r.rows[0]).toContain(
+      "Hotel Nouvel 3★: through us $264 (refundable) · public $343 on Booking.com (all-in, refundable) · save $79 (23%) with us · Super.com lists $290 before taxes & fees",
+    );
+    expect(r.rows[1]).toContain("Catalonia Avinyó 4★: through us $292 · public $290 on Agoda (before taxes & fees) · $2 cheaper there");
     expect(r.rows[2]).toContain("no public price found");
     expect(r.matched).toBe(2);
     expect(r.bookThroughUs).toBe("https://shop.example/hotels?name=Barcelona&checkin=2026-12-01&checkout=2026-12-03&rooms=1&adults=2&currency=USD");
@@ -130,7 +132,7 @@ describe("the catalogue", () => {
     delete process.env.HOTEL_SITE_URL;
   });
 
-  test("Google Hotels rows become one all-in offer per hotel: the cheapest seller, pre-tax total scaled by the hotel's tax rate plus fees", () => {
+  test("Google Hotels rows become one public offer per hotel: the cheapest all-in seller, with a discount reseller's lower before-tax figure noted", () => {
     const rows: KestrelRow[] = [
       {
         type: "hotel",
@@ -164,7 +166,15 @@ describe("the catalogue", () => {
       { type: "status", hotels: 1 } as KestrelRow,
     ];
     expect(parseKestrel(rows)).toEqual([
-      { name: "Alpes Hôtel du Pralong", totalUsd: 6547, seller: "Super.com", refundable: false, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
+      {
+        name: "Alpes Hôtel du Pralong",
+        totalUsd: 7883,
+        seller: "Official site",
+        refundable: false,
+        url: "https://www.google.com/travel/lodging/clk?a",
+        allIn: true,
+        listedBelow: { seller: "Super.com", totalUsd: 5911, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
+      },
     ]);
   });
 
@@ -206,8 +216,8 @@ describe("the catalogue", () => {
       "5 nights, 2 adults",
     ].join("\n");
     expect(parseBooking(text)).toEqual([
-      { name: "Le Saint Joseph", totalUsd: 6678, seller: "Booking.com", refundable: true, url: "https://www.booking.com" },
-      { name: "Hotel Le Carlina Courchevel 1850", totalUsd: 7521, seller: "Booking.com", refundable: false, url: "https://www.booking.com" },
+      { name: "Le Saint Joseph", totalUsd: 6678, seller: "Booking.com", refundable: true, url: "https://www.booking.com", allIn: true },
+      { name: "Hotel Le Carlina Courchevel 1850", totalUsd: 7521, seller: "Booking.com", refundable: false, url: "https://www.booking.com", allIn: true },
     ]);
     expect(hotelKey("Hôtel Le K2 Altitude")).toBe(hotelKey("Hotel Le K2 Altitude"));
   });

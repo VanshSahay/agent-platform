@@ -48,6 +48,7 @@ export function parseBooking(text: string, url = "https://www.booking.com"): Pub
       seller: "Booking.com",
       refundable: block.includes("Free cancellation"),
       url,
+      allIn: true,
     });
     if (tail >= 0 && tail < lines.indexOf("Opens in new window", end)) break;
   }
@@ -115,27 +116,50 @@ export interface KestrelRow {
   error?: string | null;
   fetched_at?: string;
 }
-/** The cheapest seller per hotel, all in: the seller's pre-tax total scaled by the hotel's tax rate, plus fees. */
+/**
+ * Sellers whose figure on Google's ladder is the stay with taxes and fees in. Measured on Courchevel: Booking.com's
+ * ladder figure matched its own site within $3, while a discount reseller's was a before-tax figure its checkout
+ * raised by 18%. Comparing against these keeps the saving honest without scraping any seller.
+ */
+const ALL_IN_SELLERS = /booking\.com|expedia|hotels\.com/i;
+export const quotesAllIn = (seller: string, official = false) => official || ALL_IN_SELLERS.test(seller);
+
+/** Per hotel: the cheapest all-in seller as the public price, plus any discount reseller listing a lower before-tax figure. */
 export function parseKestrel(rows: KestrelRow[]): PublicOffer[] {
   const hotels = new Map<string, KestrelRow>();
   for (const r of rows) if (r.type === "hotel" && r.hotel_id) hotels.set(r.hotel_id, r);
-  const best = new Map<string, PublicOffer>();
+  const byHotel = new Map<string, { allIn: KestrelRow[]; other: KestrelRow[] }>();
   for (const o of rows) {
     if (o.type !== "offer" || !o.hotel_id || typeof o.total !== "number" || o.total <= 0) continue;
-    const h = hotels.get(o.hotel_id);
-    const rate = h && typeof h.total_base === "number" && h.total_base > 0 && typeof h.taxes === "number" ? h.taxes / h.total_base : 0;
-    const allIn = Math.round(o.total * (1 + rate) + (h?.fees ?? 0));
-    const cur = best.get(o.hotel_id);
-    if (cur && cur.totalUsd <= allIn) continue;
-    best.set(o.hotel_id, {
-      name: h?.name ?? o.name ?? "",
-      totalUsd: allIn,
-      seller: o.official ? "Official site" : (o.source ?? "Google Hotels"),
-      refundable: !!o.free_cancel,
-      url: o.partner_url || o.link || h?.website || "https://www.google.com/travel/hotels",
-    });
+    const g = byHotel.get(o.hotel_id) ?? { allIn: [], other: [] };
+    (quotesAllIn(o.source ?? "", !!o.official) ? g.allIn : g.other).push(o);
+    byHotel.set(o.hotel_id, g);
   }
-  return [...best.values()].filter((o) => o.name);
+  const cheapest = (xs: KestrelRow[]) => xs.slice().sort((a, b) => a.total! - b.total!)[0];
+  const sellerOf = (o: KestrelRow) => (o.official ? "Official site" : (o.source ?? "Google Hotels"));
+  const urlOf = (o: KestrelRow, h?: KestrelRow) => o.partner_url || o.link || h?.website || "https://www.google.com/travel/hotels";
+  const offers: PublicOffer[] = [];
+  for (const [id, g] of byHotel) {
+    const h = hotels.get(id);
+    const name = h?.name ?? g.allIn[0]?.name ?? g.other[0]?.name ?? "";
+    if (!name) continue;
+    const best = cheapest(g.allIn);
+    const low = cheapest(g.other);
+    if (best) {
+      offers.push({
+        name,
+        totalUsd: Math.round(best.total!),
+        seller: sellerOf(best),
+        refundable: !!best.free_cancel,
+        url: urlOf(best, h),
+        allIn: true,
+        ...(low && low.total! < best.total! ? { listedBelow: { seller: sellerOf(low), totalUsd: Math.round(low.total!), url: urlOf(low, h) } } : {}),
+      });
+    } else if (low) {
+      offers.push({ name, totalUsd: Math.round(low.total!), seller: sellerOf(low), refundable: !!low.free_cancel, url: urlOf(low, h), allIn: false });
+    }
+  }
+  return offers;
 }
 
 /** Google Flights through Apify's kaix/google-flights-scraper: every airline and the big OTAs, about $0.003 a search. APIFY_TOKEN. */

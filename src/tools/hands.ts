@@ -120,6 +120,10 @@ export interface PublicOffer {
   seller: string;
   refundable: boolean;
   url: string;
+  /** The seller quotes the stay with taxes and fees in (hotel's own site, Booking.com, Expedia, Hotels.com); false means a before-tax figure. */
+  allIn: boolean;
+  /** A discount reseller listing a lower before-tax figure for the same room; its checkout adds taxes and fees. */
+  listedBelow?: { seller: string; totalUsd: number; url: string };
 }
 export interface PublicRatesQuery {
   city: string;
@@ -462,8 +466,16 @@ export class FakePublicRates implements PublicRatesProvider {
   public queries: PublicRatesQuery[] = [];
   constructor(
     public offers: PublicOffer[] = [
-      { name: "Hotel Nouvel", totalUsd: 343, seller: "Booking.com", refundable: true, url: "https://www.booking.com" },
-      { name: "Catalonia Avinyo", totalUsd: 290, seller: "Agoda", refundable: false, url: "https://www.agoda.com" },
+      {
+        name: "Hotel Nouvel",
+        totalUsd: 343,
+        seller: "Booking.com",
+        refundable: true,
+        url: "https://www.booking.com",
+        allIn: true,
+        listedBelow: { seller: "Super.com", totalUsd: 290, url: "https://www.super.com" },
+      },
+      { name: "Catalonia Avinyo", totalUsd: 290, seller: "Agoda", refundable: false, url: "https://www.agoda.com", allIn: false },
     ],
   ) {}
   async search(q: PublicRatesQuery) {
