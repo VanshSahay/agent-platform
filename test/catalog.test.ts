@@ -116,8 +116,15 @@ describe("the catalogue", () => {
     expect(r.rows[2]).toContain("no public price found");
     expect(r.matched).toBe(2);
     expect(r.bookThroughUs).toBe("https://shop.example/hotels?name=Barcelona&checkin=2026-12-01&checkout=2026-12-03&rooms=1&adults=2&currency=USD");
-    const page = w.app.store.listArtifacts(w.app.store.listAgents("alex")[0]!.id, { roomId: w.room.id }).find((a) => a.title === "Hotels: Barcelona 2026-12-01")!;
-    expect(String((page.data as { markdown: string }).markdown)).toContain("## Hotel Nouvel 3★");
+    const page = w.app.store.listArtifacts(w.app.store.listAgents("alex")[0]!.id, { roomId: w.room.id }).find((a) => a.kind === "hotels")!;
+    expect(page.title).toBe("Hotels: Barcelona, 2026-12-01 to 2026-12-03");
+    const data = page.data as { rows: { name: string; oursUsd: number; pub?: { seller: string } }[]; bookUrl: string; nights: number };
+    expect(data.rows.map((x) => [x.name, x.oursUsd, x.pub?.seller])).toEqual([
+      ["Hotel Nouvel", 264, "Booking.com"],
+      ["Catalonia Avinyó", 292, "Agoda"],
+      ["Leonardo Las Ramblas", 339, undefined],
+    ]);
+    expect(data.nights).toBe(2);
     expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
     delete process.env.HOTEL_MARKUP_PCT;
     delete process.env.HOTEL_SITE_URL;

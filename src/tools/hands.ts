@@ -99,6 +99,7 @@ export interface HotelOffer {
   stars?: number;
   rating?: number;
   address?: string;
+  photo?: string;
   room: string;
   board: string;
   refundable: boolean;

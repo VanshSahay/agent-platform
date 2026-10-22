@@ -827,7 +827,7 @@ function patchThread(el, html) {
 
 // A link to something the assistant made becomes a preview card under the message: title, kind, live progress.
 const docCards = new Map();
-const KIND_WORDS = { document: "Note", dashboard: "Dashboard", image: "Image", audio: "Voice note", file: "File" };
+const KIND_WORDS = { document: "Note", dashboard: "Dashboard", hotels: "Hotels", image: "Image", audio: "Voice note", file: "File" };
 function docCardHtml(a) {
   const isList = a.kind === "document" && a.summary.items > 0;
   const pct = isList ? Math.round((a.summary.done / a.summary.items) * 100) : 0;
@@ -839,7 +839,14 @@ function docCardHtml(a) {
       : a.summary.sections?.length
         ? esc(a.summary.sections.join(" · "))
         : "";
-  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener">${a.kind === "image" ? `<img class="thumb" src="/d/${esc(a.id)}?raw=1" alt="" />` : ""}<span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
+  const usd = (v) => `$${Math.round(v).toLocaleString("en-US")}`;
+  const hotels = (a.summary.hotels ?? [])
+    .map(
+      (h) =>
+        `<span class="hotel">${h.photo ? `<img src="${esc(h.photo)}" alt="" loading="lazy" />` : `<i class="nophoto"></i>`}<span class="n">${esc(h.name)}</span><span class="p"><b>${usd(h.oursUsd)}</b> us${h.pubUsd ? ` · ${usd(h.pubUsd)} ${esc(h.seller ?? "public")}` : ""}</span>${h.pubUsd && h.pubUsd > h.oursUsd ? `<span class="save">−${usd(h.pubUsd - h.oursUsd)}</span>` : ""}</span>`,
+    )
+    .join("");
+  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener">${a.kind === "image" ? `<img class="thumb" src="/d/${esc(a.id)}?raw=1" alt="" />` : ""}<span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}${hotels ? `<span class="hotels">${hotels}</span>` : ""}<span class="open">Open →</span></a>`;
 }
 async function decorateDocLinks() {
   for (const link of $$("#inner .body a[href*='/d/']")) {

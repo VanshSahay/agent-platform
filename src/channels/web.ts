@@ -17,7 +17,7 @@ import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
-import { artifactPage, type DocState, emptyState, parseDocument } from "./artifacts.ts";
+import { artifactPage, type DocState, emptyState, type HotelsData, parseDocument } from "./artifacts.ts";
 
 /**
  * The web channel: a JSON API and one page for the owner. The API shape is
@@ -696,7 +696,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const art = app.store.getArtifact(params[0]!);
         if (!art) return bad("not found", 404);
         if (art.share !== "link" && auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
-        const d = art.data as { state?: DocState; markdown?: string; subtitle?: string; kpis?: unknown[] };
+        const d = art.data as { state?: DocState; markdown?: string; subtitle?: string; kpis?: unknown[]; rows?: HotelsData["rows"] };
         const members = art.roomId ? app.rooms.memberIds(art.roomId).map((id) => app.store.getPerson(id)?.displayName ?? id) : [];
         const state = d.state ?? emptyState();
         // A glance for the chat's preview card: how many items, how many done, or the first line of a note.
@@ -710,7 +710,20 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
                 .slice(0, 140)
             : art.kind === "dashboard"
               ? d.subtitle
-              : undefined;
+              : art.kind === "hotels"
+                ? `${(d.rows ?? []).length} hotels, ${(d.rows ?? []).filter((r) => r.pub && r.pub.totalUsd > r.oursUsd).length} cheaper through us`
+                : undefined;
+        // The chat card shows the first three hotels: name, our price, the public one.
+        const hotels =
+          art.kind === "hotels"
+            ? (d.rows ?? []).slice(0, 3).map((r: { name: string; photo?: string; oursUsd: number; pub?: { totalUsd: number; seller: string } }) => ({
+                name: r.name,
+                photo: r.photo,
+                oursUsd: r.oursUsd,
+                pubUsd: r.pub?.totalUsd,
+                seller: r.pub?.seller,
+              }))
+            : undefined;
         return json({
           id: art.id,
           title: art.title,
@@ -722,6 +735,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
             items,
             done: Object.keys(state.checked).length,
             excerpt,
+            hotels,
             sections: sections
               .filter((s) => s.title)
               .map((s) => s.title)

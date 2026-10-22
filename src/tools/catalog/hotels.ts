@@ -90,9 +90,33 @@ export const HOTEL_TOOLS: ToolDef[] = [
         rows.sort((a, b) => (b.pub ? b.pub.totalUsd - b.oursUsd : -1e9) - (a.pub ? a.pub.totalUsd - a.oursUsd : -1e9) || a.oursUsd - b.oursUsd);
         const link = siteLink(q);
         const nights = Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000);
-        const head = `# Hotels in ${q.city}, ${checkIn} to ${checkOut}\n\n${nights} nights, ${q.adults} adults${q.stars ? `, ${q.stars}★` : ""}. "Through us" is our price for the whole stay, taxes in. "Public" is the lowest total ${pub.source === "none" ? "(no public source answered)" : `found on ${pub.source}`} for the same hotel and dates.${link ? `\n\nBook through us: ${link}` : ""}\n`;
-        const body = rows.map((r) => `\n## ${r.hotel.name}${r.hotel.stars ? ` ${r.hotel.stars}★` : ""}\n${rowLine(r).replace(/^[^:]+: /, "")}`).join("\n");
-        const page = saveArtifact(ctx, { kind: "document", title: `Hotels: ${q.city} ${checkIn}`, data: { markdown: `${head}${body}\n` } });
+        const page = saveArtifact(ctx, {
+          kind: "hotels",
+          title: `Hotels: ${q.city}, ${checkIn} to ${checkOut}`,
+          data: {
+            city: q.city,
+            checkIn,
+            checkOut,
+            nights,
+            adults: q.adults,
+            stars: q.stars,
+            publicSource: pub.source,
+            bookUrl: link,
+            rows: rows.map((r) => ({
+              name: r.hotel.name,
+              stars: r.hotel.stars,
+              rating: r.hotel.rating,
+              address: r.hotel.address,
+              photo: r.hotel.photo,
+              room: r.hotel.room,
+              board: r.hotel.board,
+              refundable: r.hotel.refundable,
+              feesAtHotelUsd: r.hotel.excludedFeesUsd,
+              oursUsd: r.oursUsd,
+              pub: r.pub ? { totalUsd: r.pub.totalUsd, seller: r.pub.seller, refundable: r.pub.refundable, url: r.pub.url } : undefined,
+            })),
+          },
+        });
         const matched = rows.filter((r) => r.pub).length;
         return {
           ok: true,

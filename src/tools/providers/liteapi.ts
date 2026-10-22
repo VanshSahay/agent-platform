@@ -25,7 +25,7 @@ export class LiteApi implements HotelProvider {
     if (!res.ok) throw new Error(`LiteAPI ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const body = (await res.json()) as {
       data?: { hotelId: string; roomTypes?: { rates?: Rate[] }[] }[];
-      hotels?: { id: string; name: string; stars?: number; rating?: number; address?: string }[];
+      hotels?: { id: string; name: string; stars?: number; rating?: number; address?: string; main_photo?: string; thumbnail?: string }[];
       sandbox?: boolean;
     };
     const names = new Map((body.hotels ?? []).map((h) => [h.id, h]));
@@ -39,7 +39,15 @@ export class LiteApi implements HotelProvider {
         .sort((a, b) => a.netUsd - b.netUsd)[0];
       const meta = names.get(h.hotelId);
       if (!best || !meta) continue;
-      offers.push({ id: h.hotelId, name: meta.name, stars: meta.stars, rating: meta.rating, address: meta.address, ...best });
+      offers.push({
+        id: h.hotelId,
+        name: meta.name,
+        stars: meta.stars,
+        rating: meta.rating,
+        address: meta.address,
+        photo: meta.main_photo || meta.thumbnail || undefined,
+        ...best,
+      });
     }
     offers.sort((a, b) => a.netUsd - b.netUsd);
     return { offers, evidence: `liteapi:${body.sandbox ? "sandbox:" : ""}${input.city}:${input.checkIn}:${offers.length}` };
