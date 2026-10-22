@@ -7,3 +7,6 @@ node_modules
 data/
 .DS_Store
 .claude/skills/
+
+# codegraph index (local, rebuilt by `codegraph init`)
+.codegraph/
