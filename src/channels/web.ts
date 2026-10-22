@@ -758,6 +758,14 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         }
         art.data = { ...d, state: st };
         app.store.putArtifact(art);
+        // Page edits are events: record the new snapshot for the scheduler's diff, which is
+        // how a claim becomes a tracked responsibility (multiplayer-spec §10.3).
+        const n = Number(app.store.getKv(`artedit:${art.id}`) ?? 0) + 1;
+        app.store.setKv(`artedit:${art.id}`, String(n));
+        app.store.setKv(`artedit:${art.id}:${n}`, JSON.stringify({ by: who, state: st }));
+        const pending = JSON.parse(app.store.getKv("artedit:pending") ?? "[]") as string[];
+        if (!pending.includes(art.id)) pending.push(art.id);
+        app.store.setKv("artedit:pending", JSON.stringify(pending));
         return json(st);
       },
     },

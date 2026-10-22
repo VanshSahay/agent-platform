@@ -337,8 +337,12 @@ describe("document pages", () => {
     expect(st.added["1-food"][0].text).toBe("Marshmallows");
     const again = await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json();
     expect(again.state.checked["0-clothes:0-boots"]).toBe("Sam");
+    // Page edits are events: the patch left a snapshot for the scheduler's diff.
+    expect(s.app.store.getKv(`artedit:${id}`)).toBe("1");
+    expect(JSON.parse(s.app.store.getKv("artedit:pending") ?? "[]")).toContain(id);
     await s.call("alex", "PATCH", `/api/artifacts/${id}/state`, { checked: { "0-clothes:0-boots": null } });
     expect((await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json()).state.checked).toEqual({});
+    expect(s.app.store.getKv(`artedit:${id}`)).toBe("2");
   });
 });
 

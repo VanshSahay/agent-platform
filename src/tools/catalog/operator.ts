@@ -1,6 +1,7 @@
 import { fmtWhen } from "../../core/clock.ts";
 import type { ModelImage } from "../../model/types.ts";
 import type { BrowserStep } from "../browser.ts";
+import { emptyState, type DocState } from "../../channels/artifacts.ts";
 import { askFirst, n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
 import { clip, readableRooms, saveArtifact } from "./shared.ts";
 
@@ -261,6 +262,36 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       };
       const { id, url } = saveArtifact(ctx, { kind: "dashboard", title: spec.title.slice(0, 140), data: spec, share: "room" });
       return { ok: true, content: { dashboardId: id, url }, evidence: `artifact:${id}`, label: `Published "${spec.title.slice(0, 40)}"` };
+    },
+  },
+  {
+    spec: {
+      name: "read_page",
+      description:
+        "Read a page you published (a list, plan, rota or split): who ticked and claimed what, what was added, and the people in its chat with their ids. Claims are responsibilities waiting to be tracked — call this after a page-edit event, and whenever someone says they will do something from a page.",
+      input_schema: obj({ pageId: str("The artifact id, or part of the page's title.") }, ["pageId"]),
+    },
+    family: "operator",
+    labels: { running: "Reading the page…", done: "Read the page" },
+    sideEffect: false,
+    async run(input, ctx) {
+      const q = s(input.pageId).toLowerCase();
+      const a = ctx.store.listArtifacts(ctx.agent.id).find((x) => x.kind === "document" && (x.id === s(input.pageId) || x.title.toLowerCase().includes(q)));
+      if (!a) return { ok: false, content: "No such page." };
+      const st = (a.data as { state?: DocState }).state ?? emptyState();
+      const people = (a.roomId ? ctx.rooms.memberIds(a.roomId) : []).map((id) => ({ id, displayName: ctx.store.getPerson(id)?.displayName ?? id }));
+      return {
+        ok: true,
+        content: {
+          id: a.id,
+          title: a.title,
+          url: `${ctx.publicUrl}/d/${a.id}`,
+          claimed: st.claimed,
+          checked: st.checked,
+          added: st.added,
+          people,
+        },
+      };
     },
   },
   {

@@ -1,10 +1,54 @@
 import { describe, expect, test } from "bun:test";
 import { privateProfileId } from "../src/memory/consolidate.ts";
-import { callTool, lastToolResult, reply } from "../src/model/scripted.ts";
+import { callTool, lastToolResult, reply, toolCallsSoFar } from "../src/model/scripted.ts";
 import { groupWorld, sysText } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
 import { Scheduler } from "../src/scheduler/scheduler.ts";
 import { FakePhone } from "../src/tools/hands.ts";
+
+describe("page edits become events", () => {
+  const seedPage = (w: ReturnType<typeof groupWorld>) => {
+    const st = { checked: {}, claimed: { "packing:stove": "Sam" }, added: {} };
+    w.app.store.putArtifact({
+      id: "art_page",
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      kind: "document",
+      title: "Packing list",
+      data: { markdown: "# Packing\n- stove", state: st },
+      share: "room",
+      createdAt: w.clock.now(),
+    });
+    w.app.store.setKv("artedit:art_page", "1");
+    w.app.store.setKv("artedit:art_page:1", JSON.stringify({ by: "Sam", state: st }));
+    w.app.store.setKv("artedit:pending", JSON.stringify(["art_page"]));
+    return st;
+  };
+
+  test("a tick turns a page claim into an event run, and the model tracks the responsibility", async () => {
+    const w = groupWorld((req) => {
+      const calls = toolCallsSoFar(req);
+      if (!calls.some((c) => c.name === "read_page")) return callTool("read_page", { pageId: "Packing list" });
+      if (!calls.some((c) => c.name === "track_commitment"))
+        return callTool("track_commitment", { title: "Bring the stove", owner: "sam", detail: "Packing list: claimed the stove on the page" });
+      return reply("Sam has the stove — it's in the ledger.");
+    });
+    const st = seedPage(w);
+    void st;
+    await w.app.scheduler.tick();
+    await w.app.runtime.settle();
+    // The event run fired once, named the claim, and the ledger now carries Sam's responsibility.
+    const runs = w.app.store.listRuns({ roomId: w.room.id });
+    const editRun = runs.find((r) => r.trigger === "event");
+    expect(editRun).toBeDefined();
+    expect(w.app.store.eventsForRun(editRun!.id)[0]!.type).toBe("started");
+    expect(w.app.commitments.open(w.room.id).some((c) => c.ownerId === "sam" && /stove/i.test(c.title))).toBe(true);
+    // A second tick with no new edits starts nothing: the burst is once per page.
+    const before = runs.length;
+    await w.app.scheduler.tick();
+    expect(w.app.store.listRuns({ roomId: w.room.id })).toHaveLength(before);
+  });
+});
 
 describe("memory", () => {
   test("what a person tells the agent privately does not surface in the group", async () => {

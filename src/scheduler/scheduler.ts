@@ -1,5 +1,6 @@
 import { newId } from "../core/ids.ts";
 import { DAY, HOUR, nextOccurrence, type Clock } from "../core/clock.ts";
+import type { DocState } from "../channels/artifacts.ts";
 import type { Authorization, Calendar, Commitment, Id, Schedule } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { Runtime } from "../runtime/runtime.ts";
@@ -71,9 +72,9 @@ export class Scheduler {
     this.store.putSchedule(s);
   }
 
-  async tick(): Promise<{ fired: number; nudged: number; expired: number; heartbeats: number }> {
+  async tick(): Promise<{ fired: number; nudged: number; expired: number; heartbeats: number; edited: number }> {
     const now = this.clock.now();
-    const out = { fired: 0, nudged: 0, expired: 0, heartbeats: 0 };
+    const out = { fired: 0, nudged: 0, expired: 0, heartbeats: 0, edited: 0 };
 
     // Each item on its own: one bad firing must not skip the rest of the tick.
     for (const s of this.store.dueSchedules(now)) {
@@ -82,6 +83,37 @@ export class Scheduler {
         out.fired += 1;
       } catch (e) {
         console.error(`schedule ${s.id} failed to fire:`, (e as Error).message);
+      }
+    }
+
+    // Page edits become events, at most one run per page per burst: the diff since the
+    // assistant last looked names the claims, and the run decides what is a commitment
+    // (multiplayer-spec §10.3: "Sam claimed: bring the stove" is a responsibility).
+    for (const id of JSON.parse(this.store.getKv("artedit:pending") ?? "[]") as string[]) {
+      const n = Number(this.store.getKv(`artedit:${id}`) ?? 0);
+      const seenN = Number(this.store.getKv(`artedit:seen:${id}`) ?? 0);
+      if (n === seenN) continue;
+      const art = this.store.getArtifact(id);
+      if (!art?.roomId || !this.store.getRoom(art.roomId)) {
+        this.store.setKv(`artedit:seen:${id}`, String(n));
+        continue;
+      }
+      const latest = JSON.parse(this.store.getKv(`artedit:${id}:${n}`) ?? "null") as { state: DocState } | null;
+      const seen = JSON.parse(this.store.getKv(`artedit:${id}:${seenN}`) ?? "null") as { state: DocState } | null;
+      this.store.setKv(`artedit:seen:${id}`, String(n));
+      const diff = pageDiff(seen?.state, latest?.state);
+      if (!diff) continue;
+      this.store.setKv("artedit:pending", JSON.stringify((JSON.parse(this.store.getKv("artedit:pending") ?? "[]") as string[]).filter((x) => x !== id)));
+      try {
+        await this.runtime.handleEvent({
+          roomId: art.roomId,
+          source: "artifact_edit",
+          dedupKey: `art:${id}:${n}`,
+          summary: `The page "${art.title}" changed: ${diff}. Each claim is a responsibility: read_page the page, then track_commitment with the claimer as owner for claims not already in the ledger (put the page item in the detail); ticks and additions need nothing.`,
+        });
+        out.edited += 1;
+      } catch (e) {
+        console.error(`artifact edit for ${id} failed:`, (e as Error).message);
       }
     }
 
@@ -239,6 +271,23 @@ export class Scheduler {
     }
     return { holds: true, note: "not verified automatically; verify before acting" };
   }
+}
+
+/** The human-readable delta between two page snapshots; empty when nothing a person did changed. */
+export function pageDiff(seen: DocState | null | undefined, latest: DocState | null | undefined): string {
+  if (!latest) return "";
+  const parts: string[] = [];
+  const claimed = latest.claimed ?? {};
+  const seenClaimed = seen?.claimed ?? {};
+  for (const [k, who] of Object.entries(claimed)) if (seenClaimed[k] !== who) parts.push(`${who} claimed "${k}"`);
+  for (const k of Object.keys(seenClaimed)) if (!(k in claimed)) parts.push(`the claim on "${k}" was dropped`);
+  const checked = latest.checked ?? {};
+  const seenChecked = seen?.checked ?? {};
+  for (const [k, who] of Object.entries(checked)) if (seenChecked[k] !== who) parts.push(`${who} ticked "${k}"`);
+  const added = Object.values(latest.added ?? {}).flat().length;
+  const seenAdded = Object.values(seen?.added ?? {}).flat().length;
+  if (added > seenAdded) parts.push(`${added - seenAdded} item(s) were added to the page`);
+  return parts.join("; ");
 }
 
 export function computeNext(s: Schedule, now: number): number | undefined {

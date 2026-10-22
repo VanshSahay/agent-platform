@@ -153,6 +153,31 @@ describe("the catalogue", () => {
     expect(call.labelDone).toBe('Wrote "Packing list"');
   });
 
+  test("read_page shows who claimed and ticked what, with the chat's people and ids", async () => {
+    const w = groupWorld(once("read_page", { pageId: "Packing" }, "Sam has the stove."));
+    w.app.store.putArtifact({
+      id: "art_page",
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      kind: "document",
+      title: "Packing list",
+      data: {
+        markdown: "# Packing\n- stove\n- boots",
+        state: { checked: { "packing:boots": "Jo" }, claimed: { "packing:stove": "Sam" }, added: {} },
+      },
+      share: "room",
+      createdAt: w.clock.now(),
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip what's claimed on the packing list?" });
+    const call = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "read_page")!;
+    const content = call.result as { title: string; claimed: Record<string, string>; people: { id: string; displayName: string }[] };
+    expect(call.status).toBe("done");
+    expect(content.title).toBe("Packing list");
+    expect(content.claimed).toEqual({ "packing:stove": "Sam" });
+    expect(content.people).toContainEqual({ id: "sam", displayName: "Sam" });
+    expect(call.evidence).toBeUndefined();
+  });
+
   test("checkout asks the owner, then clears the budget without claiming an order: no card, cart kept, footer says so", async () => {
     const w = groupWorld((req) => {
       const calls = toolCallsSoFar(req);
