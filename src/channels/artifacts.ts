@@ -154,11 +154,16 @@ const SHARE_CSS =
   ".sharebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:28px 0 0;padding:12px 16px;border:2px solid #111;border-radius:14px;background:#fff;font-size:14px}.sharebar.cta{background:#fff7d6}.sharebtn{font:600 14px Inter,system-ui,sans-serif;color:#fff;background:#111;border:0;border-radius:999px;padding:8px 14px;text-decoration:none;white-space:nowrap;cursor:pointer}";
 
 /** The 403 for a page that is not shared: a page, not JSON, since the link was tapped by a person. */
-export function privatePage(): Response {
+export function privatePage(clerk?: { publishableKey: string; frontendApi: string }): Response {
+  // The session cookie lives sixty seconds and only an open Circle tab refreshes it, so a link opened on its own
+  // often arrives stale. Load Clerk here once, let it write a fresh cookie, and reload; a second miss stays put.
+  const refresh = clerk
+    ? `<script>(async()=>{if(sessionStorage.getItem("ret")===location.pathname)return;await new Promise((ok,no)=>{const s=document.createElement("script");s.src="https://${esc(clerk.frontendApi)}/npm/@clerk/clerk-js@5/dist/clerk.browser.js";s.setAttribute("data-clerk-publishable-key",${JSON.stringify(clerk.publishableKey)});s.async=true;s.crossOrigin="anonymous";s.onload=ok;s.onerror=no;document.head.appendChild(s);}).catch(()=>null);if(!window.Clerk)return;await Clerk.load();if(!Clerk.session)return;await Clerk.session.getToken();sessionStorage.setItem("ret",location.pathname);location.reload();})();</script>`
+    : "";
   return new Response(
     SHELL(
       "Private page",
-      `<h1>This page is private</h1><p class="sub">It was made inside a chat. Sign in as a member of that chat to open it, or ask whoever sent it to share the page.</p><p><a class="sharebtn" href="/#signin">Sign in</a></p><aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`,
+      `${refresh}<h1>This page is private</h1><p class="sub">It was made inside a chat. Sign in as a member of that chat to open it, or ask whoever sent it to share the page.</p><p><a class="sharebtn" href="/#signin">Sign in</a></p><aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`,
     ),
     { status: 403, headers: { "content-type": "text/html; charset=utf-8", "x-frame-options": "DENY" } },
   );

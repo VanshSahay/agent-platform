@@ -1332,7 +1332,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         if (!art) return bad("not found", 404);
         const me = auth ? (await auth.personFor(req))?.id : undefined;
         const member = !auth || !art.roomId || (!!me && !!app.store.getMembership(art.roomId, me));
-        if (art.share !== "link" && !member) return privatePage();
+        if (art.share !== "link" && !member) return privatePage(cfg && fapi ? { publishableKey: cfg.publishableKey, frontendApi: fapi } : undefined);
         return artifactPage(art, url.searchParams.has("raw"), { member });
       }
       if (!p.startsWith("/api/")) return bad("not found", 404);
