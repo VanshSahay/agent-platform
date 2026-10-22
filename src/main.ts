@@ -15,6 +15,7 @@ import { fakeHands, type Hands } from "./tools/hands.ts";
 import { BrowserbaseBrowser, FallbackBrowser, LocalBrowser, localChromePath } from "./tools/browser.ts";
 import { createSearch } from "./tools/search.ts";
 import { JinaReader } from "./tools/reach.ts";
+import { LiteApi } from "./tools/providers/liteapi.ts";
 import { GoogleApi } from "./tools/providers/google.ts";
 import { AgentMail, ResendMail } from "./tools/providers/email.ts";
 import { ElevenLabsSpeech, OpenRouterImages, SlackApi, SmsOnlyPhone, StripeIssuing, TwilioSms, VapiPhone } from "./tools/providers/misc.ts";
@@ -89,6 +90,10 @@ function pickHands(): Hands {
   browsers.push({ name: "jina", browser: new JinaReader() });
   hands.browser = browsers.length === 1 ? browsers[0]!.browser : new FallbackBrowser(browsers);
   console.log(`Browser: ${browsers.map((b) => b.name).join(" → ")}${browsers.some((b) => b.name === "browserbase") ? "" : " (set BROWSERBASE_API_KEY for sign-in cards)"}`);
+  if (env.LITEAPI_API_KEY) {
+    hands.hotels = new LiteApi(env.LITEAPI_API_KEY);
+    console.log(`Hotels: LiteAPI${env.LITEAPI_API_KEY.startsWith("sand_") ? " sandbox (live rates, no booking)" : ""}`);
+  } else console.log("Hotels: fake (set LITEAPI_API_KEY)");
   const search = createSearch(process.env);
   hands.search = search;
   console.log(

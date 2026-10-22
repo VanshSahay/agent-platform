@@ -97,6 +97,21 @@ describe("the catalogue", () => {
     expect(new Set(TOOLS.map((t) => t.spec.name)).size).toBe(TOOLS.length); // no duplicate names
   });
 
+  test("hotel_rates lists the wholesale source's offers cheapest first, net next to public, with evidence and no gate", async () => {
+    const w = groupWorld(once("hotel_rates", { city: "Barcelona", countryCode: "es", checkIn: "2026-12-01", checkOut: "2026-12-03" }, "Hotel Nouvel is $240 net vs $275 public."));
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hotel in Barcelona Dec 1-3?" });
+    const calls = w.app.store.toolCallsForRun(run!.id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.status).toBe("done");
+    expect(calls[0]!.evidence).toBe("fake-hotels:1");
+    expect(w.hands.hotels.searches[0]).toEqual({ city: "Barcelona", checkIn: "2026-12-01", checkOut: "2026-12-03" });
+    const out = String(calls[0]!.result);
+    expect(out.indexOf("Hotel Nouvel")).toBeLessThan(out.indexOf("Catalonia"));
+    expect(out).toContain("$240 net vs $275 public");
+    expect(out).toContain("+ $34 paid at the hotel");
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+  });
+
   test("free slots skip busy blocks and keep working hours", () => {
     const day = Date.UTC(2026, 9, 14, 0, 0, 0); // midnight UTC
     const h = (x: number) => day + x * 3600_000;

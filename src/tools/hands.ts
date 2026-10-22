@@ -92,8 +92,29 @@ export interface PaymentProvider {
   cancelCard(cardId: string): Promise<void>;
 }
 
+/** Hotel rates from a wholesale source (LiteAPI): what the room costs us, net, next to the public price. Read-only; booking is a person's click. */
+export interface HotelOffer {
+  id: string;
+  name: string;
+  stars?: number;
+  rating?: number;
+  address?: string;
+  room: string;
+  board: string;
+  refundable: boolean;
+  /** Net total for the stay in USD, taxes included; excluded fees (city tax) listed apart. */
+  netUsd: number;
+  /** What the public is seen paying for the same room, when the source says. */
+  publicUsd?: number;
+  excludedFeesUsd: number;
+}
+export interface HotelProvider {
+  rates(input: { city: string; countryCode: string; checkIn: string; checkOut: string; adults: number; limit?: number }): Promise<{ offers: HotelOffer[]; evidence: string }>;
+}
+
 export interface Hands {
   search: SearchProvider;
+  hotels: HotelProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
   browser: BrowserProvider;
@@ -231,8 +252,59 @@ export class FakePayments implements PaymentProvider {
   }
 }
 
+export class FakeHotels implements HotelProvider {
+  public searches: { city: string; checkIn: string; checkOut: string }[] = [];
+  constructor(
+    public offers: HotelOffer[] = [
+      {
+        id: "lp1",
+        name: "Hotel Nouvel",
+        stars: 3,
+        rating: 8.9,
+        address: "Carrer de Santa Anna 20",
+        room: "Double",
+        board: "Room Only",
+        refundable: true,
+        netUsd: 239.55,
+        publicUsd: 275.48,
+        excludedFeesUsd: 0,
+      },
+      {
+        id: "lp2",
+        name: "Catalonia Avinyó",
+        stars: 4,
+        rating: 9.1,
+        address: "Carrer d'Avinyó 16",
+        room: "Double",
+        board: "Breakfast Included",
+        refundable: false,
+        netUsd: 265.62,
+        publicUsd: 305.46,
+        excludedFeesUsd: 34.48,
+      },
+      {
+        id: "lp3",
+        name: "Leonardo Las Ramblas",
+        stars: 4,
+        rating: 8.4,
+        room: "Double",
+        board: "Room Only",
+        refundable: true,
+        netUsd: 308.57,
+        publicUsd: 354.86,
+        excludedFeesUsd: 0,
+      },
+    ],
+  ) {}
+  async rates(input: { city: string; countryCode: string; checkIn: string; checkOut: string; adults: number; limit?: number }) {
+    this.searches.push({ city: input.city, checkIn: input.checkIn, checkOut: input.checkOut });
+    return { offers: this.offers.slice(0, input.limit ?? 10), evidence: `fake-hotels:${this.searches.length}` };
+  }
+}
+
 export interface FakeHands extends Hands {
   search: FakeSearch;
+  hotels: FakeHotels;
   phone: FakePhone;
   community: FakeCommunity;
   browser: FakeBrowser;
@@ -247,6 +319,7 @@ export interface FakeHands extends Hands {
 export function fakeHands(opts: Partial<FakeHands> = {}): FakeHands {
   return {
     search: opts.search ?? new FakeSearch(),
+    hotels: opts.hotels ?? new FakeHotels(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
     browser: opts.browser ?? new FakeBrowser(),
