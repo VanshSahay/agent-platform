@@ -112,15 +112,13 @@ What differs from the web app:
 
 ## Deploy
 
-Production runs on Railway as one always-on container with SQLite on a volume. `Dockerfile`, `railway.json` and `.railwayignore` are checked in; nothing else is needed on the host.
+Production runs on Fly.io as one always-on machine with SQLite on a volume. `Dockerfile`, `fly.toml` and `.dockerignore` are checked in. The first time, with the Fly CLI signed in and a card on the Fly account:
 
 ```bash
-npx @railway/cli login          # once; opens a pairing link in your browser
-npx @railway/cli link           # pick the project and environment
-npx @railway/cli up --detach    # upload this folder, build the image, roll it out
+scripts/fly-setup.sh             # creates the app and the /data volume, stages every secret from .env (fresh MASTER_KEY), deploys
 ```
 
-Images and document links open under sign-in through Clerk's same-origin session cookie, accepted for reads only, so no extra configuration is needed for `/d/` links. The service needs a volume mounted at `/data` and the variables from `.env.example` set in Railway (a fresh `MASTER_KEY` per deployment; `HOST=0.0.0.0`; `PUBLIC_URL` and `CLERK_AUTHORIZED_PARTIES` set to the Railway domain). One thing to know: the uploader honours `.git/info/exclude` with gitignore semantics, so a line like `agent/` there silently drops `src/agent` from the image; anchor such lines with a leading slash.
+After that, `fly deploy` ships the current folder. Secrets change with `fly secrets set NAME=value`; `fly.toml` carries `HOST`, `PORT`, `DB_PATH` and `PUBLIC_URL`, and `CLERK_AUTHORIZED_PARTIES` must list the Fly domain. Images and document links open under sign-in through Clerk's same-origin session cookie, accepted for reads only, so `/d/` links need nothing more. Cost at the smallest size (shared-cpu-1x, 512 MB, 1 GB volume) is about $3.50 a month.
 
 ## Layout
 
