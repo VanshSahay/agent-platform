@@ -897,7 +897,9 @@ export const SCENARIOS: Scenario[] = [
     turns: [
       { room: "couple", personId: "alex", text: "@pip meal plan for the week, Sam's veg Mon to Wed, and a shopping list." },
       { room: "couple", personId: "sam", text: "@pip I'll cook Thursday and Saturday." },
-      { tick: 31 * HOUR }, // Wednesday 17:00, a day before Thursday's dinner
+      // Wednesday 21:00: the evening before Thursday's dinner. A model that puts dinner at 7pm (as models do)
+      // has its day-before nudge due at Wednesday 19:00, so the old 17:00 tick graded a correct agent as silent.
+      { tick: 35 * HOUR },
     ],
     script: (req) => {
       const t = lastUserText(req);

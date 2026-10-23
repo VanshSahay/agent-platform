@@ -144,7 +144,7 @@ export class Scheduler {
           trigger: "heartbeat",
           source: "heartbeat",
           dedupKey: `heartbeat:${room.id}:${Math.floor(now / every)}`,
-          text: "Heartbeat check-in. Look at the ledger, the schedules and the tasks. Only speak if something changed, slipped, or needs a person; otherwise call stay_quiet.",
+          text: "Heartbeat check-in. Look at the ledger, the schedules and the tasks. Responsibilities are nudged automatically and schedules fire on their own: never reschedule, cancel or add a reminder for them here. Only speak if something changed, slipped, or needs a person; otherwise call stay_quiet.",
         });
         out.heartbeats += 1;
       } catch (e) {
@@ -186,7 +186,7 @@ export class Scheduler {
         trigger: "follow_up",
         source: "commitment_nudge",
         dedupKey: `nudge:${c.id}:${c.nudges}`,
-        text: `Follow-up on responsibility [${c.id}] "${c.title}"${ben ? ` for ${ben.displayName}` : ""}, owned by ${owner?.displayName ?? (c.ownerId === c.agentId ? "you" : c.ownerId)}${c.dueAt ? `, due ${new Date(c.dueAt).toISOString()}` : ""}. Status: ${c.status}, nudges so far: ${c.nudges}. If you own it, do it or report what blocks it. If a person owns it, check in with them in one line (ask_person for private, or the room if it was agreed there) and update the ledger from their answer.`,
+        text: `Follow-up on responsibility [${c.id}] "${c.title}"${ben ? ` for ${ben.displayName}` : ""}, owned by ${owner?.displayName ?? (c.ownerId === c.agentId ? "you" : c.ownerId)}${c.dueAt ? `, due ${new Date(c.dueAt).toISOString()}` : ""}. Status: ${c.status}, nudges so far: ${c.nudges}. If you own it, do it or report what blocks it. If a person owns it, check in with them privately in one line with ask_person (multiplayer-spec §10.1: a nudge goes to the member's own chat, not the group; only a guest, who has no private chat with you, gets one line in the group naming them), and update the ledger from their answer.`,
       });
       out.nudged += 1;
     }

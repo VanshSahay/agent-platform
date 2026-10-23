@@ -741,6 +741,19 @@ describe("audit fixes, 23 October", () => {
     expect(w.app.memory.visibleIn(w.agent.id, w.samDm, ["sam"], { requesterId: "sam" }).some((m) => m.text.includes("mornings"))).toBe(true);
   });
 
+  test("a responsibility due in the past is refused with today's date, so a wrong year never nudges at once", async () => {
+    const w = groupWorld((req, i) => {
+      if (i === 0) return callTool("track_commitment", { title: "Cook Thursday", owner: "Sam", dueAt: "2025-10-15T19:00:00-07:00" });
+      expect(lastToolResult(req)).toContain("in the past");
+      if (i === 1) return callTool("track_commitment", { title: "Cook Thursday", owner: "Sam", dueAt: "2026-10-15T19:00:00-07:00" });
+      return reply("Tracked.");
+    });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip I'll cook Thursday" });
+    const open = w.app.commitments.open(w.room.id);
+    expect(open).toHaveLength(1);
+    expect(new Date(open[0]!.dueAt!).getUTCFullYear()).toBe(2026);
+  });
+
   test("a run that chooses silence on a texting channel sends no 'on it'", async () => {
     const w = groupWorld((req, i) => (i === 0 ? callTool("stay_quiet", { reason: "chatter" }) : reply("ok")), { completer: () => "yes" });
     const chat = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Street" });

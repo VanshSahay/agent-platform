@@ -1,3 +1,4 @@
+import { fmtWhen } from "../core/clock.ts";
 import type { ApproachKind, AttentionKind, Id, Task } from "../core/types.ts";
 import type { ToolSpec } from "../model/types.ts";
 import { askFirst, describeOutreach, n, num, obj, parseOutreach, s, siteOf, str, type ToolDef } from "./kit.ts";
@@ -686,6 +687,12 @@ export const CORE_TOOLS: ToolDef[] = [
       if (!owner) return { ok: false, content: `No member named "${s(input.owner)}".` };
       const ben = s(input.beneficiary) ? ctx.findMember(s(input.beneficiary)) : undefined;
       const due = s(input.dueAt) ? Date.parse(s(input.dueAt)) : undefined;
+      // A new responsibility due before today is a slipped date (a wrong year, a past weekday), not a real
+      // deadline: it would nudge at once. Say what today is and let the model fix the date.
+      if (due !== undefined && Number.isFinite(due) && due < ctx.clock.now() - 60 * 60 * 1000) {
+        const zone = ctx.store.getPerson(ctx.agent.ownerId)?.timezone ?? "UTC";
+        return { ok: false, content: `dueAt ${s(input.dueAt)} is in the past. Now is ${fmtWhen(ctx.clock.now(), zone)} (${new Date(ctx.clock.now()).toISOString()}). Check the year and day and call again.` };
+      }
       const c = ctx.commitments.track({
         roomId: ctx.room.id,
         agentId: ctx.agent.id,
