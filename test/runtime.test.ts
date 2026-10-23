@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar, ScriptedModel } from "../src/model/scripted.ts";
+import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar, ScriptedModel, transcriptHas } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { claimLinkCode, mintLinkCode, personIdForHandle } from "../src/channels/handles.ts";
 import { FakePayments, FakePhone, FakeSearch } from "../src/tools/hands.ts";
@@ -806,6 +806,28 @@ describe("audit fixes, 23 October", () => {
     expect(browser.signIns[0]!.finished).toBe(true);
     expect(browser.signIns[0]!.kept).toBe(false);
     expect(w.app.vault.has("alex", "browser:walgreens.com")).toBe(false);
+  });
+
+  test("after a yes the approved call must run before anything else, and a reply that skips it is sent back once", async () => {
+    const buy = { amountUsd: 80, what: "Omron blood pressure monitor", where: "Walgreens" };
+    const w = groupWorld((req) => {
+      const last = lastToolResult(req) ?? "";
+      if (last.startsWith("Approved")) return reply("Cleared $80 for the monitor.");
+      if (transcriptHas(req, "[check] The request_purchase call was approved")) return callTool("request_purchase", buy);
+      if (last.includes("was approved and has not run yet")) return reply("All set.");
+      if (transcriptHas(req, "[APPROVED]")) return callTool("search_products", { query: "Omron monitor" });
+      if (last.includes("Waiting for approval")) return reply("Asked Alex.");
+      return callTool("request_purchase", buy);
+    });
+    w.agent.trust.autoApproveUnderUsd = 25;
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "buy Jo the Omron monitor from Walgreens, $80" });
+    const item = w.app.attention.openFor("alex").find((a) => a.kind === "purchase_approval")!;
+    await w.app.runtime.answerAttention(item.id, "yes", "alex");
+    const calls = w.app.store.toolCallsForRun(run!.id);
+    expect(calls.find((c) => c.name === "search_products")?.result).toContain("has not run yet");
+    expect(calls.filter((c) => c.name === "request_purchase" && c.evidence)).toHaveLength(1);
+    expect(w.app.store.getRun(run!.id)!.status).toBe("done");
   });
 
   test("an approval the requester must give themselves is put to them in the chat, so a text thread does not go silent", async () => {

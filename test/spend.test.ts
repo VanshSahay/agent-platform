@@ -107,3 +107,24 @@ describe("spend monitor", () => {
     expect(daysAgoIso(7, Date.parse("2026-10-13T17:00:00Z"))).toBe("2026-10-06T17:00:00.000Z");
   });
 });
+
+test("a model stream that breaks mid-way is retried, and the turn still comes back", async () => {
+  AnthropicModel.retryBaseMs = 0;
+  const seen: { bodies: Record<string, unknown>[] } = { bodies: [] };
+  const good = openRouterDoor(() => undefined, { bodies: [] });
+  // The first stream sends message_start twice (what OpenRouter did in eval run 13); the second is whole.
+  const start = `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "m", type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } })}\n\n`;
+  let calls = 0;
+  const fetch = async (url: string | URL | Request, init?: RequestInit) => {
+    seen.bodies.push(JSON.parse(String(init?.body)));
+    calls += 1;
+    if (calls === 1) return new Response(start + start, { status: 200, headers: { "content-type": "text/event-stream" } });
+    return (good as unknown as { client: { fetch: typeof globalThis.fetch } }).client.fetch(url, init);
+  };
+  const model = new AnthropicModel(new Anthropic({ apiKey: "x", baseURL: "https://openrouter.test/api", maxRetries: 0, fetch: fetch as unknown as typeof globalThis.fetch }), {
+    includeUsage: true,
+  });
+  const turn = await model.turn({ model: "m", system: { stable: "s", volatile: "" }, messages: [{ role: "user", content: "hi" }], tools: [], effort: "low" } as never);
+  expect(turn.text).toBe("hi");
+  expect(seen.bodies).toHaveLength(2);
+});

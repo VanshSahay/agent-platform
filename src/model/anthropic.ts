@@ -56,7 +56,27 @@ export class AnthropicModel implements ModelClient {
     }
   }
 
+  /**
+   * A model turn has no side effects, so a stream that breaks mid-way (OpenRouter has sent events out of
+   * order) or a server error is retried twice; a request the API rejects as malformed is not.
+   */
+  /** First retry delay; tests set it to 0. */
+  static retryBaseMs = 1000;
+
   async turn(req: ModelRequest): Promise<ModelTurn> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.turnOnce(req);
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        const fatal = status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429;
+        if (fatal || attempt >= 2) throw e;
+        await new Promise((r) => setTimeout(r, AnthropicModel.retryBaseMs * 3 ** attempt));
+      }
+    }
+  }
+
+  private async turnOnce(req: ModelRequest): Promise<ModelTurn> {
     const system: Anthropic.TextBlockParam[] = [{ type: "text", text: req.system.stable, cache_control: { type: "ephemeral" } }];
     if (req.system.volatile) system.push({ type: "text", text: req.system.volatile });
     const model = this.mapModel(req.model);

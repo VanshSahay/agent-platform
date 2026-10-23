@@ -804,6 +804,9 @@ export class Runtime {
                 ? "Got an answer from the group"
                 : `Got ${who}'s answer`;
       store.putToolCall(gated);
+      // The yes is for this call: until the model re-issues it, nothing else runs (eval run 13: the model
+      // went shopping after an approved $80 and the purchase never cleared).
+      if (verdict === "APPROVED") store.setKv(`reissue:${run.id}`, gated.name);
     }
     const task = run.taskId ? store.getTask(run.taskId) : undefined;
     const told = task?.delivered.length
@@ -950,6 +953,7 @@ export class Runtime {
     // the gate closed), only checkout-shaped tools may still run. Recomputed on entry so a
     // resumed run is fenced from its records; set again the moment a verdict lands mid-loop,
     // which is what stops the rest of a parallel tool batch.
+    const owedReissue = () => store.getKv(`reissue:${run.id}`);
     let budgetAnswered = store.toolCallsForRun(run.id).some((c) => c.name === "request_purchase" && c.status === "done" && (!!c.evidence || /declined/i.test(c.labelDone)));
     // Resourcefulness guards: searching in circles is a stall, long work belongs in a task, a reply must cover the ask.
     let searchesInARow = 0;
@@ -1062,6 +1066,13 @@ export class Runtime {
       if (!turn.toolUses.length) {
         // Final reply, unless someone spoke while we were composing it.
         if (drainSteers()) continue;
+        // An approved action that never ran is the errand left undone; one reminder before the reply goes out.
+        const owed = store.getKv(`reissue:${run.id}`);
+        if (owed && !store.getKv(`reissuenudge:${run.id}`)) {
+          store.setKv(`reissuenudge:${run.id}`, "1");
+          transcript.push({ role: "user", content: `[check] The ${owed} call was approved but has not run. Re-issue that exact call now; the approval lets it through.` });
+          continue;
+        }
         const reply = turn.text.trim() || lastText.trim() || "(no reply)";
         // After real work, one cheap check that the reply honours the request's constraints, and one chance to fix it.
         if (!replyChecked && run.trigger === "message" && toolCalls >= 3) {
@@ -1150,6 +1161,8 @@ export class Runtime {
           };
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
         else if (stopped()) result = { ok: false, content: "Skipped: the run was stopped." };
+        else if (owedReissue() && use.name !== owedReissue() && use.name !== "stay_quiet")
+          result = { ok: false, content: `${owedReissue()} was approved and has not run yet. Re-issue that exact call first; nothing else runs until it has.` };
         else if (budgetAnswered && !AFTER_BUDGET_TOOLS.has(use.name))
           result = {
             ok: false,
@@ -1189,6 +1202,7 @@ export class Runtime {
         rec.endedAt = result.waitingOn ? undefined : clock.now();
         rec.fingerprint = sha256([use.name, input, result.content]);
         if (use.name === "request_purchase" && rec.status === "done" && (!!rec.evidence || /declined/i.test(rec.labelDone))) budgetAnswered = true;
+        if (ran && use.name === owedReissue()) store.deleteKv(`reissue:${run.id}`);
         if (result.label) rec.labelDone = result.label;
         if (result.stall && def) rec.labelDone = def.labels.failed ?? `${result.label ?? def.labels.done} (nothing yet)`;
         store.putToolCall(rec);
@@ -1395,7 +1409,7 @@ export class Runtime {
     this.live.delete(run.id);
     this.cancelled.delete(run.id);
     store.deleteKv(`transcript:${run.id}`); // only a waiting run needs its transcript
-    for (const k of ["steercur", "acked", "readok", "browseok"]) store.deleteKv(`${k}:${run.id}`); // per-run markers end with the run
+    for (const k of ["steercur", "acked", "readok", "browseok", "reissue", "reissuenudge"]) store.deleteKv(`${k}:${run.id}`); // per-run markers end with the run
     run.quiet = quiet || undefined;
     if (quiet && run.triggerMessageId) {
       // A quiet timer or event is not worth the next run's context; the record keeps it.

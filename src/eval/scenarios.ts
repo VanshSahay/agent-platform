@@ -49,12 +49,12 @@ export const PRESETS = {
   dineout(w: EvalWorld) {
     const page = {
       title: "Hauz Khas SOCIAL | Dineout",
-      text: "Hauz Khas SOCIAL, Hauz Khas Village. Book a table. Dates: Sat 25 Oct, Sun 26 Oct. Guests: 2. Dinner: 7:30 PM, 8:00 PM, 8:30 PM. [Confirm booking]",
+      text: "Hauz Khas SOCIAL, Hauz Khas Village. Book a table. Dates: Sat 24 Oct, Sun 25 Oct. Guests: 2. Dinner: 7:30 PM, 8:00 PM, 8:30 PM. [Confirm booking]",
     };
     w.hands.browser = new (class extends FakeBrowser {
       override async run(input: Parameters<FakeBrowser["run"]>[0]) {
         const r = await super.run(input);
-        return /confirm/i.test(JSON.stringify(input.steps)) ? { ...r, text: "Booking confirmed. Hauz Khas SOCIAL, Sun 26 Oct, 8:00 PM, 2 guests. Booking ID DO-8812." } : r;
+        return /confirm/i.test(JSON.stringify(input.steps)) ? { ...r, text: "Booking confirmed. Hauz Khas SOCIAL, Sun 25 Oct, 8:00 PM, 2 guests. Booking ID DO-8812." } : r;
       }
     })(() => page);
   },
@@ -908,7 +908,7 @@ export const SCENARIOS: Scenario[] = [
       w.alias("couple", couple.id);
     },
     turns: [
-      { room: "couple", personId: "alex", text: "@pip meal plan for the week, Sam's veg Mon to Wed, and a shopping list." },
+      { room: "couple", personId: "alex", text: "@pip meal plan for the rest of this week (through Sunday), Sam's veg until Wednesday, and a shopping list." },
       { room: "couple", personId: "sam", text: "@pip I'll cook Thursday and Saturday." },
       // Wednesday 21:00: the evening before Thursday's dinner. A model that puts dinner at 7pm (as models do)
       // has its day-before nudge due at Wednesday 19:00, so the old 17:00 tick graded a correct agent as silent.
@@ -1202,7 +1202,8 @@ export const SCENARIOS: Scenario[] = [
       }
       return reply("ok");
     },
-    expects: { attention: 1 },
+    // The owner's card, plus an ask_room if the agent asks the chat what each person wants.
+    expects: { attention: 2 },
     checks: [
       {
         name: "a shared page holds everyone's lines",
@@ -1225,7 +1226,8 @@ export const SCENARIOS: Scenario[] = [
         },
       },
       noOutreachCheck("Nothing left the chat: the owner places the order themselves."),
-      finishedCheck("every run finished", "All three group runs are done (the yes resumes the third).", "room", 3),
+      // Sam's line may answer an ask_room in the first run instead of starting the second, so two runs is enough.
+      finishedCheck("every run finished", "Every group run is done (the yes resumes the last); asking the group may fold Sam's line into the first.", "room", 2),
     ],
   },
   // ---- Live-test regressions, 23 Oct 2026 (one-to-one on iMessage): each was a real failure, fixed in the runtime.
@@ -1374,18 +1376,18 @@ export const SCENARIOS: Scenario[] = [
       app.vault.put("alex", "browser:swiggy.com", "ctx_swiggy");
     },
     turns: [
-      { room: "ownerDm", personId: "alex", text: "Book Hauz Khas Social on Swiggy Dineout for Sunday 26 Oct at 8pm, 2 people. I'm already signed in to Swiggy on your browser." },
+      { room: "ownerDm", personId: "alex", text: "Book Hauz Khas Social on Swiggy Dineout for Sunday 25 Oct at 8pm, 2 people. I'm already signed in to Swiggy on your browser." },
       { room: "ownerDm", personId: "alex", text: "yes" },
       { room: "ownerDm", personId: "alex", text: "yes, confirm it" },
     ],
     script: (req) => {
       const last = lastToolResult(req) ?? "";
-      if (/Booking confirmed/.test(last)) return reply("Booked: Hauz Khas Social, Sunday 26 Oct, 8:00 PM, 2 people (booking DO-8812).");
+      if (/Booking confirmed/.test(last)) return reply("Booked: Hauz Khas Social, Sunday 25 Oct, 8:00 PM, 2 people (booking DO-8812).");
       const uses = toolCallsSoFar(req).filter((c) => c.name === "browser_use");
       if (/\[APPROVED\]/.test(lastUserText(req))) return callTool("browser_use", uses.at(-1)!.input);
       if (last.includes("Asked first")) return reply("I've asked for your OK.");
       // Each step goes after the last one's page came back: date, then time, then confirm.
-      const plan = ["text=Sun 26 Oct", "text=8:00 PM", "text=Confirm booking"];
+      const plan = ["text=Sun 25 Oct", "text=8:00 PM", "text=Confirm booking"];
       const prev = uses.length ? plan.indexOf(String((uses.at(-1)!.input.steps as { click?: string }[])[0]?.click)) : -1;
       const step = { click: plan[Math.min(prev + 1, plan.length - 1)]! };
       return callTool("browser_use", { url: "https://www.swiggy.com/restaurants/854246/dineout/book", account: "swiggy.com", steps: [step, { screenshot: true }] });
@@ -1401,12 +1403,15 @@ export const SCENARIOS: Scenario[] = [
         },
       },
       {
-        name: "the date and time were picked without a new question",
-        detail: "Browser runs that only pick a date or time happened, and no action item names them.",
+        name: "no question for a step that only picks a date or time",
+        detail: "The browser picked Sun 25 Oct and 8:00 PM (alone or with the confirm), and no action item asked about steps that only pick them.",
         pass: (app, w) => {
           const runs = (w.hands.browser as FakeBrowser).runs.map((r) => JSON.stringify(r.steps));
-          const picks = runs.filter((r) => /Sun 26|8:00 PM/.test(r) && !/Confirm/i.test(r));
-          return picks.length >= 1 && !app.store.listAttention({ assigneeId: "alex" }).some((a) => /Sun 26|8:00 PM/.test(a.detail) && !/Confirm/i.test(a.detail));
+          return (
+            runs.some((r) => /Sun 25/.test(r)) &&
+            runs.some((r) => /8:00 PM/.test(r)) &&
+            !app.store.listAttention({ assigneeId: "alex" }).some((a) => a.kind === "action" && /Sun 25|8:00 PM/.test(a.detail) && !/Confirm/i.test(a.detail))
+          );
         },
       },
       {
