@@ -7,6 +7,7 @@ import {
   handleMatches,
   isDefaultRoomName,
   LINK_CODE_TTL_MS,
+  LINK_GUESSES_PER_WINDOW,
   mintLinkCode,
   normaliseHandle,
   personIdForHandle,
@@ -72,9 +73,9 @@ describe("linking a phone by code", () => {
   test("a code from Settings, texted from a new number, writes that number onto the person; it works once and expires", () => {
     const w = groupWorld(() => reply("ok"));
     const code = mintLinkCode(w.app.store, "alex", w.clock.now());
-    expect(code).toMatch(/^\d{6}$/);
+    expect(code).toMatch(/^\d{8}$/);
     expect(claimLinkCode(w.app.store, "hello", "+14085550199", w.clock.now())).toBeUndefined();
-    expect(claimLinkCode(w.app.store, "000000", "+14085550199", w.clock.now())).toBeUndefined();
+    expect(claimLinkCode(w.app.store, "00000000", "+14085550199", w.clock.now())).toBeUndefined();
     const linked = claimLinkCode(w.app.store, ` ${code} `, "+1 (408) 555-0199", w.clock.now() + 1000)!;
     expect(linked.id).toBe("alex");
     expect(w.app.store.getPerson("alex")!.phoneE164).toBe("+14085550199");
@@ -86,6 +87,16 @@ describe("linking a phone by code", () => {
 });
 
 describe("where people are", () => {
+  test("wrong code guesses are capped across every handle, so rotating numbers buys no extra tries", () => {
+    const w = groupWorld(() => reply("ok"));
+    const code = mintLinkCode(w.app.store, "alex", w.clock.now());
+    const wrong = code === "11111111" ? "22222222" : "11111111";
+    for (let i = 0; i < LINK_GUESSES_PER_WINDOW; i++) expect(claimLinkCode(w.app.store, wrong, `+1408555${String(i).padStart(4, "0")}`, w.clock.now())).toBeUndefined();
+    // The real code no longer links in this window: guessing paused it for everyone.
+    expect(claimLinkCode(w.app.store, code, "+14085559999", w.clock.now())).toBeUndefined();
+    expect(w.app.store.getPerson("alex")!.phoneE164).not.toBe("+14085559999");
+  });
+
   test("a group on a text channel is named by who is in it until the owner names it", () => {
     expect(groupRoomName("imessage", ["Sam"])).toBe("iMessage · Sam");
     expect(groupRoomName("imessage", ["Sam", "Riley", "Jo", "Mia", "Lee"])).toBe("iMessage · Sam, Riley, Jo & 2 more");

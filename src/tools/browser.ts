@@ -343,10 +343,18 @@ export class BrowserbaseBrowser implements BrowserProvider {
     const session = await this.createSession(projectId, { ...settings, keepAlive: true, timeout: 900 })
       .catch(() => this.createSession(projectId, { ...settings, keepAlive: true }))
       .catch(() => this.createSession(projectId, settings));
-    const debugRes = await fetch(`https://api.browserbase.com/v1/sessions/${session.id}/debug`, { headers: this.headers() });
-    if (!debugRes.ok) throw new Error(`Browserbase live view: ${debugRes.status}`);
-    const debug = (await debugRes.json()) as { debuggerFullscreenUrl: string };
-    const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
+    let debug: { debuggerFullscreenUrl: string };
+    let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>>;
+    try {
+      const debugRes = await fetch(`https://api.browserbase.com/v1/sessions/${session.id}/debug`, { headers: this.headers() });
+      if (!debugRes.ok) throw new Error(`Browserbase live view: ${debugRes.status}`);
+      debug = (await debugRes.json()) as { debuggerFullscreenUrl: string };
+      browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
+    } catch (e) {
+      // A keepAlive session that never reached the person would bill and hold a queue slot until the plan's limit.
+      await this.release(projectId, session.id);
+      throw e;
+    }
     this.live.set(session.id, { browser, projectId, startedAt: Date.now() });
     try {
       const ctx = browser.contexts()[0] ?? (await browser.newContext());

@@ -38,6 +38,29 @@ export class Store {
   getPerson(id: string) {
     return parse<Person>(this.db.query("SELECT data FROM persons WHERE id = ?").get(id) as Row | null);
   }
+  /** Every reference to one person id, moved to another, in one transaction (identity merge). */
+  reassignPerson(from: string, to: string) {
+    this.db.transaction(() => {
+      const json = (table: string, field: string, col?: string) =>
+        this.db.run(
+          `UPDATE ${table} SET ${col ? `${col} = ?, ` : ""}data = json_set(data, '$.${field}', ?) WHERE json_extract(data, '$.${field}') = ?`,
+          col ? [to, to, from] : [to, from],
+        );
+      json("attention", "assigneeId", "assignee_id");
+      json("attention", "requesterId");
+      json("attention", "answeredBy");
+      json("commitments", "ownerId", "owner_id");
+      json("commitments", "beneficiaryId");
+      json("runs", "requesterId");
+      json("tasks", "requesterId");
+      json("approvals", "decidedBy");
+      json("agents", "ownerId", "owner_id");
+      // The kept person's own connection wins when both connected the same service.
+      this.db.run("UPDATE OR IGNORE credentials SET person_id = ? WHERE person_id = ?", [to, from]);
+      this.db.run("DELETE FROM credentials WHERE person_id = ?", [from]);
+    })();
+  }
+
   findPersonByPhone(phone: string) {
     // ponytail: a json_extract scan; add a phone column and index if the people table ever gets big
     const p = parse<Person>(this.db.query("SELECT data FROM persons WHERE json_extract(data, '$.phoneE164') = ?").get(phone) as Row | null);

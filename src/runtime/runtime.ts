@@ -153,6 +153,15 @@ export class Runtime {
 
   /** Dismissed or expired: the run that waited on it ends, so the room is not stuck. */
   private closeRunsWaitingOn(item: AttentionItem) {
+    // An abandoned sign-in card still holds a live browser session: end it (nothing is saved).
+    if (item.kind === "connect_account") {
+      const raw = this.d.store.getKv(`connect:${item.id}`);
+      if (raw) {
+        const c = JSON.parse(raw) as { sessionId: string };
+        this.d.store.deleteKv(`connect:${item.id}`);
+        void this.d.hands.browser.finishSignIn?.(c.sessionId, false)?.catch(() => undefined);
+      }
+    }
     for (const run of this.d.store.listRuns({ roomId: item.roomId, status: ["waiting"], limit: 500 })) {
       if (run.waitingOn !== item.id) continue;
       this.finish(run, "stopped", item.status === "expired" ? "No answer before the question expired." : "The question was dismissed.");
@@ -344,13 +353,10 @@ export class Runtime {
    * following the group-manners procedure. Trigger is an event, so if the model
    * says nothing, silence is a legal outcome.
    */
-  async groupJoined(room: Room, addedBy: Person): Promise<Run | undefined> {
-    const { store, clock } = this.d;
-    const agent = store.getAgent(room.agentId);
-    if (!agent) return undefined;
-    const dm = this.d.rooms.dmFor(agent, agent.ownerId);
-    const text = `${agent.name} was added to "${room.name}" on ${room.channel} by ${addedBy.displayName}. Set what it is for there in Settings: ${this.d.publicUrl}/#room=${room.id}`;
-    store.putMessage({
+  /** A deterministic notice in someone's private chat with the agent: written by code, never by the model. */
+  notify(agent: AgentSpec, personId: Id, text: string) {
+    const dm = this.d.rooms.dmFor(agent, personId);
+    this.d.store.putMessage({
       id: newId("msg"),
       sessionId: this.sessionFor(dm, agent).id,
       roomId: dm.id,
@@ -359,9 +365,15 @@ export class Runtime {
       source: "notice",
       text,
       visibleTo: [],
-      at: clock.now(),
+      at: this.d.clock.now(),
     });
     void this.d.deliver({ roomId: dm.id, text, kind: "notice" });
+  }
+
+  async groupJoined(room: Room, addedBy: Person): Promise<Run | undefined> {
+    const agent = this.d.store.getAgent(room.agentId);
+    if (!agent) return undefined;
+    this.notify(agent, agent.ownerId, `${agent.name} was added to "${room.name}" on ${room.channel} by ${addedBy.displayName}. Set what it is for there in Settings: ${this.d.publicUrl}/#room=${room.id}`);
     const p = this.startSystemRun({
       roomId: room.id,
       trigger: "event",

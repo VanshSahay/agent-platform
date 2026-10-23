@@ -45,6 +45,8 @@ export function parseDocument(md: string, title: string): DocSection[] {
 export interface DocState {
   checked: Record<string, string>; // item key -> who ticked it
   claimed: Record<string, string>; // item key -> who will bring it
+  /** item key -> who set that claim; differs from `claimed` when someone put another member down. */
+  claimedBy?: Record<string, string>;
   added: Record<string, { key: string; text: string; by: string }[]>; // section key -> items added on the page
 }
 export const emptyState = (): DocState => ({ checked: {}, claimed: {}, added: {} });

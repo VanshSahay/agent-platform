@@ -109,7 +109,7 @@ export class Scheduler {
           roomId: art.roomId,
           source: "artifact_edit",
           dedupKey: `art:${id}:${n}`,
-          summary: `The page "${art.title}" changed: ${diff}. Each claim is a responsibility: read_page the page, then track_commitment with the claimer as owner for claims not already in the ledger (put the page item in the detail); ticks and additions need nothing.`,
+          summary: `The page "${art.title}" changed: ${diff}. Each claim a person made for themselves is a responsibility: read_page the page, then track_commitment with them as owner for claims not already in the ledger (put the page item in the detail). When someone put another member down, ask that member privately to confirm first (ask_person) and track it only on their yes. Ticks and additions need nothing.`,
         });
         out.edited += 1;
       } catch (e) {
@@ -279,7 +279,11 @@ export function pageDiff(seen: DocState | null | undefined, latest: DocState | n
   const parts: string[] = [];
   const claimed = latest.claimed ?? {};
   const seenClaimed = seen?.claimed ?? {};
-  for (const [k, who] of Object.entries(claimed)) if (seenClaimed[k] !== who) parts.push(`${who} claimed "${k}"`);
+  for (const [k, who] of Object.entries(claimed)) {
+    if (seenClaimed[k] === who) continue;
+    const by = latest.claimedBy?.[k];
+    parts.push(by && by !== who ? `${by} put ${who} down for "${k}" (${who} has not confirmed)` : `${who} claimed "${k}"`);
+  }
   for (const k of Object.keys(seenClaimed)) if (!(k in claimed)) parts.push(`the claim on "${k}" was dropped`);
   const checked = latest.checked ?? {};
   const seenChecked = seen?.checked ?? {};

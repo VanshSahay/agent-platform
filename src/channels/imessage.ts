@@ -156,13 +156,17 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
           console.warn(`${channel}: rate limit for ${normaliseHandle(senderId).slice(0, 4)}…, dropping a message`);
           continue;
         }
-        // A six-digit code from Settings links this handle to the signed-in person; no run starts.
+        // An eight-digit code from Settings links this handle to the signed-in person; no run starts.
         const linked = claimLinkCode(app.store, text, senderId, app.clock.now());
         if (linked) {
           // The handle's derived record (a stranger who texted before signing up) is the same
           // human: memberships, memories and profiles move onto the signed-in person.
           const derived = app.store.getPerson(personIdForHandle(normaliseHandle(senderId)));
           if (derived && derived.id !== linked.id && !derived.mergedInto) app.rooms.mergePeople(linked.id, derived.id);
+          // Tell the person on their own chat, so a link they did not make is seen the same day.
+          const agent = agentFor();
+          if (agent)
+            app.runtime.notify(agent, linked.id, `${normaliseHandle(senderId)} was just linked to your account by texting your code. If that wasn't you, remove it under Settings → Channels.`);
           await spectrum
             .send(space, plainText(`Linked: this number is now ${linked.displayName}'s. Text me here any time, or add me to a group chat and I'll be there too.`))
             .catch(() => undefined);

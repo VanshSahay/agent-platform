@@ -366,6 +366,9 @@ describe("document pages", () => {
     ).json();
     expect(st.checked["0-clothes:0-boots"]).toBe("Sam");
     expect(st.claimed["0-clothes:1-hat"]).toBe("Jo");
+    expect(st.claimedBy["0-clothes:1-hat"]).toBe("Sam"); // Sam put Jo down
+    const forged = await (await s.call("sam", "PATCH", `/api/artifacts/${id}/state`, { claimed: { "0-clothes:0-boots": "Mallory" } })).json();
+    expect(forged.claimed["0-clothes:0-boots"]).toBeUndefined(); // not a member of this chat
     expect(st.added["1-food"][0].text).toBe("Marshmallows");
     const again = await (await s.call("alex", "GET", `/api/artifacts/${id}`)).json();
     expect(again.state.checked["0-clothes:0-boots"]).toBe("Sam");
@@ -431,7 +434,7 @@ describe("web api: channels", () => {
     expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123", mode: "dedicated" }]);
     expect(list.mine.phone).toBe("+14155550123");
     const r = await (await s.call("alex", "POST", "/api/channels/link-code", {})).json();
-    expect(r.code).toMatch(/^\d{6}$/);
+    expect(r.code).toMatch(/^\d{8}$/);
     expect(r.sms).toBe(`sms:+14155550123?&body=${r.code}`);
     expect(r.qr).toContain("<svg");
     expect((await s.call(undefined, "POST", "/api/channels/link-code", {})).status).toBe(401);

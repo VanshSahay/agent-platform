@@ -70,24 +70,36 @@ export function plainText(md: string): string {
 }
 
 /**
- * Linking a phone the way Fo does it: the signed-in person gets a six-digit code in
+ * Linking a phone the way Fo does it: the signed-in person gets a eight-digit code in
  * Settings and texts it to the agent's number; the sender handle becomes theirs.
  * Codes live fifteen minutes in the kv store and are consumed on first use.
  */
 export const LINK_CODE_TTL_MS = 15 * 60 * 1000;
 
+/** Wrong code-shaped guesses allowed across every handle in one window, before claims pause. */
+export const LINK_GUESSES_PER_WINDOW = 20;
+
 export function mintLinkCode(store: Store, personId: string, now: number): string {
-  const code = String(randomInt(100000, 1000000));
+  // Eight digits: with the global guess cap below, a stranger's odds of hitting a live code are negligible.
+  const code = String(randomInt(10_000_000, 100_000_000));
   store.setKv(`link:${code}`, JSON.stringify({ personId, at: now }));
   return code;
 }
 
 /** The person a code belongs to, with the handle written onto them; undefined for an unknown or stale code. */
 export function claimLinkCode(store: Store, text: string, handle: string, now: number): Person | undefined {
-  const code = text.trim().match(/^(\d{6})$/)?.[1];
+  const code = text.trim().match(/^(\d{8})$/)?.[1];
   if (!code) return undefined;
+  // A link turns a handle into someone, so guessing is capped for everyone at once, not per handle:
+  // a stranger rotating numbers gets the same budget as one sending from a single phone.
+  const window = Math.floor(now / LINK_CODE_TTL_MS);
+  const guesses = Number(store.getKv(`link-guesses:${window}`) ?? 0);
+  if (guesses >= LINK_GUESSES_PER_WINDOW) return undefined;
   const raw = store.getKv(`link:${code}`);
-  if (!raw) return undefined;
+  if (!raw) {
+    store.setKv(`link-guesses:${window}`, String(guesses + 1));
+    return undefined;
+  }
   store.deleteKv(`link:${code}`);
   const { personId, at } = JSON.parse(raw) as { personId: string; at: number };
   if (now - at > LINK_CODE_TTL_MS) return undefined;

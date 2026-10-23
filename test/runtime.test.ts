@@ -709,6 +709,34 @@ describe("co-owners", () => {
 });
 
 describe("audit fixes, 23 October", () => {
+  test("a merge carries the stranger's open card, credential and responsibility to the signed-up person", async () => {
+    const w = groupWorld(() => reply("ok"));
+    const handle = "+14085550144";
+    const derivedId = personIdForHandle(handle);
+    w.app.rooms.createPerson({ id: derivedId, displayName: handle, timezone: "UTC", phoneE164: handle });
+    w.app.rooms.addMember(w.room.id, derivedId, "guest");
+    const card = w.app.attention.open({ agentId: w.agent.id, roomId: w.room.id, assigneeId: derivedId, kind: "decision", title: "Which day?", detail: "Thursday or Friday", ttlMs: 86_400_000 });
+    w.app.vault.put(derivedId, "gmail", "secret-token");
+    const job = w.app.commitments.track({ roomId: w.room.id, agentId: w.agent.id, ownerId: derivedId, title: "Bring chairs" });
+    const riley = w.app.rooms.createPerson({ displayName: "Riley", timezone: "UTC" });
+    w.app.rooms.mergePeople(riley.id, derivedId);
+    expect(w.app.attention.openFor(riley.id).map((a) => a.id)).toContain(card.id); // their answer will find it
+    expect(w.app.vault.has(riley.id, "gmail")).toBe(true);
+    expect(w.app.vault.has(derivedId, "gmail")).toBe(false);
+    expect(w.app.store.getCommitment(job.id)!.ownerId).toBe(riley.id);
+  });
+
+  test("an abandoned sign-in card ends its live browser session without saving it", async () => {
+    const browser = new FakeBrowser();
+    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), { browser });
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "order batteries from walgreens" });
+    const item = w.app.store.listAttention({ roomId: w.ownerDm.id, status: ["open"] }).find((a) => a.kind === "connect_account")!;
+    w.app.attention.dismiss(item.id);
+    expect(browser.signIns[0]!.finished).toBe(true);
+    expect(browser.signIns[0]!.kept).toBe(false);
+    expect(w.app.vault.has("alex", "browser:walgreens.com")).toBe(false);
+  });
+
   test("a call on a server with no phone provider is refused: nothing dialled, nothing claimed", async () => {
     const phone = new FakePhone();
     const w = groupWorld(

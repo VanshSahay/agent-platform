@@ -3,10 +3,17 @@ import { privateProfileId } from "../src/memory/consolidate.ts";
 import { callTool, lastToolResult, reply, toolCallsSoFar } from "../src/model/scripted.ts";
 import { groupWorld, sysText } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
-import { Scheduler } from "../src/scheduler/scheduler.ts";
+import { pageDiff, Scheduler } from "../src/scheduler/scheduler.ts";
 import { FakePhone } from "../src/tools/hands.ts";
 
 describe("page edits become events", () => {
+  test("a claim someone made for another member reads as an unconfirmed assignment, not a responsibility", () => {
+    const diff = pageDiff(undefined, { checked: {}, claimed: { "packing:stove": "Jo", "packing:tent": "Sam" }, claimedBy: { "packing:stove": "Sam", "packing:tent": "Sam" }, added: {} });
+    expect(diff).toContain('Sam put Jo down for "packing:stove" (Jo has not confirmed)');
+    expect(diff).toContain('Sam claimed "packing:tent"');
+  });
+
+
   const seedPage = (w: ReturnType<typeof groupWorld>) => {
     const st = { checked: {}, claimed: { "packing:stove": "Sam" }, added: {} };
     w.app.store.putArtifact({

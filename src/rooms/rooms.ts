@@ -129,21 +129,29 @@ export class RoomService {
       }
     }
     for (const a of this.store.listAgents()) {
-      for (const m of this.store.listMemories(a.id)) {
-        if (m.scope === "person" && m.scopeId === dropId) {
-          this.store.putMemory({ ...m, scopeId: keepId });
-        } else if (m.subjectPersonId === dropId) {
-          this.store.putMemory({ ...m, subjectPersonId: keepId });
-        }
+      // Inactive versions too: a superseded or retracted note is still about this person.
+      for (const m of this.store.listMemories(a.id, { includeInactive: true })) {
+        const scoped = m.scope === "person" && m.scopeId === dropId;
+        const about = m.subjectPersonId === dropId;
+        if (scoped || about) this.store.putMemory({ ...m, scopeId: scoped ? keepId : m.scopeId, subjectPersonId: about ? keepId : m.subjectPersonId });
       }
-      for (const scopeId of [dropId, privateProfileId(dropId)]) {
-        const profile = this.store.getProfile(a.id, "person", scopeId);
-        if (profile) {
-          this.store.putProfile({ ...profile, scopeId: scopeId === dropId ? keepId : privateProfileId(keepId) });
-          this.store.deleteProfile(a.id, "person", scopeId);
-        }
+      for (const [from, to] of [
+        [dropId, keepId],
+        [privateProfileId(dropId), privateProfileId(keepId)],
+      ] as const) {
+        const dropped = this.store.getProfile(a.id, "person", from);
+        if (!dropped) continue;
+        const kept = this.store.getProfile(a.id, "person", to);
+        // Both sides keep what they knew until the next consolidation re-derives one profile.
+        this.store.putProfile(
+          kept ? { ...kept, text: `${kept.text}\n${dropped.text}`, derivedAt: Math.max(kept.derivedAt, dropped.derivedAt) } : { ...dropped, scopeId: to },
+        );
+        this.store.deleteProfile(a.id, "person", from);
       }
     }
+    // Everything else that names the dropped record: open cards, the ledger, credentials, runs,
+    // tasks, approvals, agents it owns. A card waiting on a stranger must find them after they sign up.
+    this.store.reassignPerson(dropId, keepId);
     this.store.putPerson({ ...drop, mergedInto: keepId });
     return this.store.getPerson(keepId);
   }

@@ -790,15 +790,25 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const who = (me ? app.store.getPerson(me)?.displayName : str(b.me)) || "someone";
         const d = art.data as { markdown?: string; state?: DocState };
         const st = d.state ?? emptyState();
+        const before = JSON.stringify(st);
         const checked = b.checked && typeof b.checked === "object" ? (b.checked as Record<string, string | null>) : {};
         for (const [k, v] of Object.entries(checked)) {
           if (v === null) delete st.checked[k];
           else st.checked[k] = who;
         }
         const claimed = b.claimed && typeof b.claimed === "object" ? (b.claimed as Record<string, string | null>) : {};
+        // A claim names a member of this chat, and the page records who set it: putting someone else
+        // down is allowed, but it is an ask for them to confirm, never a responsibility made for them.
+        const names = new Set((art.roomId ? app.rooms.memberIds(art.roomId) : []).map((id) => app.store.getPerson(id)?.displayName ?? id));
+        st.claimedBy = st.claimedBy ?? {};
         for (const [k, v] of Object.entries(claimed)) {
-          if (v === null) delete st.claimed[k];
-          else st.claimed[k] = String(v).slice(0, 80);
+          if (v === null) {
+            delete st.claimed[k];
+            delete st.claimedBy[k];
+          } else if (names.has(String(v))) {
+            st.claimed[k] = String(v).slice(0, 80);
+            st.claimedBy[k] = who;
+          }
         }
         const add = b.add && typeof b.add === "object" ? (b.add as { section?: string; text?: string }) : undefined;
         if (add?.section && add.text) {
@@ -810,6 +820,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         app.store.putArtifact(art);
         // Page edits are events: record the new snapshot for the scheduler's diff, which is
         // how a claim becomes a tracked responsibility (multiplayer-spec §10.3).
+        if (JSON.stringify(st) === before) return json(st); // nothing a person did changed: no edit, no event
         const n = Number(app.store.getKv(`artedit:${art.id}`) ?? 0) + 1;
         app.store.setKv(`artedit:${art.id}`, String(n));
         app.store.setKv(`artedit:${art.id}:${n}`, JSON.stringify({ by: who, state: st }));
