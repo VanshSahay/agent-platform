@@ -1,4 +1,4 @@
-# Circle on Railway: one always-on Bun process, SQLite on a mounted volume at /data.
+# Circle in one container: one always-on Bun process, SQLite on a mounted volume at /data (Fly.io: see fly.toml).
 FROM oven/bun:1.4
 WORKDIR /app
 COPY package.json bun.lock ./

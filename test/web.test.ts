@@ -304,6 +304,38 @@ describe("invites", () => {
 });
 
 describe("document pages", () => {
+  test("a member can share a page: before that a non-member gets a private page, after it anyone opens it and sees where Circle comes from", async () => {
+    const s = up();
+    const { newId } = await import("../src/core/ids.ts");
+    const id = newId("art");
+    s.app.store.putArtifact({
+      id,
+      agentId: s.agent.id,
+      roomId: s.room.id,
+      kind: "document",
+      title: "Packing list",
+      data: { markdown: "# Packing list\n- Boots" },
+      share: "room",
+      createdAt: s.clock.now(),
+    });
+    const closed = await s.call("zed", "GET", `/d/${id}`);
+    expect(closed.status).toBe(403);
+    expect(await closed.text()).toContain("This page is private");
+    expect(await (await s.call("sam", "GET", `/d/${id}`)).text()).toContain("Share this page");
+    expect((await s.call("zed", "PATCH", `/api/artifacts/${id}/share`, { share: "link" })).status).toBe(403);
+    // The page itself has only the session cookie: a write with it needs the custom header a cross-site form cannot send.
+    expect((await s.call(undefined, "PATCH", `/api/artifacts/${id}/share`, { share: "link" }, { cookie: "__session=as:sam" })).status).toBe(403);
+    expect(await (await s.call(undefined, "PATCH", `/api/artifacts/${id}/share`, { share: "link" }, { cookie: "__session=as:sam", "x-requested-with": "circle" })).json()).toEqual({
+      share: "link",
+    });
+    const open = await s.call("zed", "GET", `/d/${id}`);
+    expect(open.status).toBe(200);
+    const page = await open.text();
+    expect(page).toContain("Packing list");
+    expect(page).toContain("Get yours");
+    expect(page).not.toContain("Share this page");
+  });
+
   test("a document the assistant wrote is a shared checklist: ticks, claims and added items are kept per document and visible to members", async () => {
     const s = up();
     const { newId } = await import("../src/core/ids.ts");

@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, reply, toolCallsSoFar } from "../src/model/scripted.ts";
+import { recordSpend } from "../src/runtime/spend.ts";
 import { groupWorld, repliesTo } from "./helpers.ts";
-import { FakeGoogle, FakeSlack } from "../src/tools/hands.ts";
+import { FakeGoogle, type FakePublicRates, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
 import { TOOLS } from "../src/tools/registry.ts";
+import { type BookingRow, type KestrelRow, parseBooking, parseBookingRows, parseKestrel, sellerSearchUrl } from "../src/tools/providers/public-rates.ts";
+import { hotelKey } from "../src/tools/catalog/hotels.ts";
 
 /** A scripted model that calls one tool once, then replies. */
 const once =
@@ -95,6 +98,214 @@ describe("the catalogue", () => {
     expect(names.has("send_agent_email")).toBe(true); // Fo's send_wajo_email
     expect(fo.length + 1).toBe(75);
     expect(new Set(TOOLS.map((t) => t.spec.name)).size).toBe(TOOLS.length); // no duplicate names
+  });
+
+  test("hotel_compare puts our price next to the cheapest public one per hotel, savings first, on a shared page", async () => {
+    process.env.HOTEL_MARKUP_PCT = "10";
+    process.env.HOTEL_SITE_URL = "https://shop.example";
+    const w = groupWorld(
+      once("hotel_compare", { city: "Barcelona", countryCode: "ES", checkIn: "2026-12-01", checkOut: "2026-12-03", limit: 5 }, "Nouvel is $264 with us vs $343 on Booking."),
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip compare hotels in Barcelona Dec 1-3 for 2" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    expect(call.status).toBe("done");
+    expect(call.evidence).toBe("fake-hotels:1+fake-public-rates:1");
+    // The public side is asked for the star classes of the hotels we are about to show, so Google's list covers them.
+    expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.classes).toEqual([3, 4]);
+    expect((w.app.hands.publicRates as FakePublicRates).queries[0]!.names).toEqual(["Hotel Nouvel", "Catalonia Avinyó", "Leonardo Las Ramblas"]);
+    const r = call.result as { rows: string[]; matched: number; bookThroughUs: string; page: string };
+    // Nouvel: $239.55 net + 10% = $264 against $343 on Booking; Catalonia (accent and no "Avinyó" in the public name) still matches at $292 vs $290 on Agoda.
+    expect(r.rows[0]).toContain(
+      "Hotel Nouvel 3★: through us $264 (refundable) · public $343 on Booking.com (all-in, refundable) · save $79 (23%) with us · Super.com lists $290 before taxes & fees",
+    );
+    expect(r.rows[1]).toContain("Catalonia Avinyó 4★: through us $292 · public $290 on Agoda (before taxes & fees) · $2 cheaper there");
+    expect(r.rows[2]).toContain("no public price found");
+    expect(r.matched).toBe(2);
+    expect(r.bookThroughUs).toBe("https://shop.example/hotels?name=Barcelona&checkin=2026-12-01&checkout=2026-12-03&rooms=1&adults=2&currency=USD");
+    const page = w.app.store.listArtifacts(w.app.store.listAgents("alex")[0]!.id, { roomId: w.room.id }).find((a) => a.kind === "hotels")!;
+    expect(page.title).toBe("Hotels: Barcelona, 2026-12-01 to 2026-12-03");
+    const data = page.data as { rows: { name: string; oursUsd: number; pub?: { seller: string } }[]; bookUrl: string; nights: number };
+    expect(data.rows.map((x) => [x.name, x.oursUsd, x.pub?.seller])).toEqual([
+      ["Hotel Nouvel", 264, "Booking.com"],
+      ["Catalonia Avinyó", 292, "Agoda"],
+      ["Leonardo Las Ramblas", 339, undefined],
+    ]);
+    expect(data.nights).toBe(2);
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+    // A second ask for the same stay within twelve hours reuses the public prices instead of paying Google again.
+    const again = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip compare hotels in Barcelona Dec 1-3 for 2" });
+    const second = w.app.store.toolCallsForRun(again!.id)[0]!;
+    expect(second.evidence).toBe("fake-hotels:2+fake-public-rates:1:cached");
+    expect((w.app.hands.publicRates as FakePublicRates).queries).toHaveLength(1);
+    delete process.env.HOTEL_MARKUP_PCT;
+    delete process.env.HOTEL_SITE_URL;
+  });
+
+  test("Google Hotels rows become one public offer per hotel: the cheapest major seller made all-in with Google's tax estimate, a discount reseller's lower before-tax figure noted", () => {
+    const rows: KestrelRow[] = [
+      {
+        type: "hotel",
+        hotel_id: "h1",
+        name: "Alpes Hôtel du Pralong",
+        total_base: 5866.68,
+        taxes: 586.53,
+        fees: 44.6,
+        total_with_taxes: 6497.81,
+        website: "https://alpeshoteldupralong.com/",
+      },
+      {
+        type: "offer",
+        hotel_id: "h1",
+        name: "Alpes Hôtel du Pralong",
+        source: "Alpes Hôtel du Pralong",
+        official: true,
+        total: 7883.21,
+        link: "https://www.google.com/travel/lodging/clk?a",
+      },
+      {
+        type: "offer",
+        hotel_id: "h1",
+        name: "Alpes Hôtel du Pralong",
+        source: "Super.com",
+        official: false,
+        total: 5911.28,
+        partner_url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13",
+      },
+      { type: "offer", hotel_id: "h1", name: "Alpes Hôtel du Pralong", source: "Booking.com", official: false, total: 8925.83, free_cancel: true },
+      { type: "status", hotels: 1 } as KestrelRow,
+    ];
+    expect(parseKestrel(rows)).toEqual([
+      {
+        // Google's estimate for this hotel is 10% tax plus $44.60 fees: the official site's 7,883 before tax is 8,716 all-in, still under Booking's listed 8,926.
+        name: "Alpes Hôtel du Pralong",
+        totalUsd: 8716,
+        seller: "Official site",
+        refundable: false,
+        url: "https://www.google.com/travel/lodging/clk?a",
+        allIn: true,
+        taxesEstimated: true,
+        listedBelow: { seller: "Super.com", totalUsd: 5911, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
+      },
+    ]);
+  });
+
+  test("past the daily cap on public lookups, hotel_compare still prices our side and says the public column is paused", async () => {
+    process.env.PUBLIC_RATES_DAILY_CAP_USD = "0.05";
+    const w = groupWorld(once("hotel_compare", { city: "Barcelona", countryCode: "ES", checkIn: "2026-12-01", checkOut: "2026-12-03" }, "Here."));
+    recordSpend(w.app.store.db, { provider: "apify", usd: 0.06, units: "booking run", at: new Date(w.clock.now()).toISOString() });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip compare hotels in Barcelona Dec 1-3" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    const r = call.result as { matched: number; publicError?: string; rows: string[] };
+    expect(r.matched).toBe(0);
+    expect(r.publicError).toContain("paused for today");
+    expect(r.rows[0]).toContain("through us $240");
+    expect((w.app.hands.publicRates as FakePublicRates).queries).toHaveLength(0);
+    delete process.env.PUBLIC_RATES_DAILY_CAP_USD;
+  });
+
+  test("Booking.com rows become all-in offers: the stay total plus what Booking lists as paid on top; unknown names and sold-out rooms are skipped", () => {
+    const rows: BookingRow[] = [
+      {
+        type: "hotel",
+        name: "Snow Lodge Hotel Courchevel 1850",
+        url: "https://www.booking.com/hotel/fr/snow-lodge.html",
+        room_name: "Suite 303",
+        price_total: 12899.52,
+        taxes_fees_excluded: 34.49,
+        free_cancellation: true,
+      },
+      { type: "status", hotel_name: "Snow Lodge Hotel Courchevel 1850", error: null },
+      { type: "status", hotel_name: null, error: "ValueError: Booking.com autocomplete has no hotel named 'Les 3 Vallées'" },
+      { type: "hotel", name: "Le Lana", price_total: 30233.25, taxes_fees_excluded: 35.47, sold_out: true },
+    ];
+    expect(parseBookingRows(rows)).toEqual([
+      {
+        name: "Snow Lodge Hotel Courchevel 1850",
+        totalUsd: 12934,
+        seller: "Booking.com",
+        refundable: true,
+        url: "https://www.booking.com/hotel/fr/snow-lodge.html",
+        allIn: true,
+        room: "Suite 303",
+      },
+    ]);
+  });
+
+  test("public hotel links carry the dates on sellers that take them in the URL", () => {
+    const q = { city: "Courchevel", countryCode: "FR", checkIn: "2027-01-13", checkOut: "2027-01-17", adults: 2 };
+    expect(sellerSearchUrl("Booking.com", "Le Saint Joseph", q)).toBe(
+      "https://www.booking.com/searchresults.html?ss=Le%20Saint%20Joseph%2C%20Courchevel&checkin=2027-01-13&checkout=2027-01-17&group_adults=2&no_rooms=1&group_children=0&selected_currency=USD",
+    );
+    expect(sellerSearchUrl("Expedia.com", "Le Lana", q)).toContain("startDate=2027-01-13&endDate=2027-01-17&adults=2");
+    expect(sellerSearchUrl("Super.com", "Le Lana", q)).toBeUndefined();
+  });
+
+  test("Booking.com's results page parses into one total per hotel, in-area only", () => {
+    const text = [
+      "Courchevel: 13 properties found",
+      "Le Saint Joseph",
+      "Opens in new window",
+      "Courchevel 1850",
+      "Breakfast included",
+      "Free cancellation",
+      "Per night$1,336",
+      "$6,678",
+      "Price $6,678",
+      "5 nights, 2 adults",
+      "See availability",
+      "Hotel Le Carlina Courchevel 1850",
+      "Opens in new window",
+      "Superior Queen Room",
+      "Per night$1,504",
+      "$8,082$7,521",
+      "Original price $8,082. Current price $7,521.",
+      "Price $7,521",
+      "5 nights, 2 adults",
+      "Looking for more options?",
+      "Hotel Le Coucou Méribel",
+      "Opens in new window",
+      "Méribel",
+      "Price $6,384",
+      "5 nights, 2 adults",
+    ].join("\n");
+    expect(parseBooking(text)).toEqual([
+      { name: "Le Saint Joseph", totalUsd: 6678, seller: "Booking.com", refundable: true, url: "https://www.booking.com", allIn: true },
+      { name: "Hotel Le Carlina Courchevel 1850", totalUsd: 7521, seller: "Booking.com", refundable: false, url: "https://www.booking.com", allIn: true },
+    ]);
+    expect(hotelKey("Hôtel Le K2 Altitude")).toBe(hotelKey("Hotel Le K2 Altitude"));
+  });
+
+  test("flight_compare matches itineraries by flight numbers and says where each side wins or is missing", async () => {
+    const w = groupWorld(once("flight_compare", { origin: "lax", destination: "JFK", date: "2026-12-06", cabin: "business" }, "AA3177 is the same price both ways."));
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip business class LAX to JFK Dec 6" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    expect(call.status).toBe("done");
+    expect(call.evidence).toBe("fake-flights:1+fake-public-flights:1");
+    expect(w.hands.flights.queries[0]).toMatchObject({ origin: "LAX", destination: "JFK", cabin: "business", adults: 1 });
+    const r = call.result as { rows: string[]; matched: number; oursOnly: number; publicOnly: number };
+    expect(r.matched).toBe(2);
+    expect(r.publicOnly).toBe(1);
+    expect(r.rows[0]).toBe("American AA3177 > AA1796 · 23:55–10:09 · 7h14 · 1 stop · through us $787 (First, bag included) · public $788 on American · same price");
+    expect(r.rows[1]).toContain("AA4 · 06:30–14:59 · 5h29 · nonstop · through us $1,950 (First, bag included) · public $2,099 on American · save $149 with us");
+    expect(r.rows[2]).toContain("Delta DL1 · 06:15–14:31 · 5h16 · nonstop · not in our inventory · public $3,849 on Delta");
+    const page = w.app.store.listArtifacts(w.app.store.listAgents("alex")[0]!.id, { roomId: w.room.id }).find((a) => a.kind === "flights")!;
+    expect(page.title).toBe("Flights: LAX to JFK, 2026-12-06");
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
+  });
+
+  test("hotel_rates lists the wholesale source's offers cheapest first, net next to public, with evidence and no gate", async () => {
+    const w = groupWorld(once("hotel_rates", { city: "Barcelona", countryCode: "es", checkIn: "2026-12-01", checkOut: "2026-12-03" }, "Hotel Nouvel is $240 net vs $275 public."));
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip hotel in Barcelona Dec 1-3?" });
+    const calls = w.app.store.toolCallsForRun(run!.id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.status).toBe("done");
+    expect(calls[0]!.evidence).toBe("fake-hotels:1");
+    expect(w.hands.hotels.searches[0]).toEqual({ city: "Barcelona", checkIn: "2026-12-01", checkOut: "2026-12-03" });
+    const out = String(calls[0]!.result);
+    expect(out.indexOf("Hotel Nouvel")).toBeLessThan(out.indexOf("Catalonia"));
+    expect(out).toContain("$240 net vs $275 public");
+    expect(out).toContain("+ $34 paid at the hotel");
+    expect(w.app.store.listAttention({ roomId: w.room.id })).toHaveLength(0);
   });
 
   test("free slots skip busy blocks and keep working hours", () => {

@@ -5,6 +5,9 @@ import { MCP_TOOLS } from "./mcp.ts";
 import { OPERATOR_TOOLS } from "./operator.ts";
 import { PEOPLE_TOOLS } from "./people.ts";
 import { SHOPPING_TOOLS } from "./shopping.ts";
+import { GROUP_ORDER_TOOLS } from "./group-order.ts";
+import { FLIGHT_TOOLS } from "./flights.ts";
+import { HOTEL_TOOLS } from "./hotels.ts";
 
 /**
  * Everything beyond the core set, grouped as Fo groups them. Families that
@@ -17,5 +20,8 @@ export const CATALOG_TOOLS: ToolDef[] = [
   ...PEOPLE_TOOLS,
   ...withNeeds(GOOGLE_TOOLS, "google"),
   ...withNeeds(SHOPPING_TOOLS, "payments"),
+  ...GROUP_ORDER_TOOLS,
+  ...withNeeds(HOTEL_TOOLS, "hotels"),
+  ...withNeeds(FLIGHT_TOOLS, "flights"),
   ...MCP_TOOLS,
 ];

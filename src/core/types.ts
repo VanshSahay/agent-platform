@@ -46,7 +46,7 @@ export interface Artifact {
   agentId: Id;
   roomId?: Id;
   runId?: Id;
-  kind: "document" | "dashboard" | "file" | "image" | "audio";
+  kind: "document" | "dashboard" | "hotels" | "flights" | "file" | "image" | "audio";
   title: string;
   /** Markdown for documents, a dashboard spec, or a file's metadata (name, mime, size, path). */
   data: unknown;

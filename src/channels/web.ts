@@ -7,6 +7,7 @@ import type { App } from "../app.ts";
 import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, Memory, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
 import { newId } from "../core/ids.ts";
 import { buildFooter, type Delivery } from "../runtime/runtime.ts";
+import { daysAgoIso, spendSummary, startOfDayIso } from "../runtime/spend.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
@@ -17,7 +18,7 @@ import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
 import { Auth, authConfig, frontendApiFromKey } from "./auth.ts";
 import { googleAuthUrl, googleExchange } from "../tools/providers/google.ts";
-import { artifactPage, type DocState, emptyState, parseDocument } from "./artifacts.ts";
+import { artifactPage, type DocState, emptyState, type FlightsData, type HotelsData, parseDocument, privatePage } from "./artifacts.ts";
 
 /**
  * The web channel: a JSON API and one page for the owner. The API shape is
@@ -52,7 +53,8 @@ type Access =
   | "agentOwner" // agent.ownerId is me
   | "agentMember" // agent owner, or a member of one of its rooms
   | "assignee" // the attention item is addressed to me
-  | "anyAgentOwner"; // I own at least one agent
+  | "anyAgentOwner" // I own at least one agent
+  | "token"; // the operator's EVENT_TOKEN only; no signed-in person, owner included
 interface Route {
   method: string;
   re: RegExp;
@@ -173,7 +175,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
     ["connect-src 'self'", ...clerkHosts].join(" "),
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
-    ["img-src 'self' data:", cfg && "https://img.clerk.com"].filter(Boolean).join(" "),
+    ["img-src 'self' data: https:"].filter(Boolean).join(" "),
     // Sign-in cards embed the Browserbase live view.
     `frame-src https://www.browserbase.com https://*.browserbase.com${cfg ? " https://challenges.cloudflare.com" : ""}`,
     "worker-src 'self' blob:",
@@ -228,14 +230,15 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
   function permit(route: Route, c: Ctx): Response | undefined {
     if (route.access === "public") return;
     const bearer = bearerOf(c.req);
-    if (route.orToken && eventToken && bearer && sameSecret(bearer, eventToken)) return;
+    if ((route.orToken || route.access === "token") && eventToken && bearer && sameSecret(bearer, eventToken)) return;
+    if (route.access === "token") return eventToken ? bad("not found", 404) : bad("EVENT_TOKEN is not configured", 503);
     if (!auth) return;
     if (!c.me) return route.orToken && !eventToken ? bad("EVENT_TOKEN is not configured", 503) : bad("sign in required", 401);
     const me = c.me;
     if (route.access === "signedIn") return;
     const s = route.scope ? route.scope(c) : {};
     if (!s) return bad("not found", 404);
-    const ok: Record<Exclude<Access, "public" | "signedIn">, () => boolean> = {
+    const ok: Record<Exclude<Access, "public" | "signedIn" | "token">, () => boolean> = {
       self: () => s.personId === me,
       roomMember: () => !!s.room && isMember(s.room.id, me),
       roomOwner: () => !!s.room && ownsRoom(s.room, me),
@@ -627,6 +630,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           googleConfigured: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
           agentEmail: app.hands.email.address(),
           google: services.includes("google"),
+
           slack: services.includes("slack"),
           mcp: services.filter((x) => x.startsWith("mcp:")).map((x) => x.slice(4)),
           apis: services.filter((x) => x.startsWith("api:")).map((x) => x.slice(4)),
@@ -698,12 +702,13 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const art = app.store.getArtifact(params[0]!);
         if (!art) return bad("not found", 404);
         if (art.share !== "link" && auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
-        const d = art.data as { state?: DocState; markdown?: string; subtitle?: string; kpis?: unknown[] };
+        const d = art.data as { state?: DocState; markdown?: string; subtitle?: string; kpis?: unknown[]; rows?: HotelsData["rows"] };
         const members = art.roomId ? app.rooms.memberIds(art.roomId).map((id) => app.store.getPerson(id)?.displayName ?? id) : [];
         const state = d.state ?? emptyState();
         // A glance for the chat's preview card: how many items, how many done, or the first line of a note.
         const sections = art.kind === "document" ? parseDocument(d.markdown ?? "", art.title) : [];
         const items = sections.reduce((n, s) => n + s.items.length, 0) + Object.values(state.added).reduce((n, l) => n + l.length, 0);
+        const flightRows = art.kind === "flights" ? ((art.data as FlightsData).rows ?? []) : [];
         const excerpt =
           art.kind === "document"
             ? sections
@@ -712,7 +717,32 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
                 .slice(0, 140)
             : art.kind === "dashboard"
               ? d.subtitle
-              : undefined;
+              : art.kind === "hotels"
+                ? `${(d.rows ?? []).length} hotels, ${(d.rows ?? []).filter((r) => r.pub && r.pub.totalUsd > r.oursUsd).length} cheaper through us`
+                : art.kind === "flights"
+                  ? `${flightRows.length} itineraries, ${flightRows.filter((r) => r.ours && r.pub && r.pub.totalUsd > r.ours.totalUsd + 1).length} cheaper through us`
+                  : undefined;
+        // The chat card shows the first three itineraries as one line each.
+        const flights =
+          art.kind === "flights"
+            ? flightRows.slice(0, 3).map((r) => ({
+                name: `${r.airline} ${r.flights.join(" › ")} · ${r.departAt.slice(11, 16)}–${r.arriveAt.slice(11, 16)}${r.stops ? ` · ${r.stops} stop` : " · nonstop"}`,
+                oursUsd: r.ours?.totalUsd,
+                pubUsd: r.pub?.totalUsd,
+                seller: r.pub?.seller,
+              }))
+            : undefined;
+        // The chat card shows the first three hotels: name, our price, the public one.
+        const hotels =
+          art.kind === "hotels"
+            ? (d.rows ?? []).slice(0, 3).map((r: { name: string; photo?: string; oursUsd: number; pub?: { totalUsd: number; seller: string } }) => ({
+                name: r.name,
+                photo: r.photo,
+                oursUsd: r.oursUsd,
+                pubUsd: r.pub?.totalUsd,
+                seller: r.pub?.seller,
+              }))
+            : undefined;
         return json({
           id: art.id,
           title: art.title,
@@ -724,12 +754,29 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
             items,
             done: Object.keys(state.checked).length,
             excerpt,
+            hotels,
+            flights,
             sections: sections
               .filter((s) => s.title)
               .map((s) => s.title)
               .slice(0, 6),
           },
         });
+      },
+    },
+    // ---- a member opens a page to anyone with the link (or closes it again)
+    {
+      method: "PATCH",
+      re: /^\/api\/artifacts\/([^/]+)\/share$/,
+      access: "public",
+      handle: ({ params, me, body: b }) => {
+        const art = app.store.getArtifact(params[0]!);
+        if (!art) return bad("not found", 404);
+        if (auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
+        if (b.share !== "link" && b.share !== "room") return bad("share must be link or room");
+        art.share = b.share;
+        app.store.putArtifact(art);
+        return json({ share: art.share });
       },
     },
     {
@@ -1238,6 +1285,18 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
     { method: "POST", re: /^\/api\/tick$/, access: "anyAgentOwner", orToken: true, handle: async () => json(await app.scheduler.tick()) },
+    // What the deployment has cost, for the operator only (EVENT_TOKEN; `bun run spend`), never for a signed-in person.
+    {
+      method: "GET",
+      re: /^\/api\/spend$/,
+      access: "token",
+      handle: (c) => {
+        const now = app.clock.now();
+        const raw = c.url.searchParams.get("since");
+        const since = raw === "week" ? daysAgoIso(7, now) : raw && !Number.isNaN(Date.parse(raw)) ? new Date(Date.parse(raw)).toISOString() : startOfDayIso(now);
+        return json(spendSummary(app.store.db, { since, until: new Date(now).toISOString(), flyUsdPerMonth: Number(process.env.FLY_USD_PER_MONTH ?? 0) || 0 }));
+      },
+    },
   ];
 
   const server = Bun.serve({
@@ -1282,11 +1341,10 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       if (p.startsWith("/d/")) {
         const art = app.store.getArtifact(p.slice(3).split("/")[0] ?? "");
         if (!art) return bad("not found", 404);
-        if (art.share !== "link" && auth && art.roomId) {
-          const me = (await auth.personFor(req))?.id;
-          if (!me || !app.store.getMembership(art.roomId, me)) return bad("sign in as a member of that chat to open this", 403);
-        }
-        return artifactPage(art, url.searchParams.has("raw"));
+        const me = auth ? (await auth.personFor(req))?.id : undefined;
+        const member = !auth || !art.roomId || (!!me && !!app.store.getMembership(art.roomId, me));
+        if (art.share !== "link" && !member) return privatePage(cfg && fapi ? { publishableKey: cfg.publishableKey, frontendApi: fapi } : undefined);
+        return artifactPage(art, url.searchParams.has("raw"), { member });
       }
       if (!p.startsWith("/api/")) return bad("not found", 404);
 

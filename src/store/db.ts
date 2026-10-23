@@ -99,6 +99,11 @@ CREATE INDEX IF NOT EXISTS artifacts_agent ON artifacts(agent_id, created_at);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY, v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS spend (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, provider TEXT NOT NULL, usd REAL NOT NULL, units TEXT NOT NULL,
+  run_id TEXT, session_id TEXT, note TEXT
+);
+CREATE INDEX IF NOT EXISTS spend_at ON spend(at);
 `;
 
 /**

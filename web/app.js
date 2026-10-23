@@ -75,6 +75,9 @@ async function ensureAuth() {
     // Sign-in and sign-up both live on this page, in the app's own light look, never on Clerk's hosted portal.
     $("#app").innerHTML = '<div id="signin" style="min-height:100dvh;padding:40px;display:grid;place-items:center"></div>';
     const opts = {
+      // Virtual routing: Clerk keeps its steps (password, code) in memory instead of rewriting the hash,
+      // which the app's own router would otherwise read as "signed out somewhere else" and bounce to /welcome.
+      routing: "virtual",
       signInUrl: `${location.origin}/#signin`,
       signUpUrl: `${location.origin}/#signup`,
       afterSignInUrl: `${location.origin}/`,
@@ -183,7 +186,8 @@ function route() {
     return;
   }
   if (!$("#pageChat")) {
-    location.reload(); // signed out: the page holds only the sign-in form, and #signup needs the other one
+    // Signed out: the page holds only the sign-in form. Reload only to swap sign-in for sign-up; any other hash is Clerk's own.
+    if (/^#sign(in|up)\/?$/.test(location.hash)) location.reload();
     return;
   }
   const [page, sub] = h.split("/");
@@ -712,6 +716,9 @@ async function renderThread() {
   // Timer and answer prompts are the agent's own notes; the Why? drawer shows them, the thread does not.
   const msgs = (data.messages ?? data).filter((m) => m.role !== "system");
   const active = data.activeRun;
+  // Nothing is delivered while a run works, so the "working…" line would never show the current step: re-read every few seconds.
+  clearTimeout(state.activePoll);
+  if (active && active.status === "running") state.activePoll = setTimeout(() => renderThread(), 3000);
   if (!msgs.length) {
     // "Want me to…" cards: what the circle actually has open first, the stock ideas after.
     if (!state.suggFor || state.suggFor !== state.room) {
@@ -781,7 +788,9 @@ async function renderThread() {
       try {
         await api(`/api/attention/${encodeURIComponent(card.dataset.item)}/resolve`, { personId: state.me, answer: b.dataset.connect === "done" ? "done" : "cancel" });
         state.lastMsgCount = -1;
-        load();
+        // Start over: close this window and ask for a fresh one, for when the live view has timed out.
+        if (b.dataset.connect === "retry") send(`sign me in to ${b.dataset.site} again`);
+        else load();
       } catch (err) {
         status(err.message, true);
         card.querySelectorAll("button").forEach((x) => {
@@ -820,13 +829,14 @@ function patchThread(el, html) {
     el.replaceChildren(...next);
     return;
   }
-  el.querySelector('[data-id="working"]')?.remove();
+  // The sender's optimistic bubble and its "working…" line carry no id; the stored copies replace them.
+  for (const c of [...el.children]) if (!c.dataset.id || c.dataset.id === "working") c.remove();
   for (const c of next.slice(have.length)) el.appendChild(c);
 }
 
 // A link to something the assistant made becomes a preview card under the message: title, kind, live progress.
 const docCards = new Map();
-const KIND_WORDS = { document: "Note", dashboard: "Dashboard", image: "Image", audio: "Voice note", file: "File" };
+const KIND_WORDS = { document: "Note", dashboard: "Dashboard", hotels: "Hotels", flights: "Flights", image: "Image", audio: "Voice note", file: "File" };
 function docCardHtml(a) {
   const isList = a.kind === "document" && a.summary.items > 0;
   const pct = isList ? Math.round((a.summary.done / a.summary.items) * 100) : 0;
@@ -838,7 +848,20 @@ function docCardHtml(a) {
       : a.summary.sections?.length
         ? esc(a.summary.sections.join(" · "))
         : "";
-  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener">${a.kind === "image" ? `<img class="thumb" src="/d/${esc(a.id)}?raw=1" alt="" />` : ""}<span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}<span class="open">Open →</span></a>`;
+  const usd = (v) => `$${Math.round(v).toLocaleString("en-US")}`;
+  const hotels = (a.summary.hotels ?? [])
+    .map(
+      (h) =>
+        `<span class="hotel">${h.photo ? `<img src="${esc(h.photo)}" alt="" loading="lazy" />` : `<i class="nophoto"></i>`}<span class="n">${esc(h.name)}</span><span class="p"><b>${usd(h.oursUsd)}</b> us${h.pubUsd ? ` · ${usd(h.pubUsd)} ${esc(h.seller ?? "public")}` : ""}</span>${h.pubUsd && h.pubUsd > h.oursUsd ? `<span class="save">−${usd(h.pubUsd - h.oursUsd)}</span>` : ""}</span>`,
+    )
+    .join("");
+  const flights = (a.summary.flights ?? [])
+    .map(
+      (f) =>
+        `<span class="hotel flight"><span class="n">${esc(f.name)}</span><span class="p">${f.oursUsd ? `<b>${usd(f.oursUsd)}</b> us` : "not ours"}${f.pubUsd ? ` · ${usd(f.pubUsd)} ${esc(f.seller ?? "public")}` : ""}</span>${f.oursUsd && f.pubUsd && f.pubUsd > f.oursUsd + 1 ? `<span class="save">−${usd(f.pubUsd - f.oursUsd)}</span>` : ""}</span>`,
+    )
+    .join("");
+  return `<a class="doccard ${esc(a.kind)}" href="/d/${esc(a.id)}" target="_blank" rel="noopener">${a.kind === "image" ? `<img class="thumb" src="/d/${esc(a.id)}?raw=1" alt="" />` : ""}<span class="kind">${kind}</span><strong>${esc(a.title)}</strong>${meta ? `<span class="meta">${meta}</span>` : ""}${isList ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ""}${hotels || flights ? `<span class="hotels">${hotels}${flights}</span>` : ""}<span class="open">Open →</span></a>`;
 }
 async function decorateDocLinks() {
   for (const link of $$("#inner .body a[href*='/d/']")) {
@@ -864,7 +887,35 @@ async function decorateDocLinks() {
 }
 const linkify = (escaped) => escaped.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
 /** Light Markdown for the assistant's replies: bold, italics, code, links, bullets, numbered lists, headings. Escaped first. */
+// A ```cards block is a shortlist: the agent gives options as data, the chat shows them as cards.
+function cardsHtml(json) {
+  let items;
+  try {
+    items = JSON.parse(json);
+  } catch {
+    return `<pre>${esc(json)}</pre>`;
+  }
+  if (!Array.isArray(items)) return "";
+  const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//.test(u) ? u : "");
+  return `<div class="cards">${items
+    .slice(0, 6)
+    .map((c) => {
+      const url = safeUrl(c.url);
+      const img = safeUrl(c.image);
+      const body = `${img ? `<img src="${esc(img)}" alt="" loading="lazy" />` : ""}<span class="t"><strong>${esc(c.title ?? "")}</strong>${c.subtitle ? `<span class="sub">${esc(c.subtitle)}</span>` : ""}${c.note ? `<span class="note">${esc(c.note)}</span>` : ""}</span><span class="side">${c.price ? `<b class="price">${esc(c.price)}</b>` : ""}${c.tag ? `<span class="tag">${esc(c.tag)}</span>` : ""}${url ? `<span class="open">Open →</span>` : ""}</span>`;
+      return url
+        ? `<a class="optcard${c.tag === "pick" ? " pick" : ""}" href="${esc(url)}" target="_blank" rel="noopener">${body}</a>`
+        : `<span class="optcard${c.tag === "pick" ? " pick" : ""}">${body}</span>`;
+    })
+    .join("")}</div>`;
+}
 function md(text) {
+  // Cards are rendered as data; everything around them is ordinary Markdown.
+  const parts = text.split(/```cards\s*\n([\s\S]*?)\n\s*```/);
+  if (parts.length > 1) return parts.map((p, i) => (i % 2 ? cardsHtml(p) : mdText(p))).join("");
+  return mdText(text);
+}
+function mdText(text) {
   const inline = (t) =>
     esc(t)
       .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -951,7 +1002,7 @@ function cardHtml(c) {
       : "Cancelled. Nothing was connected.";
   return `<div class="acard ${esc(c.status)}" data-item="${esc(c.itemId)}"><h4>Sign in to ${esc(c.site)}</h4><p>${lead}</p>${
     open
-      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write"></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button></div>`
+      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write; fullscreen" allowfullscreen></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button><a class="btn" href="${esc(c.liveViewUrl)}" target="_blank" rel="noopener">Open full size ↗</a><button class="btn" data-connect="retry" data-site="${esc(c.site)}" type="button" title="If the window says the connection closed, start a fresh one">Start over</button></div>`
       : ""
   }</div>`;
 }

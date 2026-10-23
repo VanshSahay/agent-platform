@@ -129,13 +129,56 @@ const SHELL = (
 <style>body{margin:0;background:#fbfbf8;color:#111;font:15.5px/1.6 Inter,system-ui,sans-serif}main{max-width:760px;margin:0 auto;padding:40px 20px 80px}h1{font:800 32px/1.1 Rubik,Inter,sans-serif;letter-spacing:-.03em;margin:0 0 6px}h2{font-size:20px;margin:28px 0 8px}h3{font-size:17px}.sub{color:#55554f;margin:0 0 24px}.card{background:#fff;border:2px solid #111;border-radius:16px;box-shadow:3px 3px 0 #111;padding:16px 18px;margin:14px 0}.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.kpi .v{font:800 28px/1 Rubik,Inter,sans-serif}.kpi .l{color:#55554f;font-size:13px}.kpi .d{font-size:12px}.up{color:#16865a}.down{color:#c3352b}code{background:#f3f3ee;padding:1px 5px;border-radius:5px}img,audio{max-width:100%}a{color:#111}.foot{color:#8a8a83;font-size:12px;margin-top:40px}</style></head><body><main>${body}</main></body></html>`;
 
 /** The page at /d/:id for whatever the agent made. */
-export function artifactPage(a: Artifact, raw: boolean): Response {
+/** Who is looking: a member of the chat may share the page; anyone else came in by a shared link. */
+export interface Viewer {
+  member: boolean;
+}
+
+export function artifactPage(a: Artifact, raw: boolean, viewer: Viewer = { member: true }): Response {
+  const res = render(a, raw);
+  if (typeof res !== "string") return res;
+  // ponytail: the bar is spliced in before </main>, which every page shell has exactly once
+  return html(res.replace("</main>", `${shareBar(a, viewer)}</main>`));
+}
+
+/** A member can open the page to anyone with the link; a visitor sees who made it and where to get one. */
+function shareBar(a: Artifact, viewer: Viewer): string {
+  if (!viewer.member)
+    return `<aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`;
+  const open = a.share === "link";
+  return `<aside class="sharebar"><span id="shareNote">${open ? "Anyone with the link can open this page." : "Only members of the chat can open this page."}</span><button class="sharebtn" id="shareBtn" type="button">${open ? "Copy link" : "Share this page"}</button></aside><style>${SHARE_CSS}</style>
+<script>(()=>{const b=document.getElementById("shareBtn"),n=document.getElementById("shareNote"),url=location.origin+location.pathname;let open=${open};b.onclick=async()=>{if(!open){try{const r=await fetch("/api/artifacts/${a.id}/share",{method:"PATCH",headers:{"content-type":"application/json","x-requested-with":"circle"},body:JSON.stringify({share:"link"})});if(!r.ok)throw new Error();open=true;n.textContent="Anyone with the link can open this page.";}catch{b.textContent="Could not share";return;}}
+if(navigator.share){try{await navigator.share({title:document.title,url});return;}catch{}}
+try{await navigator.clipboard.writeText(url);b.textContent="Link copied";}catch{n.textContent="Anyone with the link can open this page: "+url;b.textContent="Copy link";}};})();</script>`;
+}
+const SHARE_CSS =
+  ".sharebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:28px 0 0;padding:12px 16px;border:2px solid #111;border-radius:14px;background:#fff;font-size:14px}.sharebar.cta{background:#fff7d6}.sharebtn{font:600 14px Inter,system-ui,sans-serif;color:#fff;background:#111;border:0;border-radius:999px;padding:8px 14px;text-decoration:none;white-space:nowrap;cursor:pointer}";
+
+/** The 403 for a page that is not shared: a page, not JSON, since the link was tapped by a person. */
+export function privatePage(clerk?: { publishableKey: string; frontendApi: string }): Response {
+  // The session cookie lives sixty seconds and only an open Circle tab refreshes it, so a link opened on its own
+  // often arrives stale. Load Clerk here once, let it write a fresh cookie, and reload; a second miss stays put.
+  const refresh = clerk
+    ? `<script>(async()=>{if(sessionStorage.getItem("ret")===location.pathname)return;await new Promise((ok,no)=>{const s=document.createElement("script");s.src="https://${esc(clerk.frontendApi)}/npm/@clerk/clerk-js@5/dist/clerk.browser.js";s.setAttribute("data-clerk-publishable-key",${JSON.stringify(clerk.publishableKey)});s.async=true;s.crossOrigin="anonymous";s.onload=ok;s.onerror=no;document.head.appendChild(s);}).catch(()=>null);if(!window.Clerk)return;await Clerk.load();if(!Clerk.session)return;await Clerk.session.getToken();sessionStorage.setItem("ret",location.pathname);location.reload();})();</script>`
+    : "";
+  return new Response(
+    SHELL(
+      "Private page",
+      `${refresh}<h1>This page is private</h1><p class="sub">It was made inside a chat. Sign in as a member of that chat to open it, or ask whoever sent it to share the page.</p><p><a class="sharebtn" href="/#signin">Sign in</a></p><aside class="sharebar cta"><span>Made with <strong>Circle</strong>, an assistant that lives in your group chat.</span><a class="sharebtn" href="/welcome">Get yours</a></aside><style>${SHARE_CSS}</style>`,
+    ),
+    { status: 403, headers: { "content-type": "text/html; charset=utf-8", "x-frame-options": "DENY" } },
+  );
+}
+
+function render(a: Artifact, raw: boolean): Response | string {
   const d = a.data as Record<string, unknown>;
   const made = `<p class="foot">Made by the assistant on ${new Date(a.createdAt).toISOString().slice(0, 10)}.</p>`;
   if (a.kind === "document") {
     if (raw) return new Response(String(d.markdown ?? ""), { headers: { "content-type": "text/markdown; charset=utf-8" } });
-    return html(documentApp(a));
+    return documentApp(a);
   }
+  if (a.kind === "hotels") return hotelsPage(a);
+  if (a.kind === "flights") return flightsPage(a);
   if (a.kind === "dashboard") {
     const spec = d as unknown as Dash;
     const kpis = (spec.kpis ?? [])
@@ -145,7 +188,7 @@ export function artifactPage(a: Artifact, raw: boolean): Response {
       )
       .join("");
     const charts = (spec.charts ?? []).map((c) => `<div class="card"><h3>${esc(c.title)}</h3>${chartSvg(c)}</div>`).join("");
-    return html(SHELL(a.title, `<h1>${esc(spec.title)}</h1>${spec.subtitle ? `<p class="sub">${esc(spec.subtitle)}</p>` : ""}<div class="kpis">${kpis}</div>${charts}${made}`));
+    return SHELL(a.title, `<h1>${esc(spec.title)}</h1>${spec.subtitle ? `<p class="sub">${esc(spec.subtitle)}</p>` : ""}<div class="kpis">${kpis}</div>${charts}${made}`);
   }
   const mime = String(d.mimeType ?? "application/octet-stream");
   const bytes = Buffer.from(String(d.base64 ?? ""), "base64");
@@ -154,11 +197,9 @@ export function artifactPage(a: Artifact, raw: boolean): Response {
       headers: { "content-type": mime, "content-disposition": a.kind === "file" ? `attachment; filename="${a.title.replace(/[^\w.-]+/g, "_")}"` : "inline" },
     });
   const media = a.kind === "image" ? `<img src="?raw=1" alt="${esc(a.title)}">` : `<audio controls src="?raw=1"></audio>`;
-  return html(
-    SHELL(
-      a.title,
-      `<h1>${esc(a.title)}</h1><div class="card">${media}</div>${d.prompt ? `<p class="sub">${esc(String(d.prompt))}</p>` : ""}${d.text ? `<p>${esc(String(d.text))}</p>` : ""}${made}`,
-    ),
+  return SHELL(
+    a.title,
+    `<h1>${esc(a.title)}</h1><div class="card">${media}</div>${d.prompt ? `<p class="sub">${esc(String(d.prompt))}</p>` : ""}${d.text ? `<p>${esc(String(d.text))}</p>` : ""}${made}`,
   );
 }
 
@@ -297,4 +338,115 @@ function confetti(){if(matchMedia("(prefers-reduced-motion: reduce)").matches)re
 addEventListener("pointermove",(e)=>{document.querySelectorAll("#eyes svg").forEach((sv)=>{const r=sv.getBoundingClientRect();const a=Math.atan2(e.clientY-r.top-r.height/2,e.clientX-r.left-r.width/2);const p=sv.querySelector(".pupil");p.setAttribute("cx",String(12+Math.cos(a)*4));p.setAttribute("cy",String(15+Math.sin(a)*4))})},{passive:true});
 load();setInterval(()=>{if(!document.hidden)api("/api/artifacts/"+BOOT.id).then((r)=>{state=r.state;render()}).catch(()=>{})},4000);
 </script></body></html>`;
+}
+
+/** The hotel comparison: one card per hotel, our price against the cheapest public one, a book button. */
+export interface HotelsData {
+  city: string;
+  checkIn: string;
+  checkOut: string;
+  nights: number;
+  adults: number;
+  stars?: number;
+  publicSource: string;
+  bookUrl?: string;
+  rows: {
+    name: string;
+    stars?: number;
+    rating?: number;
+    address?: string;
+    photo?: string;
+    room: string;
+    board: string;
+    refundable: boolean;
+    feesAtHotelUsd: number;
+    oursUsd: number;
+    pub?: {
+      totalUsd: number;
+      seller: string;
+      refundable: boolean;
+      url: string;
+      allIn?: boolean;
+      taxesEstimated?: boolean;
+      room?: string;
+      listedBelow?: { seller: string; totalUsd: number; url: string };
+    };
+  }[];
+}
+const money = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
+function hotelsPage(a: Artifact): string {
+  const d = a.data as HotelsData;
+  const cheaper = d.rows.filter((r) => r.pub && r.pub.totalUsd > r.oursUsd);
+  const best = cheaper.map((r) => r.pub!.totalUsd - r.oursUsd).sort((x, y) => y - x)[0];
+  const cards = d.rows
+    .map((r) => {
+      const save = r.pub ? r.pub.totalUsd - r.oursUsd : undefined;
+      const badge =
+        save === undefined
+          ? `<span class="badge none">no public price found</span>`
+          : save > 0
+            ? `<span class="badge save">save ${money(save)} · ${Math.round((save / r.pub!.totalUsd) * 100)}%</span>`
+            : `<span class="badge lose">${money(-save)} cheaper on ${esc(r.pub!.seller)}</span>`;
+      const photo = r.photo && /^https:\/\//.test(r.photo) ? `<img src="${esc(r.photo)}" alt="" loading="lazy">` : `<div class="nophoto"></div>`;
+      return `<article class="hotel">${photo}<div class="body"><h2>${esc(r.name)}</h2><p class="meta">${r.stars ? `${"★".repeat(r.stars)} · ` : ""}${r.rating ? `${r.rating}/10 · ` : ""}${esc(r.address ?? "")}</p><p class="room">${esc(r.room)}${r.board ? ` · ${esc(r.board)}` : ""} · ${r.refundable ? "free cancellation" : "non-refundable"}${r.feesAtHotelUsd ? ` · ${money(r.feesAtHotelUsd)} paid at the hotel` : ""}</p><div class="prices"><div class="ours"><span class="l">Through us</span><span class="v">${money(r.oursUsd)}</span><span class="n">${d.nights} nights, taxes in</span></div><div class="pub"><span class="l">${r.pub && !r.pub.allIn ? "Public, before taxes & fees" : "Cheapest public, all-in"}</span>${r.pub ? `<span class="v">${money(r.pub.totalUsd)}</span><span class="n">on <a href="${esc(r.pub.url)}" rel="noopener" target="_blank">${esc(r.pub.seller)}</a>${r.pub.taxesEstimated ? ", taxes estimated" : ""}${r.pub.refundable ? ", free cancellation" : ""}${r.pub.room ? `<br>${esc(r.pub.room)}` : ""}${r.pub.listedBelow ? `<br><a href="${esc(r.pub.listedBelow.url)}" rel="noopener" target="_blank">${esc(r.pub.listedBelow.seller)}</a> lists ${money(r.pub.listedBelow.totalUsd)} before taxes & fees` : ""}</span>` : `<span class="v dim">—</span><span class="n">not listed for these dates</span>`}</div></div>${badge}${d.bookUrl ? `<a class="book" href="${esc(d.bookUrl)}" target="_blank" rel="noopener">Book through us →</a>` : ""}</div></article>`;
+    })
+    .join("");
+  const summary = `${d.rows.length} hotels · ${cheaper.length} cheaper through us${best ? ` · best saving ${money(best)}` : ""} · public prices from ${esc(d.publicSource)}`;
+  return SHELL(
+    a.title,
+    `<h1>${esc(d.city)}</h1><p class="sub">${esc(d.checkIn)} to ${esc(d.checkOut)} · ${d.nights} nights · ${d.adults} adults${d.stars ? ` · ${d.stars}★` : ""}</p><p class="summary">${summary}</p>${d.bookUrl ? "" : `<p class="note">Booking through us is not set up on this server yet, so this page compares only.</p>`}${cards}<p class="foot">Made by the assistant on ${new Date(a.createdAt).toISOString().slice(0, 10)}. "Through us" is our price for the whole stay with taxes included. ${
+      d.publicSource === "Booking.com"
+        ? "The public price is Booking.com's total for its cheapest room for the dates, with the taxes and fees Booking lists at checkout added, so it is what you would pay there."
+        : `The public price is the lowest total on ${esc(d.publicSource)} from a major seller (the hotel's own site, Booking.com, Expedia, Hotels.com), made all-in: Google lists most sellers before tax, so where it says "taxes estimated" Google's own tax-and-fee estimate for that hotel was added (checked against Expedia's checkout within $11). Discount resellers' checkouts add more than taxes, so their lower figures are shown but not counted.`
+    } Each side is its cheapest room for the dates, so the rooms can differ.</p>
+<style>.summary{font-weight:600;margin:0 0 18px}.note{color:#8a4b00;background:#fff4e0;border-radius:10px;padding:8px 12px}.hotel{display:grid;grid-template-columns:200px 1fr;gap:0;background:#fff;border:2px solid #111;border-radius:16px;box-shadow:3px 3px 0 #111;margin:16px 0;overflow:hidden}.hotel img,.nophoto{width:100%;height:100%;min-height:170px;object-fit:cover;background:#eee}.hotel .body{padding:14px 18px 16px;position:relative}.hotel h2{margin:0 0 2px;font-size:20px}.hotel .meta,.hotel .room{margin:0;color:#55554f;font-size:13px}.hotel .room{margin:6px 0 10px;color:#111}.prices{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 0}.prices .l{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#55554f}.prices .v{display:block;font:800 26px/1.1 Rubik,Inter,sans-serif}.prices .v.dim{color:#aaa}.prices .n{display:block;font-size:12px;color:#55554f}.ours{border-left:4px solid #16865a;padding-left:10px}.badge{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:3px 10px;margin:4px 0}.badge.save{background:#e2f7ec;color:#16865a}.badge.lose{background:#fde8e6;color:#c3352b}.badge.none{background:#f3f3ee;color:#55554f}.book{display:inline-block;margin:6px 0 0 8px;background:#111;color:#fff;text-decoration:none;font-weight:600;font-size:13px;border-radius:999px;padding:7px 14px}@media(max-width:600px){.hotel{grid-template-columns:1fr}.hotel img,.nophoto{max-height:180px}}</style>`,
+  );
+}
+
+/** The flight comparison: one card per itinerary, our fare against the public one, matched by flight numbers. */
+export interface FlightsData {
+  origin: string;
+  destination: string;
+  date: string;
+  returnDate?: string;
+  adults: number;
+  cabin: string;
+  publicSource: string;
+  rows: {
+    airline: string;
+    flights: string[];
+    departAt: string;
+    arriveAt: string;
+    durationMin: number;
+    returnDurationMin?: number;
+    stops: number;
+    ours?: { totalUsd: number; cabin: string; refundable: boolean; changeable: boolean; checkedBag: boolean };
+    pub?: { totalUsd: number; seller: string; url: string };
+  }[];
+}
+function flightsPage(a: Artifact): string {
+  const d = a.data as FlightsData;
+  const hhmm = (iso: string) => iso.slice(11, 16);
+  const dur = (m: number) => `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+  const cheaper = d.rows.filter((r) => r.ours && r.pub && r.pub.totalUsd > r.ours.totalUsd + 1).length;
+  const cards = d.rows
+    .map((r) => {
+      const badge = !r.ours
+        ? `<span class="badge none">not in our inventory</span>`
+        : !r.pub
+          ? `<span class="badge none">no public price</span>`
+          : r.pub.totalUsd > r.ours.totalUsd + 1
+            ? `<span class="badge save">save ${money(r.pub.totalUsd - r.ours.totalUsd)} with us</span>`
+            : r.ours.totalUsd > r.pub.totalUsd + 1
+              ? `<span class="badge lose">${money(r.ours.totalUsd - r.pub.totalUsd)} cheaper on ${esc(r.pub.seller)}</span>`
+              : `<span class="badge none">same price</span>`;
+      return `<article class="hotel flight"><div class="body"><h2>${esc(r.airline)} <small>${esc(r.flights.join(" › "))}</small></h2><p class="meta">${esc(d.origin)} ${hhmm(r.departAt)} → ${esc(d.destination)} ${hhmm(r.arriveAt)} · ${r.returnDurationMin !== undefined ? `${dur(r.durationMin)} out, ${dur(r.returnDurationMin)} back` : dur(r.durationMin)} · ${r.stops ? `${r.stops} stop${r.stops > 1 ? "s" : ""}${r.returnDurationMin !== undefined ? " each way at most" : ""}` : "nonstop"}${r.ours ? ` · ${esc(r.ours.cabin)}${r.ours.refundable ? " · refundable" : ""}${r.ours.checkedBag ? " · bag included" : ""}` : ""}</p><div class="prices"><div class="ours"><span class="l">Through us</span>${r.ours ? `<span class="v">${money(r.ours.totalUsd)}</span><span class="n">all in, ${d.adults} adult${d.adults > 1 ? "s" : ""}</span>` : `<span class="v dim">—</span><span class="n">not offered by our source</span>`}</div><div class="pub"><span class="l">Public</span>${r.pub ? `<span class="v">${money(r.pub.totalUsd)}</span><span class="n">on <a href="${esc(r.pub.url)}" rel="noopener" target="_blank">${esc(r.pub.seller)}</a></span>` : `<span class="v dim">—</span><span class="n">not listed</span>`}</div></div>${badge}</div></article>`;
+    })
+    .join("");
+  const summary = `${d.rows.length} itineraries · ${cheaper} cheaper through us · public prices from ${esc(d.publicSource)}`;
+  return SHELL(
+    a.title,
+    `<h1>${esc(d.origin)} → ${esc(d.destination)}</h1><p class="sub">${esc(d.date)}${d.returnDate ? ` to ${esc(d.returnDate)}` : ", one way"} · ${d.adults} adult${d.adults > 1 ? "s" : ""} · ${esc(d.cabin.replace("_", " "))}</p><p class="summary">${summary}</p><p class="note">Booking through us is not set up on this server yet, so this page compares only.</p>${cards}<p class="foot">Made by the assistant on ${new Date(a.createdAt).toISOString().slice(0, 10)}. "Through us" is our fare with taxes and fees; the public price is the lowest total found on ${esc(d.publicSource)} for the same flights.</p>
+<style>.summary{font-weight:600;margin:0 0 18px}.note{color:#8a4b00;background:#fff4e0;border-radius:10px;padding:8px 12px}.hotel{background:#fff;border:2px solid #111;border-radius:16px;box-shadow:3px 3px 0 #111;margin:16px 0;overflow:hidden}.hotel .body{padding:14px 18px 16px}.hotel h2{margin:0 0 2px;font-size:20px}.hotel h2 small{font-weight:500;color:#55554f;font-size:13px;margin-left:6px}.hotel .meta{margin:0 0 8px;color:#55554f;font-size:13px}.prices{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:8px 0}.prices .l{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#55554f}.prices .v{display:block;font:800 26px/1.1 Rubik,Inter,sans-serif}.prices .v.dim{color:#aaa}.prices .n{display:block;font-size:12px;color:#55554f}.ours{border-left:4px solid #16865a;padding-left:10px}.badge{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:3px 10px;margin:4px 0}.badge.save{background:#e2f7ec;color:#16865a}.badge.lose{background:#fde8e6;color:#c3352b}.badge.none{background:#f3f3ee;color:#55554f}</style>`,
+  );
 }

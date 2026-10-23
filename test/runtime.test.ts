@@ -13,7 +13,7 @@ import { newAgent } from "../src/agent/spec.ts";
 import { newId } from "../src/core/ids.ts";
 import type { Run, ToolCallRecord } from "../src/core/types.ts";
 import type { Delivery } from "../src/runtime/runtime.ts";
-import { buildFooter, integrityNote } from "../src/runtime/runtime.ts";
+import { buildFooter, estimateFor, integrityNote } from "../src/runtime/runtime.ts";
 import { parseDecision } from "../src/runtime/decide.ts";
 import { e164 } from "../src/tools/registry.ts";
 
@@ -30,13 +30,26 @@ describe("run loop", () => {
     expect(events.at(-2)).toBe("done");
   });
 
+  test("a chat in Messages gets an 'on it' with an estimate at the first tool call; the web chat does not", async () => {
+    const search = new FakeSearch(() => [{ title: "Lee's Repairs", url: "https://x", snippet: "handyman" }]);
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("web_search", { query: "handyman" }) : reply("Found Lee's Repairs.")), { search });
+    w.app.store.putRoom({ ...w.room, channel: "imessage" });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip find a handyman" });
+    const kinds = w.deliveries.filter((d) => d.roomId === w.room.id).map((d) => [d.kind, d.text.split("\n")[0]]);
+    expect(kinds[0]).toEqual(["ack", "On it — about a minute."]);
+    expect(kinds.at(-1)![0]).toBe("reply");
+    expect(estimateFor("hotel_compare", {})).toBe("give me 2 or 3 minutes");
+    expect(estimateFor("plan", { steps: [{ text: "compare hotels" }, { text: "compare flights" }] })).toBe("give me 3 to 5 minutes");
+  });
+
   test("tool calls are recorded with labels and evidence, and the footer is built from records", async () => {
     const search = new FakeSearch((q) => (q.includes("handyman") ? [{ title: "Lee's Repairs", url: "https://x", snippet: "Mandarin-speaking handyman" }] : []));
     const w = groupWorld(
       (req, i) => {
         if (i === 0) return callTool("web_search", { query: "Mandarin speaking handyman San Jose" });
         expect(lastToolResult(req)).toContain("Lee's Repairs");
-        return reply("Found Lee's Repairs. Want me to call them?");
+        // A footer the model copied from an earlier reply is dropped; only the records' footer stays.
+        return reply("Found Lee's Repairs. Want me to call them?\n— 3 steps · 2 verified: Made a call");
       },
       { search },
     );
@@ -50,6 +63,8 @@ describe("run loop", () => {
     const text = repliesTo(w.deliveries, w.room.id)[0]!;
     expect(text).toContain("Found Lee's Repairs.");
     expect(text).toContain("— 1 step · 1 verified: Searched: ");
+    expect(text).not.toContain("Made a call");
+    expect(text.split("\n").filter((l) => l.startsWith("— "))).toHaveLength(1);
   });
 
   test("a reply that claims an action with no side-effect record is corrected", () => {
@@ -302,6 +317,25 @@ describe("chatter is not an answer", () => {
     expect(e164("555-0100")).toBeUndefined();
   });
 
+  test("a tool that fails twice the same way earns a note telling the model to stop calling it", async () => {
+    const w = groupWorld(
+      (req, i) => {
+        if (i < 3) return callTool("browse_page", { url: "https://down.example/" });
+        const t = JSON.stringify(req.messages);
+        expect(t).toContain("failed twice in a row");
+        return reply("The page is down; I'll try later.");
+      },
+      {
+        browser: new FakeBrowser(() => {
+          throw new Error("connectOverCDP: Timeout 30000ms exceeded");
+        }),
+      },
+    );
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip read down.example" });
+    expect(run?.status).toBe("done");
+    expect(w.app.store.toolCallsForRun(run!.id).filter((c) => c.status === "failed").length).toBeGreaterThanOrEqual(2);
+  });
+
   test("a soft opener on a long message is not a yes", () => {
     expect(parseDecision("ok")).toEqual({ kind: "yes" });
     expect(parseDecision("ok, go ahead")).toEqual({ kind: "yes" });
@@ -349,7 +383,7 @@ describe("context economics", () => {
 
   test("with every provider wired the whole catalogue is offered; with none, only ungated tools", () => {
     const none = toolsForRun(new Set());
-    const all = toolsForRun(new Set(["google", "email", "slack", "speech", "images", "payments", "phone", "browser"]));
+    const all = toolsForRun(new Set(["google", "email", "slack", "speech", "images", "payments", "phone", "browser", "hotels", "flights"]));
     expect(none).toContainEqual(expect.objectContaining({ name: "web_search" }));
     expect(none.find((t) => t.name === "text_to_speech")).toBeUndefined();
     expect(all.map((t) => t.name)).toEqual(TOOLS.map((t) => t.spec.name));

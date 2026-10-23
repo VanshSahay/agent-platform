@@ -70,3 +70,24 @@ Where to look, in order of how often leaks surface: Google Hotels' seller list (
 - The endpoint is **`https://mcp.getoffers.com/`** (root). The documented `/v1` path is misrouted on their side (`Cannot POST /api/mcpv1`); the root answers `401 Invalid API key` to an unauthenticated initialize, so it is live.
 - Keys are self-service for an agency account: Dashboard → Company → **MCP API keys**, with a key name and permission ticks for Search, Book and Read bookings. Ellie's account shows the form and "No keys yet". Not generated: creating a credential on the account is the owner's call.
 - Circle needs no new code: Settings → Connections → Add MCP with that URL and the key stores it in the vault as `mcp:getoffers`, and `mcp_call` reaches the tools; a search is a read, `create_booking` is a write that the gate asks about, and reading the owner's connection from a guest's request asks the owner first. Payment settles against the agency's prepaid balance (Finance → Top Up, up to 5% prepayment discount), so the spending threshold and `request_purchase` apply before any `create_booking`.
+
+## 9. Nuitée Connect (LiteAPI) rates, same hotels and dates (21 Oct 2026)
+
+Ellie's Nuitée Connect account (connect.nuitee.com) is a distributor-network account with a sandbox key, a hosted B2B/B2C site, and a 12% default network markup. The key is in `.env` as `LITEAPI_API_KEY`. Rates below are from `POST /v3.0/hotels/rates` for Barcelona, 2 adults, USD, with names from `GET /v3.0/data/hotels`. `retailRate.total` is what the partner pays (taxes included, commission $0 on this key, so a net rate); `suggestedSellingPrice` is the public price Nuitée sees the room sold for; RFN is refundable, NRFN is not. The sandbox's rates are live content; whether every sandbox rate is bookable at that price is not stated in the docs.
+
+| Hotel, 10–12 Nov 2026 | LiteAPI net total (terms) | Nuitée's public price | GetOffers total (terms) | Booking.com |
+|---|---|---|---|---|
+| Hotel Nouvel | **$239.55** (RFN) | $275.48 | $273.02 (refundable) | $343 (free cancellation) |
+| Catalonia Avinyó | $265.62 (NRFN) | $305.46 | $273.57 (refundable) | unavailable |
+| BW Plus Alfa Aeropuerto | **$270.07** (RFN) | $310.58 | $325.38 (refundable) | unavailable |
+| Leonardo Las Ramblas | **$308.57** (RFN) | $354.86 | $337.71 (non-refundable) | unavailable |
+| Hesperia Barri Gòtic | $319.38 (RFN) | $321.94 | $318.44 (non-refundable) | unavailable |
+| Petit Palace Boqueria Garden | $328.36 (NRFN) | $331.97 | $341.67 (non-refundable) | unavailable |
+| SERHS Rivoli Rambla | $336.29 (NRFN) | $386.73 | $344.65 (non-refundable) | unavailable |
+| Hotel Medinaceli | $347.33 (NRFN) | $353.92 | $359.96 (non-refundable) | unavailable |
+| Ilunion Almirante | $352.63 (NRFN) | $405.53 | $348.60 (refundable) | unavailable |
+| Oriente Atiram | $297.67 (NRFN) | $342.32 | $304.57 (non-refundable) | unavailable |
+
+Reading: on the sold-out week LiteAPI's net rate is 2 to 17% under GetOffers on the same hotel, and 30% under Booking.com on the one hotel Booking still had, usually with better cancellation terms; Nuitée's own "public price" sits about 13 to 15% above its net, which is the margin a reseller is expected to take. For 1–3 Dec, LiteAPI returned 87 Barcelona hotels (Hesperia Barri Gòtic $196 non-refundable, Medinaceli $236, Petit Palace $248) against GetOffers's 7; the two Booking-priced hotels from section 6 (Arrey Alella, Alfa Aeropuerto) were not in LiteAPI's December result set, so that pair stays unmeasured. One bad datum: Leonardo Gran Via's suggested price of $1,132 against a $267 net is a content error, the kind a matcher must discard.
+
+Cost to use: search is free, bookings pay a commission; 264 Barcelona hotels came back for the November dates in one call, versus 100 (merged from four feeds) on GetOffers.

@@ -1154,6 +1154,71 @@ export const SCENARIOS: Scenario[] = [
       noOutreachCheck("An introduction contacts nobody."),
     ],
   },
+
+  {
+    name: "group-order",
+    description:
+      "The friends order candy together from a Faire brand: each says what they want, the agent keeps the total against the minimum, hands the owner the list once it is met, and records who owes what after the owner says it is placed.",
+    category: "groceries",
+    shape: "friends",
+    cases: [27, 41],
+    turns: [
+      { room: "room", personId: "alex", text: "@pip let's do a Candy Club group order from Faire, $150 minimum. I'll take 3 holiday bundles at $24." },
+      { room: "room", personId: "sam", text: "@pip put me down for 4 packs of sour belts ($12) and 2 gummy jars ($9)." },
+      { room: "room", personId: "riley", text: "@pip 2 holiday bundles for me please." },
+      { room: "room", personId: "alex", text: "yes" },
+    ],
+    script: (req) => {
+      const text = lastUserText(req);
+      const last = lastToolResult(req) ?? "";
+      // The owner's yes resumes Riley's run: record the placed order now (the first call opened the card).
+      if (transcriptHas(req, "[APPROVED]")) {
+        if (/"shares"/.test(last)) return reply("Recorded: $186 placed. Sam owes Alex $66, Riley $48.");
+        return callTool("group_order_close", { brand: "Candy Club" });
+      }
+      if (/group order from Faire/.test(text)) {
+        if (!n(req, "group_order_update"))
+          return callTool("group_order_update", { brand: "Candy Club", minimumUsd: 150, person: "me", item: "Holiday Candy Bundle", unitUsd: 24, quantity: 3 });
+        return reply("Candy Club it is: $150 minimum, you're in for 3 holiday bundles ($72). Everyone, say what you want; the page has the list.");
+      }
+      if (/sour belts/.test(text)) {
+        if (n(req, "group_order_update") < 1) return callTool("group_order_update", { brand: "Candy Club", person: "Sam", item: "Sour Belts (12 pack)", unitUsd: 12, quantity: 4 });
+        if (n(req, "group_order_update") < 2) return callTool("group_order_update", { brand: "Candy Club", person: "Sam", item: "Gummy Bears Jar", unitUsd: 9, quantity: 2 });
+        return reply("Added for Sam: $138 of the $150 minimum so far, $12 to go.");
+      }
+      if (/holiday bundles for me/.test(text)) {
+        if (!n(req, "group_order_update")) return callTool("group_order_update", { brand: "Candy Club", person: "Riley", item: "Holiday Candy Bundle", unitUsd: 24, quantity: 2 });
+        if (!n(req, "group_order_close")) return callTool("group_order_close", { brand: "Candy Club" });
+        return reply("That's $186, minimum met. Alex, place it on faire.com and say yes when it's in.");
+      }
+      return reply("ok");
+    },
+    expects: { attention: 1 },
+    checks: [
+      {
+        name: "a shared page holds everyone's lines",
+        detail: "A document titled for the Candy Club group order exists in the room with a section per person.",
+        pass: (app, w) =>
+          documentsIn(app, w, w.room.id).some((d) => d.title.startsWith("Group order: Candy Club") && /## Sam/.test(markdownOf(d.data)) && /## Riley/.test(markdownOf(d.data))),
+      },
+      {
+        name: "the order was recorded only after the owner's yes",
+        detail: "One group_order_close call ended with evidence after an action card was resolved, and the stored order is marked placed.",
+        pass: (app, w) =>
+          afterGate("group_order_close", ["action", "guest_request"])(app, w) && /"placedAt":\d+/.test(app.store.getKv(`group-order:${w.room.id}:candy-club`) ?? ""),
+      },
+      {
+        name: "each person owes the owner their share",
+        detail: "Open responsibilities for Sam ($66) and Riley ($48), both to Alex, none for Alex.",
+        pass: (app, w) => {
+          const cs = app.store.listCommitments({ roomId: w.room.id }).filter((c) => c.status === "open");
+          return cs.length === 2 && cs.some((c) => c.ownerId === "sam" && /\$66/.test(c.title)) && cs.some((c) => c.ownerId === "riley" && /\$48/.test(c.title));
+        },
+      },
+      noOutreachCheck("Nothing left the chat: the owner places the order themselves."),
+      finishedCheck("every run finished", "All three group runs are done (the yes resumes the third).", "room", 3),
+    ],
+  },
 ];
 
 export function findScenarios(only?: string, filter: { category?: string; shape?: string } = {}): Scenario[] {

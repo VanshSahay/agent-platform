@@ -92,8 +92,112 @@ export interface PaymentProvider {
   cancelCard(cardId: string): Promise<void>;
 }
 
+/** Hotel rates from a wholesale source (LiteAPI): what the room costs us, net, next to the public price. Read-only; booking is a person's click. */
+export interface HotelOffer {
+  id: string;
+  name: string;
+  stars?: number;
+  rating?: number;
+  address?: string;
+  photo?: string;
+  room: string;
+  board: string;
+  refundable: boolean;
+  /** Net total for the stay in USD, taxes included; excluded fees (city tax) listed apart. */
+  netUsd: number;
+  /** What the public is seen paying for the same room, when the source says. */
+  publicUsd?: number;
+  excludedFeesUsd: number;
+}
+export interface HotelProvider {
+  rates(input: { city: string; countryCode: string; checkIn: string; checkOut: string; adults: number; limit?: number }): Promise<{ offers: HotelOffer[]; evidence: string }>;
+}
+
+/** What the public pays for the same hotel and dates, from one public source, matched to our offers by name. */
+export interface PublicOffer {
+  name: string;
+  totalUsd: number;
+  seller: string;
+  refundable: boolean;
+  url: string;
+  /** The figure is the stay with taxes and fees in; false means a before-tax figure from a seller nobody trusted. */
+  allIn: boolean;
+  /** The seller listed before tax and Google's tax-and-fee estimate for the hotel was added (within $11 of Expedia's checkout when measured). */
+  taxesEstimated?: boolean;
+  /** The seller's cheapest room for the dates, when it names one; ours may be a different room. */
+  room?: string;
+  /** A discount reseller listing a lower before-tax figure for the same room; its checkout adds taxes and fees. */
+  listedBelow?: { seller: string; totalUsd: number; url: string };
+}
+export interface PublicRatesQuery {
+  city: string;
+  countryCode: string;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  stars?: number;
+  /** Star classes of the hotels we are about to show, so Google's list covers them rather than its cheapest twenty. */
+  classes?: number[];
+  /** The hotels we are about to show, by name: Booking.com is asked about each one. */
+  names?: string[];
+}
+export interface PublicRatesProvider {
+  search(q: PublicRatesQuery): Promise<{ offers: PublicOffer[]; source: string; evidence: string }>;
+}
+
+/** Flights: our wholesale side (LiteAPI) and the public side (Google Flights), matched by flight numbers. */
+export type Cabin = "economy" | "premium_economy" | "business" | "first";
+export interface FlightQuery {
+  origin: string;
+  destination: string;
+  date: string;
+  returnDate?: string;
+  adults: number;
+  cabin: Cabin;
+  maxStops?: number;
+}
+export interface FlightOffer {
+  /** The flight numbers in order, e.g. ["AA3177", "AA1796"]; the match key across sources. */
+  flights: string[];
+  airline: string;
+  departAt: string;
+  arriveAt: string;
+  /** Outbound leg; a round trip carries the return leg in returnDurationMin, and stops is the most on either leg. */
+  durationMin: number;
+  returnDurationMin?: number;
+  stops: number;
+  cabin: string;
+  totalUsd: number;
+  refundable: boolean;
+  changeable: boolean;
+  checkedBag: boolean;
+  offerId?: string;
+}
+export interface FlightProvider {
+  search(q: FlightQuery): Promise<{ offers: FlightOffer[]; evidence: string }>;
+}
+export interface PublicFlightOffer {
+  flights: string[];
+  airline: string;
+  departAt: string;
+  arriveAt: string;
+  durationMin: number;
+  returnDurationMin?: number;
+  stops: number;
+  totalUsd: number;
+  seller: string;
+  url: string;
+}
+export interface PublicFlightsProvider {
+  search(q: FlightQuery): Promise<{ offers: PublicFlightOffer[]; source: string; evidence: string }>;
+}
+
 export interface Hands {
   search: SearchProvider;
+  hotels: HotelProvider;
+  publicRates: PublicRatesProvider;
+  flights: FlightProvider;
+  publicFlights: PublicFlightsProvider;
   phone: PhoneProvider;
   community: CommunityProvider;
   browser: BrowserProvider;
@@ -231,8 +335,169 @@ export class FakePayments implements PaymentProvider {
   }
 }
 
+export class FakeHotels implements HotelProvider {
+  public searches: { city: string; checkIn: string; checkOut: string }[] = [];
+  constructor(
+    public offers: HotelOffer[] = [
+      {
+        id: "lp1",
+        name: "Hotel Nouvel",
+        stars: 3,
+        rating: 8.9,
+        address: "Carrer de Santa Anna 20",
+        room: "Double",
+        board: "Room Only",
+        refundable: true,
+        netUsd: 239.55,
+        publicUsd: 275.48,
+        excludedFeesUsd: 0,
+      },
+      {
+        id: "lp2",
+        name: "Catalonia Avinyó",
+        stars: 4,
+        rating: 9.1,
+        address: "Carrer d'Avinyó 16",
+        room: "Double",
+        board: "Breakfast Included",
+        refundable: false,
+        netUsd: 265.62,
+        publicUsd: 305.46,
+        excludedFeesUsd: 34.48,
+      },
+      {
+        id: "lp3",
+        name: "Leonardo Las Ramblas",
+        stars: 4,
+        rating: 8.4,
+        room: "Double",
+        board: "Room Only",
+        refundable: true,
+        netUsd: 308.57,
+        publicUsd: 354.86,
+        excludedFeesUsd: 0,
+      },
+    ],
+  ) {}
+  async rates(input: { city: string; countryCode: string; checkIn: string; checkOut: string; adults: number; limit?: number }) {
+    this.searches.push({ city: input.city, checkIn: input.checkIn, checkOut: input.checkOut });
+    return { offers: this.offers.slice(0, input.limit ?? 10), evidence: `fake-hotels:${this.searches.length}` };
+  }
+}
+
+export class FakeFlights implements FlightProvider {
+  public queries: FlightQuery[] = [];
+  constructor(
+    public offers: FlightOffer[] = [
+      {
+        flights: ["AA3177", "AA1796"],
+        airline: "American",
+        departAt: "2026-12-06T23:55:00",
+        arriveAt: "2026-12-07T10:09:00",
+        durationMin: 434,
+        stops: 1,
+        cabin: "First",
+        totalUsd: 787.2,
+        refundable: false,
+        changeable: true,
+        checkedBag: true,
+        offerId: "off_1",
+      },
+      {
+        flights: ["AA4"],
+        airline: "American",
+        departAt: "2026-12-06T06:30:00",
+        arriveAt: "2026-12-06T14:59:00",
+        durationMin: 329,
+        stops: 0,
+        cabin: "First",
+        totalUsd: 1950,
+        refundable: false,
+        changeable: true,
+        checkedBag: true,
+        offerId: "off_2",
+      },
+    ],
+  ) {}
+  async search(q: FlightQuery) {
+    this.queries.push(q);
+    return { offers: this.offers, evidence: `fake-flights:${this.queries.length}` };
+  }
+}
+
+export class FakePublicFlights implements PublicFlightsProvider {
+  public queries: FlightQuery[] = [];
+  constructor(
+    public offers: PublicFlightOffer[] = [
+      {
+        flights: ["AA3177", "AA1796"],
+        airline: "American",
+        departAt: "2026-12-06T23:55:00-08:00",
+        arriveAt: "2026-12-07T10:09:00-05:00",
+        durationMin: 434,
+        stops: 1,
+        totalUsd: 788,
+        seller: "American",
+        url: "https://www.google.com/travel/flights",
+      },
+      {
+        flights: ["AA4"],
+        airline: "American",
+        departAt: "2026-12-06T06:30:00-08:00",
+        arriveAt: "2026-12-06T14:59:00-05:00",
+        durationMin: 329,
+        stops: 0,
+        totalUsd: 2099,
+        seller: "American",
+        url: "https://www.google.com/travel/flights",
+      },
+      {
+        flights: ["DL1"],
+        airline: "Delta",
+        departAt: "2026-12-06T06:15:00-08:00",
+        arriveAt: "2026-12-06T14:31:00-05:00",
+        durationMin: 316,
+        stops: 0,
+        totalUsd: 3849,
+        seller: "Delta",
+        url: "https://www.google.com/travel/flights",
+      },
+    ],
+  ) {}
+  async search(q: FlightQuery) {
+    this.queries.push(q);
+    return { offers: this.offers, source: "Google Flights", evidence: `fake-public-flights:${this.queries.length}` };
+  }
+}
+
+export class FakePublicRates implements PublicRatesProvider {
+  public queries: PublicRatesQuery[] = [];
+  constructor(
+    public offers: PublicOffer[] = [
+      {
+        name: "Hotel Nouvel",
+        totalUsd: 343,
+        seller: "Booking.com",
+        refundable: true,
+        url: "https://www.booking.com",
+        allIn: true,
+        listedBelow: { seller: "Super.com", totalUsd: 290, url: "https://www.super.com" },
+      },
+      { name: "Catalonia Avinyo", totalUsd: 290, seller: "Agoda", refundable: false, url: "https://www.agoda.com", allIn: false },
+    ],
+  ) {}
+  async search(q: PublicRatesQuery) {
+    this.queries.push(q);
+    return { offers: this.offers, source: "Booking.com", evidence: `fake-public-rates:${this.queries.length}` };
+  }
+}
+
 export interface FakeHands extends Hands {
   search: FakeSearch;
+  hotels: FakeHotels;
+  publicRates: FakePublicRates;
+  flights: FakeFlights;
+  publicFlights: FakePublicFlights;
   phone: FakePhone;
   community: FakeCommunity;
   browser: FakeBrowser;
@@ -247,6 +512,10 @@ export interface FakeHands extends Hands {
 export function fakeHands(opts: Partial<FakeHands> = {}): FakeHands {
   return {
     search: opts.search ?? new FakeSearch(),
+    hotels: opts.hotels ?? new FakeHotels(),
+    publicRates: opts.publicRates ?? new FakePublicRates(),
+    flights: opts.flights ?? new FakeFlights(),
+    publicFlights: opts.publicFlights ?? new FakePublicFlights(),
     phone: opts.phone ?? new FakePhone(),
     community: opts.community ?? new FakeCommunity(),
     browser: opts.browser ?? new FakeBrowser(),

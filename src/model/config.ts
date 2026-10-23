@@ -61,7 +61,7 @@ export function createModel(cfg: ModelConfig, env: Record<string, string | undef
       maxRetries: 2,
       defaultHeaders: { "HTTP-Referer": env.PUBLIC_URL ?? "http://localhost:3000", "X-Title": "Circle" },
     });
-    return new AnthropicModel(client, { smallModel: cfg.smallModel, mapModel: (id) => normalizeModelId(id === cfg.smallModel ? id : cfg.model, "openrouter") });
+    return new AnthropicModel(client, { smallModel: cfg.smallModel, includeUsage: true, mapModel: (id) => normalizeModelId(id === cfg.smallModel ? id : cfg.model, "openrouter") });
   }
   if (cfg.provider === "anthropic")
     return new AnthropicModel(new Anthropic({ timeout: 180_000, maxRetries: 2 }), {

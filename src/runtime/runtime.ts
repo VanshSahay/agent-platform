@@ -25,7 +25,8 @@ export interface Delivery {
   text: string;
   /** Empty means everyone in the room. */
   visibleTo?: Id[];
-  kind: "reply" | "notice" | "card" | "progress";
+  /** An ack is the "on it" text a chat outside the web gets before the work starts, with a rough estimate. */
+  kind: "reply" | "notice" | "card" | "progress" | "ack";
 }
 
 export interface RuntimeDeps {
@@ -55,6 +56,9 @@ export interface RuntimeDeps {
 const MAX_TURNS = 24;
 /** Tools that may still run after the budget has answered a purchase in this run: the checkout path, recording, and stopping. */
 const AFTER_BUDGET_TOOLS = new Set(["checkout_cart", "add_to_cart", "view_cart", "save_address", "update_task", "remember", "stay_quiet"]);
+// A reply's tool budget: nudged to answer at the first number, refused more tools at the second. Tasks get double.
+const REPLY_NUDGE_AT = 14;
+const TOOL_BUDGET = 18;
 const IMPLIED_PER_MINUTE = 6; // ponytail: a busier chat says the agent's name; raise or make per-agent if that pinches
 const COMPACT_AFTER = 30;
 const KEEP_RECENT = 12;
@@ -480,7 +484,9 @@ export class Runtime {
     // the newest card assigned to this person; for an approval it must also read as one
     // (a yes, a no or an option), so chatter cannot decline a purchase.
     const named = this.named(agent, text);
-    const mine = this.d.attention.openFor(personId).filter((a) => a.roomId === room.id || room.kind === "dm");
+    // A sign-in card is answered by its Done or Cancel button, never by a message: a bare message
+    // written while one is open is a new request, and the card stays open.
+    const mine = this.d.attention.openFor(personId).filter((a) => (a.roomId === room.id || room.kind === "dm") && a.kind !== "connect_account");
     const hit = mine[mine.length - 1];
     if (hit && !named && (!hit.gateKey || answers(text, hit.options))) return hit;
     if (hit) return undefined;
@@ -846,6 +852,9 @@ export class Runtime {
       .some((c) => c.name === "request_purchase" && c.status === "done" && (!!c.evidence || /declined/i.test(c.labelDone)));
     // Resourcefulness guards: searching in circles is a stall, long work belongs in a task, a reply must cover the ask.
     let searchesInARow = 0;
+    // The same tool failing the same way twice is not going to work a third time; the model is told to stop.
+    let lastFailure = "";
+    let failuresInARow = 0;
     let toolCalls = 0;
     let nudgedToDelegate = false;
     let replyChecked = false;
@@ -865,6 +874,7 @@ export class Runtime {
 
     // The tool list is chosen once per run and never changes mid-run, so the prompt prefix caches.
     const tools = toolsForRun(this.d.providers);
+    let acked = false;
     while (turns < maxTurns) {
       turns += 1;
       drainSteers();
@@ -899,7 +909,7 @@ export class Runtime {
 
       let turn: Awaited<ReturnType<ModelClient["turn"]>>;
       try {
-        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools });
+        turn = await model.turn({ model: agent.model, effort: agent.effort, system, messages: collapse(transcript), tools, runId: run.id });
       } catch (e) {
         emit("error", { message: String((e as Error).message) });
         this.saveTranscript(run, transcript);
@@ -993,6 +1003,23 @@ export class Runtime {
       for (const use of turn.toolUses) {
         const def = TOOL_INDEX.get(use.name);
         const input = (use.input && typeof use.input === "object" ? use.input : {}) as Record<string, unknown>;
+        // Past the budget nothing runs: the person has waited long enough, and the reply must come from what is already in hand.
+        if (toolCalls >= (run.taskId ? TOOL_BUDGET * 2 : TOOL_BUDGET)) {
+          results.push({
+            type: "tool_result",
+            tool_use_id: use.id,
+            content: `Tool budget for this reply is used up (${toolCalls} calls). Reply now with what you have and what is still open; no more tools.`,
+            is_error: true,
+          });
+          continue;
+        }
+        // Messages has no "working…" line, so the first tool call of a request texts an "on it" with an estimate.
+        if (!acked && run.trigger === "message" && TEXTING.has(room.channel)) {
+          acked = true;
+          const text = `On it — ${estimateFor(use.name, input)}.`;
+          emit("progress", { text });
+          void this.d.deliver({ roomId: room.id, text, kind: "ack" });
+        }
         const rec: ToolCallRecord = {
           id: newId("tc"),
           runId: run.id,
@@ -1061,6 +1088,11 @@ export class Runtime {
           searchesInARow += 1;
           if (searchesInARow > 3 && !result.stall) result.stall = "searching again instead of acting on what was found";
         } else if (result.approach) searchesInARow = 0;
+        const failure = result.ok ? "" : `${use.name}:${String(typeof result.content === "string" ? result.content : JSON.stringify(result.content)).slice(0, 60)}`;
+        failuresInARow = failure && failure === lastFailure ? failuresInARow + 1 : failure ? 1 : 0;
+        lastFailure = failure;
+        if (failuresInARow === 2)
+          notes.push(`${use.name} failed twice in a row with the same error. Do not call it again in this run: tell the person what happened and what they can do instead.`);
         const livePlan =
           planner.get(run.id) ??
           (result.approach && run.trigger === "message"
@@ -1117,10 +1149,10 @@ export class Runtime {
         this.finish(run, "done", undefined, `Stayed quiet: ${quiet}`, true);
         return;
       }
-      if (run.trigger === "message" && !run.taskId && toolCalls >= 8 && !nudgedToDelegate) {
+      if (run.trigger === "message" && !run.taskId && toolCalls >= REPLY_NUDGE_AT && !nudgedToDelegate) {
         nudgedToDelegate = true;
         notes.push(
-          "Eight tool calls in: this is long work. Hand the rest to delegate_task with a brief that lists what you found and what is still open, tell the room in one line, and stop.",
+          `${REPLY_NUDGE_AT} tool calls in: reply now with what you have and what is still open; never re-run a tool that already answered. Only work that genuinely needs many more minutes goes to delegate_task, with a brief of what you found.`,
         );
       }
       if (notes.length) transcript.push({ role: "user", content: `[planner] ${notes.join(" ")}` });
@@ -1215,6 +1247,8 @@ export class Runtime {
     }
     if (run.taskId) this.d.tasks.delivered(run.taskId, text);
     const calls = store.toolCallsForRun(run.id);
+    // The model sees earlier footers in the transcript and sometimes copies one; only the records' footer is kept.
+    text = text.replace(/(?:^|\n)— \d+ steps?(?: · [^\n]*)?: [^\n]*/g, "").trim();
     const footer = buildFooter(calls);
     const integrity = integrityNote(text, calls);
     const full = [text, integrity, footer].filter(Boolean).join("\n");
@@ -1420,4 +1454,20 @@ function collapse(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
     } else out.push({ ...m });
   }
   return out;
+}
+
+/** Chats that live in a messaging app: no live "working…" line, so they get an "on it" text. */
+const TEXTING = new Set(["imessage", "sms", "whatsapp", "telegram", "slack"]);
+
+/** A rough time for the "on it" text: from the plan's steps when the first call is the plan, else from the tool. */
+export function estimateFor(tool: string, input: Record<string, unknown>): string {
+  const slow = /compare|browser_use|connect_account|delegate_task|place_call|watch_for/;
+  if (tool === "plan") {
+    const steps = Array.isArray(input.steps) ? (input.steps as unknown[]) : [];
+    const text = JSON.stringify(steps).toLowerCase();
+    if (steps.length >= 5 || /hotel|flight|browser|call/.test(text)) return "give me 3 to 5 minutes";
+    if (steps.length >= 3) return "a couple of minutes";
+    return "about a minute";
+  }
+  return slow.test(tool) ? "give me 2 or 3 minutes" : "about a minute";
 }

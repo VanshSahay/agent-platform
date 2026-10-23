@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { SpendLog } from "../runtime/spend.ts";
 import { chromium, type Browser, type Page } from "playwright-core";
 
 /**
@@ -238,6 +239,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
   async run(input: { url: string; contextId?: string; steps: BrowserStep[] }): Promise<BrowserRun> {
     const projectId = await this.project();
     const session = await this.createSession(projectId, input.contextId ? { browserSettings: { context: { id: input.contextId, persist: true } } } : {});
+    const startedAt = Date.now();
     let browser: Browser | undefined;
     try {
       browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
@@ -250,30 +252,71 @@ export class BrowserbaseBrowser implements BrowserProvider {
     } finally {
       await browser?.close().catch(() => undefined);
       await this.release(projectId, session.id);
+      this.charge(session.id, startedAt, "run");
     }
   }
 
   private projectId?: string;
   /** Sign-in sessions stay open (CDP connection held) until the person presses Done or Cancel. */
-  private live = new Map<string, { browser: Browser; projectId: string }>();
+  private live = new Map<string, { browser: Browser; projectId: string; startedAt: number }>();
+  private spend?: SpendLog;
   constructor(
     private apiKey: string,
-    opts: { projectId?: string } = {},
+    opts: { projectId?: string; spend?: SpendLog } = {},
   ) {
     this.projectId = opts.projectId;
+    this.spend = opts.spend;
+  }
+
+  /**
+   * Browser time is billed by the hour of session life. Each session is timed from creation to the release
+   * request; BROWSERBASE_USD_PER_HOUR prices it (default 0.10, the Startup plan's overage on browserbase.com/pricing,
+   * read 22 Oct 2026; the Developer plan's is 0.12, and hours inside a plan's allowance are already paid for).
+   * A session Browserbase keeps alive after release, or a minimum billed length, is not counted.
+   */
+  private charge(sessionId: string, startedAt: number, what: string) {
+    if (!this.spend) return;
+    const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const perHour = Number(process.env.BROWSERBASE_USD_PER_HOUR ?? 0.1);
+    this.spend.record({
+      provider: "browserbase",
+      usd: (seconds / 3600) * (Number.isFinite(perHour) ? perHour : 0.1),
+      units: `browserbase ${seconds} s`,
+      note: `${what} ${sessionId}`,
+    });
   }
 
   private headers() {
     return { "X-BB-API-Key": this.apiKey, "content-type": "application/json" };
   }
 
+  // ponytail: the plan allows a few concurrent sessions; two runs browsing at once hit 429. Hold the rest in line and retry once.
+  private inFlight = 0;
+  private waiters: (() => void)[] = [];
   private async createSession(projectId: string, extra: Record<string, unknown> = {}): Promise<{ id: string; connectUrl: string }> {
-    const res = await fetch("https://api.browserbase.com/v1/sessions", { method: "POST", headers: this.headers(), body: JSON.stringify({ projectId, ...extra }) });
-    if (!res.ok) throw new Error(`Browserbase session: ${res.status} ${await res.text()}`);
-    return (await res.json()) as { id: string; connectUrl: string };
+    while (this.inFlight >= 2) await new Promise<void>((r) => this.waiters.push(r));
+    this.inFlight++;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const res = await fetch("https://api.browserbase.com/v1/sessions", { method: "POST", headers: this.headers(), body: JSON.stringify({ projectId, ...extra }) });
+        if (res.ok) return (await res.json()) as { id: string; connectUrl: string };
+        const text = await res.text();
+        if (res.status === 429 && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 8_000));
+          continue;
+        }
+        throw new Error(`Browserbase session: ${res.status} ${text}`);
+      }
+    } catch (e) {
+      this.inFlight--;
+      this.waiters.shift()?.();
+      throw e;
+    }
   }
-
+  /** Pairs with createSession: a slot opens when the session is released. */
   private async release(projectId: string, sessionId: string) {
+    this.inFlight = Math.max(0, this.inFlight - 1);
+    this.waiters.shift()?.();
     await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}`, {
       method: "POST",
       headers: this.headers(),
@@ -291,14 +334,20 @@ export class BrowserbaseBrowser implements BrowserProvider {
     const ctxRes = await fetch("https://api.browserbase.com/v1/contexts", { method: "POST", headers: this.headers(), body: JSON.stringify({ projectId }) });
     if (!ctxRes.ok) throw new Error(`Browserbase context: ${ctxRes.status} ${await ctxRes.text()}`);
     const context = (await ctxRes.json()) as { id: string };
-    const settings = { browserSettings: { context: { id: context.id, persist: true } } };
-    // A longer session when the plan allows it; otherwise the project default.
-    const session = await this.createSession(projectId, { ...settings, timeout: 900 }).catch(() => this.createSession(projectId, settings));
+    // A modest remote viewport: the live view scales the remote screen to the card's width, so a 1280-wide
+    // page arrives in tiny type; at 1024 by 768 it is close to one-to-one in the chat and readable on a phone.
+    const settings = { browserSettings: { context: { id: context.id, persist: true }, viewport: { width: 1024, height: 768 } } };
+    // keepAlive: the session outlives this process's CDP connection, so a deploy or restart mid sign-in no longer
+    // kills the live view ("Debugging connection was closed"); Done or Cancel still releases it. A longer session
+    // when the plan allows it; otherwise the project default.
+    const session = await this.createSession(projectId, { ...settings, keepAlive: true, timeout: 900 })
+      .catch(() => this.createSession(projectId, { ...settings, keepAlive: true }))
+      .catch(() => this.createSession(projectId, settings));
     const debugRes = await fetch(`https://api.browserbase.com/v1/sessions/${session.id}/debug`, { headers: this.headers() });
     if (!debugRes.ok) throw new Error(`Browserbase live view: ${debugRes.status}`);
     const debug = (await debugRes.json()) as { debuggerFullscreenUrl: string };
     const browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
-    this.live.set(session.id, { browser, projectId });
+    this.live.set(session.id, { browser, projectId, startedAt: Date.now() });
     try {
       const ctx = browser.contexts()[0] ?? (await browser.newContext());
       const page: Page = ctx.pages()[0] ?? (await ctx.newPage());
@@ -315,6 +364,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     this.live.delete(sessionId);
     await l?.browser.close().catch(() => undefined);
     await this.release(l?.projectId ?? (await this.project()), sessionId);
+    if (l) this.charge(sessionId, l.startedAt, "sign-in");
   }
 
   private async project(): Promise<string> {
@@ -332,6 +382,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     const projectId = await this.project();
     // With a context, the page loads with the person's signed-in cookies and keeps any it sets.
     const session = await this.createSession(projectId, input.contextId ? { browserSettings: { context: { id: input.contextId, persist: true } } } : {});
+    const startedAt = Date.now();
     let browser: Browser | undefined;
     try {
       browser = await chromium.connectOverCDP(session.connectUrl, { timeout: 30_000 });
@@ -343,6 +394,7 @@ export class BrowserbaseBrowser implements BrowserProvider {
     } finally {
       await browser?.close().catch(() => undefined);
       await this.release(projectId, session.id);
+      this.charge(session.id, startedAt, "read");
     }
   }
 }

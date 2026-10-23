@@ -85,7 +85,7 @@ export function createApp(opts: {
     maxTurns: opts.maxTurns,
     compactAfter: opts.compactAfter,
     publicUrl: opts.publicUrl,
-    providers: new Set(opts.providers ?? ["google", "email", "slack", "speech", "images", "payments", "phone", "browser"]),
+    providers: new Set(opts.providers ?? ["google", "email", "slack", "speech", "images", "payments", "phone", "browser", "hotels", "flights"]),
   });
   const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
   const consolidator = new Consolidator(store, clock, opts.model, memory);

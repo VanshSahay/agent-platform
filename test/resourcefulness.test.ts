@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { callTool, lastUserText, reply, toolCallsSoFar, transcriptHas } from "../src/model/scripted.ts";
+import { callTool, lastToolResult, lastUserText, reply, toolCallsSoFar, transcriptHas } from "../src/model/scripted.ts";
 import { FakeSearch } from "../src/tools/hands.ts";
 import { groupWorld, repliesTo } from "./helpers.ts";
 
@@ -57,10 +57,11 @@ describe("resourcefulness guards", () => {
     expect(replies[0]).toContain("Found it.");
   });
 
-  test("after eight tool calls the model is told to hand the rest to a task", async () => {
+  test("after fourteen tool calls the model is told to reply with what it has, and past eighteen no tool runs", async () => {
     const w = groupWorld(
       (req) => {
-        if (transcriptHas(req, "delegate_task")) return reply("Handing this to a task.");
+        const last = lastToolResult(req) ?? "";
+        if (/budget for this reply is used up/.test(last)) return reply("Here is what I found so far.");
         const n = toolCallsSoFar(req).length;
         return callTool(n % 2 ? "browse_page" : "web_search", n % 2 ? { url: "https://shop.example/zalto" } : { query: `q${n}` });
       },
@@ -68,7 +69,10 @@ describe("resourcefulness guards", () => {
     );
     const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip research every shop" });
     expect(run!.status).toBe("done");
-    expect(w.app.store.toolCallsForRun(run!.id).length).toBe(8);
-    expect(lastUserText(w.model.calls.at(-1)!)).toContain("delegate_task");
+    // Refused calls are not recorded: eighteen ran, the nineteenth was answered with the budget note.
+    expect(w.app.store.toolCallsForRun(run!.id).length).toBe(18);
+    const nudge = w.model.calls.map((c) => lastUserText(c)).find((t) => /14 tool calls in/.test(t ?? ""));
+    expect(nudge).toContain("reply now with what you have");
+    expect(repliesTo(w.deliveries, w.room.id).at(-1)).toContain("Here is what I found so far.");
   });
 });

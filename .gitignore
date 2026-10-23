@@ -8,3 +8,6 @@ data/
 .DS_Store
 .claude/skills/
 CONTRACT-RULES.md
+
+# codegraph index (local, rebuilt by `codegraph init`)
+.codegraph/
