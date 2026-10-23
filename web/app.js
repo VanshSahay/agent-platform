@@ -788,7 +788,9 @@ async function renderThread() {
       try {
         await api(`/api/attention/${encodeURIComponent(card.dataset.item)}/resolve`, { personId: state.me, answer: b.dataset.connect === "done" ? "done" : "cancel" });
         state.lastMsgCount = -1;
-        load();
+        // Start over: close this window and ask for a fresh one, for when the live view has timed out.
+        if (b.dataset.connect === "retry") send(`sign me in to ${b.dataset.site} again`);
+        else load();
       } catch (err) {
         status(err.message, true);
         card.querySelectorAll("button").forEach((x) => {
@@ -1000,7 +1002,7 @@ function cardHtml(c) {
       : "Cancelled. Nothing was connected.";
   return `<div class="acard ${esc(c.status)}" data-item="${esc(c.itemId)}"><h4>Sign in to ${esc(c.site)}</h4><p>${lead}</p>${
     open
-      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write; fullscreen" allowfullscreen></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button><a class="btn" href="${esc(c.liveViewUrl)}" target="_blank" rel="noopener">Open full size ↗</a></div>`
+      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write; fullscreen" allowfullscreen></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button><a class="btn" href="${esc(c.liveViewUrl)}" target="_blank" rel="noopener">Open full size ↗</a><button class="btn" data-connect="retry" data-site="${esc(c.site)}" type="button" title="If the window says the connection closed, start a fresh one">Start over</button></div>`
       : ""
   }</div>`;
 }

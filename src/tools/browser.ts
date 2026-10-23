@@ -337,8 +337,12 @@ export class BrowserbaseBrowser implements BrowserProvider {
     // A modest remote viewport: the live view scales the remote screen to the card's width, so a 1280-wide
     // page arrives in tiny type; at 1024 by 768 it is close to one-to-one in the chat and readable on a phone.
     const settings = { browserSettings: { context: { id: context.id, persist: true }, viewport: { width: 1024, height: 768 } } };
-    // A longer session when the plan allows it; otherwise the project default.
-    const session = await this.createSession(projectId, { ...settings, timeout: 900 }).catch(() => this.createSession(projectId, settings));
+    // keepAlive: the session outlives this process's CDP connection, so a deploy or restart mid sign-in no longer
+    // kills the live view ("Debugging connection was closed"); Done or Cancel still releases it. A longer session
+    // when the plan allows it; otherwise the project default.
+    const session = await this.createSession(projectId, { ...settings, keepAlive: true, timeout: 900 })
+      .catch(() => this.createSession(projectId, { ...settings, keepAlive: true }))
+      .catch(() => this.createSession(projectId, settings));
     const debugRes = await fetch(`https://api.browserbase.com/v1/sessions/${session.id}/debug`, { headers: this.headers() });
     if (!debugRes.ok) throw new Error(`Browserbase live view: ${debugRes.status}`);
     const debug = (await debugRes.json()) as { debuggerFullscreenUrl: string };
