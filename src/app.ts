@@ -15,6 +15,7 @@ import { Planner } from "./planning/planner.ts";
 import { Runtime } from "./runtime/runtime.ts";
 import { Scheduler } from "./scheduler/scheduler.ts";
 import { loadSkills } from "./skills/skills.ts";
+import type { Skill } from "./skills/skills.ts";
 import type { ModelClient } from "./model/types.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
 
@@ -33,6 +34,7 @@ export interface App {
   hands: Hands;
   tasks: TaskService;
   vault: Vault;
+  skills: Skill[];
   /** Subscribe to outbound deliveries (channel adapters, UI streams, tests). */
   onDeliver(fn: (d: Delivery) => void): () => void;
 }
@@ -104,6 +106,7 @@ export function createApp(opts: {
     hands,
     tasks,
     vault,
+    skills,
     onDeliver(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);

@@ -470,4 +470,12 @@ describe("web api: many agents", () => {
     expect(cleared.tools).toBeUndefined();
     expect(cleared.modelPinned).toBe(false);
   });
+
+  test("the settings screen can list what an agent may be narrowed to: skills by name, tool families without the always-on core", async () => {
+    const s = up();
+    const opts = await (await s.call("alex", "GET", "/api/agents/options")).json();
+    expect(opts.families).toContain("calls");
+    expect(opts.skills.every((k: { name: string }) => !k.name.startsWith("_"))).toBe(true);
+    expect((await s.call(undefined, "GET", "/api/agents/options")).status).toBe(401);
+  });
 });

@@ -110,6 +110,12 @@ const agentFor = (roomId) => {
   const r = roomOf(roomId);
   return state.agents.find((a) => a.id === r?.agentId) ?? state.agents[0];
 };
+const myAgents = () => state.agents.filter((a) => a.ownerId === state.me);
+/** The agent a new chat or Settings is about: the one in the open chat if it is mine, else my first. */
+const myAgent = () => {
+  const here = agentFor(state.room);
+  return here && here.ownerId === state.me ? here : (myAgents()[0] ?? here);
+};
 const personOf = (id) => state.people.find((p) => p.id === id);
 const nameOf = (id) => personOf(id)?.displayName ?? state.agents.find((a) => a.id === id)?.name ?? id;
 const firstName = (id) => nameOf(id).split(" ")[0];
@@ -420,18 +426,20 @@ function roomForm() {
     el.innerHTML = "";
     return;
   }
-  const agent = state.agents[0];
+  const agent = myAgent();
   if (!agent) {
     status("Make an agent first.");
     return;
   }
+  const mine = myAgents();
   el.innerHTML = `<form class="form"><h4>New chat</h4>
     <div class="field"><input type="text" name="name" placeholder="What is it for?" required autocomplete="off" maxlength="80" /></div>
+    ${mine.length > 1 ? `<div class="field"><label>Who answers</label><select name="agentId">${mine.map((a) => `<option value="${esc(a.id)}" ${a.id === agent.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></div>` : ""}
     <div class="chips starters" id="starters"></div>
     <div class="hint">That is all. You get a link to send; people join when they open it, no app needed. ${esc(agent.name)} picks up what the chat is for as you talk.</div>
     <div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button><span class="note"></span></div></form>`;
   const form = el.querySelector("form");
-  const name = form.querySelector("input");
+  const name = form.querySelector('input[name="name"]');
   form.querySelector("[data-cancel]").onclick = () => (el.innerHTML = "");
   // Starter chips come from what the assistant knows about this person, so a new account sees none.
   api(`/api/rooms/starters?agentId=${encodeURIComponent(agent.id)}${state.me ? `&personId=${encodeURIComponent(state.me)}` : ""}`)
@@ -451,7 +459,8 @@ function roomForm() {
     e.preventDefault();
     try {
       const members = state.me ? [{ personId: state.me, role: "owner", consented: true }] : [];
-      const room = await api("/api/rooms", { agentId: agent.id, name: name.value.trim(), kind: "group", members });
+      const agentId = form.querySelector('select[name="agentId"]')?.value ?? agent.id;
+      const room = await api("/api/rooms", { agentId, name: name.value.trim(), kind: "group", members });
       el.innerHTML = "";
       state.room = room.id;
       state.lastMsgCount = -1;
@@ -1288,7 +1297,7 @@ function renderSettings() {
   const el = $("#settings");
   const active = document.activeElement;
   if (el.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return; // do not clobber what the person is typing
-  const agent = agentFor(state.room);
+  const agent = myAgents().find((a) => a.id === state.settingsAgent) ?? myAgent();
   const me = personOf(state.me);
   const section = SETTINGS_SECTIONS.some(([k]) => k === state.settingsSection) ? state.settingsSection : "general";
   const render = {
@@ -1557,22 +1566,72 @@ function settingsNotifications(box) {
 }
 
 function settingsAssistant(box, agent) {
+  const mine = myAgents();
   const rooms = state.rooms.filter((r) => r.agentId === agent.id && r.kind === "group");
-  box.innerHTML = `<form class="section" id="aboutForm"><h3>About ${esc(agent.name)}</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to. <a class="link" href="#memory">What it remembers →</a></p>
+  const pinned = agent.modelPinned ? agent.model : "";
+  box.innerHTML = `<div class="section" id="agentsBox"><h3>Your assistants</h3><p class="lead">Each one has its own name, memory, chats and limits. The one picked here is the one the rest of this page changes.</p>
+    <div class="chips">${mine.map((a) => `<button class="chip ${a.id === agent.id ? "on" : ""}" type="button" data-agent="${esc(a.id)}">${esc(a.name)}</button>`).join("")}<button class="chip" type="button" id="newAgentBtn">+ New assistant</button></div>
+    <form class="form" id="newAgentForm" hidden><div class="field"><label>Name</label><input type="text" name="name" required maxlength="60" /></div>
+      <div class="field"><label>What it is for (optional)</label><textarea name="purpose"></textarea></div>
+      <div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button><span class="note"></span></div></form>
+    <div id="lineBox"></div></div>
+  <form class="section" id="aboutForm"><h3>About ${esc(agent.name)}</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to. <a class="link" href="#memory">What it remembers →</a></p>
     <div class="field"><label>Name</label><input type="text" name="name" value="${esc(agent.name)}" required /></div>
     <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set below.</div></div>
     <div class="field"><label>Instructions</label><textarea name="instructions" placeholder="Anything it should always keep in mind.">${esc(agent.instructions)}</textarea></div>
     <div class="field"><label>Effort</label><select name="effort">${EFFORTS.map((e) => `<option value="${e}" ${e === agent.effort ? "selected" : ""}>${e}</option>`).join("")}</select><div class="hint">How hard it thinks before acting. Higher is slower and more careful.</div></div>
+    <div class="field"><label>Model (optional)</label><input type="text" name="model" value="${esc(pinned)}" placeholder="${esc(agent.model ?? "")}" /><div class="hint">Leave empty to use the server's default${agent.model && !pinned ? ` (now ${esc(agent.model)})` : ""}. A model named here is kept across restarts.</div></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
+  <form class="section" id="limitsForm"><h3>What it may use</h3><p class="lead">Everything is on unless you narrow it. Planning, asking people, reminders, memory and staying quiet are always on.</p><div id="limitsBody" class="tiny">Loading…</div>
     <div class="actions"><button class="btn primary" type="submit">Save</button><span class="note"></span></div></form>
   <div class="section" id="whereForm"><h3>Where it is</h3><p class="lead">Every chat it has been added to, and what that chat mostly needs from it. It stays a general assistant everywhere.</p>
-    ${rooms.map((r) => `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div><div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`).join("") || `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then share its invite link under Invites.</div>`}
+    ${
+      rooms
+        .map(
+          (r) => `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div>
+      ${mine.length > 1 ? `<div class="field"><label>Who answers here</label><select name="agentId">${mine.map((a) => `<option value="${esc(a.id)}" ${a.id === agent.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select><div class="hint">Handing the chat over keeps its messages; what ${esc(agent.name)} noted about it stays with ${esc(agent.name)}.</div></div>` : ""}
+      <div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`,
+        )
+        .join("") || `<div class="empty">Not in any group chat yet. Make one from the Rooms list, then share its invite link under Invites.</div>`
+    }
   </div>`;
+  $$("#agentsBox [data-agent]").forEach((b) => {
+    b.onclick = () => {
+      state.settingsAgent = b.dataset.agent;
+      renderSettings();
+    };
+  });
+  const newForm = $("#newAgentForm");
+  $("#newAgentBtn").onclick = () => {
+    newForm.hidden = false;
+    newForm.querySelector("input").focus();
+  };
+  newForm.querySelector("[data-cancel]").onclick = () => (newForm.hidden = true);
+  newForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(newForm);
+    try {
+      const a = await api("/api/agents", { ownerId: state.me, name: String(fd.get("name")).trim(), purpose: String(fd.get("purpose") ?? "").trim() });
+      state.settingsAgent = a.id;
+      document.activeElement?.blur();
+      await load();
+      renderSettings();
+    } catch (err) {
+      failed(newForm, err);
+    }
+  };
+  assistantLine(agent, mine);
+  assistantLimits(agent);
   $$("#whereForm form.whereroom").forEach((form) => {
     form.onsubmit = async (e) => {
       e.preventDefault();
+      const fd = new FormData(form);
+      const body = { focus: fd.get("focus") };
+      if (fd.get("agentId") && fd.get("agentId") !== agent.id) body.agentId = fd.get("agentId");
       try {
-        await api(`/api/rooms/${encodeURIComponent(form.dataset.room)}`, { focus: new FormData(form).get("focus") }, "PATCH");
-        saved(form, "Saved");
+        await api(`/api/rooms/${encodeURIComponent(form.dataset.room)}`, body, "PATCH");
+        saved(form, body.agentId ? "Handed over" : "Saved");
+        document.activeElement?.blur();
         load();
       } catch (err) {
         failed(form, err);
@@ -1586,7 +1645,7 @@ function settingsAssistant(box, agent) {
     try {
       await api(
         `/api/agents/${encodeURIComponent(agent.id)}`,
-        { name: fd.get("name"), purpose: fd.get("purpose"), instructions: fd.get("instructions"), effort: fd.get("effort") },
+        { name: fd.get("name"), purpose: fd.get("purpose"), instructions: fd.get("instructions"), effort: fd.get("effort"), model: String(fd.get("model") ?? "").trim() },
         "PATCH",
       );
       saved(about, "Saved.");
@@ -1594,6 +1653,67 @@ function settingsAssistant(box, agent) {
       load();
     } catch (err) {
       failed(about, err);
+    }
+  };
+}
+
+/** Which of my assistants answers the iMessage line. Only shown when the line is connected. */
+async function assistantLine(agent, mine) {
+  const box = $("#lineBox");
+  let info;
+  try {
+    info = await api(`/api/channels?personId=${encodeURIComponent(state.me)}`);
+  } catch {
+    return;
+  }
+  const im = info.channels.find((c) => c.channel === "imessage");
+  if (!im || !box) return;
+  const current = mine.find((a) => a.id === im.agentId);
+  box.innerHTML = `<form class="field" id="lineForm"><label>Answers on iMessage</label><div class="addrow"><select name="agentId">${mine.map((a) => `<option value="${esc(a.id)}" ${a.id === (current?.id ?? "") ? "selected" : ""}>${esc(a.name)}</option>`).join("")}${current ? "" : `<option value="" selected disabled>${im.agentId ? "someone else's assistant" : "nobody picked"}</option>`}</select><button class="btn small" type="submit">Save</button></div><div class="hint">Groups that add the line get this assistant. Chats already running keep theirs; hand them over below.</div><span class="note"></span></form>`;
+  const form = $("#lineForm");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const agentId = new FormData(form).get("agentId");
+    if (!agentId) return;
+    try {
+      await api("/api/channels/imessage/agent", { agentId }, "PUT");
+      saved(form, "Saved.");
+    } catch (err) {
+      failed(form, err);
+    }
+  };
+}
+
+/** Skills by name, tools by family; every box ticked means no list at all, so new ones arrive switched on. */
+async function assistantLimits(agent) {
+  const body = $("#limitsBody");
+  let opts;
+  try {
+    opts = await api("/api/agents/options");
+  } catch (err) {
+    if (body) body.textContent = err.message;
+    return;
+  }
+  if (!body) return;
+  const on = (list, name) => !list || list.includes(name);
+  body.className = "";
+  body.innerHTML = `<div class="checks"><h4 class="tiny">Tools</h4>${opts.families.map((f) => `<label class="check"><input type="checkbox" name="tools" value="${esc(f)}" ${on(agent.tools, f) ? "checked" : ""} /> ${esc(f)}</label>`).join("")}</div>
+    <div class="checks"><h4 class="tiny">Skills</h4>${opts.skills.map((k) => `<label class="check" title="${esc(k.when)}"><input type="checkbox" name="skills" value="${esc(k.name)}" ${on(agent.skills, k.name) ? "checked" : ""} /> ${esc(k.name)}</label>`).join("")}</div>`;
+  labelFields(body);
+  const form = $("#limitsForm");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const pick = (name, all) => {
+      const chosen = fd.getAll(name).map(String);
+      return chosen.length === all.length ? null : chosen;
+    };
+    try {
+      await api(`/api/agents/${encodeURIComponent(agent.id)}`, { tools: pick("tools", opts.families), skills: pick("skills", opts.skills) }, "PATCH");
+      saved(form, "Saved.");
+      load();
+    } catch (err) {
+      failed(form, err);
     }
   };
 }

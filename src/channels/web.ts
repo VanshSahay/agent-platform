@@ -14,6 +14,7 @@ import { SuggestionService } from "../inbox/suggestions.ts";
 import QRCode from "qrcode";
 import { listPeople, peopleVisibleTo, publicPerson } from "../store/queries.ts";
 import { publicUrl } from "../tools/kit.ts";
+import { ALWAYS_TOOLS, TOOLS } from "../tools/registry.ts";
 import { privateProfileId } from "../memory/consolidate.ts";
 import type { IMessageHandle } from "./imessage.ts";
 import { LINK_CODE_TTL_MS, mintLinkCode } from "./handles.ts";
@@ -348,6 +349,17 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
     },
 
     // ---- agents
+    {
+      // What an owner can narrow an agent to: skills by name, tools by family. The coordination core is always on.
+      method: "GET",
+      re: /^\/api\/agents\/options$/,
+      access: "signedIn",
+      handle: () =>
+        json({
+          skills: app.skills.filter((s) => !s.name.startsWith("_")).map((s) => ({ name: s.name, when: s.when })),
+          families: [...new Set(TOOLS.filter((t) => !ALWAYS_TOOLS.has(t.spec.name)).map((t) => t.family))].sort(),
+        }),
+    },
     {
       method: "POST",
       re: /^\/api\/agents$/,
