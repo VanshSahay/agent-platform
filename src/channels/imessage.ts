@@ -183,14 +183,16 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
             app.store.putRoom(room);
           }
         }
-        // First contact with a new group: introduce the agent once and tell the owner.
-        if (created && room.kind === "group") {
-          void app.runtime.groupJoined(room, person).catch((e) => console.error(`${channel} group join failed`, (e as Error).message));
-        }
+        // First contact with a new group: introduce the agent once and tell the owner. The first
+        // message waits for the introduction, so two runs never race in one new chat.
+        const joined =
+          created && room.kind === "group"
+            ? app.runtime.groupJoined(room, person).catch((e) => console.error(`${channel} group join failed`, (e as Error).message))
+            : Promise.resolve();
         // Not awaited: a run can take minutes, and the next text (another chat, or a steer
         // for this one) must be read while it runs.
-        void spectrum
-          .responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` }))
+        void joined
+          .then(() => spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` })))
           .catch((e) => console.error(`${channel} run failed`, (e as Error).message));
       } catch (e) {
         console.error(`${channel} inbound failed`, (e as Error).message);

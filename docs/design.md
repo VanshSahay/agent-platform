@@ -61,6 +61,8 @@ People join a room through an invite link the owner mints (`POST /api/rooms/:id/
 
 **Co-owners and per-person trust (multiplayer-spec §7.3).** A room owner may promote a member to co-owner; each owner carries their own `TrustPolicy` (`Person.trust`, the agent's being the default), and a purchase is routed by payer: a co-owner's buy follows their own threshold and the card goes to their own DM, not their partner's. Shared payment sources and member-owned cards land with the payments provider.
 
+**Never a fake in front of a person.** Every tool whose provider is a boot-level hand carries `needs`; `main.ts` lists only what it really wired, the run offers only those tools, and the loop refuses any tool whose provider is missing even when the model names it unoffered. Without a phone vendor `place_call` answers "not available on this server" instead of the test fake's "they answered".
+
 **Low tech comfort.** When the requester is marked as not comfortable with technology the prompt switches to one step at a time, no jargon, their words for things, "ask what they see before saying what to tap", and anything needing a password, a code or money goes to a named person.
 
 ## 5. A run

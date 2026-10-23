@@ -133,7 +133,14 @@ function pickHands(): { hands: Hands; providers: string[] } {
   // Public prices to compare against: Booking.com by hotel name through Apify when keyed (PUBLIC_RATES=google for Google's ladder).
   const pubRates = publicRatesFrom(env, hands.browser, spend);
   hands.publicRates = pubRates.hand;
-  if (env.APIFY_TOKEN) hands.publicFlights = new ApifyFlights(env.APIFY_TOKEN, undefined, spend);
+  // Without Apify there is no public flight price: an honest error, never the fake's canned fares.
+  hands.publicFlights = env.APIFY_TOKEN
+    ? new ApifyFlights(env.APIFY_TOKEN, undefined, spend)
+    : {
+        async search() {
+          throw new Error("public flight prices are not configured (set APIFY_TOKEN)");
+        },
+      };
   console.log(`Public hotel prices: ${pubRates.label}; margin ${process.env.HOTEL_MARKUP_PCT ?? 0}%`);
   const search = createSearch(process.env);
   hands.search = search;

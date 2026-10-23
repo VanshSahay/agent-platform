@@ -383,7 +383,7 @@ describe("context economics", () => {
 
   test("with every provider wired the whole catalogue is offered; with none, only ungated tools", () => {
     const none = toolsForRun(new Set());
-    const all = toolsForRun(new Set(["google", "email", "slack", "speech", "images", "payments", "phone", "browser", "hotels", "flights"]));
+    const all = toolsForRun(new Set(["google", "email", "slack", "speech", "images", "payments", "phone", "browser", "hotels", "flights", "community"]));
     expect(none).toContainEqual(expect.objectContaining({ name: "web_search" }));
     expect(none.find((t) => t.name === "text_to_speech")).toBeUndefined();
     expect(all.map((t) => t.name)).toEqual(TOOLS.map((t) => t.spec.name));
@@ -705,6 +705,77 @@ describe("co-owners", () => {
     const buy = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "request_purchase")!;
     expect(buy.evidence).toContain("purchase-approved");
     expect(String(buy.result)).toContain("under Alex's $25 threshold");
+  });
+});
+
+describe("audit fixes, 23 October", () => {
+  test("a call on a server with no phone provider is refused: nothing dialled, nothing claimed", async () => {
+    const phone = new FakePhone();
+    const w = groupWorld(
+      (req, i) => (i === 0 ? callTool("place_call", { to: "+14085550100", who: "the clinic", objective: "confirm Thursday" }) : reply("I can't place calls on this server yet.")),
+      { phone, providers: [] },
+    );
+    w.agent.trust.autoAllow = ["place_call"];
+    w.app.store.putAgent(w.agent);
+    const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "call the clinic" });
+    const call = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "place_call")!;
+    expect(call.status).toBe("failed");
+    expect(call.evidence).toBeUndefined();
+    expect(String(call.result)).toContain("not available on this server");
+    expect(phone.calls).toHaveLength(0);
+    expect(repliesTo(w.deliveries, w.ownerDm.id).at(-1)).not.toContain("Made a call");
+  });
+
+  test("a tool the run was not offered is refused even when the model names it", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("hotel_compare", { city: "Paris", checkIn: "2026-12-01", checkOut: "2026-12-03" }) : reply("ok")), { providers: [] });
+    const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "hotels in Paris" });
+    const call = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "hotel_compare")!;
+    expect(call.status).toBe("failed");
+    expect(call.evidence).toBeUndefined();
+    expect(String(call.result)).toContain("needs the hotels provider");
+  });
+
+  test("a co-owner whose id sorts first still leaves the agent owner as the approver for guests", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("send_sms", { to: "+14085550100", who: "the plumber", text: "Can you come Thursday?" }) : reply("Asked.")));
+    w.app.rooms.createPerson({ id: "aaron", displayName: "Aaron", timezone: "UTC" });
+    w.app.rooms.addMember(w.room.id, "aaron", "member");
+    w.app.rooms.promoteOwner(w.room.id, "aaron"); // "aaron" sorts before "alex"
+    expect(w.app.rooms.owner(w.room)!.id).toBe("alex");
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "@pip text the plumber about Thursday" });
+    const item = w.app.store.listAttention({ roomId: w.room.id }).find((a) => a.kind === "guest_request");
+    expect(item?.assigneeId).toBe("alex");
+  });
+
+  test("a co-owner never borrows the agent owner's trust or accounts", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 12, what: "batteries", where: "Walgreens" }) : reply("ok")));
+    w.agent.trust.autoApproveUnderUsd = 25; // Alex's default
+    w.agent.trust.autoAllow = ["send_sms"];
+    w.app.store.putAgent(w.agent);
+    w.app.rooms.promoteOwner(w.room.id, "sam"); // Sam set no trust of his own
+    expect(w.app.rooms.accountsFor(w.room, "sam")).toEqual({ accountOwnerId: "sam", needsApproval: false });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip buy Jo the $12 batteries" });
+    const buy = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "request_purchase")!;
+    expect(buy.evidence).toBeUndefined(); // Alex's $25 does not cover Sam
+    const item = w.app.store.listAttention({ roomId: w.room.id }).find((a) => a.kind === "purchase_approval");
+    expect(item?.assigneeId).toBe("sam");
+  });
+
+  test("read_page only sees pages made in this chat", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("read_page", { pageId: "Medication" }) : reply("ok")));
+    w.app.store.putArtifact({
+      id: "art_private",
+      agentId: w.agent.id,
+      roomId: w.ownerDm.id,
+      kind: "document",
+      title: "Medication",
+      data: { markdown: "# Medication\n- metformin" },
+      share: "link",
+      createdAt: w.clock.now(),
+    });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "riley", text: "@pip read the medication page" });
+    const call = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "read_page")!;
+    expect(call.status).toBe("failed");
+    expect(JSON.stringify(call.result)).not.toContain("metformin");
   });
 });
 

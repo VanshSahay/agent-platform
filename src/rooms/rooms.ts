@@ -168,14 +168,20 @@ export class RoomService {
   }
 
   owner(room: Room): Person | undefined {
-    const m = this.members(room.id).find((x) => x.role === "owner");
-    return m ? this.store.getPerson(m.personId) : undefined;
+    return this.approversFor(room)[0];
   }
 
   /** Who may say yes for a request in this room: the owner, whose accounts and money are at stake. */
+  /**
+   * The room's owners, the agent's owner first, then co-owners by when they joined. Never row
+   * order: the store returns memberships by person id, so "the first owner" would otherwise
+   * depend on how ids happen to sort.
+   */
   approversFor(room: Room): Person[] {
+    const agentOwner = this.store.getAgent(room.agentId)?.ownerId;
     return this.members(room.id)
       .filter((m) => m.role === "owner")
+      .sort((a, b) => Number(b.personId === agentOwner) - Number(a.personId === agentOwner) || a.joinedAt - b.joinedAt)
       .map((m) => this.store.getPerson(m.personId))
       .filter((p): p is Person => !!p);
   }
@@ -190,6 +196,8 @@ export class RoomService {
     const owner = this.owner(room);
     const mem = this.store.getMembership(room.id, requesterId);
     if (owner && requesterId === owner.id) return { accountOwnerId: owner.id, needsApproval: false };
+    // A co-owner's own requests run on their own accounts and money (multiplayer-spec §7.3).
+    if (mem && mem.role === "owner") return { accountOwnerId: requesterId, needsApproval: false };
     if (mem && mem.role === "member" && mem.consentedAt) return { accountOwnerId: requesterId, needsApproval: false };
     return { accountOwnerId: owner?.id ?? requesterId, needsApproval: true };
   }

@@ -386,6 +386,7 @@ export const CORE_TOOLS: ToolDef[] = [
       ),
     },
     family: "calls",
+    needs: "phone",
     labels: { running: "On a call…", done: "Made a call", failed: "Call failed" },
     sideEffect: true,
     async run(input, ctx) {
@@ -419,6 +420,7 @@ export const CORE_TOOLS: ToolDef[] = [
       input_schema: obj({ to: str("E.164 number."), who: str("Who this is."), text: str("The message.") }, ["to", "who", "text"]),
     },
     family: "calls",
+    needs: "phone",
     labels: { running: "Sending a text…", done: "Sent a text" },
     sideEffect: true,
     async run(input, ctx) {
@@ -451,6 +453,7 @@ export const CORE_TOOLS: ToolDef[] = [
       ),
     },
     family: "community",
+    needs: "community",
     labels: { running: "Asking a community…", done: "Posted to a community" },
     sideEffect: true,
     async run(input, ctx) {
@@ -479,6 +482,7 @@ export const CORE_TOOLS: ToolDef[] = [
       input_schema: obj({ postId: str("The post id returned by post_community.") }, ["postId"]),
     },
     family: "community",
+    needs: "community",
     labels: { running: "Reading replies…", done: "Read community replies" },
     sideEffect: false,
     async run(input, ctx) {

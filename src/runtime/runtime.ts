@@ -1042,6 +1042,8 @@ export class Runtime {
         // gate still covers writes.
         const foreignRead = def && touchesAccount(def) && !def.sideEffect && run.requesterId !== undefined && run.requesterId !== accounts.accountOwnerId;
         if (!def) result = { ok: false, content: `Unknown tool ${use.name}.` };
+        else if (def.needs && !this.d.providers.has(def.needs))
+          result = { ok: false, content: `${use.name} is not available on this server (it needs the ${def.needs} provider, which is not connected). Say so plainly; never describe it as done.` };
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
         else if (stopped()) result = { ok: false, content: "Skipped: the run was stopped." };
         else if (foreignRead && !readOk(def.family)) result = foreignReadResult(def.family);

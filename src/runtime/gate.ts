@@ -1,13 +1,16 @@
 import { sha256 } from "../core/ids.ts";
 import { contactKey } from "../tools/kit.ts";
 import { hourIn, type Clock } from "../core/clock.ts";
-import type { AgentSpec, Id, Room, Run } from "../core/types.ts";
+import type { AgentSpec, Id, Room, Run, TrustPolicy } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 import type { RoomService } from "../rooms/rooms.ts";
 import type { AttentionService } from "../inbox/attention.ts";
 import type { GateDecision, ToolContext } from "../tools/registry.ts";
 
 export type GateInput = Parameters<ToolContext["gate"]>[0];
+
+/** The trust of someone who set none: every purchase and every listed tool asks. */
+const NO_TRUST: TrustPolicy = { autoAllow: [], autoApproveUnderUsd: 0, spendingPaused: false, communityPostingAllowed: [] };
 
 /**
  * Approval policy, the one place that decides whether an effect may happen now.
@@ -72,12 +75,17 @@ export function decideGate(
   // Whose money and whose trust (multiplayer-spec §7.3): a room owner is the payer of their
   // own purchases, with their per-person trust over the agent's default; everyone else spends
   // from the owner's side, and the owner answers. Per-person payment sources land with Stripe.
+  // Shortcuts (threshold, allow list, communities) apply only when the request runs on the
+  // requester's own accounts: a co-owner never borrows the agent owner's trust or accounts.
+  // The agent owner's default is the agent's policy; a co-owner's default trusts nothing.
   const requesterRole = run.requesterId ? rooms.role(room.id, run.requesterId) : undefined;
-  const requesterIsAnOwner = run.requesterId === agent.ownerId || requesterRole === "owner";
-  const payerIsRequester = g.kind === "purchase_approval" && requesterIsAnOwner && !!run.requesterId;
+  const ownAccounts = !!run.requesterId && accounts.accountOwnerId === run.requesterId;
+  const requesterIsAnOwner = ownAccounts && (run.requesterId === agent.ownerId || requesterRole === "owner");
+  const trustOf = (id: Id) => store.getPerson(id)?.trust ?? (id === agent.ownerId ? agent.trust : NO_TRUST);
+  const payerIsRequester = g.kind === "purchase_approval" && requesterIsAnOwner;
   const payer = payerIsRequester ? store.getPerson(run.requesterId!) : undefined;
-  const payerTrust = payer?.trust ?? agent.trust;
-  const requesterTrust = (run.requesterId && requesterIsAnOwner ? store.getPerson(run.requesterId)?.trust : undefined) ?? agent.trust;
+  const payerTrust = payerIsRequester ? trustOf(run.requesterId!) : agent.trust;
+  const requesterTrust = requesterIsAnOwner ? trustOf(run.requesterId!) : NO_TRUST;
   const money = g.money ?? 0;
   if (g.kind === "purchase_approval" && payerTrust.spendingPaused) return { granted: false, held: "Spending is paused. Do not buy; tell them." };
   if (g.kind === "purchase_approval" && payerIsRequester && money > 0 && money <= payerTrust.autoApproveUnderUsd) {
