@@ -999,7 +999,8 @@ export const SCENARIOS: Scenario[] = [
         pass: (app, w) => app.commitments.open(w.room.id).some((c) => c.ownerId === "sam" && /stove/i.test(c.title)),
       },
       noOutreachCheck("A packing list contacts nobody outside the chat."),
-      finishedCheck("both runs finished", "Both group runs are done.", "room", 2),
+      // Asking the group who brings the stove is right, and Sam's answer then resumes the first run instead of starting a second.
+      finishedCheck("every run finished", "Every group run is done; Sam's line may answer an ask_room in the first.", "room", 1),
     ],
   },
   {
@@ -1205,8 +1206,8 @@ export const SCENARIOS: Scenario[] = [
       }
       return reply("ok");
     },
-    // The owner's card, plus an ask_room if the agent asks the chat what each person wants.
-    expects: { attention: 2 },
+    // The owner's card, plus up to two ask_rooms: what each person wants, and who covers the shortfall.
+    expects: { attention: 3 },
     checks: [
       {
         name: "a shared page holds everyone's lines",
@@ -1229,8 +1230,8 @@ export const SCENARIOS: Scenario[] = [
         },
       },
       noOutreachCheck("Nothing left the chat: the owner places the order themselves."),
-      // Sam's line may answer an ask_room in the first run instead of starting the second, so two runs is enough.
-      finishedCheck("every run finished", "Every group run is done (the yes resumes the last); asking the group may fold Sam's line into the first.", "room", 2),
+      // Each line may answer an ask_room in the first run instead of starting its own, so one run can carry the whole order.
+      finishedCheck("every run finished", "Every group run is done (the yes resumes the last); asking the group may fold the lines into the first.", "room", 1),
     ],
   },
   // ---- Live-test regressions, 23 Oct 2026 (one-to-one on iMessage): each was a real failure, fixed in the runtime.
