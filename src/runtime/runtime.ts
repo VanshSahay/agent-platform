@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { redact } from "../ops/ops.ts";
 import { newId, sha256 } from "../core/ids.ts";
 import type { Clock } from "../core/clock.ts";
 import type { AgentSpec, AgentState, Approval, AttentionItem, Id, Message, Person, Room, Run, RunEvent, RunTrigger, Session, Task, ToolCallRecord } from "../core/types.ts";
@@ -1150,7 +1151,7 @@ export class Runtime {
             try {
               result = await def.run(input, ctx);
             } catch (e) {
-              result = { ok: false, content: `Tool error: ${String((e as Error).message)}` };
+              result = { ok: false, content: `Tool error: ${redact(String((e as Error).message))}` }; // an SDK error can carry a connect URL with its key
             }
           }
         }

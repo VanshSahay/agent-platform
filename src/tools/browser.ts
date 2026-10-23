@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { redact } from "../ops/ops.ts";
 import type { SpendLog } from "../runtime/spend.ts";
 import { chromium, type Browser, type Page } from "playwright-core";
 
@@ -219,7 +220,7 @@ export class FallbackBrowser implements BrowserProvider {
       } catch (e) {
         last = e;
         this.warn(
-          `browser ${name} failed on ${what}: ${String((e as Error).message)
+          `browser ${name} failed on ${what}: ${redact(String((e as Error).message))
             .split("\n")[0]
             ?.slice(0, 160)}`,
         );

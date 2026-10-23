@@ -64,3 +64,9 @@ test("the error log redactor takes out keys, bearer tokens and secrets in query 
   expect(redact("Authorization: Bearer eyJhbGciOi.payload.sig")).toBe("Authorization: Bearer [redacted]");
   expect(redact("send to +14155550123 failed")).toBe("send to +14155550123 failed");
 });
+
+test("a browser connect URL's signing key is taken out of a tool error before anyone stores it", () => {
+  expect(redact('connectOverCDP: WebSocket error fetching "https://1.2.3.4/?signingKey=eyJhbGci.abc.def"')).toBe(
+    'connectOverCDP: WebSocket error fetching "https://1.2.3.4/?signingKey=[redacted]"',
+  );
+});

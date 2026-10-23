@@ -64,7 +64,7 @@ export class Ops {
 const SECRETS: [RegExp, string][] = [
   [/\b(sk|pk|rk)[-_](live|test|ant|or|proj)?[-_]?[A-Za-z0-9_-]{12,}/g, "[key]"],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]"],
-  [/(\b(key|token|secret|password|api_key|apikey|access_token)["']?\s*[=:]\s*["']?)[^&\s,"']+/gi, "$1[redacted]"],
+  [/(\b(key|token|secret|password|api_key|apikey|access_token|signingKey)["']?\s*[=:]\s*["']?)[^&\s,"']+/gi, "$1[redacted]"],
   [/\b(xox[abposr]-[A-Za-z0-9-]{8,})/g, "[slack-token]"],
   [/\b[A-Za-z0-9_-]{40,}\b/g, "[long-token]"],
 ];

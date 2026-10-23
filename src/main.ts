@@ -161,6 +161,9 @@ function pickHands(): { hands: Hands; providers: string[] } {
   return { hands, providers };
 }
 
+// Bun before 1.4 checks a WebSocket's TLS certificate against the resolved IP, so every Browserbase session fails to connect.
+if (process.env.BROWSERBASE_API_KEY && Bun.version.localeCompare("1.4.0", undefined, { numeric: true }) < 0)
+  console.warn(`Bun ${Bun.version}: Browserbase sessions will fail to connect (TLS check on the IP); run \`bun upgrade\` to 1.4 or later.`);
 const dbPath = process.env.DB_PATH ?? "data/circle.sqlite";
 if (dbPath !== ":memory:") {
   mkdirSync(dirname(dbPath), { recursive: true });

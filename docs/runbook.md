@@ -123,6 +123,8 @@ Circle reaches iMessage through Photon Spectrum (`PROJECT_ID`, `PROJECT_SECRET` 
 - **Shared pool (Free and Pro):** one-to-one only. Each person registers the number they text from, under Settings → Channels. It cannot join group chats.
 - **Dedicated line (Business, $250 a month per line at the time of writing, so confirm with Photon):** Circle has its own number. People add it to new or existing group chats like a friend. Set `IMESSAGE_PHONE` to the line's number. **Real group chats need this plan.**
 
+**One Photon project per running copy.** Photon delivers each text to every server connected to the project, so a laptop and the deployment sharing one project both answer, the laptop without the deployment's history. Give local testing its own project.
+
 After changing either: `fly secrets set PROJECT_ID=... PROJECT_SECRET=... IMESSAGE_PHONE=+1...`. Fly restarts the machine on a secret change. `/health` shows `channels.imessage.state` as `up` once connected.
 
 ## Secrets
