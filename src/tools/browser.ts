@@ -334,7 +334,9 @@ export class BrowserbaseBrowser implements BrowserProvider {
     const ctxRes = await fetch("https://api.browserbase.com/v1/contexts", { method: "POST", headers: this.headers(), body: JSON.stringify({ projectId }) });
     if (!ctxRes.ok) throw new Error(`Browserbase context: ${ctxRes.status} ${await ctxRes.text()}`);
     const context = (await ctxRes.json()) as { id: string };
-    const settings = { browserSettings: { context: { id: context.id, persist: true } } };
+    // A modest remote viewport: the live view scales the remote screen to the card's width, so a 1280-wide
+    // page arrives in tiny type; at 1024 by 768 it is close to one-to-one in the chat and readable on a phone.
+    const settings = { browserSettings: { context: { id: context.id, persist: true }, viewport: { width: 1024, height: 768 } } };
     // A longer session when the plan allows it; otherwise the project default.
     const session = await this.createSession(projectId, { ...settings, timeout: 900 }).catch(() => this.createSession(projectId, settings));
     const debugRes = await fetch(`https://api.browserbase.com/v1/sessions/${session.id}/debug`, { headers: this.headers() });

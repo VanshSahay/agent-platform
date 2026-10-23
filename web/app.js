@@ -1000,7 +1000,7 @@ function cardHtml(c) {
       : "Cancelled. Nothing was connected.";
   return `<div class="acard ${esc(c.status)}" data-item="${esc(c.itemId)}"><h4>Sign in to ${esc(c.site)}</h4><p>${lead}</p>${
     open
-      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write"></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button></div>`
+      ? `<iframe src="${esc(c.liveViewUrl)}" title="Sign in to ${esc(c.site)}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allow="clipboard-read; clipboard-write; fullscreen" allowfullscreen></iframe><div class="row"><button class="btn primary" data-connect="done" type="button">Done, I'm signed in</button><button class="btn" data-connect="cancel" type="button">Cancel</button><a class="btn" href="${esc(c.liveViewUrl)}" target="_blank" rel="noopener">Open full size ↗</a></div>`
       : ""
   }</div>`;
 }
