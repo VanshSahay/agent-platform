@@ -139,7 +139,7 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
       const link = d.kind === "card" && process.env.PUBLIC_URL ? `\n\nOr open it in the app: ${process.env.PUBLIC_URL}/#room=${room.id}` : "";
       await spectrum.send(space, plainText(d.text) + link);
     } catch (e) {
-      console.error(`${channel} send failed`, (e as Error).message);
+      app.ops.error(`${channel} send`, e);
     }
   });
 
@@ -192,18 +192,24 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
         // message waits for the introduction, so two runs never race in one new chat.
         const joined =
           created && room.kind === "group"
-            ? app.runtime.groupJoined(room, person).catch((e) => console.error(`${channel} group join failed`, (e as Error).message))
+            ? app.runtime.groupJoined(room, person).catch((e) => app.ops.error(`${channel} group join`, e))
             : Promise.resolve();
         // Not awaited: a run can take minutes, and the next text (another chat, or a steer
         // for this one) must be read while it runs.
         void joined
           .then(() => spectrum.responding(space, () => app.runtime.handleMessage({ roomId: room.id, personId: person.id, text, dedupKey: `${channel}:${message.id}` })))
-          .catch((e) => console.error(`${channel} run failed`, (e as Error).message));
+          .catch((e) => app.ops.error(`${channel} run`, e));
       } catch (e) {
-        console.error(`${channel} inbound failed`, (e as Error).message);
+        app.ops.error(`${channel} inbound`, e);
       }
     }
-  })().catch((e) => console.error(`${channel} stream ended`, (e as Error).message));
+  })()
+    // The loop only ends when the provider drops us; say so on /health instead of answering nobody quietly.
+    .then(() => app.ops.channel(channel, "down", "stream ended"))
+    .catch((e) => {
+      app.ops.channel(channel, "down", (e as Error).message);
+      app.ops.error(`${channel} stream`, e);
+    });
 
   const users = spectrumUsers(cfg);
   const mode = phone && phone !== "shared" ? "dedicated" : "shared";

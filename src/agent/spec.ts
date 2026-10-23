@@ -33,6 +33,7 @@ export function newAgent(input: {
   soul?: Partial<Soul>;
   trust?: Partial<TrustPolicy>;
   model?: string;
+  createdAt?: number;
 }): AgentSpec {
   return {
     id: newId("agt"),
@@ -50,6 +51,6 @@ export function newAgent(input: {
     model: input.model ?? modelConfig().model,
     effort: "high",
     trust: { ...DEFAULT_TRUST, ...input.trust },
-    createdAt: Date.now(),
+    createdAt: input.createdAt ?? Date.now(),
   };
 }

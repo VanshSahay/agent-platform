@@ -51,6 +51,8 @@ export interface RuntimeDeps {
   publicUrl?: string;
   /** Boot-level providers wired on this server (google, email, speech, payments, phone, browser, images). Tool selection per run follows it. */
   providers: Providers;
+  /** Where background failures are logged; stderr when absent (tests). */
+  onError?: (source: string, e: unknown) => void;
 }
 
 const MAX_TURNS = 24;
@@ -1422,7 +1424,7 @@ export class Runtime {
           excludeMessageIds: group.map((q) => String(q.data.messageId)).filter(Boolean),
         });
       } catch (e) {
-        console.error("queued run failed:", (e as Error).message);
+        (this.d.onError ?? logToStderr)("queued run", e);
       }
     })().finally(() => this.inFlight.delete(p));
     this.inFlight.add(p);
@@ -1451,6 +1453,8 @@ export function stopNotice(who: string, calls: ToolCallRecord[]): string {
   const labels = Array.from(new Set(acted.map((c) => c.labelDone)));
   return `Stopped by ${who}. Already done before the stop, and not undone: ${labels.join("; ")}.`;
 }
+
+const logToStderr = (source: string, e: unknown) => console.error(`${source}:`, (e as Error)?.message ?? e);
 
 export function buildFooter(calls: ToolCallRecord[]): string {
   const done = calls.filter((c) => c.status === "done");

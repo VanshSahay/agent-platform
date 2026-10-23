@@ -23,6 +23,15 @@ primary_region = "sjc"
   auto_start_machines = true
   min_machines_running = 1
 
+  # /health is 503 when the database cannot be read or the scheduler has stopped beating.
+  # Fly stops routing to a failing machine and shows it in `fly status`; see docs/runbook.md.
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"

@@ -70,13 +70,26 @@ export class Store {
 
   // ----- agents -----
   putAgent(a: AgentSpec) {
+    // REPLACE would resolve a handle clash by deleting the other agent; refuse instead.
+    const clash = this.db.query("SELECT id FROM agents WHERE handle = ? AND id != ?").get(a.handle, a.id);
+    if (clash) throw new Error(`handle "${a.handle}" is taken by another agent`);
     this.db.run("INSERT OR REPLACE INTO agents(id, owner_id, handle, data) VALUES (?, ?, ?, ?)", [a.id, a.ownerId, a.handle, JSON.stringify(a)]);
   }
   getAgent(id: string) {
     return parse<AgentSpec>(this.db.query("SELECT data FROM agents WHERE id = ?").get(id) as Row | null);
   }
+  /** A handle no other agent has: the name's, or the name's with a number. */
+  freeHandle(base: string) {
+    const root = base || "agent";
+    for (let i = 1; ; i++) {
+      const h = i === 1 ? root : `${root}-${i}`;
+      if (!this.db.query("SELECT 1 FROM agents WHERE handle = ?").get(h)) return h;
+    }
+  }
   listAgents(ownerId?: string) {
-    const rows = ownerId ? (this.db.query("SELECT data FROM agents WHERE owner_id = ?").all(ownerId) as Row[]) : (this.db.query("SELECT data FROM agents").all() as Row[]);
+    // Oldest first, stably: INSERT OR REPLACE gives an edited agent a new rowid, so rowid order would move it to the end.
+    const order = "ORDER BY json_extract(data, '$.createdAt'), id";
+    const rows = ownerId ? (this.db.query(`SELECT data FROM agents WHERE owner_id = ? ${order}`).all(ownerId) as Row[]) : (this.db.query(`SELECT data FROM agents ${order}`).all() as Row[]);
     return parseAll<AgentSpec>(rows);
   }
 
@@ -520,5 +533,14 @@ export class Store {
   }
   setKv(k: string, v: string) {
     this.db.run("INSERT OR REPLACE INTO kv(k, v) VALUES (?, ?)", [k, v]);
+  }
+
+  // ----- error log: operational, not a run record, so it is pruned -----
+  logError(at: number, source: string, message: string, keep = 1000) {
+    this.db.run("INSERT INTO errors(at, source, message) VALUES (?, ?, ?)", [at, source, message]);
+    this.db.run("DELETE FROM errors WHERE id <= (SELECT MAX(id) FROM errors) - ?", [keep]);
+  }
+  listErrors(opts: { since?: number; limit?: number } = {}): { id: number; at: number; source: string; message: string }[] {
+    return this.db.query("SELECT id, at, source, message FROM errors WHERE at >= ? ORDER BY id DESC LIMIT ?").all(opts.since ?? 0, opts.limit ?? 100) as never;
   }
 }

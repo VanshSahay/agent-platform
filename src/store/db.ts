@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS spend (
   run_id TEXT, session_id TEXT, note TEXT
 );
 CREATE INDEX IF NOT EXISTS spend_at ON spend(at);
+CREATE TABLE IF NOT EXISTS errors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, source TEXT NOT NULL, message TEXT NOT NULL
+);
 `;
 
 /**

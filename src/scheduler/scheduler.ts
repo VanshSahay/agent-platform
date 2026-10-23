@@ -23,8 +23,13 @@ export class Scheduler {
     private commitments: CommitmentService,
     private attention: AttentionService,
     private model: ModelClient,
-    private opts: { heartbeatEveryMs?: number } = {},
+    private opts: { heartbeatEveryMs?: number; onError?: (source: string, e: unknown) => void } = {},
   ) {}
+
+  private fail(source: string, e: unknown) {
+    if (this.opts.onError) this.opts.onError(source, e);
+    else console.error(`${source}:`, (e as Error).message);
+  }
 
   static createSchedule(
     store: Store,
@@ -82,7 +87,7 @@ export class Scheduler {
         await this.fire(s, now);
         out.fired += 1;
       } catch (e) {
-        console.error(`schedule ${s.id} failed to fire:`, (e as Error).message);
+        this.fail(`schedule ${s.id}`, e);
       }
     }
 
@@ -116,7 +121,7 @@ export class Scheduler {
         out.edited += 1;
         done();
       } catch (e) {
-        console.error(`artifact edit for ${id} failed:`, (e as Error).message);
+        this.fail(`artifact edit ${id}`, e);
       }
     }
 
@@ -124,7 +129,7 @@ export class Scheduler {
       try {
         await this.nudge(c, now, out);
       } catch (e) {
-        console.error(`nudge for ${c.id} failed:`, (e as Error).message);
+        this.fail(`nudge ${c.id}`, e);
       }
     }
 
@@ -148,7 +153,7 @@ export class Scheduler {
         });
         out.heartbeats += 1;
       } catch (e) {
-        console.error(`heartbeat for ${room.id} failed:`, (e as Error).message);
+        this.fail(`heartbeat ${room.id}`, e);
       }
     }
     return out;

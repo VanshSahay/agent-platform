@@ -65,7 +65,7 @@ export function evalWorld(opts: WorldOptions): EvalWorld {
   const jo = app.rooms.createPerson({ id: "jo", displayName: "Jo", timezone: "America/Los_Angeles", techComfort: "low" });
   const riley = app.rooms.createPerson({ id: "riley", displayName: "Riley", timezone: "America/Los_Angeles" });
 
-  const agent = newAgent({ ownerId: alex.id, name: "Pip", model: opts.modelId });
+  const agent = newAgent({ ownerId: alex.id, name: "Pip", model: opts.modelId, createdAt: clock.now() });
   app.store.putAgent(agent);
   app.memory.write({ agentId: agent.id, scope: "agent", scopeId: agent.id, type: "rule", text: "Ask before calling anyone; keep messages short." });
   app.memory.write({ agentId: agent.id, scope: "person", scopeId: alex.id, type: "preference", text: "Alex prefers morning appointments.", visibleToRooms: [] });

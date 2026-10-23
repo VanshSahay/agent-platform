@@ -492,3 +492,46 @@ describe("web api: inspect and stop", () => {
     expect(stopped.status).toBe("stopped");
   });
 });
+
+describe("operations", () => {
+  test("/health answers 200 while the loops beat, 503 once one misses three beats, and never carries an error's text", async () => {
+    const s = up();
+    s.app.ops.beat("scheduler", 60_000);
+    s.app.ops.error("tick", new Error("upstream said Bearer abc.def.ghi for sk-or-v1-0123456789abcdef"));
+    const fine = await s.call(undefined, "GET", "/health");
+    expect(fine.status).toBe(200);
+    const body = await fine.json();
+    expect(body.recentErrors).toBe(1);
+    expect(JSON.stringify(body)).not.toContain("upstream");
+    s.clock.set(s.clock.now() + 4 * 60_000);
+    expect((await s.call(undefined, "GET", "/health")).status).toBe(503);
+  });
+
+  test("the error log is for the operator only, with secrets taken out before it is stored", async () => {
+    const s = up();
+    s.app.ops.error("imessage send", new Error("401 for token=abcd1234 with Bearer abc.def and sk-or-v1-0123456789abcdef"));
+    expect((await s.call("sam", "GET", "/api/ops/errors")).status).toBe(403);
+    const { errors } = await (await s.call("alex", "GET", "/api/ops/errors")).json();
+    expect(errors[0].source).toBe("imessage send");
+    expect(errors[0].message).toBe("401 for token=[redacted] with Bearer [redacted] and [key]");
+  });
+
+  test("editing an agent does not change which agent is the oldest, so the default line agent stays put", async () => {
+    const s = up();
+    const second = await (await s.call("alex", "POST", "/api/agents", { name: "Juno" })).json();
+    expect(s.app.store.listAgents()[0]!.id).toBe(s.agent.id);
+    await s.call("alex", "PATCH", `/api/agents/${s.agent.id}`, { instructions: "be brief" });
+    expect(s.app.store.listAgents()[0]!.id).toBe(s.agent.id);
+    expect(s.app.store.listAgents()[1]!.id).toBe(second.id);
+  });
+});
+
+test("two owners naming their assistants the same keep both: the second gets its own handle", async () => {
+  const s = up();
+  const a = await (await s.call("alex", "POST", "/api/agents", { name: "Juno" })).json();
+  const b = await (await s.call("zed", "POST", "/api/agents", { name: "Juno" })).json();
+  expect(a.handle).toBe("juno");
+  expect(b.handle).toBe("juno-2");
+  expect(s.app.store.getAgent(a.id)).toBeDefined();
+  expect(() => s.app.store.putAgent({ ...b, handle: "juno" })).toThrow();
+});

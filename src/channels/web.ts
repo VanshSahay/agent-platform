@@ -56,6 +56,7 @@ type Access =
   | "agentMember" // agent owner, or a member of one of its rooms
   | "assignee" // the attention item is addressed to me
   | "anyAgentOwner" // I own at least one agent
+  | "operator" // runs this deployment: OPERATOR_EMAILS, else the owner of the oldest agent
   | "token"; // the operator's EVENT_TOKEN only; no signed-in person, owner included
 interface Route {
   method: string;
@@ -248,9 +249,19 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       agentMember: () => !!s.agent && reachesAgent(s.agent, me),
       assignee: () => s.item?.assigneeId === me,
       anyAgentOwner: () => app.store.listAgents(me).length > 0,
+      operator: () => isOperator(me),
     };
     return ok[route.access]() ? undefined : bad("not allowed", 403);
   }
+
+  const isOperator = (me: string) => {
+    const listed = (process.env.OPERATOR_EMAILS ?? "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    if (listed.length) return listed.includes(app.store.getPerson(me)?.email?.toLowerCase() ?? "");
+    return app.store.listAgents()[0]?.ownerId === me;
+  };
 
   const ndjson = (stream: ReadableStream<string>) => new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-cache" } });
 
@@ -348,6 +359,13 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       },
     },
 
+    // ---- operations: the error log, for whoever runs the deployment
+    {
+      method: "GET",
+      re: /^\/api\/ops\/errors$/,
+      access: "operator",
+      handle: ({ url }) => json({ health: app.ops.health(), errors: app.store.listErrors({ since: Number(url.searchParams.get("since") ?? 0), limit: Math.min(Number(url.searchParams.get("limit") ?? 100), 500) }) }),
+    },
     // ---- agents
     {
       // What an owner can narrow an agent to: skills by name, tools by family. The coordination core is always on.
@@ -369,7 +387,15 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         if (typeof trust === "string") return bad(trust);
         const ownerId = me ?? str(b.ownerId);
         if (!ownerId) return bad("ownerId required");
-        const a = newAgent({ ownerId, name: str(b.name) ?? "", purpose: str(b.purpose) ?? "", instructions: str(b.instructions), trust });
+        const name = str(b.name)?.trim() ?? "";
+        if (!name) return bad("name required");
+        const handle = app.store.freeHandle(
+          name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, ""),
+        );
+        const a = newAgent({ ownerId, name, handle, purpose: str(b.purpose) ?? "", instructions: str(b.instructions), trust, createdAt: app.clock.now() });
         app.store.putAgent(a);
         return json(a);
       },
@@ -1401,7 +1427,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       if (p === "/welcome") return asset("landing.html", "text/html; charset=utf-8");
       if (p === "/landing.css") return asset("landing.css", "text/css; charset=utf-8");
       if (p === "/styles.css") return asset("styles.css", "text/css; charset=utf-8");
-      if (p === "/health") return json({ ok: true, now: app.clock.now(), auth: !!auth });
+      if (p === "/health") {
+        // Public and cheap: states and times only, never an error's text (that is /api/ops/errors, for operators).
+        const h = app.ops.health();
+        return json({ ...h, auth: !!auth }, h.ok ? 200 : 503);
+      }
       if (p === "/oauth/google/callback") {
         const state = url.searchParams.get("state") ?? "";
         const code = url.searchParams.get("code") ?? "";
@@ -1437,7 +1467,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       const c: Ctx = { req, url, me, params: hit[1].slice(1), body };
       return permit(hit[0], c) ?? (await hit[0].handle(c));
     } catch (e) {
-      console.error(`web: ${req.method} ${p} failed:`, e);
+      app.ops.error(`web ${req.method} ${p}`, e);
       return bad("internal error", 500);
     }
   }

@@ -220,26 +220,41 @@ if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
     .split(",")
     .map((x) => x.trim())
     .filter((x): x is SpectrumChannel => x in SPECTRUM_CHANNELS);
-  for (const channel of wanted)
+  for (const channel of wanted) {
+    app.ops.channel(channel, "starting");
     startChannel(app, { projectId: process.env.PROJECT_ID, projectSecret: process.env.PROJECT_SECRET, channel })
       .then((h) => {
         channels.push({ channel, phone: h.phone, mode: h.mode, handle: h });
+        app.ops.channel(channel, "up");
         console.log(`${channel}: connected${h.phone ? ` as ${h.phone}` : h.mode === "shared" ? " (shared pool: each person gets a number once registered)" : ""}`);
       })
-      .catch((e) => console.error(`${channel}: failed to start`, e));
+      .catch((e) => {
+        app.ops.channel(channel, "down", (e as Error).message);
+        app.ops.error(`${channel} start`, e);
+      });
+  }
 } else console.log("Channels: off (set PROJECT_ID and PROJECT_SECRET, and CHANNELS=imessage,whatsapp,telegram,slack)");
 
-let ticking = false;
+let ticking = 0; // when the tick in progress started; 0 when none
+const TICK_MS = Number(process.env.TICK_MS ?? 30_000);
+const BEAT_MS = Math.max(TICK_MS, 60_000);
+const STUCK_MS = 20 * 60_000;
+app.ops.expect("scheduler", BEAT_MS);
 setInterval(
   () => {
     // A firing can take minutes (it awaits the run); the next tick waits rather than piling up.
-    if (ticking) return;
-    ticking = true;
+    // The loop is alive while ticks finish or one is still within reason; a tick stuck past that stops the beat.
+    if (ticking) {
+      if (Date.now() - ticking < STUCK_MS) app.ops.beat("scheduler", BEAT_MS);
+      return;
+    }
+    app.ops.beat("scheduler", BEAT_MS);
+    ticking = Date.now();
     app.scheduler
       .tick()
-      .catch((e) => console.error("tick failed", e))
+      .catch((e) => app.ops.error("tick", e))
       .finally(() => {
-        ticking = false;
+        ticking = 0;
       });
     // Mail that arrived in the assistant's own inbox enters like an app event, into the owner's chat.
     if (!(app.hands.email instanceof FakeEmail))
@@ -258,9 +273,9 @@ setInterval(
           }
           if (msgs.length) await app.hands.email.markProcessed(msgs.map((m) => m.id));
         })
-        .catch((e) => console.error("inbound email failed", (e as Error).message));
+        .catch((e) => app.ops.error("inbound email", e));
   },
-  Number(process.env.TICK_MS ?? 30_000),
+  TICK_MS,
 );
 
 // Nightly memory pass at 03:00 in each owner's zone.
@@ -270,7 +285,7 @@ setInterval(
       if (hourIn(app.store.getPerson(agent.ownerId)?.timezone ?? "UTC", Date.now()) !== 3) continue;
       const last = Number(app.store.getKv(`consolidated:${agent.id}`) ?? 0);
       if (Date.now() - last < 20 * 3600 * 1000) continue;
-      await app.consolidator.runFor(agent).catch((e) => console.error("consolidate failed", e));
+      await app.consolidator.runFor(agent).catch((e) => app.ops.error("consolidate", e));
     }
   },
   10 * 60 * 1000,

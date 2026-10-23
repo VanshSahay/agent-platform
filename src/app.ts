@@ -15,6 +15,7 @@ import { Planner } from "./planning/planner.ts";
 import { Runtime } from "./runtime/runtime.ts";
 import { Scheduler } from "./scheduler/scheduler.ts";
 import { loadSkills } from "./skills/skills.ts";
+import { Ops } from "./ops/ops.ts";
 import type { Skill } from "./skills/skills.ts";
 import type { ModelClient } from "./model/types.ts";
 import { fakeHands, type Hands } from "./tools/hands.ts";
@@ -35,6 +36,7 @@ export interface App {
   tasks: TaskService;
   vault: Vault;
   skills: Skill[];
+  ops: Ops;
   /** Subscribe to outbound deliveries (channel adapters, UI streams, tests). */
   onDeliver(fn: (d: Delivery) => void): () => void;
 }
@@ -69,6 +71,8 @@ export function createApp(opts: {
     for (const l of listeners) l(d);
   };
   const tasks = new TaskService(store, clock);
+  const ops = new Ops(store, clock);
+  const onError = (source: string, e: unknown) => ops.error(source, e);
   const vault = new Vault(store, clock, opts.masterKey ?? "dev-only-master-key");
   const runtime = new Runtime({
     store,
@@ -87,9 +91,10 @@ export function createApp(opts: {
     maxTurns: opts.maxTurns,
     compactAfter: opts.compactAfter,
     publicUrl: opts.publicUrl,
+    onError,
     providers: new Set(opts.providers ?? ["google", "email", "slack", "speech", "images", "payments", "phone", "browser", "hotels", "flights", "community"]),
   });
-  const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs });
+  const scheduler = new Scheduler(store, clock, runtime, commitments, attention, opts.model, { heartbeatEveryMs: opts.heartbeatEveryMs, onError });
   const consolidator = new Consolidator(store, clock, opts.model, memory);
   return {
     store,
@@ -107,6 +112,7 @@ export function createApp(opts: {
     tasks,
     vault,
     skills,
+    ops,
     onDeliver(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
