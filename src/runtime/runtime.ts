@@ -10,7 +10,7 @@ import type { AttentionService } from "../inbox/attention.ts";
 import type { CommitmentService } from "../care/commitments.ts";
 import type { Planner } from "../planning/planner.ts";
 import type { Hands } from "../tools/hands.ts";
-import { TOOL_INDEX, toolsForRun, type Providers, type ToolContext, type ToolResult } from "../tools/registry.ts";
+import { allowedFor, TOOL_INDEX, toolsForRun, type Providers, type ToolContext, type ToolResult } from "../tools/registry.ts";
 import { matchSkills, type Skill } from "../skills/skills.ts";
 import type { TaskService } from "../tasks/tasks.ts";
 import type { Vault } from "../tools/vault.ts";
@@ -854,7 +854,9 @@ export class Runtime {
 
     const lastUser = [...transcript].reverse().find((m) => m.role === "user");
     const requestText = typeof lastUser?.content === "string" ? lastUser.content : "";
-    const matched = matchSkills(this.d.skills, requestText, { group: room.kind === "group" });
+    // An agent with a skills list reads only those procedures (core rules, named with a leading _, always apply).
+    const agentSkills = agent.skills ? this.d.skills.filter((sk) => sk.name.startsWith("_") || agent.skills!.includes(sk.name)) : this.d.skills;
+    const matched = matchSkills(agentSkills, requestText, { group: room.kind === "group" });
     const recalled = memory.recall(agent.id, room, memberIds, requestText, 20, { requesterId: run.requesterId });
     const visible = memory.visibleIn(agent.id, room, memberIds, { requesterId: run.requesterId });
     const memories = dedupeById(recalled.concat(visible.filter((m) => m.type !== "rule"))).slice(0, 40);
@@ -907,7 +909,7 @@ export class Runtime {
     const stopped = () => this.cancelled.has(run.id) || store.getRun(run.id)?.status === "stopped";
 
     // The tool list is chosen once per run and never changes mid-run, so the prompt prefix caches.
-    const tools = toolsForRun(this.d.providers);
+    const tools = toolsForRun(this.d.providers, agent.tools);
     let acked = store.getKv(`acked:${run.id}`) === "1";
     while (turns < maxTurns) {
       turns += 1;
@@ -929,7 +931,7 @@ export class Runtime {
         rules: memory.rulesFor(agent.id, room, memberIds),
         profiles,
         memories,
-        skills: this.d.skills,
+        skills: agentSkills,
         matchedSkills: matched,
         ledger: commitments.describe(room.id, nameOf, owner?.timezone ?? "UTC"),
         plan,
@@ -1073,6 +1075,8 @@ export class Runtime {
         // gate still covers writes.
         const foreignRead = def && touchesAccount(def) && !def.sideEffect && run.requesterId !== undefined && run.requesterId !== accounts.accountOwnerId;
         if (!def) result = { ok: false, content: `Unknown tool ${use.name}.` };
+        else if (!allowedFor(def, agent.tools))
+          result = { ok: false, content: `${use.name} is not one of ${agent.name}'s tools. Say so plainly, or use one that is.` };
         else if (def.needs && !this.d.providers.has(def.needs))
           result = { ok: false, content: `${use.name} is not available on this server (it needs the ${def.needs} provider, which is not connected). Say so plainly; never describe it as done.` };
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };

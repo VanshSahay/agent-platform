@@ -186,9 +186,10 @@ if (app.store.listAgents().length === 0) {
 }
 
 // The deployment's model is the model: refresh what each agent record shows so Settings → Assistant does not name an old one.
+// An agent whose owner chose a model keeps it.
 for (const agent of app.store.listAgents()) {
   const want = modelConfig(process.env).model;
-  if (agent.model !== want) app.store.putAgent({ ...agent, model: want });
+  if (!agent.modelPinned && agent.model !== want) app.store.putAgent({ ...agent, model: want });
 }
 
 // Without sign-in the API trusts whoever it is talking to, so it may only talk to this machine.

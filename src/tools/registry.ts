@@ -958,6 +958,28 @@ export type Providers = ReadonlySet<string>;
  * prompt prefix caches; discovery of more happens through search_tools for the
  * next run.
  */
-export function toolsForRun(providers: Providers): ToolSpec[] {
-  return TOOLS.filter((t) => !t.needs || providers.has(t.needs)).map((t) => t.spec);
+export function toolsForRun(providers: Providers, allow?: string[]): ToolSpec[] {
+  return TOOLS.filter((t) => (!t.needs || providers.has(t.needs)) && allowedFor(t, allow)).map((t) => t.spec);
+}
+
+/** What every agent keeps whatever its tool list: planning, asking, the ledger, memory, hand-off and silence. */
+export const ALWAYS_TOOLS = new Set([
+  "plan",
+  "revise_plan",
+  "ask_room",
+  "ask_person",
+  "wait_for_user_input",
+  "track_commitment",
+  "update_commitment",
+  "remember",
+  "search_memory",
+  "delegate_task",
+  "update_task",
+  "steer_task",
+  "stay_quiet",
+]);
+
+/** A tool is allowed for an agent with no list, or when its name or family is on the list, or when it is core. */
+export function allowedFor(t: ToolDef, allow?: string[]): boolean {
+  return !allow || ALWAYS_TOOLS.has(t.spec.name) || allow.includes(t.spec.name) || allow.includes(t.family);
 }

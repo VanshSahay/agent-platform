@@ -863,6 +863,34 @@ describe("audit fixes, 23 October", () => {
   });
 });
 
+describe("an agent's own tools and skills", () => {
+  test("an agent with a tool list is offered only those (and the coordination core), and a named outsider is refused", async () => {
+    const seen: string[][] = [];
+    const w = groupWorld((req, i) => {
+      seen.push(req.tools.map((t) => t.name));
+      return i === 0 ? callTool("place_call", { to: "+14085550100", who: "the clinic", objective: "confirm" }) : reply("I can't call from here.");
+    });
+    w.app.store.putAgent({ ...w.agent, tools: ["search"] }); // the web-search family only
+    const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "call the clinic" });
+    expect(seen[0]).toContain("web_search");
+    expect(seen[0]).toContain("track_commitment"); // core stays
+    expect(seen[0]).not.toContain("place_call");
+    const call = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "place_call")!;
+    expect(call.status).toBe("failed");
+    expect(String(call.result)).toContain("not one of Pip's tools");
+  });
+
+  test("an agent with a skills list sees only those procedures, and the core rules still apply", async () => {
+    const w = groupWorld(() => reply("ok"));
+    w.app.store.putAgent({ ...w.agent, skills: ["tech-help"] });
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "hi" });
+    const stable = w.model.calls[0]!.system.stable;
+    expect(stable).toContain("tech-help");
+    expect(stable).not.toContain("find-a-vendor");
+    expect(stable).toContain("never ask for permission yourself"); // _core-rules
+  });
+});
+
 describe("planner", () => {
   test("a stalled approach switches to the next rung after two attempts and the model is told", async () => {
     const search = new FakeSearch(() => []);

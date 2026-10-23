@@ -17,6 +17,7 @@ import type { App } from "../app.ts";
 import type { Person, Room } from "../core/types.ts";
 import type { Delivery } from "../runtime/runtime.ts";
 import { findPersonByEmail } from "../store/queries.ts";
+import { agentForChannel } from "../agent/routing.ts";
 import { claimLinkCode, groupRoomName, HandleRateLimit, handleMatches, isDefaultRoomName, normaliseHandle, personIdForHandle, plainText, roleForNewcomer } from "./handles.ts";
 
 /**
@@ -88,7 +89,7 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
   const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone ?? process.env.IMESSAGE_PHONE;
   const limiter = new HandleRateLimit();
 
-  const agentFor = () => app.store.listAgents()[0];
+  const agentFor = () => agentForChannel(app.store, channel);
 
   // The owner's own phone or email wins (compared normalised, so spacing never hides them); then any
   // person record carrying the handle; then the handle's derived id; then a fresh record. An existing

@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newAgent } from "../agent/spec.ts";
+import { agentForChannel, setAgentForChannel } from "../agent/routing.ts";
 import type { App } from "../app.ts";
 import type { AgentSpec, AttentionItem, Calendar, Commitment, MemberRole, Memory, MemoryScope, Message, Person, Profile, Room, TrustPolicy } from "../core/types.ts";
 import { newId } from "../core/ids.ts";
@@ -374,6 +375,16 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const effort = str(b.effort);
         if (effort && !EFFORTS.includes(effort)) return bad(`effort must be one of ${EFFORTS.join(", ")}`);
         const soul = b.soul && typeof b.soul === "object" && !Array.isArray(b.soul) ? (b.soul as object) : {};
+        const list = (v: unknown, name: string): string[] | null | undefined | string => {
+          if (v === undefined) return undefined;
+          if (v === null) return null; // null clears the list: everything again
+          return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length <= 80) ? (v as string[]).slice(0, 200) : `${name} must be a list of names, or null`;
+        };
+        const skills = list(b.skills, "skills");
+        const tools = list(b.tools, "tools");
+        if (typeof skills === "string") return bad(skills);
+        if (typeof tools === "string") return bad(tools);
+        const model = str(b.model)?.trim();
         Object.assign(a, {
           name: str(b.name) ?? a.name,
           purpose: str(b.purpose) ?? a.purpose,
@@ -381,9 +392,26 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           effort: effort ?? a.effort,
           trust: { ...a.trust, ...trust },
           soul: { ...a.soul, ...soul },
+          // A model the owner names is kept across restarts; an empty one goes back to the deployment default.
+          ...(model !== undefined ? (model ? { model: model.slice(0, 120), modelPinned: true } : { modelPinned: false }) : {}),
+          ...(skills !== undefined ? { skills: skills ?? undefined } : {}),
+          ...(tools !== undefined ? { tools: tools ?? undefined } : {}),
         });
         app.store.putAgent(a);
         return json(a);
+      },
+    },
+    {
+      // Which of the owner's agents answers on a channel line: adding that agent to a group is adding the line.
+      method: "PUT",
+      re: /^\/api\/channels\/([a-z]+)\/agent$/,
+      access: "anyAgentOwner",
+      handle: ({ params, me, body: b }) => {
+        const agent = app.store.getAgent(str(b.agentId) ?? "");
+        if (!agent) return bad("no such agent", 404);
+        if (auth && agent.ownerId !== me) return bad("you can only put an agent you own on a line", 403);
+        setAgentForChannel(app.store, params[0]!, agent.id);
+        return json({ channel: params[0], agentId: agent.id });
       },
     },
     // ---- channels: where the assistant can be texted, and linking a phone to a person
@@ -397,7 +425,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         // Shared pool: the number to text is per person, known once they are registered.
         const assigned = im?.mode === "shared" && person?.phoneE164 && im.handle ? ((await im.handle.assigned(person.phoneE164)) ?? null) : null;
         return json({
-          channels: (opts.channels ?? []).map((c) => ({ channel: c.channel, phone: c.phone ?? null, mode: c.mode ?? (c.phone ? "dedicated" : "shared") })),
+          channels: (opts.channels ?? []).map((c) => ({ channel: c.channel, phone: c.phone ?? null, mode: c.mode ?? (c.phone ? "dedicated" : "shared"), agentId: agentForChannel(app.store, c.channel)?.id ?? null })),
           linked: { phone: person?.phoneE164 ?? null, email: person?.email ?? null },
           mine: { phone: im?.phone ?? assigned },
         });
@@ -416,7 +444,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         if (!/^\+\d{8,15}$/.test(phone)) return bad("phone must be in E.164, like +14085550100");
         const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
         if (!im?.handle) return bad("iMessage is not connected on this server", 404);
-        const agent = app.store.listAgents()[0];
+        const agent = agentForChannel(app.store, "imessage");
         try {
           const { assignedPhone } = await im.handle.register(phone, person.displayName);
           app.store.putPerson({ ...person, phoneE164: phone });
@@ -432,7 +460,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/channels\/vcard$/,
       access: "signedIn",
       handle: async ({ me, url }) => {
-        const agent = app.store.listAgents()[0];
+        const agent = agentForChannel(app.store, "imessage");
         const im = (opts.channels ?? []).find((c) => c.channel === "imessage");
         const person = app.store.getPerson(me ?? url.searchParams.get("personId") ?? "");
         const phone = im?.phone ?? (person?.phoneE164 && im?.handle ? await im.handle.assigned(person.phoneE164) : undefined);
@@ -515,11 +543,18 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/rooms\/([^/]+)$/,
       access: "roomOwner",
       scope: (c) => roomScope(c.params[0]),
-      handle: ({ params, body: b }) => {
+      handle: ({ params, me, body: b }) => {
         const room = app.store.getRoom(params[0]!);
         if (!room) return bad("no such room", 404);
         if (b.focus !== undefined) room.focus = str(b.focus)?.trim().slice(0, 500) || undefined;
         if (str(b.name)?.trim()) room.name = str(b.name)!.trim().slice(0, 80);
+        // Hand the chat to another of the caller's agents. Notes the old agent kept stay with it.
+        if (str(b.agentId) && b.agentId !== room.agentId) {
+          const target = app.store.getAgent(str(b.agentId)!);
+          if (!target) return bad("no such agent", 404);
+          if (auth && target.ownerId !== me) return bad("you can only hand a chat to an agent you own", 403);
+          room.agentId = target.id;
+        }
         if (b.outreachHours && typeof b.outreachHours === "object") {
           const h = b.outreachHours as { start?: unknown; end?: unknown };
           if (typeof h.start === "number" && typeof h.end === "number" && h.start >= 0 && h.end <= 24 && h.start < h.end) room.outreachHours = { start: h.start, end: h.end };

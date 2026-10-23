@@ -122,8 +122,14 @@ export interface AgentSpec {
   instructions: string;
   soul: Soul;
   model: string;
+  /** The owner chose this model; boot leaves it alone instead of following the deployment default. */
+  modelPinned?: boolean;
   effort: Effort;
   trust: TrustPolicy;
+  /** Procedures this agent may use, by skill name; absent means all. Core rules always apply. */
+  skills?: string[];
+  /** Tools this agent may use, by tool name or family; absent means every tool the server wired. */
+  tools?: string[];
   createdAt: UnixMs;
 }
 

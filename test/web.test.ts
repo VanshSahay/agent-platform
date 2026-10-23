@@ -3,6 +3,7 @@ import { Auth } from "../src/channels/auth.ts";
 import { type ChannelInfo, startWebServer } from "../src/channels/web.ts";
 import { reply } from "../src/model/scripted.ts";
 import { groupWorld } from "./helpers.ts";
+import { agentForChannel } from "../src/agent/routing.ts";
 
 /** The group world behind a server with a stub sign-in: `Bearer as:<id>` is that person, anything else is nobody. */
 function serve(opts: { eventToken?: string; lookupEmail?: Record<string, string>; channels?: ChannelInfo[] } = {}) {
@@ -122,7 +123,7 @@ describe("web api: deny by default", () => {
     };
     const s = up({ channels: [{ channel: "imessage", mode: "shared", handle }] });
     const before = await (await s.call("sam", "GET", `/api/channels`)).json();
-    expect(before.channels[0]).toEqual({ channel: "imessage", phone: null, mode: "shared" });
+    expect(before.channels[0]).toEqual({ channel: "imessage", phone: null, mode: "shared", agentId: s.agent.id });
     expect(before.mine.phone).toBeNull();
     expect((await s.call("sam", "POST", `/api/channels/register`, { phone: "408 555" })).status).toBe(400);
     const r = await (await s.call("sam", "POST", `/api/channels/register`, { phone: "+1 (408) 555-0100" })).json();
@@ -433,12 +434,40 @@ describe("web api: channels", () => {
   test("a signed-in person gets a link code with the number to text and a QR; the list shows what is up", async () => {
     const s = up({ channels: [{ channel: "imessage", phone: "+14155550123" }] });
     const list = await (await s.call("alex", "GET", "/api/channels")).json();
-    expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123", mode: "dedicated" }]);
+    expect(list.channels).toEqual([{ channel: "imessage", phone: "+14155550123", mode: "dedicated", agentId: s.agent.id }]);
     expect(list.mine.phone).toBe("+14155550123");
     const r = await (await s.call("alex", "POST", "/api/channels/link-code", {})).json();
     expect(r.code).toMatch(/^\d{8}$/);
     expect(r.sms).toBe(`sms:+14155550123?&body=${r.code}`);
     expect(r.qr).toContain("<svg");
     expect((await s.call(undefined, "POST", "/api/channels/link-code", {})).status).toBe(401);
+  });
+});
+
+describe("web api: many agents", () => {
+  test("an owner runs a second agent: puts it on the iMessage line, hands a chat to it, gives it a model, tools and skills", async () => {
+    const s = up({ channels: [{ channel: "imessage", phone: "+14155550123" }] });
+    const created = await (await s.call("alex", "POST", "/api/agents", { name: "Juno", purpose: "Trips and bookings" })).json();
+    expect(created.ownerId).toBe("alex");
+    // The line answers as Juno now; a group added on it gets Juno with no code change.
+    expect((await s.call("alex", "PUT", "/api/channels/imessage/agent", { agentId: created.id })).status).toBe(200);
+    expect(agentForChannel(s.app.store, "imessage")!.id).toBe(created.id);
+    expect((await (await s.call("alex", "GET", "/api/channels")).json()).channels[0].agentId).toBe(created.id);
+    // Someone else's agent cannot be put on Alex's line, nor handed Alex's chat.
+    const zeds = await (await s.call("zed", "POST", "/api/agents", { name: "Zed's" })).json();
+    expect((await s.call("zed", "PUT", "/api/channels/imessage/agent", { agentId: s.agent.id })).status).toBe(403);
+    expect((await s.call("alex", "PATCH", `/api/rooms/${s.room.id}`, { agentId: zeds.id })).status).toBe(403);
+    // Alex hands the trip chat to Juno.
+    const moved = await (await s.call("alex", "PATCH", `/api/rooms/${s.room.id}`, { agentId: created.id })).json();
+    expect(moved.agentId).toBe(created.id);
+    // A chosen model is kept (pinned); tools and skills lists are stored, and null clears them.
+    const tuned = await (await s.call("alex", "PATCH", `/api/agents/${created.id}`, { model: "anthropic/claude-sonnet-5.5", tools: ["calls", "web_search"], skills: ["travel-and-trips"] })).json();
+    expect(tuned.model).toBe("anthropic/claude-sonnet-5.5");
+    expect(tuned.modelPinned).toBe(true);
+    expect(tuned.tools).toEqual(["calls", "web_search"]);
+    expect((await s.call("alex", "PATCH", `/api/agents/${created.id}`, { tools: "everything" })).status).toBe(400);
+    const cleared = await (await s.call("alex", "PATCH", `/api/agents/${created.id}`, { tools: null, model: "" })).json();
+    expect(cleared.tools).toBeUndefined();
+    expect(cleared.modelPinned).toBe(false);
   });
 });
