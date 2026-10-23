@@ -422,7 +422,7 @@ describe("the catalogue", () => {
     expect(run?.status).toBe("waiting");
     const item = w.app.attention.openFor("alex")[0]!;
     expect(item.kind).toBe("action");
-    expect(item.title).toContain("act on ubereats.com as Alex");
+    expect(item.title).toContain("use ubereats.com as Alex");
     expect(w.hands.browser.runs).toEqual([]);
     const w2 = groupWorld((req) =>
       toolCallsSoFar(req).length ? reply("ok") : callTool("browser_use", { url: "https://ubereats.com/orders", account: "ubereats.com", steps: [{ scroll: "down" }] }),
@@ -430,6 +430,27 @@ describe("the catalogue", () => {
     w2.app.vault.put("alex", "browser:ubereats.com", "ctx_1");
     expect((await w2.app.runtime.handleMessage({ roomId: w2.room.id, personId: "riley", text: "@pip what did alex order last?" }))?.status).toBe("waiting");
     expect(w2.hands.browser.runs).toEqual([]);
+  });
+
+  test("one yes covers moving around a signed-in site for the errand; a step that confirms asks again", async () => {
+    const step = (click: string) => callTool("browser_use", { url: "https://swiggy.com/dineout/book", account: "swiggy.com", steps: [{ click }] });
+    const w = groupWorld((req) => {
+      const n = toolCallsSoFar(req).length;
+      return n <= 1 ? step("text=Sun 26") : n === 2 ? step("text=2 guests") : n === 3 ? step("text=Confirm booking") : reply("ok");
+    });
+    w.app.vault.put("alex", "browser:swiggy.com", "ctx_1");
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "book Hauz Khas Social Sunday 8pm for 2" });
+    const first = w.app.attention.openFor("alex")[0]!;
+    expect(first.title).toBe("OK to use swiggy.com as Alex for this?");
+    await w.app.runtime.answerAttention(first.id, "Yes", "alex");
+    // The date and the guests went through on that one yes; the confirm click waits for its own.
+    expect(w.hands.browser.runs).toHaveLength(2);
+    const second = w.app.attention.openFor("alex")[0]!;
+    expect(second.title).toBe("OK to confirm on swiggy.com as Alex?");
+    expect(second.detail).toContain("Confirm booking");
+    // Tapping yes twice on the first card changes nothing and starts no follow-up run.
+    expect(await w.app.runtime.answerAttention(first.id, "Yes", "alex")).toBeUndefined();
+    expect(w.app.store.listRuns({ roomId: w.ownerDm.id })).toHaveLength(1);
   });
 
   test("a guest's request that reads the owner's connected account asks the owner first, before the tool runs", async () => {

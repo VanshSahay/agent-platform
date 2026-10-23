@@ -303,6 +303,9 @@ export class Runtime {
 
   /** An approval or answer arrived through the inbox UI rather than chat. */
   async answerAttention(itemId: Id, answer: string, answeredBy?: Id): Promise<Run | undefined> {
+    // Answered once: a second tap (or a resend while the first answer's run is still working) must not
+    // resume anything again, nor start a follow-up for a question whose run is already back at work.
+    if (this.d.store.getAttention(itemId)?.status !== "open") return undefined;
     const item = this.d.attention.resolve(itemId, answer, answeredBy);
     return this.resumeWaitingOn(item);
   }
@@ -333,7 +336,10 @@ export class Runtime {
         store.putApproval(a);
       }
     }
-    if (!waiting.length && item.status === "resolved") {
+    // Follow up only when no run stands behind the card any more (a stuck responsibility, an ended run),
+    // never when its run has already been resumed by an earlier delivery of this answer.
+    const behind = item.runId ? store.getRun(item.runId) : undefined;
+    if (!waiting.length && item.status === "resolved" && !(behind && (behind.status === "running" || behind.status === "waiting"))) {
       const who = store.getPerson(item.answeredBy ?? item.assigneeId)?.displayName ?? "they";
       return this.startSystemRun({
         roomId: item.roomId,
@@ -1387,7 +1393,7 @@ export class Runtime {
     this.live.delete(run.id);
     this.cancelled.delete(run.id);
     store.deleteKv(`transcript:${run.id}`); // only a waiting run needs its transcript
-    for (const k of ["steercur", "acked", "readok"]) store.deleteKv(`${k}:${run.id}`); // per-run markers end with the run
+    for (const k of ["steercur", "acked", "readok", "browseok"]) store.deleteKv(`${k}:${run.id}`); // per-run markers end with the run
     run.quiet = quiet || undefined;
     if (quiet && run.triggerMessageId) {
       // A quiet timer or event is not worth the next run's context; the record keeps it.

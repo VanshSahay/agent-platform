@@ -5,6 +5,9 @@ import { emptyState, type DocState } from "../../channels/artifacts.ts";
 import { askFirst, n, num, obj, s, siteOf, str, type ToolDef, publicUrl } from "../kit.ts";
 import { clip, readableRooms, saveArtifact } from "./shared.ts";
 
+/** A click or key press that commits on someone's behalf rather than moving around the site. */
+const COMMIT = /\b(confirm|pay|payment|place order|order now|checkout|check out|submit|send|reserve now|book now|complete booking|proceed to pay|purchase|buy)\b/i;
+
 const list = (description: string) => ({ type: "array", items: { type: "string" }, description });
 
 /** Fo's "operator" family: the agent's own housekeeping, artifacts, the browser as an actor, and code. */
@@ -428,17 +431,29 @@ export const OPERATOR_TOOLS: ToolDef[] = [
       // as does any use of an account that is not the requester's own.
       const acts = steps.some((st) => "click" in st || "fill" in st || "press" in st);
       if (site && (acts || ctx.requesterId !== ctx.accountOwnerId)) {
-        const gate = ctx.gate({
-          kind: "action",
-          title: `OK to ${acts ? "act" : "look"} on ${site} as ${ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "the account owner"}?`,
-          detail: `${url}\n${steps
-            .map((st) => JSON.stringify(st))
-            .join("\n")
-            .slice(0, 800)}`,
-          key: ["browser_use", url, site, steps],
-        });
-        const held = askFirst(gate, "Asked first. Nothing was clicked.");
-        if (held) return held;
+        // One yes covers moving around the site for this errand (dates, guests, menus); a step that
+        // commits — confirm, pay, order, send — asks again with the exact steps. Asking per click made
+        // a booking a dozen approvals long.
+        const commits = steps.some((st) => COMMIT.test(JSON.stringify("click" in st || "press" in st ? st : {})));
+        const grantKey = `browseok:${ctx.run.id}`;
+        const granted = JSON.parse(ctx.store.getKv(grantKey) ?? "[]") as string[];
+        if (commits || !granted.includes(site)) {
+          const owner = ctx.store.getPerson(ctx.accountOwnerId)?.displayName ?? "the account owner";
+          const gate = ctx.gate({
+            kind: "action",
+            title: commits ? `OK to confirm on ${site} as ${owner}?` : `OK to use ${site} as ${owner} for this?`,
+            detail: commits
+              ? `${url}\n${steps
+                  .map((st) => JSON.stringify(st))
+                  .join("\n")
+                  .slice(0, 800)}`
+              : `To: ${s(ctx.run.requestText) || "the request in this chat"}. I'll move around ${site} signed in as ${owner}, and ask again before anything that books, pays, orders or sends.`,
+            key: commits ? ["browser_use", url, site, steps] : ["browser_use", site, "errand"],
+          });
+          const held = askFirst(gate, "Asked first. Nothing was clicked.");
+          if (held) return held;
+          if (!commits) ctx.store.setKv(grantKey, JSON.stringify([...granted, site]));
+        }
       }
       try {
         const r = site ? await ctx.vault.use(`browser:${site}`, (contextId) => ctx.hands.browser.run({ url, contextId, steps })) : await ctx.hands.browser.run({ url, steps });

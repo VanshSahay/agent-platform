@@ -544,6 +544,10 @@ async function renderInbox() {
           .join("")
       : `<div class="empty"><strong>Nothing needs you right now.</strong>When ${esc(agent.name)} gets stuck on something only you can answer, it waits here.</div>`;
     const answer = async (id, text) => {
+      // The request returns only when the resumed run settles, which can take minutes: show it as sent
+      // at once so nobody taps again.
+      const row = $(`#inbox .card[data-item="${CSS.escape(id)}"] .row`);
+      if (row) row.innerHTML = `<span class="mut">Answered "${esc(text)}". ${esc(agent.name)} is on it.</span>`;
       try {
         await api(`/api/attention/${encodeURIComponent(id)}/resolve`, { answer: text, personId: state.me });
         load();
