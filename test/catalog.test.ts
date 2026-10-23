@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { callTool, reply, toolCallsSoFar } from "../src/model/scripted.ts";
+import { recordSpend } from "../src/runtime/spend.ts";
 import { groupWorld, repliesTo } from "./helpers.ts";
 import { FakeGoogle, type FakePublicRates, FakeSlack } from "../src/tools/hands.ts";
 import { freeSlots } from "../src/tools/catalog/google.ts";
@@ -186,6 +187,20 @@ describe("the catalogue", () => {
         listedBelow: { seller: "Super.com", totalUsd: 5911, url: "https://www.super.com/travel/transition/?checkin_at=2027-01-13" },
       },
     ]);
+  });
+
+  test("past the daily cap on public lookups, hotel_compare still prices our side and says the public column is paused", async () => {
+    process.env.PUBLIC_RATES_DAILY_CAP_USD = "0.05";
+    const w = groupWorld(once("hotel_compare", { city: "Barcelona", countryCode: "ES", checkIn: "2026-12-01", checkOut: "2026-12-03" }, "Here."));
+    recordSpend(w.app.store.db, { provider: "apify", usd: 0.06, units: "booking run", at: new Date(w.clock.now()).toISOString() });
+    const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip compare hotels in Barcelona Dec 1-3" });
+    const call = w.app.store.toolCallsForRun(run!.id)[0]!;
+    const r = call.result as { matched: number; publicError?: string; rows: string[] };
+    expect(r.matched).toBe(0);
+    expect(r.publicError).toContain("paused for today");
+    expect(r.rows[0]).toContain("through us $240");
+    expect((w.app.hands.publicRates as FakePublicRates).queries).toHaveLength(0);
+    delete process.env.PUBLIC_RATES_DAILY_CAP_USD;
   });
 
   test("Booking.com rows become all-in offers: the stay total plus what Booking lists as paid on top; unknown names and sold-out rooms are skipped", () => {

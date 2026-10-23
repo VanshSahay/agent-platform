@@ -1,6 +1,6 @@
 import type { Cabin, FlightOffer, PublicFlightOffer } from "../hands.ts";
 import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
-import { saveArtifact } from "./shared.ts";
+import { publicLookupsPaused, saveArtifact } from "./shared.ts";
 
 const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`;
 const ymd = /^\d{4}-\d{2}-\d{2}$/;
@@ -75,7 +75,12 @@ export const FLIGHT_TOOLS: ToolDef[] = [
       try {
         const [ours, pub] = await Promise.all([
           ctx.hands.flights.search(q).catch((e: Error) => ({ offers: [] as FlightOffer[], evidence: "", error: e.message })),
-          ctx.hands.publicFlights.search(q).catch((e: Error) => ({ offers: [] as PublicFlightOffer[], source: "none", evidence: "", error: e.message })),
+          (() => {
+            const paused = publicLookupsPaused(ctx);
+            return paused
+              ? Promise.resolve({ offers: [] as PublicFlightOffer[], source: "none", evidence: "", error: paused })
+              : ctx.hands.publicFlights.search(q).catch((e: Error) => ({ offers: [] as PublicFlightOffer[], source: "none", evidence: "", error: e.message }));
+          })(),
         ]);
         if (!ours.offers.length && !pub.offers.length)
           return {

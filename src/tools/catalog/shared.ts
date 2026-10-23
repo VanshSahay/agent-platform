@@ -1,6 +1,7 @@
 import { newId } from "../../core/ids.ts";
 import type { Artifact, Id } from "../../core/types.ts";
 import type { ToolContext } from "../kit.ts";
+import { spendSummary, startOfDayIso } from "../../runtime/spend.ts";
 
 /** Store something the agent made and hand back where to open it. */
 export function saveArtifact(ctx: ToolContext, a: { kind: Artifact["kind"]; title: string; data: unknown; share?: Artifact["share"] }): { id: Id; url: string } {
@@ -36,4 +37,15 @@ export function notConnected(ctx: ToolContext, service: string) {
     ok: false as const,
     content: `${service} is not connected for ${who}. Ask them to connect it under Settings → Connections (${ctx.publicUrl}/#settings), then try again.`,
   };
+}
+
+/**
+ * Public price lookups cost money per run (Apify). PUBLIC_RATES_DAILY_CAP_USD (default 2) is the most a day may spend on
+ * them; past it the comparison still runs on our side and says the public column is paused for the day.
+ */
+export function publicLookupsPaused(ctx: ToolContext): string | undefined {
+  const cap = Number(process.env.PUBLIC_RATES_DAILY_CAP_USD ?? 2);
+  if (!(cap > 0)) return undefined;
+  const spent = spendSummary(ctx.store.db, { since: startOfDayIso(ctx.clock.now()), until: new Date(ctx.clock.now()).toISOString() }).byProvider.apify?.usd ?? 0;
+  return spent >= cap ? `public price lookups are paused for today: $${spent.toFixed(2)} spent of the $${cap} daily cap (PUBLIC_RATES_DAILY_CAP_USD)` : undefined;
 }

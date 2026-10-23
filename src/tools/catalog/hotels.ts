@@ -1,6 +1,6 @@
 import type { HotelOffer, PublicOffer } from "../hands.ts";
 import { n, num, obj, s, str, type ToolDef } from "../kit.ts";
-import { saveArtifact } from "./shared.ts";
+import { publicLookupsPaused, saveArtifact } from "./shared.ts";
 
 const usd = (v: number) => `$${v.toFixed(0)}`;
 const ymd = /^\d{4}-\d{2}-\d{2}$/;
@@ -93,10 +93,13 @@ export const HOTEL_TOOLS: ToolDef[] = [
         const names = rows.map((r) => r.hotel.name);
         const cacheKey = `pubrates:${q.city.toLowerCase()}:${q.countryCode}:${checkIn}:${checkOut}:${q.adults}:${classes.join("")}:${names.slice().sort().join("|").toLowerCase()}`;
         const cached = JSON.parse(ctx.store.getKv(cacheKey) ?? "null") as { at: number; pub: Awaited<ReturnType<typeof ctx.hands.publicRates.search>> } | null;
+        const paused = publicLookupsPaused(ctx);
         const pub =
           cached && ctx.clock.now() - cached.at < PUBLIC_CACHE_MS
             ? { ...cached.pub, evidence: `${cached.pub.evidence}:cached` }
-            : await ctx.hands.publicRates.search({ ...q, classes, names }).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
+            : paused
+              ? { offers: [] as PublicOffer[], source: "none", evidence: "", error: paused }
+              : await ctx.hands.publicRates.search({ ...q, classes, names }).catch((e: Error) => ({ offers: [] as PublicOffer[], source: "none", evidence: "", error: e.message }));
         if (pub.offers.length && !pub.evidence.endsWith(":cached")) ctx.store.setKv(cacheKey, JSON.stringify({ at: ctx.clock.now(), pub }));
         for (const r of rows) r.pub = pub.offers.find((p) => sameHotel(p.name, r.hotel.name));
         // Savings first, then price; hotels without a public match go last.
