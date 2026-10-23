@@ -54,8 +54,23 @@ export interface RuntimeDeps {
 }
 
 const MAX_TURNS = 24;
-/** Tools that may still run after the budget has answered a purchase in this run: the checkout path, recording, and stopping. */
-const AFTER_BUDGET_TOOLS = new Set(["checkout_cart", "add_to_cart", "view_cart", "save_address", "update_task", "remember", "stay_quiet"]);
+/**
+ * Tools that may still run after the budget has answered a purchase in this run: the shopping path the
+ * verdict leads into (find the product, cart, address, checkout), recording, and stopping. What it refuses
+ * is the wandering the verdict should end: the open web, browsing, sign-ins, and new questions.
+ */
+const AFTER_BUDGET_TOOLS = new Set([
+  "search_products",
+  "add_to_cart",
+  "view_cart",
+  "remove_from_cart",
+  "checkout_cart",
+  "save_address",
+  "list_saved_addresses",
+  "update_task",
+  "remember",
+  "stay_quiet",
+]);
 // A reply's tool budget: nudged to answer at the first number, refused more tools at the second. Tasks get double.
 const REPLY_NUDGE_AT = 14;
 const TOOL_BUDGET = 18;

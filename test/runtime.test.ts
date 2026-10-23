@@ -523,13 +523,13 @@ describe("group join", () => {
 });
 
 describe("the budget fence", () => {
-  test("after the budget answers, shopping tools are refused even in the same parallel batch", async () => {
+  test("after the budget answers, the open web is refused even in the same parallel batch; the shopping path is not", async () => {
     const w = groupWorld(
       (req, i) => {
         if (i === 0)
           return callTools([
             { name: "request_purchase", input: { amountUsd: 12, what: "AA batteries", where: "Walgreens" } },
-            { name: "search_products", input: { query: "AA batteries" } },
+            { name: "web_search", input: { query: "AA batteries cheapest" } },
           ]);
         const t = JSON.stringify(req.messages);
         expect(t).toContain("The budget already answered");
@@ -544,7 +544,7 @@ describe("the budget fence", () => {
     const buy = calls.find((c) => c.name === "request_purchase")!;
     expect(buy.status).toBe("done");
     expect(buy.evidence).toContain("purchase-approved");
-    const shop = calls.filter((c) => c.name === "search_products");
+    const shop = calls.filter((c) => c.name === "web_search");
     expect(shop).toHaveLength(1);
     expect(shop[0]!.status).toBe("failed");
     expect(String(shop[0]!.result)).toContain("budget already answered");
