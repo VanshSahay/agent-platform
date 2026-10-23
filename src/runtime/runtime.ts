@@ -240,6 +240,24 @@ export class Runtime {
       return this.resumeWaitingOn(item);
     }
 
+    // 1b. "Signed in" while their sign-in card is still open: the sign-in happened somewhere the agent
+    //     cannot see (their own phone or app). Point at the card instead of starting a second run on the
+    //     same errand, which would wait on the same card and could act twice once it is done.
+    const card = SAYS_SIGNED_IN.test(input.text)
+      ? store
+          .listAttention({ status: ["open"] })
+          .find((a) => a.agentId === agent.id && a.assigneeId === input.personId && (a.kind === "connect_account" || a.kind === "credential_fix"))
+      : undefined;
+    if (card) {
+      const site = card.card?.site ?? "the site";
+      this.notice(
+        room,
+        agent,
+        `That sign-in has not reached me yet: signing in to ${site} on your phone or in its app does not carry over. Open the sign-in card and sign in inside its browser: ${this.d.publicUrl ?? "http://localhost:3000"}/#room=${card.roomId}`,
+      );
+      return card.runId ? store.getRun(card.runId) : undefined;
+    }
+
     // 2. Is the agent addressed, by name or by the shape of the request?
     if (!this.addressed(room, agent, input.text) && !(await this.impliedRequest(room, agent, input.text))) return undefined;
 
@@ -1472,6 +1490,9 @@ export function stopNotice(who: string, calls: ToolCallRecord[]): string {
   const labels = Array.from(new Set(acted.map((c) => c.labelDone)));
   return `Stopped by ${who}. Already done before the stop, and not undone: ${labels.join("; ")}.`;
 }
+
+/** "Just signed in", "I've logged in", "done": a person saying they finished a sign-in. */
+const SAYS_SIGNED_IN = /^\W*(i\s*(just|have|['’]ve)?\s*)?(just\s+)?(signed|logged)\s*in\b|^\W*(done|did it|all set)\W*$/i;
 
 const logToStderr = (source: string, e: unknown) => console.error(`${source}:`, (e as Error)?.message ?? e);
 

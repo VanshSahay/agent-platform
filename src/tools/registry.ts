@@ -168,7 +168,7 @@ export const CORE_TOOLS: ToolDef[] = [
         requesterId: ctx.requesterId,
         kind: "connect_account",
         title: `Sign in to ${site}`,
-        detail: `${ctx.agent.name} needs your ${site} account to: ${s(input.why)}. Sign in inside the chat; ${ctx.agent.name} never sees your password, only the signed-in browser.`,
+        detail: `${ctx.agent.name} needs your ${site} account to: ${s(input.why).replace(/[.\s]+$/, "")}. Sign in inside the chat (on a phone, open the link to the app); ${ctx.agent.name} never sees your password, only the signed-in browser.`,
         card: { kind: "connect_account", itemId: "", site, liveViewUrl: live.liveViewUrl, status: "open" },
         ttlMs: 30 * 60 * 1000,
       });

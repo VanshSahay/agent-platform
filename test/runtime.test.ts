@@ -808,6 +808,19 @@ describe("audit fixes, 23 October", () => {
     expect(w.app.vault.has("alex", "browser:walgreens.com")).toBe(false);
   });
 
+  test("'just signed in' while the sign-in card is still open points at the card and starts no second run", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "swiggy.com", why: "book the table" }) : reply("Waiting for the sign-in.")), {
+      browser: new FakeBrowser(),
+    });
+    const first = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "book Hauz Khas Social for Sunday 8pm" });
+    const calls = w.model.calls.length;
+    const back = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "Just signed in" });
+    expect(back?.id).toBe(first!.id);
+    expect(w.app.store.listRuns({ roomId: w.ownerDm.id })).toHaveLength(1);
+    expect(w.model.calls.length).toBe(calls);
+    expect(noticesTo(w.deliveries, w.ownerDm.id).at(-1)).toContain("has not reached me yet");
+  });
+
   test("a run waiting on a sign-in shows as blocked on the radar, naming who must sign in", async () => {
     const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), {
       browser: new FakeBrowser(),
