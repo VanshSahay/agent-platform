@@ -117,7 +117,10 @@ export const GROUP_ORDER_TOOLS: ToolDef[] = [
           people: shares(ctx, o).map((x) => `${x.name}: ${usd(x.goods)}`),
           page: url,
           // The result says what comes next, so "minimum met" in a reply is never the end of the turn.
-          next: short === 0 && t > 0 ? "Minimum met: call group_order_close now, in this turn. Its card to the owner is the last call." : `Tell the chat the total and that ${usd(short)} is still missing.`,
+          next:
+            short === 0 && t > 0
+              ? "Minimum met: call group_order_close now, in this turn. Its card to the owner is the last call."
+              : `Tell the chat the total and that ${usd(short)} is still missing.`,
         },
         evidence: `group-order:${ctx.room.id}:${slug(brand)}:${o.lines.length}`,
         label: `${nameOf(ctx, personId)} ${qty ? `added ${qty} × ${item}` : `dropped ${item}`}`,

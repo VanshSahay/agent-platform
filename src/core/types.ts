@@ -124,6 +124,8 @@ export interface AgentSpec {
   model: string;
   /** The owner chose this model; boot leaves it alone instead of following the deployment default. */
   modelPinned?: boolean;
+  /** The owner's off switch: no run starts, schedules wait, until it is turned back on. */
+  paused?: boolean;
   effort: Effort;
   trust: TrustPolicy;
   /** Procedures this agent may use, by skill name; absent means all. Core rules always apply. */

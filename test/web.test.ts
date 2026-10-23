@@ -221,16 +221,16 @@ describe("web api: deny by default", () => {
       process.env.EVENT_TOKEN = ambient;
     }
     async function eventsTest() {
-    const s = up({ eventToken: "hook-secret" });
-    const ev = { agentId: s.agent.id, source: "calendar", summary: "Jo's appointment moved" };
-    expect((await s.call(undefined, "POST", `/api/events`, ev)).status).toBe(401);
-    expect((await s.call(undefined, "POST", `/api/events`, ev, { authorization: "Bearer wrong" })).status).toBe(401);
-    expect((await s.call("riley", "POST", `/api/events`, ev)).status).toBe(403);
-    expect((await s.call(undefined, "POST", `/api/events`, ev, { authorization: "Bearer hook-secret" })).status).toBe(200);
-    expect((await s.call("alex", "POST", `/api/events`, { ...ev, dedupKey: "e2" })).status).toBe(200);
-    expect((await s.call(undefined, "POST", `/api/tick`, undefined, { authorization: "Bearer hook-secret" })).status).toBe(200);
-    const unset = up();
-    expect((await unset.call(undefined, "POST", `/api/events`, ev)).status).toBe(503);
+      const s = up({ eventToken: "hook-secret" });
+      const ev = { agentId: s.agent.id, source: "calendar", summary: "Jo's appointment moved" };
+      expect((await s.call(undefined, "POST", `/api/events`, ev)).status).toBe(401);
+      expect((await s.call(undefined, "POST", `/api/events`, ev, { authorization: "Bearer wrong" })).status).toBe(401);
+      expect((await s.call("riley", "POST", `/api/events`, ev)).status).toBe(403);
+      expect((await s.call(undefined, "POST", `/api/events`, ev, { authorization: "Bearer hook-secret" })).status).toBe(200);
+      expect((await s.call("alex", "POST", `/api/events`, { ...ev, dedupKey: "e2" })).status).toBe(200);
+      expect((await s.call(undefined, "POST", `/api/tick`, undefined, { authorization: "Bearer hook-secret" })).status).toBe(200);
+      const unset = up();
+      expect((await unset.call(undefined, "POST", `/api/events`, ev)).status).toBe(503);
     }
   });
 
@@ -461,7 +461,9 @@ describe("web api: many agents", () => {
     const moved = await (await s.call("alex", "PATCH", `/api/rooms/${s.room.id}`, { agentId: created.id })).json();
     expect(moved.agentId).toBe(created.id);
     // A chosen model is kept (pinned); tools and skills lists are stored, and null clears them.
-    const tuned = await (await s.call("alex", "PATCH", `/api/agents/${created.id}`, { model: "anthropic/claude-sonnet-5.5", tools: ["calls", "web_search"], skills: ["travel-and-trips"] })).json();
+    const tuned = await (
+      await s.call("alex", "PATCH", `/api/agents/${created.id}`, { model: "anthropic/claude-sonnet-5.5", tools: ["calls", "web_search"], skills: ["travel-and-trips"] })
+    ).json();
     expect(tuned.model).toBe("anthropic/claude-sonnet-5.5");
     expect(tuned.modelPinned).toBe(true);
     expect(tuned.tools).toEqual(["calls", "web_search"]);
@@ -534,4 +536,23 @@ test("two owners naming their assistants the same keep both: the second gets its
   expect(b.handle).toBe("juno-2");
   expect(s.app.store.getAgent(a.id)).toBeDefined();
   expect(() => s.app.store.putAgent({ ...b, handle: "juno" })).toThrow();
+});
+
+test("the owner's off switch stops a waiting errand, runs nothing new, holds reminders, and back on they fire", async () => {
+  const s = up();
+  const card = s.app.attention.open({ agentId: s.agent.id, roomId: s.room.id, assigneeId: "alex", kind: "decision", title: "OK?", detail: "" });
+  const waiting = await s.app.runtime.handleMessage({ roomId: s.room.id, personId: "sam", text: "@pip book it" });
+  s.app.store.putRun({ ...waiting!, status: "waiting", waitingOn: card.id, endedAt: undefined });
+  expect((await s.call("sam", "PATCH", `/api/agents/${s.agent.id}`, { paused: true })).status).toBe(403);
+  expect((await s.call("alex", "PATCH", `/api/agents/${s.agent.id}`, { paused: true })).status).toBe(200);
+  expect(s.app.store.getRun(waiting!.id)!.status).toBe("stopped");
+  const calls = s.model.calls.length;
+  const next = await s.app.runtime.handleMessage({ roomId: s.room.id, personId: "sam", text: "@pip hello?" });
+  expect(next!.status).toBe("stopped");
+  expect(s.model.calls.length).toBe(calls);
+  s.app.commitments.track({ roomId: s.room.id, agentId: s.agent.id, ownerId: "sam", title: "Bring the stove", dueAt: s.clock.now() + 3 * 3600_000 });
+  s.clock.set(s.clock.now() + 2 * 3600_000);
+  expect((await s.app.scheduler.tick()).nudged).toBe(0);
+  await s.call("alex", "PATCH", `/api/agents/${s.agent.id}`, { paused: false });
+  expect((await s.app.scheduler.tick()).nudged).toBe(1);
 });

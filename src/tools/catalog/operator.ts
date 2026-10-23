@@ -277,7 +277,9 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     async run(input, ctx) {
       const q = s(input.pageId).toLowerCase();
       // Only this chat's pages: what a group or a private chat made stays there.
-      const a = ctx.store.listArtifacts(ctx.agent.id, { roomId: ctx.room.id }).find((x) => x.kind === "document" && (x.id === s(input.pageId) || x.title.toLowerCase().includes(q)));
+      const a = ctx.store
+        .listArtifacts(ctx.agent.id, { roomId: ctx.room.id })
+        .find((x) => x.kind === "document" && (x.id === s(input.pageId) || x.title.toLowerCase().includes(q)));
       if (!a) return { ok: false, content: "No such page." };
       const st = (a.data as { state?: DocState }).state ?? emptyState();
       const people = (a.roomId ? ctx.rooms.memberIds(a.roomId) : []).map((id) => ({ id, displayName: ctx.store.getPerson(id)?.displayName ?? id }));
@@ -306,7 +308,9 @@ export const OPERATOR_TOOLS: ToolDef[] = [
     sideEffect: false,
     async run(input, ctx) {
       const q = s(input.dashboardId).toLowerCase();
-      const a = ctx.store.listArtifacts(ctx.agent.id, { roomId: ctx.room.id }).find((x) => x.kind === "dashboard" && (x.id === s(input.dashboardId) || x.title.toLowerCase().includes(q)));
+      const a = ctx.store
+        .listArtifacts(ctx.agent.id, { roomId: ctx.room.id })
+        .find((x) => x.kind === "dashboard" && (x.id === s(input.dashboardId) || x.title.toLowerCase().includes(q)));
       if (!a) return { ok: false, content: "No such dashboard." };
       return { ok: true, content: { id: a.id, url: `${ctx.publicUrl}/d/${a.id}`, spec: a.data } };
     },

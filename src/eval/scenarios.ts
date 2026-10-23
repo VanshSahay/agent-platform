@@ -1057,9 +1057,7 @@ export const SCENARIOS: Scenario[] = [
     description:
       "The open web returns paid directories that do not confirm Mandarin speakers; the agent changes course on what it learned (revises the plan or moves to another approach) instead of repeating the same search.",
     setup(_app, w) {
-      w.hands.search = new FakeSearch(() => [
-        { title: "Top 10 handyman websites", url: "https://directories.example/", snippet: "Compare handyman services anywhere." },
-      ]);
+      w.hands.search = new FakeSearch(() => [{ title: "Top 10 handyman websites", url: "https://directories.example/", snippet: "Compare handyman services anywhere." }]);
       w.hands.browser = new FakeBrowser(() => ({ text: "Chinese community forum: Lee's Repairs — 普通话, (408) 555-0100, does home repairs." }));
     },
     turns: [{ room: "room", personId: "alex", text: "@pip find a Mandarin-speaking handyman near Jo's in San Jose to fix her dripping kitchen tap this week." }],
@@ -1112,8 +1110,7 @@ export const SCENARIOS: Scenario[] = [
 
   {
     name: "group-join-intro",
-    description:
-      "The agent is added to an existing iMessage group: it introduces itself once in the group thread and the owner is told where to set the group's priorities.",
+    description: "The agent is added to an existing iMessage group: it introduces itself once in the group thread and the owner is told where to set the group's priorities.",
     category: "events",
     shape: "friends",
     setup(app, w) {
@@ -1148,10 +1145,7 @@ export const SCENARIOS: Scenario[] = [
         name: "the owner was told where to set priorities",
         detail: "A notice in the owner's DM names the group and who added it.",
         noOpPasses: true,
-        pass: (app, w) =>
-          app.store
-            .messagesForRoom(w.ownerDm.id)
-            .some((m) => m.source === "notice" && /Maple Street/.test(m.text) && /Riley/.test(m.text)),
+        pass: (app, w) => app.store.messagesForRoom(w.ownerDm.id).some((m) => m.source === "notice" && /Maple Street/.test(m.text) && /Riley/.test(m.text)),
       },
       noOutreachCheck("An introduction contacts nobody."),
     ],

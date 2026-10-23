@@ -691,7 +691,10 @@ export const CORE_TOOLS: ToolDef[] = [
       // deadline: it would nudge at once. Say what today is and let the model fix the date.
       if (due !== undefined && Number.isFinite(due) && due < ctx.clock.now() - 60 * 60 * 1000) {
         const zone = ctx.store.getPerson(ctx.agent.ownerId)?.timezone ?? "UTC";
-        return { ok: false, content: `dueAt ${s(input.dueAt)} is in the past. Now is ${fmtWhen(ctx.clock.now(), zone)} (${new Date(ctx.clock.now()).toISOString()}). Check the year and day and call again.` };
+        return {
+          ok: false,
+          content: `dueAt ${s(input.dueAt)} is in the past. Now is ${fmtWhen(ctx.clock.now(), zone)} (${new Date(ctx.clock.now()).toISOString()}). Check the year and day and call again.`,
+        };
       }
       const c = ctx.commitments.track({
         roomId: ctx.room.id,

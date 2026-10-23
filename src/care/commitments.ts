@@ -62,8 +62,9 @@ export class CommitmentService {
   }
 
   /** Called by the scheduler: returns commitments whose nudge is due and advances their nudge clock. */
-  takeDueNudges(now = this.clock.now()): Commitment[] {
-    const due = this.store.dueCommitments(now);
+  /** `held` leaves a commitment due for later (its agent is paused) instead of spending a nudge on it. */
+  takeDueNudges(now = this.clock.now(), held: (c: Commitment) => boolean = () => false): Commitment[] {
+    const due = this.store.dueCommitments(now).filter((c) => !held(c));
     for (const c of due) {
       c.nudges += 1;
       // Nudge again a day later, then every day until done; stop after 3 nudges past due.

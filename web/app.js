@@ -633,17 +633,25 @@ async function renderInbox() {
   } else {
     const filter = state.activityFilter ?? "all";
     const shown = inbox.activity.filter((r) => filter === "all" || r.status === filter);
-    const chips = `<div class="chips filters">${[["all", "All"], ["failed", "Didn't finish"], ["stopped", "Stopped"], ["done", "Done"]].map(([k, w]) => `<button class="chip ${k === filter ? "on" : ""}" type="button" data-filter="${k}">${w}</button>`).join("")}</div>`;
+    const chips = `<div class="chips filters">${[
+      ["all", "All"],
+      ["failed", "Didn't finish"],
+      ["stopped", "Stopped"],
+      ["done", "Done"],
+    ]
+      .map(([k, w]) => `<button class="chip ${k === filter ? "on" : ""}" type="button" data-filter="${k}">${w}</button>`)
+      .join("")}</div>`;
     el.innerHTML = !inbox.activity.length
       ? `<div class="empty"><strong>Nothing finished yet.</strong>What ${esc(agent.name)} gets done shows up here, in its own words.</div>`
-      : chips + (shown.length
-      ? shown
-          .map(
-            (r) =>
-              `<div class="card"><h4>${esc(r.outcome ?? r.failureReason ?? statusWords(r.status))}</h4><div class="meta">${esc(roomOf(r.roomId)?.name ?? "")} · ${esc(statusWords(r.status))} · ${fmt(r.endedAt ?? r.startedAt)}</div><div class="row"><button class="link" data-why="${esc(r.id)}" type="button">Why?</button></div></div>`,
-          )
-          .join("")
-      : `<div class="empty">Nothing here.</div>`);
+      : chips +
+        (shown.length
+          ? shown
+              .map(
+                (r) =>
+                  `<div class="card"><h4>${esc(r.outcome ?? r.failureReason ?? statusWords(r.status))}</h4><div class="meta">${esc(roomOf(r.roomId)?.name ?? "")} · ${esc(statusWords(r.status))} · ${fmt(r.endedAt ?? r.startedAt)}</div><div class="row"><button class="link" data-why="${esc(r.id)}" type="button">Why?</button></div></div>`,
+              )
+              .join("")
+          : `<div class="empty">Nothing here.</div>`);
     $$("#inbox [data-filter]").forEach((b) => {
       b.onclick = () => {
         state.activityFilter = b.dataset.filter;
@@ -1613,6 +1621,11 @@ function settingsAssistant(box, agent) {
       <div class="field"><label>What it is for (optional)</label><textarea name="purpose"></textarea></div>
       <div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" data-cancel>Cancel</button><span class="note"></span></div></form>
     <div id="lineBox"></div></div>
+  <div class="section" id="pauseBox"><h3>${agent.paused ? `${esc(agent.name)} is paused` : "Off switch"}</h3><p class="lead">${
+    agent.paused
+      ? "It reads messages but does nothing: no replies, no reminders, no background work. Reminders that come due wait until it is back on."
+      : "Stops everything it is doing now and anything new, until you turn it back on. Each chat it stops in is told what had already been done."
+  }</p><div class="actions"><button class="btn ${agent.paused ? "primary" : ""}" type="button" id="pauseBtn">${agent.paused ? "Turn back on" : `Pause ${esc(agent.name)}`}</button><span class="note"></span></div></div>
   <form class="section" id="aboutForm"><h3>About ${esc(agent.name)}</h3><p class="lead">The name people use in the chat. It is a general assistant; narrow it here only if you want to. <a class="link" href="#memory">What it remembers →</a></p>
     <div class="field"><label>Name</label><input type="text" name="name" value="${esc(agent.name)}" required /></div>
     <div class="field"><label>What it is for (optional)</label><textarea name="purpose">${esc(agent.purpose)}</textarea><div class="hint">Leave the default to keep it general. Priorities for a particular chat are set below.</div></div>
@@ -1626,7 +1639,9 @@ function settingsAssistant(box, agent) {
     ${
       rooms
         .map(
-          (r) => `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div>
+          (
+            r,
+          ) => `<form class="whereroom" data-room="${esc(r.id)}"><div class="headrow"><strong>${esc(r.name)}</strong><span class="mut">${r.members.length} ${r.members.length === 1 ? "person" : "people"}</span></div><div class="field"><label>Priorities here</label><textarea name="focus" placeholder="What this chat mostly needs from it.">${esc(r.focus ?? "")}</textarea></div>
       ${mine.length > 1 ? `<div class="field"><label>Who answers here</label><select name="agentId">${mine.map((a) => `<option value="${esc(a.id)}" ${a.id === agent.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select><div class="hint">Handing the chat over keeps its messages; what ${esc(agent.name)} noted about it stays with ${esc(agent.name)}.</div></div>` : ""}
       <div class="actions"><button class="btn" type="submit">Save</button><span class="note"></span></div></form>`,
         )
@@ -1656,6 +1671,16 @@ function settingsAssistant(box, agent) {
       renderSettings();
     } catch (err) {
       failed(newForm, err);
+    }
+  };
+  $("#pauseBtn").onclick = async () => {
+    if (!agent.paused && !confirm(`Pause ${agent.name}? Anything it is in the middle of stops now.`)) return;
+    try {
+      await api(`/api/agents/${encodeURIComponent(agent.id)}`, { paused: !agent.paused }, "PATCH");
+      await load();
+      renderSettings();
+    } catch (err) {
+      failed($("#pauseBox"), err);
     }
   };
   assistantLine(agent, mine);

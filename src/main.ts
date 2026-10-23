@@ -2,6 +2,7 @@ import { hourIn } from "./core/clock.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { backup, restoreIfStaged } from "./ops/backup.ts";
 import { createApp } from "./app.ts";
 import type { ModelClient } from "./model/types.ts";
 import { reply, ScriptedModel } from "./model/scripted.ts";
@@ -161,7 +162,11 @@ function pickHands(): { hands: Hands; providers: string[] } {
 }
 
 const dbPath = process.env.DB_PATH ?? "data/circle.sqlite";
-if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
+if (dbPath !== ":memory:") {
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const kept = restoreIfStaged(dbPath);
+  if (kept) console.log(`Restored the database from restore.sqlite; the one it replaced is ${kept}`);
+}
 if (!process.env.MASTER_KEY) console.log("Vault: MASTER_KEY not set; members' credentials are encrypted with a dev key (set MASTER_KEY in production)");
 const wired = pickHands();
 const app = createApp({
@@ -240,43 +245,57 @@ const TICK_MS = Number(process.env.TICK_MS ?? 30_000);
 const BEAT_MS = Math.max(TICK_MS, 60_000);
 const STUCK_MS = 20 * 60_000;
 app.ops.expect("scheduler", BEAT_MS);
-setInterval(
-  () => {
-    // A firing can take minutes (it awaits the run); the next tick waits rather than piling up.
-    // The loop is alive while ticks finish or one is still within reason; a tick stuck past that stops the beat.
-    if (ticking) {
-      if (Date.now() - ticking < STUCK_MS) app.ops.beat("scheduler", BEAT_MS);
-      return;
-    }
-    app.ops.beat("scheduler", BEAT_MS);
-    ticking = Date.now();
-    app.scheduler
-      .tick()
-      .catch((e) => app.ops.error("tick", e))
-      .finally(() => {
-        ticking = 0;
-      });
-    // Mail that arrived in the assistant's own inbox enters like an app event, into the owner's chat.
-    if (!(app.hands.email instanceof FakeEmail))
-      app.hands.email
-        .unprocessed()
-        .then(async (msgs) => {
-          for (const m of msgs.slice(0, 10)) {
-            for (const agent of app.store.listAgents())
-              await app.runtime.handleEvent({
-                agentId: agent.id,
-                source: "inbound_email",
-                summary: `Email from ${m.from}: ${m.subject}`,
-                detail: m.text,
-                dedupKey: `email:${m.id}`,
-              });
-          }
-          if (msgs.length) await app.hands.email.markProcessed(msgs.map((m) => m.id));
-        })
-        .catch((e) => app.ops.error("inbound email", e));
-  },
-  TICK_MS,
-);
+setInterval(() => {
+  // A firing can take minutes (it awaits the run); the next tick waits rather than piling up.
+  // The loop is alive while ticks finish or one is still within reason; a tick stuck past that stops the beat.
+  if (ticking) {
+    if (Date.now() - ticking < STUCK_MS) app.ops.beat("scheduler", BEAT_MS);
+    return;
+  }
+  app.ops.beat("scheduler", BEAT_MS);
+  ticking = Date.now();
+  app.scheduler
+    .tick()
+    .catch((e) => app.ops.error("tick", e))
+    .finally(() => {
+      ticking = 0;
+    });
+  // Mail that arrived in the assistant's own inbox enters like an app event, into the owner's chat.
+  if (!(app.hands.email instanceof FakeEmail))
+    app.hands.email
+      .unprocessed()
+      .then(async (msgs) => {
+        for (const m of msgs.slice(0, 10)) {
+          for (const agent of app.store.listAgents())
+            await app.runtime.handleEvent({
+              agentId: agent.id,
+              source: "inbound_email",
+              summary: `Email from ${m.from}: ${m.subject}`,
+              detail: m.text,
+              dedupKey: `email:${m.id}`,
+            });
+        }
+        if (msgs.length) await app.hands.email.markProcessed(msgs.map((m) => m.id));
+      })
+      .catch((e) => app.ops.error("inbound email", e));
+}, TICK_MS);
+
+// A daily copy of the database beside it (docs/runbook.md: backup and restore).
+const BACKUP_EVERY_MS = 24 * 3600 * 1000;
+if (dbPath !== ":memory:")
+  setInterval(
+    () => {
+      const last = Number(app.store.getKv("backup:last") ?? 0);
+      if (Date.now() - last < BACKUP_EVERY_MS) return;
+      try {
+        backup(app.store.db, join(dirname(dbPath), "backups"), Date.now(), Number(process.env.BACKUPS_KEPT ?? 7));
+        app.store.setKv("backup:last", String(Date.now()));
+      } catch (e) {
+        app.ops.error("backup", e);
+      }
+    },
+    10 * 60 * 1000,
+  );
 
 // Nightly memory pass at 03:00 in each owner's zone.
 setInterval(

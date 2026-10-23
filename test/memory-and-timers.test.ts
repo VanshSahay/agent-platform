@@ -8,11 +8,15 @@ import { FakePhone } from "../src/tools/hands.ts";
 
 describe("page edits become events", () => {
   test("a claim someone made for another member reads as an unconfirmed assignment, not a responsibility", () => {
-    const diff = pageDiff(undefined, { checked: {}, claimed: { "packing:stove": "Jo", "packing:tent": "Sam" }, claimedBy: { "packing:stove": "Sam", "packing:tent": "Sam" }, added: {} });
+    const diff = pageDiff(undefined, {
+      checked: {},
+      claimed: { "packing:stove": "Jo", "packing:tent": "Sam" },
+      claimedBy: { "packing:stove": "Sam", "packing:tent": "Sam" },
+      added: {},
+    });
     expect(diff).toContain('Sam put Jo down for "packing:stove" (Jo has not confirmed)');
     expect(diff).toContain('Sam claimed "packing:tent"');
   });
-
 
   const seedPage = (w: ReturnType<typeof groupWorld>) => {
     const st = { checked: {}, claimed: { "packing:stove": "Sam" }, added: {} };
@@ -35,7 +39,16 @@ describe("page edits become events", () => {
   test("a tick on a page costs nothing: no run, the page leaves the queue, old snapshots are pruned", async () => {
     const w = groupWorld(() => reply("should not run"));
     const st = { checked: { "packing:boots": "Jo" }, claimed: {}, added: {} };
-    w.app.store.putArtifact({ id: "art_t", agentId: w.agent.id, roomId: w.room.id, kind: "document", title: "Packing", data: { markdown: "- boots", state: st }, share: "room", createdAt: w.clock.now() });
+    w.app.store.putArtifact({
+      id: "art_t",
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      kind: "document",
+      title: "Packing",
+      data: { markdown: "- boots", state: st },
+      share: "room",
+      createdAt: w.clock.now(),
+    });
     w.app.store.setKv("artedit:art_t", "2");
     w.app.store.setKv("artedit:art_t:1", JSON.stringify({ by: "Jo", state: { checked: {}, claimed: {}, added: {} } }));
     w.app.store.setKv("artedit:art_t:2", JSON.stringify({ by: "Jo", state: st }));

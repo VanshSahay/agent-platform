@@ -265,7 +265,13 @@ export class Runtime {
             store.appendEvent({ runId: active.id, sessionId: session.id, type: "steer_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text } });
             return active;
           }
-          store.appendEvent({ runId: active.id, sessionId: session.id, type: "run_queued", at: this.d.clock.now(), data: { personId: input.personId, text: input.text, messageId: msg.id } });
+          store.appendEvent({
+            runId: active.id,
+            sessionId: session.id,
+            type: "run_queued",
+            at: this.d.clock.now(),
+            data: { personId: input.personId, text: input.text, messageId: msg.id },
+          });
           return undefined;
         }
         // The live run ended while we classified: this message starts its own run below.
@@ -416,7 +422,11 @@ export class Runtime {
   async groupJoined(room: Room, addedBy: Person): Promise<Run | undefined> {
     const agent = this.d.store.getAgent(room.agentId);
     if (!agent) return undefined;
-    this.notify(agent, agent.ownerId, `${agent.name} was added to "${room.name}" on ${room.channel} by ${addedBy.displayName}. Set what it is for there in Settings: ${this.d.publicUrl}/#room=${room.id}`);
+    this.notify(
+      agent,
+      agent.ownerId,
+      `${agent.name} was added to "${room.name}" on ${room.channel} by ${addedBy.displayName}. Set what it is for there in Settings: ${this.d.publicUrl}/#room=${room.id}`,
+    );
     const p = this.startSystemRun({
       roomId: room.id,
       trigger: "event",
@@ -652,6 +662,11 @@ export class Runtime {
       startedAt: clock.now(),
     };
     store.putRun(run);
+    if (input.agent.paused) {
+      // Recorded, never run: the owner switched the agent off. The message itself is already stored.
+      this.finish(run, "stopped", "The assistant is paused by its owner.");
+      return run;
+    }
     this.live.add(run.id); // from creation, so a message arriving during compaction steers this run instead of failing it
     if (input.taskId) this.d.tasks.update(input.taskId, { runId: run.id, status: "running" });
     store.appendEvent({
@@ -722,6 +737,10 @@ export class Runtime {
 
   private async resume(run: Run, item: AttentionItem): Promise<Run> {
     const { store, clock } = this.d;
+    if (store.getAgent(run.agentId)?.paused) {
+      this.finish(run, "stopped", "The assistant is paused by its owner.");
+      return run;
+    }
     run.status = "running";
     run.waitingOn = undefined;
     store.putRun(run);
@@ -904,9 +923,7 @@ export class Runtime {
     // the gate closed), only checkout-shaped tools may still run. Recomputed on entry so a
     // resumed run is fenced from its records; set again the moment a verdict lands mid-loop,
     // which is what stops the rest of a parallel tool batch.
-    let budgetAnswered = store
-      .toolCallsForRun(run.id)
-      .some((c) => c.name === "request_purchase" && c.status === "done" && (!!c.evidence || /declined/i.test(c.labelDone)));
+    let budgetAnswered = store.toolCallsForRun(run.id).some((c) => c.name === "request_purchase" && c.status === "done" && (!!c.evidence || /declined/i.test(c.labelDone)));
     // Resourcefulness guards: searching in circles is a stall, long work belongs in a task, a reply must cover the ask.
     let searchesInARow = 0;
     // The same tool failing the same way twice is not going to work a third time; the model is told to stop.
@@ -1097,10 +1114,12 @@ export class Runtime {
         // gate still covers writes.
         const foreignRead = def && touchesAccount(def) && !def.sideEffect && run.requesterId !== undefined && run.requesterId !== accounts.accountOwnerId;
         if (!def) result = { ok: false, content: `Unknown tool ${use.name}.` };
-        else if (!allowedFor(def, agent.tools))
-          result = { ok: false, content: `${use.name} is not one of ${agent.name}'s tools. Say so plainly, or use one that is.` };
+        else if (!allowedFor(def, agent.tools)) result = { ok: false, content: `${use.name} is not one of ${agent.name}'s tools. Say so plainly, or use one that is.` };
         else if (def.needs && !this.d.providers.has(def.needs))
-          result = { ok: false, content: `${use.name} is not available on this server (it needs the ${def.needs} provider, which is not connected). Say so plainly; never describe it as done.` };
+          result = {
+            ok: false,
+            content: `${use.name} is not available on this server (it needs the ${def.needs} provider, which is not connected). Say so plainly; never describe it as done.`,
+          };
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
         else if (stopped()) result = { ok: false, content: "Skipped: the run was stopped." };
         else if (budgetAnswered && !AFTER_BUDGET_TOOLS.has(use.name))
@@ -1123,9 +1142,7 @@ export class Runtime {
           // A side effect must not happen twice in one run: the same tool with the same input returns
           // the first result instead of acting again (a resumed run re-issues its last action).
           const prior = def.sideEffect
-            ? store
-                .toolCallsForRun(run.id)
-                .find((c) => c.name === use.name && c.status === "done" && c.evidence && sha256([c.name, c.input]) === sha256([use.name, input]))
+            ? store.toolCallsForRun(run.id).find((c) => c.name === use.name && c.status === "done" && c.evidence && sha256([c.name, c.input]) === sha256([use.name, input]))
             : undefined;
           if (prior) {
             result = { ok: true, content: prior.result, evidence: prior.evidence, label: `${prior.labelDone} (already done)` };
@@ -1169,7 +1186,8 @@ export class Runtime {
         if (result.approach && livePlan) {
           if (result.stall) {
             const st = planner.stall(run.id, result.stall);
-            if (st?.switchedTo) notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that, or call revise_plan if you know a better course.`);
+            if (st?.switchedTo)
+              notes.push(`That approach stalled twice; the plan now tries "${st.switchedTo}" for this step. Act on that, or call revise_plan if you know a better course.`);
             else if (st?.exhausted)
               notes.push(`All approaches for that step failed; the plan moved to the next step. If nothing is left, tell the room what you tried and what you need.`);
             else if (result.approach === "call")

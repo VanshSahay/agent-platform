@@ -167,7 +167,11 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
           // Tell the person on their own chat, so a link they did not make is seen the same day.
           const agent = agentFor();
           if (agent)
-            app.runtime.notify(agent, linked.id, `${normaliseHandle(senderId)} was just linked to your account by texting your code. If that wasn't you, remove it under Settings → Channels.`);
+            app.runtime.notify(
+              agent,
+              linked.id,
+              `${normaliseHandle(senderId)} was just linked to your account by texting your code. If that wasn't you, remove it under Settings → Channels.`,
+            );
           await spectrum
             .send(space, plainText(`Linked: this number is now ${linked.displayName}'s. Text me here any time, or add me to a group chat and I'll be there too.`))
             .catch(() => undefined);
@@ -190,10 +194,7 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
         }
         // First contact with a new group: introduce the agent once and tell the owner. The first
         // message waits for the introduction, so two runs never race in one new chat.
-        const joined =
-          created && room.kind === "group"
-            ? app.runtime.groupJoined(room, person).catch((e) => app.ops.error(`${channel} group join`, e))
-            : Promise.resolve();
+        const joined = created && room.kind === "group" ? app.runtime.groupJoined(room, person).catch((e) => app.ops.error(`${channel} group join`, e)) : Promise.resolve();
         // Not awaited: a run can take minutes, and the next text (another chat, or a steer
         // for this one) must be read while it runs.
         void joined

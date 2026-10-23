@@ -117,7 +117,7 @@ What differs from the web app:
 Production runs on Fly.io as one always-on machine with SQLite on a volume. `Dockerfile`, `fly.toml` and `.dockerignore` are checked in. The first time, with the Fly CLI signed in and a card on the Fly account:
 
 ```bash
-scripts/fly-setup.sh             # creates the app and the /data volume, stages every secret from .env (fresh MASTER_KEY), deploys
+APP=circle-agent ORG=<org> scripts/fly-setup.sh   # creates the app and the /data volume, stages every secret from .env (MASTER_KEY minted once, kept on re-runs), deploys
 ```
 
 After that, `fly deploy` ships the current folder. Secrets change with `fly secrets set NAME=value`; `fly.toml` carries `HOST`, `PORT`, `DB_PATH` and `PUBLIC_URL`, and `CLERK_AUTHORIZED_PARTIES` must list the Fly domain. Images and document links open under sign-in through Clerk's same-origin session cookie, accepted for reads only, so `/d/` links need nothing more. Cost at the smallest size (shared-cpu-1x, 512 MB, 1 GB volume) is about $3.50 a month.
@@ -145,6 +145,8 @@ web/            the owner's page: inbox, chat, memory, ledger
 test/           offline tests with a scripted model and fake hands
 ```
 
+Operating it (health, the error log, stopping and pausing, daily backups and restore, rollback, iMessage lines, costs) is in [docs/runbook.md](docs/runbook.md).
+
 ## API in one screen
 
 ```
@@ -164,7 +166,11 @@ GET  /api/connections/info           what the caller has connected; GET /api/con
 POST /api/people/:id/connections     {kind: slack|mcp|api, name, url|baseUrl, token…}  DELETE /api/people/:id/connections/:service
 GET  /api/artifacts?agentId          documents, dashboards, images, audio and files the assistant made; POST /api/files uploads one; /d/:id opens one
 GET  /api/profiles?agentId           derived summaries per scope
-GET  /api/tasks?roomId               delegated tasks with progress and what they told the room
+GET  /api/tasks?roomId               delegated tasks with progress and what they told the room; POST /api/tasks/:id/stop cancels one
+POST /api/runs/:id/stop              stop a run; the chat is told which outside actions had already completed
+POST /api/agents | PATCH /api/agents/:id  {name, purpose, instructions, effort, model, tools, skills, paused}  GET /api/agents/options lists tools and skills
+PUT  /api/channels/:channel/agent    {agentId}                    which of your assistants answers that line
+GET  /health                         db, scheduler beat, channel states (503 when unhealthy); GET /api/ops/errors the error log (operator)
 POST /api/events                     {source, summary, detail?, roomId|agentId, dedupKey}  a connected app's event
 GET|POST /api/people/:id/credentials {service, secret}  own credentials into the vault (names only come back)
 POST /api/tick                       run the scheduler once
@@ -176,10 +182,11 @@ Who may call what, when sign-in is on (every route is denied unless a rule allow
 public         /, /health, static files, /api/me (null when signed out)
 signed in      /api/state (only the rooms, agents and people you share a room with), GET/POST /api/people, POST /api/agents
 self           PATCH /api/people/:id, /api/people/:id/credentials
-room member    messages, sessions (events, watch), runs (get, stop), POST /api/commitments/:id;
+room member    messages, sessions (events, watch), runs (get, stop), tasks (stop) — stops only by the asker or the owner, POST /api/commitments/:id;
                /api/tasks, /api/schedules, /api/commitments lists are filtered to your rooms
 room owner     POST /api/rooms/:id/members, /api/rooms/:id/invites, POST /api/schedules, /api/schedules/:id/pause
-agent owner    PATCH /api/agents/:id, POST /api/rooms, /api/memory (all), /api/profiles
+agent owner    PATCH /api/agents/:id, POST /api/rooms, /api/memory (all), /api/profiles; PUT /api/channels/:channel/agent (any owner, own agents only)
+operator       /api/ops/errors (OPERATOR_EMAILS, else the owner of the oldest assistant)
 agent reach    /api/inbox, /api/suggestions (owner or a member of one of its rooms; radar and activity filtered to your rooms)
 assignee       /api/attention/:id/resolve, /dismiss
 machines       POST /api/events and /api/tick: `Authorization: Bearer <EVENT_TOKEN>`, or a signed-in agent owner
@@ -199,6 +206,8 @@ git checkout --orphan main && git commit -m "Circle" && git remote set-url origi
 
 Last full pass: 21 October 2026 (the codebase review in [docs/research/codebase-review-2026-10-21.md](docs/research/codebase-review-2026-10-21.md), with what was applied and what was left open at its top). 22 October additions from the merged branch: group join (one introduction per group, a deterministic owner notice), message priority rules (the requester steers; a member's contribution to a live errand joins it attributed; a separate ask queues as its own run, coalescing rapid messages), durable execution (a run interrupted by a restart resumes at boot; a side effect never acts twice in one run), model-driven re-planning (revise_plan), and a budget fence (after the budget answers, non-checkout tools are refused).
 
+
+23 October (M1 operations): several assistants per owner (create, pick which answers the iMessage line, hand a chat to another, per-assistant model, tools and skills); inspect and stop (the radar shows working, waiting and blocked runs and background tasks with Stop; a stop tells the chat from the records what had already been done; an owner's off switch pauses an assistant and holds its reminders); `/health` checks the database, the scheduler's beat and channels, with a redacted error log for the operator; daily SQLite backups with restore at boot; [docs/runbook.md](docs/runbook.md). Real iMessage groups are still untested: they need the dedicated Photon line.
 **Built.** The run loop with gates, steering, resume and a footer from records; approvals as single-use records bound to one action; quiet outcomes; task agents; watches; app events; the responsibilities ledger with nudges and escalation, fed by page edits (a claim on a page becomes a tracked responsibility; read_page shows the agent who claimed what); memory with scopes, privacy, transcript mining and nightly consolidation in the owner's zone; session compaction; plans with the approach ladder and stall handling; the tool catalogue above, contained (see "Keeps boundaries"); an encrypted vault with sign-in cards inside the chat; rooms with owner, member and guest, invite links and guest serving, and an identity merge (a texted handle and a later web sign-up are one person, the guest becoming a member); co-owners with per-person trust (a partner's purchase follows their own threshold and asks them); chat search; the owner UI with Clerk sign-in, a landing page, Fo-style settings sections, attachments, a getting-started checklist and the assistant's email and number in the header; iMessage, WhatsApp Business, Telegram and Slack through Photon Spectrum, with Settings → Channels telling the truth per Photon plan (shared pool: register the number you iMessage from and get texted first, one-to-one; dedicated line: the assistant's number, a phone link by code, and group chats); the model through OpenRouter (DeepSeek V4.1 Flash) or Anthropic; a browser chain (local Chrome in local mode, Browserbase, Jina as the floor) and search through Browserbase Search with Exa behind it; the scenario harness with a store-diff grader and pass^k, and a Harness² loop (`bun run harness`) that proposes, validates, probes and adopts edits to `skills/` with the eval as the judge and records every verdict in `skills/EXPERIENCE.md`.
 
 **Measured.** Live eval on 22 October (merged branch): 12 of 17 scenarios fully passed; purchase-threshold then went 1/5 → 5/5 after the budget fence, and stall-revise-course passed 4/4 (runs recorded in [docs/eval-harness.md](docs/eval-harness.md)). The remaining misses are oven-repair (1/6) and over-searching in the ladder, meal-plan and packing-list scenarios.

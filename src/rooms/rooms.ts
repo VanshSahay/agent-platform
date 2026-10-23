@@ -143,9 +143,7 @@ export class RoomService {
         if (!dropped) continue;
         const kept = this.store.getProfile(a.id, "person", to);
         // Both sides keep what they knew until the next consolidation re-derives one profile.
-        this.store.putProfile(
-          kept ? { ...kept, text: `${kept.text}\n${dropped.text}`, derivedAt: Math.max(kept.derivedAt, dropped.derivedAt) } : { ...dropped, scopeId: to },
-        );
+        this.store.putProfile(kept ? { ...kept, text: `${kept.text}\n${dropped.text}`, derivedAt: Math.max(kept.derivedAt, dropped.derivedAt) } : { ...dropped, scopeId: to });
         this.store.deleteProfile(a.id, "person", from);
       }
     }

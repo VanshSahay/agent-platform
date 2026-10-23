@@ -82,7 +82,10 @@ export class Scheduler {
     const out = { fired: 0, nudged: 0, expired: 0, heartbeats: 0, edited: 0 };
 
     // Each item on its own: one bad firing must not skip the rest of the tick.
+    // A paused agent's work stays due and fires once it is back on.
+    const paused = (agentId: Id) => !!this.store.getAgent(agentId)?.paused;
     for (const s of this.store.dueSchedules(now)) {
+      if (paused(s.agentId)) continue;
       try {
         await this.fire(s, now);
         out.fired += 1;
@@ -125,7 +128,7 @@ export class Scheduler {
       }
     }
 
-    for (const c of this.commitments.takeDueNudges(now)) {
+    for (const c of this.commitments.takeDueNudges(now, (c) => paused(c.agentId))) {
       try {
         await this.nudge(c, now, out);
       } catch (e) {
@@ -137,6 +140,7 @@ export class Scheduler {
 
     const every = this.opts.heartbeatEveryMs ?? DAY;
     for (const room of this.store.listRooms()) {
+      if (paused(room.agentId)) continue;
       const last = Number(this.store.getKv(`heartbeat:${room.id}`) ?? 0);
       if (now - last < every) continue;
       const open = this.commitments.open(room.id);

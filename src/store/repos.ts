@@ -89,7 +89,9 @@ export class Store {
   listAgents(ownerId?: string) {
     // Oldest first, stably: INSERT OR REPLACE gives an edited agent a new rowid, so rowid order would move it to the end.
     const order = "ORDER BY json_extract(data, '$.createdAt'), id";
-    const rows = ownerId ? (this.db.query(`SELECT data FROM agents WHERE owner_id = ? ${order}`).all(ownerId) as Row[]) : (this.db.query(`SELECT data FROM agents ${order}`).all() as Row[]);
+    const rows = ownerId
+      ? (this.db.query(`SELECT data FROM agents WHERE owner_id = ? ${order}`).all(ownerId) as Row[])
+      : (this.db.query(`SELECT data FROM agents ${order}`).all() as Row[]);
     return parseAll<AgentSpec>(rows);
   }
 

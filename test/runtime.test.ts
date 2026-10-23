@@ -436,7 +436,13 @@ describe("durable execution", () => {
 
       // Second process, same database: the boot resume continues the run.
       let saw: string | undefined;
-      const a2 = createApp({ dbPath: db, model: new ScriptedModel((req) => { saw = JSON.stringify(req.messages); return reply("Lee's can do Thursday 2pm, about $120."); }) });
+      const a2 = createApp({
+        dbPath: db,
+        model: new ScriptedModel((req) => {
+          saw = JSON.stringify(req.messages);
+          return reply("Lee's can do Thursday 2pm, about $120.");
+        }),
+      });
       const deliveries: Delivery[] = [];
       a2.onDeliver((d) => deliveries.push(d));
       await a2.runtime.settle();
@@ -553,16 +559,17 @@ describe("the budget fence", () => {
   });
 
   test("a connected checkout still runs after the verdict", async () => {
-    const w = groupWorld(
-      (req, i) => {
-        if (i === 0) return callTool("request_purchase", { amountUsd: 12, what: "AA batteries", where: "Walgreens" });
-        if (i === 1) return callTools([{ name: "add_to_cart", input: { title: "AA batteries 12-pack", url: "https://www.walgreens.com/batteries", priceUsd: 11.99, quantity: 1 } }, { name: "checkout_cart", input: {} }]);
-        const last = lastToolResult(req) ?? "";
-        expect(last).not.toContain("budget already answered");
-        return reply("Budget cleared at Walgreens: $11.99. Nothing was ordered — here are the links to finish.");
-      },
-      {},
-    );
+    const w = groupWorld((req, i) => {
+      if (i === 0) return callTool("request_purchase", { amountUsd: 12, what: "AA batteries", where: "Walgreens" });
+      if (i === 1)
+        return callTools([
+          { name: "add_to_cart", input: { title: "AA batteries 12-pack", url: "https://www.walgreens.com/batteries", priceUsd: 11.99, quantity: 1 } },
+          { name: "checkout_cart", input: {} },
+        ]);
+      const last = lastToolResult(req) ?? "";
+      expect(last).not.toContain("budget already answered");
+      return reply("Budget cleared at Walgreens: $11.99. Nothing was ordered — here are the links to finish.");
+    }, {});
     w.agent.trust.autoApproveUnderUsd = 25;
     w.alex.addresses = [{ id: "addr1", label: "Home", line1: "1 Maple St", city: "San Jose", region: "CA", postalCode: "95101", country: "US" }];
     w.app.store.putPerson(w.alex);
@@ -715,7 +722,15 @@ describe("audit fixes, 23 October", () => {
     const derivedId = personIdForHandle(handle);
     w.app.rooms.createPerson({ id: derivedId, displayName: handle, timezone: "UTC", phoneE164: handle });
     w.app.rooms.addMember(w.room.id, derivedId, "guest");
-    const card = w.app.attention.open({ agentId: w.agent.id, roomId: w.room.id, assigneeId: derivedId, kind: "decision", title: "Which day?", detail: "Thursday or Friday", ttlMs: 86_400_000 });
+    const card = w.app.attention.open({
+      agentId: w.agent.id,
+      roomId: w.room.id,
+      assigneeId: derivedId,
+      kind: "decision",
+      title: "Which day?",
+      detail: "Thursday or Friday",
+      ttlMs: 86_400_000,
+    });
     w.app.vault.put(derivedId, "gmail", "secret-token");
     const job = w.app.commitments.track({ roomId: w.room.id, agentId: w.agent.id, ownerId: derivedId, title: "Bring chairs" });
     const riley = w.app.rooms.createPerson({ displayName: "Riley", timezone: "UTC" });
@@ -794,7 +809,9 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("a run waiting on a sign-in shows as blocked on the radar, naming who must sign in", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), { browser: new FakeBrowser() });
+    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), {
+      browser: new FakeBrowser(),
+    });
     await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "order batteries from walgreens" });
     const [run] = w.app.attention.inbox("alex", w.agent.id).inFlight;
     expect(run?.state).toBe("blocked");

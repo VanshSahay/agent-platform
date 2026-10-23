@@ -364,7 +364,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       method: "GET",
       re: /^\/api\/ops\/errors$/,
       access: "operator",
-      handle: ({ url }) => json({ health: app.ops.health(), errors: app.store.listErrors({ since: Number(url.searchParams.get("since") ?? 0), limit: Math.min(Number(url.searchParams.get("limit") ?? 100), 500) }) }),
+      handle: ({ url }) =>
+        json({
+          health: app.ops.health(),
+          errors: app.store.listErrors({ since: Number(url.searchParams.get("since") ?? 0), limit: Math.min(Number(url.searchParams.get("limit") ?? 100), 500) }),
+        }),
     },
     // ---- agents
     {
@@ -405,7 +409,7 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
       re: /^\/api\/agents\/([^/]+)$/,
       access: "agentOwner",
       scope: (c) => agentScope(c.params[0]),
-      handle: ({ params, body: b }) => {
+      handle: async ({ params, me, body: b }) => {
         const a = app.store.getAgent(params[0]!);
         if (!a) return bad("no such agent", 404);
         const trust = parseTrust(b.trust);
@@ -434,8 +438,11 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
           ...(model !== undefined ? (model ? { model: model.slice(0, 120), modelPinned: true } : { modelPinned: false }) : {}),
           ...(skills !== undefined ? { skills: skills ?? undefined } : {}),
           ...(tools !== undefined ? { tools: tools ?? undefined } : {}),
+          ...(typeof b.paused === "boolean" ? { paused: b.paused || undefined } : {}),
         });
         app.store.putAgent(a);
+        // Switching off stops what is in flight too; each stop tells its chat what had already been done.
+        if (b.paused === true) for (const r of app.store.listRuns({ agentId: a.id, status: ["running", "waiting"] })) await app.runtime.stop(r.id, me);
         return json(a);
       },
     },
@@ -463,7 +470,12 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         // Shared pool: the number to text is per person, known once they are registered.
         const assigned = im?.mode === "shared" && person?.phoneE164 && im.handle ? ((await im.handle.assigned(person.phoneE164)) ?? null) : null;
         return json({
-          channels: (opts.channels ?? []).map((c) => ({ channel: c.channel, phone: c.phone ?? null, mode: c.mode ?? (c.phone ? "dedicated" : "shared"), agentId: agentForChannel(app.store, c.channel)?.id ?? null })),
+          channels: (opts.channels ?? []).map((c) => ({
+            channel: c.channel,
+            phone: c.phone ?? null,
+            mode: c.mode ?? (c.phone ? "dedicated" : "shared"),
+            agentId: agentForChannel(app.store, c.channel)?.id ?? null,
+          })),
           linked: { phone: person?.phoneE164 ?? null, email: person?.email ?? null },
           mine: { phone: im?.phone ?? assigned },
         });
