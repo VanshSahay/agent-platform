@@ -84,7 +84,7 @@ In the web app, signed in as the owner:
 - **Home → Last activity** lists finished runs. Filter by *Didn't finish*, *Stopped* or *Done*.
 - **Settings → Assistant → Off switch** pauses an assistant entirely. It stops everything in flight, starts nothing new, and holds schedules and reminders until it is turned back on, when they fire. Messages that arrive while it is paused are kept.
 
-Every stop posts a notice in the chat, written by code rather than the model, saying which outside actions had already completed ("Already done before the stop, and not undone: Sent a text") or that nothing outside had been done.
+Every stop posts a notice in the chat, written by code rather than the model, naming the request it stopped and which outside actions had already completed (`Stopped "text the clinic" (Alex). Already done before the stop, and not undone: Sent a text.`) or that nothing outside had been done.
 
 The same through the API: `POST /api/runs/:id/stop`, `POST /api/tasks/:id/stop`, `PATCH /api/agents/:id {"paused": true}`; `GET /api/runs/:id` for the record.
 

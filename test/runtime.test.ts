@@ -808,6 +808,16 @@ describe("audit fixes, 23 October", () => {
     expect(w.app.vault.has("alex", "browser:walgreens.com")).toBe(false);
   });
 
+  test("an approval the requester must give themselves is put to them in the chat, so a text thread does not go silent", async () => {
+    const phone = new FakePhone();
+    const w = groupWorld((req, i) => (i === 0 ? callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Can we move to Thursday?" }) : reply("ok")), { phone });
+    const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "text the clinic to move my appointment to Thursday" });
+    expect(run?.status).toBe("waiting");
+    expect(phone.sms).toHaveLength(0);
+    const asked = w.deliveries.filter((d) => d.roomId === w.ownerDm.id && d.kind !== "reply").map((d) => d.text);
+    expect(asked.some((t) => t.includes("OK to text the clinic?") && t.includes("Reply here"))).toBe(true);
+  });
+
   test("'just signed in' while the sign-in card is still open points at the card and starts no second run", async () => {
     const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "swiggy.com", why: "book the table" }) : reply("Waiting for the sign-in.")), {
       browser: new FakeBrowser(),

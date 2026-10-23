@@ -399,7 +399,7 @@ export class Runtime {
     this.finish(run, "stopped", `Stopped by ${who}.`);
     const room = this.d.store.getRoom(run.roomId);
     const agent = this.d.store.getAgent(run.agentId);
-    if (room && agent && run.trigger !== "heartbeat") this.notice(room, agent, stopNotice(who, this.d.store.toolCallsForRun(run.id)));
+    if (room && agent && run.trigger !== "heartbeat") this.notice(room, agent, stopNotice(who, this.d.store.toolCallsForRun(run.id), run.requestText));
   }
 
   /** Stop a delegated task: its live run if it has one, else the task record alone. */
@@ -1095,6 +1095,7 @@ export class Runtime {
       // Tool calls, in order. A gate pauses the run after the tool that opened it.
       const results: Anthropic.ToolResultBlockParam[] = [];
       let paused: AttentionItem | undefined;
+      let askedInRoom = false; // the pausing tool already put its question in front of the person
       const notes: string[] = [];
       for (const use of turn.toolUses) {
         const def = TOOL_INDEX.get(use.name);
@@ -1236,7 +1237,10 @@ export class Runtime {
           });
           void this.d.deliver({ roomId: room.id, text: notice, kind: "notice" });
         }
-        if (result.waitingOn) paused = result.waitingOn;
+        if (result.waitingOn) {
+          paused = result.waitingOn;
+          if (result.roomNotice || SELF_ASKING_TOOLS.has(use.name)) askedInRoom = true;
+        }
         if (result.quiet && !paused) quiet = result.quiet;
 
         const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
@@ -1308,8 +1312,10 @@ export class Runtime {
           }
           return;
         }
-        // Tell the assignee privately when the question is not already in this room.
-        if (paused.assigneeId !== run.requesterId && paused.title !== "Question for the group") {
+        // Tell the assignee privately when the question is not already in front of them. A gate on the
+        // requester's own action (an approval to act as them) posts nothing by itself: without this, a
+        // chat outside the web app would just go silent.
+        if (paused.title !== "Question for the group" && (paused.assigneeId !== run.requesterId || !askedInRoom)) {
           const card = `${KIND_LABEL[paused.kind]}: ${paused.title}\n${paused.detail}${paused.options?.length ? `\nOptions: ${paused.options.join(" / ")}` : ""}\nReply here with your answer.`;
           ctx.dm(paused.assigneeId, card);
         }
@@ -1484,12 +1490,17 @@ export class Runtime {
 
 /** The status footer is built from records, not from the model's words. */
 /** What a stop leaves behind, from the records only: outside actions that completed, and none claimed that did not. */
-export function stopNotice(who: string, calls: ToolCallRecord[]): string {
+export function stopNotice(who: string, calls: ToolCallRecord[], request?: string): string {
+  // Name the errand: with two runs in one chat, a bare "Stopped" reads as if the wrong one ended.
+  const what = request ? `"${request.length > 60 ? `${request.slice(0, 57)}…` : request}"` : "that";
   const acted = calls.filter((c) => c.status === "done" && TOOL_INDEX.get(c.name)?.sideEffect);
-  if (!acted.length) return `Stopped by ${who}. Nothing outside had been done yet.`;
+  if (!acted.length) return `Stopped ${what} (${who}). Nothing outside had been done for it yet.`;
   const labels = Array.from(new Set(acted.map((c) => c.labelDone)));
-  return `Stopped by ${who}. Already done before the stop, and not undone: ${labels.join("; ")}.`;
+  return `Stopped ${what} (${who}). Already done before the stop, and not undone: ${labels.join("; ")}.`;
 }
+
+/** Tools that put their own question to the person; the loop must not post it again. */
+const SELF_ASKING_TOOLS = new Set(["ask_room", "ask_person", "wait_for_user_input"]);
 
 /** "Just signed in", "I've logged in", "done": a person saying they finished a sign-in. */
 const SAYS_SIGNED_IN = /^\W*(i\s*(just|have|['’]ve)?\s*)?(just\s+)?(signed|logged)\s*in\b|^\W*(done|did it|all set)\W*$/i;
