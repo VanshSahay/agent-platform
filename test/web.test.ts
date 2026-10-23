@@ -479,3 +479,16 @@ describe("web api: many agents", () => {
     expect((await s.call(undefined, "GET", "/api/agents/options")).status).toBe(401);
   });
 });
+
+describe("web api: inspect and stop", () => {
+  test("delegated work is stopped by the person who asked or the owner, nobody else; the radar lists it", async () => {
+    const s = up();
+    const task = s.app.tasks.create({ agentId: s.agent.id, roomId: s.room.id, requesterId: "sam", title: "Compare three movers", instructions: "quotes for Saturday" });
+    const inbox = await (await s.call("jo", "GET", `/api/inbox?agentId=${s.agent.id}`)).json();
+    expect(inbox.tasks.map((t: { id: string }) => t.id)).toEqual([task.id]);
+    expect((await s.call("jo", "POST", `/api/tasks/${task.id}/stop`, {})).status).toBe(403);
+    expect((await s.call("zed", "POST", `/api/tasks/${task.id}/stop`, {})).status).toBe(403);
+    const stopped = await (await s.call("sam", "POST", `/api/tasks/${task.id}/stop`, {})).json();
+    expect(stopped.status).toBe("stopped");
+  });
+});

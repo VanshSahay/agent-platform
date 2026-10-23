@@ -1088,8 +1088,23 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         if (!run) return bad("no such run", 404);
         const room = app.store.getRoom(run.roomId);
         if (me && run.requesterId !== me && !(room && ownsRoom(room, me))) return bad("only the person who asked, or the owner, can stop this", 403);
-        await app.runtime.stop(run.id);
+        await app.runtime.stop(run.id, me);
         return json({ ok: true });
+      },
+    },
+    {
+      // Cancel delegated work: only the person who asked for it, or the owner, as with a run.
+      method: "POST",
+      re: /^\/api\/tasks\/([^/]+)\/stop$/,
+      access: "roomMember",
+      scope: (c) => roomScope(app.store.getTask(c.params[0]!)?.roomId),
+      handle: async ({ params, me }) => {
+        const task = app.store.getTask(params[0]!);
+        if (!task) return bad("no such task", 404);
+        const room = app.store.getRoom(task.roomId);
+        if (me && task.requesterId !== me && !(room && ownsRoom(room, me))) return bad("only the person who asked, or the owner, can stop this", 403);
+        await app.runtime.stopTask(task.id, me);
+        return json(app.store.getTask(task.id));
       },
     },
     {
@@ -1110,7 +1125,13 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         const personId = me ?? url.searchParams.get("personId") ?? "";
         const box = app.attention.inbox(personId, url.searchParams.get("agentId") ?? "");
         // Radar and activity are per agent; a member sees only the rooms they are in.
-        return json({ needsYou: box.needsYou, radar: inMyRooms(me, box.radar), inFlight: inMyRooms(me, box.inFlight), activity: inMyRooms(me, box.activity) });
+        // What a run waits on is named to the person it waits on and the room's owner; others see only who.
+        const inFlight = inMyRooms(me, box.inFlight).map((r) => {
+          if (!r.waitingFor || !me || r.waitingFor.assigneeId === me) return r;
+          const room = app.store.getRoom(r.roomId);
+          return room && ownsRoom(room, me) ? r : { ...r, waitingFor: { ...r.waitingFor, title: "" } };
+        });
+        return json({ needsYou: box.needsYou, radar: inMyRooms(me, box.radar), inFlight, tasks: inMyRooms(me, box.tasks), activity: inMyRooms(me, box.activity) });
       },
     },
     {

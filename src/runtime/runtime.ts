@@ -360,11 +360,48 @@ export class Runtime {
     });
   }
 
-  async stop(runId: Id) {
+  /**
+   * Stop future actions and say, from the stored records, what had already happened outside:
+   * a cancelled errand must not leave people guessing whether the email went out.
+   */
+  async stop(runId: Id, byId?: Id) {
     const run = this.d.store.getRun(runId);
     if (!run || (run.status !== "running" && run.status !== "waiting")) return;
     this.cancelled.add(runId); // the loop checks this between turns and tools
-    this.finish(run, "stopped", "Stopped by a person.");
+    const who = byId ? (this.d.store.getPerson(byId)?.displayName ?? "someone") : "a person";
+    this.finish(run, "stopped", `Stopped by ${who}.`);
+    const room = this.d.store.getRoom(run.roomId);
+    const agent = this.d.store.getAgent(run.agentId);
+    if (room && agent && run.trigger !== "heartbeat") this.notice(room, agent, stopNotice(who, this.d.store.toolCallsForRun(run.id)));
+  }
+
+  /** Stop a delegated task: its live run if it has one, else the task record alone. */
+  async stopTask(taskId: Id, byId?: Id) {
+    const task = this.d.store.getTask(taskId);
+    if (!task || (task.status !== "running" && task.status !== "waiting")) return;
+    const run = task.runId ? this.d.store.getRun(task.runId) : undefined;
+    if (run && (run.status === "running" || run.status === "waiting")) return this.stop(run.id, byId);
+    this.d.tasks.update(taskId, { status: "stopped", progress: "Stopped before it resumed." });
+  }
+
+  /** A deterministic notice in someone's private chat with the agent: written by code, never by the model. */
+  notify(agent: AgentSpec, personId: Id, text: string) {
+    this.notice(this.d.rooms.dmFor(agent, personId), agent, text);
+  }
+
+  private notice(room: Room, agent: AgentSpec, text: string) {
+    this.d.store.putMessage({
+      id: newId("msg"),
+      sessionId: this.sessionFor(room, agent).id,
+      roomId: room.id,
+      role: "assistant",
+      authorId: agent.id,
+      source: "notice",
+      text,
+      visibleTo: [],
+      at: this.d.clock.now(),
+    });
+    void this.d.deliver({ roomId: room.id, text, kind: "notice" });
   }
 
   /**
@@ -374,23 +411,6 @@ export class Runtime {
    * following the group-manners procedure. Trigger is an event, so if the model
    * says nothing, silence is a legal outcome.
    */
-  /** A deterministic notice in someone's private chat with the agent: written by code, never by the model. */
-  notify(agent: AgentSpec, personId: Id, text: string) {
-    const dm = this.d.rooms.dmFor(agent, personId);
-    this.d.store.putMessage({
-      id: newId("msg"),
-      sessionId: this.sessionFor(dm, agent).id,
-      roomId: dm.id,
-      role: "assistant",
-      authorId: agent.id,
-      source: "notice",
-      text,
-      visibleTo: [],
-      at: this.d.clock.now(),
-    });
-    void this.d.deliver({ roomId: dm.id, text, kind: "notice" });
-  }
-
   async groupJoined(room: Room, addedBy: Person): Promise<Run | undefined> {
     const agent = this.d.store.getAgent(room.agentId);
     if (!agent) return undefined;
@@ -823,7 +843,7 @@ export class Runtime {
       accountOwnerId: accounts.accountOwnerId,
       delegate: (task) => this.pendingTasks.set(run.id, (this.pendingTasks.get(run.id) ?? []).concat(task)),
       steerTask: (taskId, text) => this.steerTask(taskId, text, run.requesterId),
-      stopRun: (runId) => void this.stop(runId),
+      stopRun: (runId) => void this.stop(runId, run.requesterId),
       gate: (g) => decideGate(this.d, run, room, agent, accounts, g),
       dm: (personId, text) => {
         const dm = rooms.dmFor(agent, personId);
@@ -1424,6 +1444,14 @@ export class Runtime {
 // ------------------------------------------------------------------ pure helpers
 
 /** The status footer is built from records, not from the model's words. */
+/** What a stop leaves behind, from the records only: outside actions that completed, and none claimed that did not. */
+export function stopNotice(who: string, calls: ToolCallRecord[]): string {
+  const acted = calls.filter((c) => c.status === "done" && TOOL_INDEX.get(c.name)?.sideEffect);
+  if (!acted.length) return `Stopped by ${who}. Nothing outside had been done yet.`;
+  const labels = Array.from(new Set(acted.map((c) => c.labelDone)));
+  return `Stopped by ${who}. Already done before the stop, and not undone: ${labels.join("; ")}.`;
+}
+
 export function buildFooter(calls: ToolCallRecord[]): string {
   const done = calls.filter((c) => c.status === "done");
   const failed = calls.filter((c) => c.status === "failed");

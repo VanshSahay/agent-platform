@@ -793,6 +793,14 @@ describe("audit fixes, 23 October", () => {
     expect(w.app.vault.has("alex", "browser:walgreens.com")).toBe(false);
   });
 
+  test("a run waiting on a sign-in shows as blocked on the radar, naming who must sign in", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), { browser: new FakeBrowser() });
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "order batteries from walgreens" });
+    const [run] = w.app.attention.inbox("alex", w.agent.id).inFlight;
+    expect(run?.state).toBe("blocked");
+    expect(run?.waitingFor?.assigneeId).toBe("alex");
+  });
+
   test("a call on a server with no phone provider is refused: nothing dialled, nothing claimed", async () => {
     const phone = new FakePhone();
     const w = groupWorld(

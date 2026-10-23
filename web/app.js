@@ -586,10 +586,20 @@ async function renderInbox() {
       };
     });
   } else if (state.tab === "radar") {
-    const rows = inbox.inFlight
+    const tasks = inbox.tasks ?? [];
+    const canStop = (x) => x.requesterId === state.me || agentFor(x.roomId)?.ownerId === state.me;
+    const rows = tasks
       .map(
-        (r) =>
-          `<div class="card"><h4>${r.status === "waiting" ? "Waiting on someone" : "Working on it"}</h4><p>${esc(roomOf(r.roomId)?.name ?? "")} · ${esc(triggerWords(r))} · started ${fmt(r.startedAt)}</p><div class="row"><button class="link" data-why="${esc(r.id)}" type="button">Why?</button></div></div>`,
+        (t) =>
+          `<div class="card"><h4>${esc(t.title)}</h4><p>${esc(t.progress || (t.status === "waiting" ? "Waiting on someone" : "Working on it"))}</p><div class="meta">${esc(roomOf(t.roomId)?.name ?? "")} · in the background · started ${fmt(t.createdAt)}</div><div class="row">${t.runId ? `<button class="link" data-why="${esc(t.runId)}" type="button">Why?</button>` : ""}${canStop(t) ? `<button class="btn small" data-stoptask="${esc(t.id)}" type="button">Stop</button>` : ""}</div></div>`,
+      )
+      .concat(
+        inbox.inFlight
+          .filter((r) => !tasks.some((t) => t.runId === r.id))
+          .map(
+            (r) =>
+              `<div class="card ${r.state === "blocked" ? "blocked" : ""}"><h4>${esc(runStateWords(r))}</h4><p>${esc(roomOf(r.roomId)?.name ?? "")} · ${esc(triggerWords(r))} · started ${fmt(r.startedAt)}</p>${r.waitingFor?.title ? `<div class="meta">${esc(r.waitingFor.title)}</div>` : ""}<div class="row"><button class="link" data-why="${esc(r.id)}" type="button">Why?</button>${canStop(r) ? `<button class="btn small" data-stoprun="${esc(r.id)}" type="button">Stop</button>` : ""}</div></div>`,
+          ),
       )
       .concat(
         inbox.radar.map(
@@ -600,6 +610,17 @@ async function renderInbox() {
     el.innerHTML = rows.length
       ? rows.join("")
       : `<div class="empty"><strong>${esc(agent.name)}'s schedule is empty.</strong>Ask it to do something later, or to check on something, and it schedules itself. Work in progress shows here too.</div>`;
+    $$("#inbox [data-stoprun], #inbox [data-stoptask]").forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm("Stop this? Anything already done outside stays done; the chat is told what.")) return;
+        try {
+          await api(b.dataset.stoprun ? `/api/runs/${encodeURIComponent(b.dataset.stoprun)}/stop` : `/api/tasks/${encodeURIComponent(b.dataset.stoptask)}/stop`, {});
+        } catch (e) {
+          status(e.message, true);
+        }
+        load();
+      };
+    });
     $$("#inbox [data-pause]").forEach((b) => {
       b.onclick = async () => {
         await api(`/api/schedules/${encodeURIComponent(b.dataset.pause)}/pause`, { paused: b.dataset.paused === "1" });
@@ -610,20 +631,37 @@ async function renderInbox() {
       b.onclick = () => openDrawer(b.dataset.why);
     });
   } else {
-    el.innerHTML = inbox.activity.length
-      ? inbox.activity
+    const filter = state.activityFilter ?? "all";
+    const shown = inbox.activity.filter((r) => filter === "all" || r.status === filter);
+    const chips = `<div class="chips filters">${[["all", "All"], ["failed", "Didn't finish"], ["stopped", "Stopped"], ["done", "Done"]].map(([k, w]) => `<button class="chip ${k === filter ? "on" : ""}" type="button" data-filter="${k}">${w}</button>`).join("")}</div>`;
+    el.innerHTML = !inbox.activity.length
+      ? `<div class="empty"><strong>Nothing finished yet.</strong>What ${esc(agent.name)} gets done shows up here, in its own words.</div>`
+      : chips + (shown.length
+      ? shown
           .map(
             (r) =>
               `<div class="card"><h4>${esc(r.outcome ?? r.failureReason ?? statusWords(r.status))}</h4><div class="meta">${esc(roomOf(r.roomId)?.name ?? "")} · ${esc(statusWords(r.status))} · ${fmt(r.endedAt ?? r.startedAt)}</div><div class="row"><button class="link" data-why="${esc(r.id)}" type="button">Why?</button></div></div>`,
           )
           .join("")
-      : `<div class="empty"><strong>Nothing finished yet.</strong>What ${esc(agent.name)} gets done shows up here, in its own words.</div>`;
+      : `<div class="empty">Nothing here.</div>`);
+    $$("#inbox [data-filter]").forEach((b) => {
+      b.onclick = () => {
+        state.activityFilter = b.dataset.filter;
+        renderInbox();
+      };
+    });
     $$("#inbox [data-why]").forEach((b) => {
       b.onclick = () => openDrawer(b.dataset.why);
     });
   }
   renderNav();
 }
+const runStateWords = (r) =>
+  r.state === "blocked"
+    ? `Blocked: ${r.waitingFor?.kind === "credential_fix" || r.waitingFor?.kind === "connect_account" ? `needs ${firstName(r.waitingFor.assigneeId)} to sign in` : "its question expired"}`
+    : r.state === "waiting"
+      ? `Waiting on ${r.waitingFor ? firstName(r.waitingFor.assigneeId) : "someone"}`
+      : "Working on it";
 const statusWords = (s) => ({ done: "done", failed: "didn't finish", stopped: "stopped", running: "working", waiting: "waiting" })[s] ?? s;
 const triggerWords = (r) =>
   ({

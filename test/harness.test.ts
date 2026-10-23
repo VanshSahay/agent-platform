@@ -4,6 +4,7 @@ import { groupWorld, noticesTo, repliesTo, sysText } from "./helpers.ts";
 import { DAY, HOUR } from "../src/core/clock.ts";
 import { Vault } from "../src/tools/vault.ts";
 import { parseDecision } from "../src/runtime/decide.ts";
+import { stopNotice } from "../src/runtime/runtime.ts";
 import { privateProfileId } from "../src/memory/consolidate.ts";
 
 describe("silence is an outcome", () => {
@@ -310,6 +311,15 @@ describe("stopping and restarting", () => {
     expect(w.app.store.toolCallsForRun(run.id).filter((c) => c.status === "done")).toHaveLength(1);
     expect(w.app.store.toolCallsForRun(run.id)).toHaveLength(1);
     expect(repliesTo(w.deliveries, w.room.id)).toHaveLength(0);
+    // The room is told, by code and from the records, that nothing outside had happened.
+    expect(noticesTo(w.deliveries, w.room.id)).toContain("Stopped by a person. Nothing outside had been done yet.");
+  });
+
+  test("a stop names the outside actions that already completed, and only those", () => {
+    const at = 0;
+    const rec = (name: string, status: "done" | "failed", labelDone: string) => ({ id: name, runId: "r", name, input: {}, status, labelRunning: "", labelDone, startedAt: at });
+    const text = stopNotice("Alex", [rec("send_sms", "done", "Sent a text"), rec("place_call", "failed", "Made a call"), rec("search_memory", "done", "Searched memory")] as never);
+    expect(text).toBe("Stopped by Alex. Already done before the stop, and not undone: Sent a text.");
   });
 
   test("a run left running by a crash is failed at boot, and a message to its session gets a fresh run", async () => {

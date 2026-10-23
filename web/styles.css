@@ -475,3 +475,6 @@ header .reach a { color: var(--text-2); text-decoration: none } header .reach a:
 #agentsBox .chip { cursor: pointer; padding: 2px 10px; color: var(--text-2) }
 #agentsBox .chip.on { border-color: var(--ink); color: var(--text); font-weight: 600 }
 .checks { margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 2px 18px } .checks h4 { margin: 0 0 4px; flex-basis: 100% } .checks .check { min-width: 140px }
+.filters .chip, .filters .chip.on { cursor: pointer; padding: 2px 10px } .filters .chip.on { border-color: var(--ink); font-weight: 600 }
+.card.blocked h4 { color: var(--bad, #b42318) }
+.card .row .btn.small { margin-left: auto }

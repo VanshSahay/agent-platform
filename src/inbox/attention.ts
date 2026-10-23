@@ -1,6 +1,6 @@
 import { newId } from "../core/ids.ts";
 import type { Clock } from "../core/clock.ts";
-import type { AttentionItem, AttentionKind, ConnectCard, Id } from "../core/types.ts";
+import type { AttentionItem, AttentionKind, ConnectCard, Id, Run } from "../core/types.ts";
 import type { Store } from "../store/repos.ts";
 
 /**
@@ -105,9 +105,18 @@ export class AttentionService {
       .listSchedules({ agentId })
       .filter((s) => !s.paused)
       .sort((a, b) => (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
-    const inFlight = this.store.listRuns({ agentId, status: ["running", "waiting"] });
+    const inFlight = this.store.listRuns({ agentId, status: ["running", "waiting"] }).map((r) => this.withWait(r));
+    const tasks = this.store.listTasks({ agentId, status: ["running", "waiting"] });
     const activity = this.store.listRuns({ agentId, status: ["done", "failed", "stopped"], limit: 30 });
-    return { needsYou, radar, inFlight, activity };
+    return { needsYou, radar, inFlight, tasks, activity };
+  }
+
+  /** What a waiting run waits on. A sign-in nobody but the account holder can give is "blocked", not just slow. */
+  private withWait(run: Run): Run & { state: "running" | "waiting" | "blocked"; waitingFor?: { kind: AttentionKind; assigneeId: Id; title: string } } {
+    const item = run.waitingOn ? this.store.getAttention(run.waitingOn) : undefined;
+    if (run.status !== "waiting" || !item) return { ...run, state: run.status === "waiting" ? "waiting" : "running" };
+    const blocked = item.kind === "credential_fix" || item.kind === "connect_account" || item.status !== "open";
+    return { ...run, state: blocked ? "blocked" : "waiting", waitingFor: { kind: item.kind, assigneeId: item.assigneeId, title: item.title } };
   }
 }
 
