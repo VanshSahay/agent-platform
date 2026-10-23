@@ -1,4 +1,4 @@
-import { dayIn, fmtWhen } from "../core/clock.ts";
+import { dayIn } from "../core/clock.ts";
 import type { AgentSpec, Memory, Person, Plan, Room, RunTrigger } from "../core/types.ts";
 import type { Skill } from "../skills/skills.ts";
 import { skillIndex } from "../skills/skills.ts";
@@ -120,7 +120,8 @@ export function buildSystemPrompt(input: {
   if (input.plan && input.planText) volatile.push(`Current plan:\n${input.planText}`);
 
   const situation = [
-    `Now: ${fmtWhen(input.now, zone)} (${zone}). Trigger: ${input.trigger}.`,
+    `Now: ${nowLine(input.now, zone)} (${zone}). Trigger: ${input.trigger}.`,
+    `Coming days: ${comingDays(input.now, zone)}.`,
     input.requester
       ? `Speaking with: ${input.requester.displayName}${input.requester.pronouns ? ` (${input.requester.pronouns})` : ""}${input.requester.techComfort === "low" ? ", low tech comfort: one step at a time" : ""}.`
       : "",
@@ -134,4 +135,17 @@ export function buildSystemPrompt(input: {
 
 function dateOf(ms: number, zone: string) {
   return dayIn(ms, zone);
+}
+
+/** Weekday and year spelled out: without them the model guessed, and "Thursday" landed a day late (eval run 13). */
+export function nowLine(at: number, zone: string): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "long", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(
+    new Date(at),
+  );
+}
+
+/** The next fourteen days as "Wed Oct 14", so a weekday is looked up, never computed. */
+export function comingDays(at: number, zone: string): string {
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short", month: "short", day: "numeric" });
+  return Array.from({ length: 14 }, (_, i) => fmt.format(new Date(at + (i + 1) * 86_400_000)).replace(",", "")).join(", ");
 }

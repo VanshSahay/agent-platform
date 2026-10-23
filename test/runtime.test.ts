@@ -1242,3 +1242,13 @@ describe("members from the chat", () => {
     expect(w.app.rooms.role(w.room.id, "riley")).toBeUndefined();
   });
 });
+
+test("the prompt names today's weekday and year and spells out the coming two weeks, so weekdays are looked up", async () => {
+  const { nowLine, comingDays } = await import("../src/agent/prompt.ts");
+  const at = Date.UTC(2026, 9, 13, 17, 0, 0); // the eval world's start
+  expect(nowLine(at, "America/Los_Angeles")).toBe("Tuesday, Oct 13, 2026 at 10:00 AM");
+  const days = comingDays(at, "America/Los_Angeles").split(", ");
+  expect(days[1]).toBe("Thu Oct 15");
+  expect(days).toContain("Sun Oct 25");
+  expect(days).toHaveLength(14);
+});
