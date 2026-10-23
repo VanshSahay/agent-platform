@@ -21,6 +21,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
     "@clerk/backend": "^3.23.2",
+    "@spectrum-ts/imessage-local": "^12.14.0",
     "playwright-core": "^1.64.0",
     "qrcode": "^1.5.4",
     "spectrum-ts": "^12.10.1"
