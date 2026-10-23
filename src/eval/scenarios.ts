@@ -659,9 +659,12 @@ export const SCENARIOS: Scenario[] = [
     category: "home-services",
     shape: "solo",
     cases: [17, 4],
-    setup(_app, w) {
+    setup(app, w) {
       PRESETS.oneRepairer(w);
       PRESETS.noAnswer(w);
+      // A repair visit needs an address; with none saved the model rightly asked, and the scripted "yes" answered that instead of the call (run 14).
+      w.alex.addresses = [{ id: "addr_home", label: "Home", line1: "12 Pine St", city: "San Jose", region: "CA", postalCode: "95110", country: "US" }];
+      app.store.putPerson(w.alex);
     },
     turns: [
       { room: "ownerDm", personId: "alex", text: "Oven shows F3. Find a repairer in San Jose and book them, you can call." },
