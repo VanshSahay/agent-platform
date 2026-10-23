@@ -85,8 +85,11 @@ export class SuggestionService {
       }
     }
     const rooms = this.store.listRooms(agent.id).filter((r) => r.kind === "group" && this.store.getMembership(r.id, person.id));
+    // A note about this person counts only if it may be seen in a chat they are in: what someone told the
+    // agent about them privately (visible in that someone's own chat) never comes back to them as a suggestion.
+    const theirRooms = new Set(this.store.roomsForPerson(person.id));
     const notes = [
-      ...this.store.listMemories(agent.id, { scope: "person", scopeId: person.id }),
+      ...this.store.listMemories(agent.id, { scope: "person", scopeId: person.id }).filter((m) => m.visibleToRooms.length === 0 || m.visibleToRooms.some((r) => theirRooms.has(r))),
       ...this.store.listMemories(agent.id, { scope: "agent", scopeId: agent.id }),
       ...rooms.flatMap((r) => this.store.listMemories(agent.id, { scope: "room", scopeId: r.id })),
     ]

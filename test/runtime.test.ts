@@ -726,6 +726,21 @@ describe("audit fixes, 23 October", () => {
     expect(w.app.store.getCommitment(job.id)!.ownerId).toBe(riley.id);
   });
 
+  test("what Alex tells the agent privately about Sam never reaches Sam's own chat", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("remember", { type: "fact", text: "Sam is hiding his debts from Alex.", about: "Sam" }) : reply("Noted.")));
+    w.app.rooms.addMember(w.ownerDm.id, "sam", "guest"); // findMember resolves Sam from Alex's chat
+    await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "remember Sam is hiding his debts from me" });
+    w.app.rooms.removeMember(w.ownerDm.id, "sam");
+    const note = w.app.store.listMemories(w.agent.id, { includeInactive: true }).find((m) => m.text.includes("debts"))!;
+    expect(note.scopeId).toBe("sam");
+    expect(note.visibleToRooms).toEqual([w.ownerDm.id]);
+    const sam = w.app.memory.visibleIn(w.agent.id, w.samDm, ["sam"], { requesterId: "sam" });
+    expect(sam.some((m) => m.text.includes("debts"))).toBe(false);
+    // Sam's own private notes still reach him in his chat.
+    w.app.memory.write({ agentId: w.agent.id, scope: "person", scopeId: "sam", type: "preference", text: "Sam prefers mornings." });
+    expect(w.app.memory.visibleIn(w.agent.id, w.samDm, ["sam"], { requesterId: "sam" }).some((m) => m.text.includes("mornings"))).toBe(true);
+  });
+
   test("a run that chooses silence on a texting channel sends no 'on it'", async () => {
     const w = groupWorld((req, i) => (i === 0 ? callTool("stay_quiet", { reason: "chatter" }) : reply("ok")), { completer: () => "yes" });
     const chat = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Street" });

@@ -330,6 +330,8 @@ describe("document pages", () => {
     });
     const open = await s.call("zed", "GET", `/d/${id}`);
     expect(open.status).toBe(200);
+    // A visitor holding the link sees the page, not who is in the chat.
+    expect((await (await s.call("zed", "GET", `/api/artifacts/${id}`)).json()).members).toEqual([]);
     const page = await open.text();
     expect(page).toContain("Packing list");
     expect(page).toContain("Get yours");

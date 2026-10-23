@@ -703,7 +703,9 @@ export function startWebServer(app: App, opts: WebOptions = {}) {
         if (!art) return bad("not found", 404);
         if (art.share !== "link" && auth && (!me || !art.roomId || !isMember(art.roomId, me))) return bad("sign in as a member of that chat", 403);
         const d = art.data as { state?: DocState; markdown?: string; subtitle?: string; kpis?: unknown[]; rows?: HotelsData["rows"] };
-        const members = art.roomId ? app.rooms.memberIds(art.roomId).map((id) => app.store.getPerson(id)?.displayName ?? id) : [];
+        // Who is in the chat is for its members; a visitor holding a link sees the page, not the people.
+        const insider = !auth || (!!me && !!art.roomId && isMember(art.roomId, me));
+        const members = insider && art.roomId ? app.rooms.memberIds(art.roomId).map((id) => app.store.getPerson(id)?.displayName ?? id) : [];
         const state = d.state ?? emptyState();
         // A glance for the chat's preview card: how many items, how many done, or the first line of a note.
         const sections = art.kind === "document" ? parseDocument(d.markdown ?? "", art.title) : [];
