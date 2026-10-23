@@ -92,18 +92,20 @@ export class Scheduler {
     for (const id of JSON.parse(this.store.getKv("artedit:pending") ?? "[]") as string[]) {
       const n = Number(this.store.getKv(`artedit:${id}`) ?? 0);
       const seenN = Number(this.store.getKv(`artedit:seen:${id}`) ?? 0);
-      if (n === seenN) continue;
-      const art = this.store.getArtifact(id);
-      if (!art?.roomId || !this.store.getRoom(art.roomId)) {
-        this.store.setKv(`artedit:seen:${id}`, String(n));
-        continue;
-      }
       const latest = JSON.parse(this.store.getKv(`artedit:${id}:${n}`) ?? "null") as { state: DocState } | null;
       const seen = JSON.parse(this.store.getKv(`artedit:${id}:${seenN}`) ?? "null") as { state: DocState } | null;
-      this.store.setKv(`artedit:seen:${id}`, String(n));
-      const diff = pageDiff(seen?.state, latest?.state);
-      if (!diff) continue;
-      this.store.setKv("artedit:pending", JSON.stringify((JSON.parse(this.store.getKv("artedit:pending") ?? "[]") as string[]).filter((x) => x !== id)));
+      const art = this.store.getArtifact(id);
+      // Ticks and additions post nothing (multiplayer-spec §10.3), so only a change in who brings what costs a run.
+      const diff = n === seenN || !art?.roomId || !this.store.getRoom(art.roomId) ? "" : pageDiff(seen?.state, latest?.state, { claimsOnly: true });
+      const done = () => {
+        this.store.setKv(`artedit:seen:${id}`, String(n));
+        for (let i = seenN; i < n; i++) this.store.deleteKv(`artedit:${id}:${i}`); // keep only the newest snapshot
+        this.store.setKv("artedit:pending", JSON.stringify((JSON.parse(this.store.getKv("artedit:pending") ?? "[]") as string[]).filter((x) => x !== id)));
+      };
+      if (!diff || !art?.roomId) {
+        done();
+        continue;
+      }
       try {
         await this.runtime.handleEvent({
           roomId: art.roomId,
@@ -112,6 +114,7 @@ export class Scheduler {
           summary: `The page "${art.title}" changed: ${diff}. Each claim a person made for themselves is a responsibility: read_page the page, then track_commitment with them as owner for claims not already in the ledger (put the page item in the detail). When someone put another member down, ask that member privately to confirm first (ask_person) and track it only on their yes. Ticks and additions need nothing.`,
         });
         out.edited += 1;
+        done();
       } catch (e) {
         console.error(`artifact edit for ${id} failed:`, (e as Error).message);
       }
@@ -274,7 +277,7 @@ export class Scheduler {
 }
 
 /** The human-readable delta between two page snapshots; empty when nothing a person did changed. */
-export function pageDiff(seen: DocState | null | undefined, latest: DocState | null | undefined): string {
+export function pageDiff(seen: DocState | null | undefined, latest: DocState | null | undefined, opts: { claimsOnly?: boolean } = {}): string {
   if (!latest) return "";
   const parts: string[] = [];
   const claimed = latest.claimed ?? {};
@@ -285,6 +288,7 @@ export function pageDiff(seen: DocState | null | undefined, latest: DocState | n
     parts.push(by && by !== who ? `${by} put ${who} down for "${k}" (${who} has not confirmed)` : `${who} claimed "${k}"`);
   }
   for (const k of Object.keys(seenClaimed)) if (!(k in claimed)) parts.push(`the claim on "${k}" was dropped`);
+  if (opts.claimsOnly) return parts.join("; ");
   const checked = latest.checked ?? {};
   const seenChecked = seen?.checked ?? {};
   for (const [k, who] of Object.entries(checked)) if (seenChecked[k] !== who) parts.push(`${who} ticked "${k}"`);

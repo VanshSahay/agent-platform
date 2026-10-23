@@ -726,6 +726,34 @@ describe("audit fixes, 23 October", () => {
     expect(w.app.store.getCommitment(job.id)!.ownerId).toBe(riley.id);
   });
 
+  test("a run that chooses silence on a texting channel sends no 'on it'", async () => {
+    const w = groupWorld((req, i) => (i === 0 ? callTool("stay_quiet", { reason: "chatter" }) : reply("ok")), { completer: () => "yes" });
+    const chat = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Street" });
+    w.app.rooms.addMember(chat.id, "alex", "owner", { consented: true });
+    w.app.rooms.addMember(chat.id, "sam", "member");
+    await w.app.runtime.handleMessage({ roomId: chat.id, personId: "sam", text: "@pip anyone around this weekend?" });
+    expect(w.deliveries.filter((d) => d.roomId === chat.id && d.kind === "ack")).toHaveLength(0);
+  });
+
+  test("a task delegated just before a crash starts again at the next boot", async () => {
+    const db = join(tmpdir(), `circle-task-${Math.random().toString(36).slice(2)}.sqlite`);
+    try {
+      const a1 = createApp({ dbPath: db, model: new ScriptedModel(() => reply("unreachable")) });
+      const alex = a1.rooms.createPerson({ displayName: "Alex", timezone: "UTC" });
+      const agent = newAgent({ ownerId: alex.id, name: "Pip" });
+      a1.store.putAgent(agent);
+      const room = a1.rooms.dmFor(agent, alex.id);
+      // The task row exists and says running, but the process died before its run launched.
+      const task = a1.tasks.create({ agentId: agent.id, roomId: room.id, requesterId: alex.id, title: "Find a repairer", instructions: "Search and report one name." });
+      const a2 = createApp({ dbPath: db, model: new ScriptedModel(() => reply("Done: Lin Home Repair, (408) 555-0100.")) });
+      await new Promise((r) => setTimeout(r, 0)); // reconcile schedules restarts after listeners attach
+      await a2.runtime.settle();
+      expect(a2.store.getTask(task.id)!.status).toBe("done");
+    } finally {
+      for (const f of [db, `${db}-wal`, `${db}-shm`]) rmSync(f, { force: true });
+    }
+  });
+
   test("an abandoned sign-in card ends its live browser session without saving it", async () => {
     const browser = new FakeBrowser();
     const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), { browser });

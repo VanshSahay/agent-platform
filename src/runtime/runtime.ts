@@ -107,6 +107,12 @@ export class Runtime {
       this.finish(run, "failed", "Interrupted by a restart.");
       if (task && task.status === "running") resume.push({ ...this.d.tasks.update(task.id, { status: "running", progress })!, progress });
     }
+    // A task delegated just before a crash never got its run: the row says running, nothing is executing.
+    for (const task of this.d.store.listTasks({ status: ["running"] })) {
+      const r = task.runId ? this.d.store.getRun(task.runId) : undefined;
+      if (r && (r.status === "running" || r.status === "waiting")) continue;
+      if (!resume.some((t) => t.id === task.id)) resume.push(task);
+    }
     // Tasks an earlier boot failed with this note were never retried; one more chance each.
     for (const task of this.d.store.listTasks({ status: ["failed"] })) {
       if (task.progress !== "Interrupted by a restart." || resume.some((t) => t.id === task.id)) continue;
@@ -870,12 +876,13 @@ export class Runtime {
     let toolCalls = 0;
     let nudgedToDelegate = false;
     let replyChecked = false;
-    let steerCursor = steerFrom ?? store.lastSeq(run.sessionId);
+    let steerCursor = steerFrom ?? Number(store.getKv(`steercur:${run.id}`) ?? store.lastSeq(run.sessionId));
     // Steering: messages that arrived while we were working. Drained at the start of a turn
     // and again before any exit, so a message during the final turn is never lost.
     const drainSteers = (): boolean => {
       const steers = store.eventsAfter(run.sessionId, steerCursor).filter((e) => e.runId === run.id && e.type === "steer_queued");
       steerCursor = store.lastSeq(run.sessionId);
+      store.setKv(`steercur:${run.id}`, String(steerCursor));
       for (const s of steers) {
         transcript.push({ role: "user", content: `[while you were working] ${nameOf(String(s.data.personId))}: ${String(s.data.text)}` });
         emit("steer_applied", { seq: s.seq });
@@ -886,7 +893,7 @@ export class Runtime {
 
     // The tool list is chosen once per run and never changes mid-run, so the prompt prefix caches.
     const tools = toolsForRun(this.d.providers);
-    let acked = false;
+    let acked = store.getKv(`acked:${run.id}`) === "1";
     while (turns < maxTurns) {
       turns += 1;
       drainSteers();
@@ -982,6 +989,7 @@ export class Runtime {
             transcript.push({ role: "user", content: `[check] Your reply does not cover: ${missing}. Fix that, or say plainly in one line that you could not.` });
             continue;
           }
+          if (drainSteers()) continue;
         }
         this.saveTranscript(run, transcript);
         this.sendReply(run, room, agent, reply);
@@ -990,21 +998,22 @@ export class Runtime {
 
       const requesterName = run.requesterId ? (store.getPerson(run.requesterId)?.displayName ?? "someone") : "someone";
       const ownerName = store.getPerson(accounts.accountOwnerId)?.displayName ?? "the account owner";
-      const readOk = (family: string) =>
-        ctx.gate({
-          kind: "action",
-          title: `OK for ${requesterName} to read your ${family} account?`,
-          detail: `${requesterName} asked something that needs your connected ${family} account. A yes covers this request only.`,
-          key: ["read-account", family, run.requesterId],
-        }).granted;
-      const foreignReadResult = (family: string): ToolResult => {
+      // One ask per account family per run: a yes is remembered for the rest of this run (and across
+      // its resumes), so a second read never opens a second card.
+      const readGrantedKey = `readok:${run.id}`;
+      const foreignReadBlocked = (family: string): ToolResult | undefined => {
+        const granted = JSON.parse(store.getKv(readGrantedKey) ?? "[]") as string[];
+        if (granted.includes(family)) return undefined;
         const gate = ctx.gate({
           kind: "action",
           title: `OK for ${requesterName} to read your ${family} account?`,
           detail: `${requesterName} asked something that needs your connected ${family} account. A yes covers this request only.`,
           key: ["read-account", family, run.requesterId],
         });
-        if (gate.granted) return { ok: false, content: "retry" };
+        if (gate.granted) {
+          store.setKv(readGrantedKey, JSON.stringify([...granted, family]));
+          return undefined;
+        }
         if ("held" in gate) return { ok: true, content: gate.held, held: true };
         return { ok: true, content: `Asked ${ownerName} before reading their ${family} account. Nothing was read.`, waitingOn: gate.item, roomNotice: gate.notice };
       };
@@ -1016,7 +1025,7 @@ export class Runtime {
         const def = TOOL_INDEX.get(use.name);
         const input = (use.input && typeof use.input === "object" ? use.input : {}) as Record<string, unknown>;
         // Past the budget nothing runs: the person has waited long enough, and the reply must come from what is already in hand.
-        if (toolCalls >= (run.taskId ? TOOL_BUDGET * 2 : TOOL_BUDGET)) {
+        if (use.name !== "stay_quiet" && toolCalls >= (run.taskId ? TOOL_BUDGET * 2 : TOOL_BUDGET)) {
           results.push({
             type: "tool_result",
             tool_use_id: use.id,
@@ -1024,13 +1033,6 @@ export class Runtime {
             is_error: true,
           });
           continue;
-        }
-        // Messages has no "working…" line, so the first tool call of a request texts an "on it" with an estimate.
-        if (!acked && run.trigger === "message" && TEXTING.has(room.channel)) {
-          acked = true;
-          const text = `On it — ${estimateFor(use.name, input)}.`;
-          emit("progress", { text });
-          void this.d.deliver({ roomId: room.id, text, kind: "ack" });
         }
         const rec: ToolCallRecord = {
           id: newId("tc"),
@@ -1049,6 +1051,8 @@ export class Runtime {
         if (use.name === "place_call") setState("calling");
 
         let result: ToolResult;
+        let blocked: ToolResult | undefined;
+        let ran = false;
         // A connected account belongs to one person. When the request is someone else's (a guest, an
         // unconsented member), even reading it asks the account owner once per run; the tool's own
         // gate still covers writes.
@@ -1058,14 +1062,23 @@ export class Runtime {
           result = { ok: false, content: `${use.name} is not available on this server (it needs the ${def.needs} provider, which is not connected). Say so plainly; never describe it as done.` };
         else if (paused) result = { ok: false, content: "Skipped: the run is paused on an earlier question." };
         else if (stopped()) result = { ok: false, content: "Skipped: the run was stopped." };
-        else if (foreignRead && !readOk(def.family)) result = foreignReadResult(def.family);
         else if (budgetAnswered && !AFTER_BUDGET_TOOLS.has(use.name))
           result = {
             ok: false,
             content:
               "The budget already answered this errand (approved or declined). Reply the verdict in one line and stop — the fence has refused further shopping, searching or questions. Only a connected checkout tool may still run.",
           };
+        else if (foreignRead && (blocked = foreignReadBlocked(def.family))) result = blocked;
         else {
+          ran = true;
+          // Messages has no "working…" line, so the first tool that really runs texts an "on it" with an estimate, once per run.
+          if (!acked && use.name !== "stay_quiet" && run.trigger === "message" && TEXTING.has(room.channel)) {
+            acked = true;
+            store.setKv(`acked:${run.id}`, "1");
+            const text = `On it — ${estimateFor(use.name, input)}.`;
+            emit("progress", { text });
+            void this.d.deliver({ roomId: room.id, text, kind: "ack" });
+          }
           // A side effect must not happen twice in one run: the same tool with the same input returns
           // the first result instead of acting again (a resumed run re-issues its last action).
           const prior = def.sideEffect
@@ -1097,7 +1110,7 @@ export class Runtime {
 
         // Plan bookkeeping. The first approach-shaped call opens a plan when the model wrote none, so
         // stalls are counted and the ladder moves whether or not the model planned.
-        toolCalls += 1;
+        if (ran) toolCalls += 1; // refusals are not work: they never push the run toward its budget
         if (result.approach === "search") {
           searchesInARow += 1;
           if (searchesInARow > 3 && !result.stall) result.stall = "searching again instead of acting on what was found";
@@ -1290,6 +1303,7 @@ export class Runtime {
     this.live.delete(run.id);
     this.cancelled.delete(run.id);
     store.deleteKv(`transcript:${run.id}`); // only a waiting run needs its transcript
+    for (const k of ["steercur", "acked", "readok"]) store.deleteKv(`${k}:${run.id}`); // per-run markers end with the run
     run.quiet = quiet || undefined;
     if (quiet && run.triggerMessageId) {
       // A quiet timer or event is not worth the next run's context; the record keeps it.
@@ -1348,6 +1362,9 @@ export class Runtime {
     const through = Number(store.getKv(`runqueue:${sessionId}`) ?? 0);
     const queued = store.eventsAfter(sessionId, through).filter((e) => e.type === "run_queued");
     if (!queued.length) return;
+    // Another run is live in this chat (a drained one, a resumed one): its own finish drains next.
+    const live = store.activeRunForSession(sessionId);
+    if (live && live.status === "running" && this.live.has(live.id)) return;
     const group = this.coalesceQueued(queued)[0]!;
     store.setKv(`runqueue:${sessionId}`, String(group.at(-1)!.seq));
     const p: Promise<void> = (async () => {

@@ -32,6 +32,21 @@ describe("page edits become events", () => {
     return st;
   };
 
+  test("a tick on a page costs nothing: no run, the page leaves the queue, old snapshots are pruned", async () => {
+    const w = groupWorld(() => reply("should not run"));
+    const st = { checked: { "packing:boots": "Jo" }, claimed: {}, added: {} };
+    w.app.store.putArtifact({ id: "art_t", agentId: w.agent.id, roomId: w.room.id, kind: "document", title: "Packing", data: { markdown: "- boots", state: st }, share: "room", createdAt: w.clock.now() });
+    w.app.store.setKv("artedit:art_t", "2");
+    w.app.store.setKv("artedit:art_t:1", JSON.stringify({ by: "Jo", state: { checked: {}, claimed: {}, added: {} } }));
+    w.app.store.setKv("artedit:art_t:2", JSON.stringify({ by: "Jo", state: st }));
+    w.app.store.setKv("artedit:pending", JSON.stringify(["art_t"]));
+    await w.app.scheduler.tick();
+    expect(w.app.store.listRuns({ roomId: w.room.id })).toHaveLength(0);
+    expect(JSON.parse(w.app.store.getKv("artedit:pending") ?? "[]")).toEqual([]);
+    expect(w.app.store.getKv("artedit:art_t:1")).toBeUndefined();
+    expect(w.app.store.getKv("artedit:art_t:2")).toBeDefined();
+  });
+
   test("a tick turns a page claim into an event run, and the model tracks the responsibility", async () => {
     const w = groupWorld((req) => {
       const calls = toolCallsSoFar(req);
