@@ -57,7 +57,11 @@ export interface TickTurn {
 export interface EventTurn {
   event: { room: RoomKey; source: string; summary: string; detail?: string };
 }
-export type Turn = MessageTurn | TickTurn | EventTurn;
+/** Answer the person's open question from the app's inbox (not the chat); `taps` > 1 sends it that many times at once, like a double tap. */
+export interface AnswerTurn {
+  answer: { personId: string; text: string; taps?: number };
+}
+export type Turn = MessageTurn | TickTurn | EventTurn | AnswerTurn;
 
 export interface Check {
   name: string;
@@ -102,7 +106,7 @@ export interface CheckResult {
 
 /** One record per run a turn produced (a tick may fire several, or none). `tools` lists the run's tool calls, a trailing + marking stored evidence. */
 export interface TurnRecord {
-  kind: "message" | "tick" | "event";
+  kind: "message" | "tick" | "event" | "answer";
   room: string;
   personId: string;
   runId?: string;
@@ -255,6 +259,21 @@ export async function runScenario(scenario: Scenario, opts: RunOptions): Promise
           kind: "event",
           room: t.event.room,
           personId: `event:${t.event.source}`,
+          runId: run?.id,
+          status: run?.status,
+          trigger: run?.trigger,
+          tools: run ? toolList(app, run.id) : [],
+        });
+        continue;
+      }
+      if ("answer" in t) {
+        const item = app.attention.openFor(t.answer.personId).find((a) => a.agentId === world.agent.id && a.kind !== "connect_account");
+        const runs = item ? await Promise.all(Array.from({ length: t.answer.taps ?? 1 }, () => app.runtime.answerAttention(item.id, t.answer.text, t.answer.personId))) : [];
+        const run = runs.find(Boolean);
+        record(t, {
+          kind: "answer",
+          room: item ? world.keyOf(item.roomId) : "",
+          personId: t.answer.personId,
           runId: run?.id,
           status: run?.status,
           trigger: run?.trigger,

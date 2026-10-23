@@ -98,6 +98,7 @@ function summarize(name: string, trials: ScenarioResult[]) {
 function describeTurn(t: Turn): string {
   if ("tick" in t) return `[clock] +${(t.tick / 3_600_000).toFixed(1)}h`;
   if ("event" in t) return `[${t.event.room}] event:${t.event.source}: ${t.event.summary.slice(0, 60)}`;
+  if ("answer" in t) return `[inbox] ${t.answer.personId}: ${t.answer.text}${(t.answer.taps ?? 1) > 1 ? ` (x${t.answer.taps})` : ""}`;
   return `[${t.room}] ${t.personId}: ${t.text.slice(0, 70)}${t.text.length > 70 ? "…" : ""}`;
 }
 

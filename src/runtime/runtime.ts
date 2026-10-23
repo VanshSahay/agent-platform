@@ -778,7 +778,9 @@ export class Runtime {
         ? connected
           ? "CONNECTED"
           : "DECLINED"
-        : item.kind.endsWith("_approval") || item.kind === "guest_request"
+        : // Any gate (it carries a gate key) is a yes or a no to one action, whatever its kind: an "action" card
+          // for a signed-in site resumed as a mere answer, and the model was never told to re-issue.
+          item.kind.endsWith("_approval") || item.kind === "guest_request" || !!item.gateKey
           ? isYes(item.answer ?? "", item.options)
             ? "APPROVED"
             : "DECLINED"

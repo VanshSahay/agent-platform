@@ -45,6 +45,19 @@ export const PRESETS = {
     w.hands.search = new FakeSearch(() => []);
     w.hands.community = new FakeCommunity(() => []);
   },
+  /** A Dineout booking page in a signed-in browser: date and time pickers, and a confirmation only after a Confirm click. */
+  dineout(w: EvalWorld) {
+    const page = {
+      title: "Hauz Khas SOCIAL | Dineout",
+      text: "Hauz Khas SOCIAL, Hauz Khas Village. Book a table. Dates: Sat 25 Oct, Sun 26 Oct. Guests: 2. Dinner: 7:30 PM, 8:00 PM, 8:30 PM. [Confirm booking]",
+    };
+    w.hands.browser = new (class extends FakeBrowser {
+      override async run(input: Parameters<FakeBrowser["run"]>[0]) {
+        const r = await super.run(input);
+        return /confirm/i.test(JSON.stringify(input.steps)) ? { ...r, text: "Booking confirmed. Hauz Khas SOCIAL, Sun 26 Oct, 8:00 PM, 2 guests. Booking ID DO-8812." } : r;
+      }
+    })(() => page);
+  },
   /** Product search finds one priced Walgreens item for battery queries, and the shop's pages confirm an order once placed. */
   shop(w: EvalWorld) {
     w.hands.search = new FakeSearch((q) => (/batter/i.test(q) ? [BATTERIES] : []));
@@ -1213,6 +1226,199 @@ export const SCENARIOS: Scenario[] = [
       },
       noOutreachCheck("Nothing left the chat: the owner places the order themselves."),
       finishedCheck("every run finished", "All three group runs are done (the yes resumes the third).", "room", 3),
+    ],
+  },
+  // ---- Live-test regressions, 23 Oct 2026 (one-to-one on iMessage): each was a real failure, fixed in the runtime.
+
+  {
+    name: "self-approval-asks",
+    description:
+      "Alex's own errand needs Alex's OK to text a third party: the question reaches Alex in the chat (it went silent on iMessage), and the text goes once after the yes.",
+    category: "doctor",
+    shape: "solo",
+    cases: [3],
+    turns: [
+      { room: "ownerDm", personId: "alex", text: "Text Dr. Patel's office at +14085550142 and ask to move my Thursday 3pm to Friday morning." },
+      { room: "ownerDm", personId: "alex", text: "yes" },
+    ],
+    script: (req) => {
+      const last = lastToolResult(req) ?? "";
+      if (last.includes('"sent":true')) return reply("Texted Dr. Patel's office asking to move Thursday 3pm to Friday morning; I'll tell you what they say.");
+      const again = reissue(req, "send_sms");
+      if (again) return again;
+      if (n(req, "send_sms")) return reply("I need your OK before I text them.");
+      return callTool("send_sms", {
+        to: "+14085550142",
+        who: "Dr. Patel's office",
+        text: "Hello, this is Pip for Alex. Could Alex's Thursday 3pm be moved to Friday morning? Thank you.",
+      });
+    },
+    expects: { attention: 1, outreach: ["send_sms"], schedules: 1 },
+    checks: [
+      {
+        name: "the question reached Alex in the chat",
+        detail: "Before Alex's yes, something delivered to Alex's DM names the approval (OK to text…).",
+        pass: (app, w) => w.deliveries.some((d) => d.roomId === w.ownerDm.id && /OK to text/i.test(d.text)),
+      },
+      {
+        name: "nothing texted before the yes",
+        detail: "The first send_sms record carries no evidence.",
+        pass: (app, w) => called("send_sms")(app, w) && !toolCalls(app, w, "send_sms")[0]?.evidence,
+      },
+      {
+        name: "one text went out after the yes",
+        detail: "The fake phone sent exactly one SMS, and a send_sms call ended with evidence after the outreach approval was resolved.",
+        pass: (app, w) => w.hands.phone.sms.length === 1 && afterGate("send_sms", "outreach_approval")(app, w),
+      },
+      finishedCheck("the run finished", "Every run in Alex's DM is done.", "ownerDm"),
+    ],
+  },
+
+  {
+    name: "double-tap-approval",
+    description: "Alex taps Yes twice in the app while the resumed run works: the errand runs once, with no second follow-up run racing it.",
+    category: "doctor",
+    shape: "solo",
+    cases: [3],
+    turns: [
+      { room: "ownerDm", personId: "alex", text: "Text Dr. Patel's office at +14085550142 and ask to move my Thursday 3pm to Friday morning." },
+      { answer: { personId: "alex", text: "Yes", taps: 2 } },
+    ],
+    script: (req) => {
+      const last = lastToolResult(req) ?? "";
+      if (last.includes('"sent":true')) return reply("Texted Dr. Patel's office; I'll tell you what they say.");
+      const again = reissue(req, "send_sms");
+      if (again) return again;
+      if (n(req, "send_sms")) return reply("I need your OK before I text them.");
+      return callTool("send_sms", {
+        to: "+14085550142",
+        who: "Dr. Patel's office",
+        text: "Hello, this is Pip for Alex. Could Alex's Thursday 3pm be moved to Friday morning? Thank you.",
+      });
+    },
+    expects: { attention: 1, outreach: ["send_sms"], schedules: 1 },
+    checks: [
+      {
+        name: "one run, no follow-up started by the second tap",
+        detail: "Alex answered an approval, Alex's DM holds exactly one run, and no follow_up run exists for the agent.",
+        pass: (app, w) =>
+          app.store.listAttention({ assigneeId: "alex" }).some((a) => a.kind === "outreach_approval" && a.status === "resolved") &&
+          runsIn(app, w.ownerDm.id).length === 1 &&
+          !allRuns(app, w).some((r) => r.trigger === "follow_up"),
+      },
+      {
+        name: "exactly one text went out",
+        detail: "The fake phone sent one SMS, after the approval.",
+        pass: (app, w) => w.hands.phone.sms.length === 1 && afterGate("send_sms", "outreach_approval")(app, w),
+      },
+      finishedCheck("the run finished", "Every run in Alex's DM is done.", "ownerDm"),
+    ],
+  },
+
+  {
+    name: "signed-in-elsewhere",
+    description:
+      "Alex says 'just signed in' after signing in on their phone, not in the card: the agent points back at the card instead of starting a second run on the same booking.",
+    category: "events",
+    shape: "solo",
+    cases: [16],
+    setup(_app, w) {
+      w.hands.browser = new FakeBrowser(() => ({ title: "Hauz Khas SOCIAL | Dineout", text: "Hauz Khas SOCIAL. Book a table. Sign in to see Dineout slots and book." }));
+    },
+    turns: [
+      { room: "ownerDm", personId: "alex", text: "Book me a table at Hauz Khas Social on Swiggy Dineout for Sunday 8pm, 2 people." },
+      { room: "ownerDm", personId: "alex", text: "Just signed in" },
+    ],
+    script: (req) => {
+      if (n(req, "connect_account")) return reply("Sign in to Swiggy in the card and I'll book it.");
+      return callTool("connect_account", { site: "swiggy.com", why: "book Hauz Khas Social, Sunday 8pm, 2 people" });
+    },
+    expects: { attention: 1 },
+    checks: [
+      {
+        name: "a sign-in card was opened for Swiggy",
+        detail: "A connect_account item for swiggy.com is assigned to Alex.",
+        pass: (app) => app.store.listAttention({ assigneeId: "alex" }).some((a) => a.kind === "connect_account" && a.card?.site === "swiggy.com"),
+      },
+      {
+        name: "'just signed in' started no second run",
+        detail: "Alex's DM holds exactly one run, still waiting on the sign-in card.",
+        pass: (app, w) => {
+          const runs = runsIn(app, w.ownerDm.id);
+          return runs.length === 1 && runs[0]!.status === "waiting" && app.store.getAttention(runs[0]!.waitingOn ?? "")?.kind === "connect_account";
+        },
+      },
+      {
+        name: "pointed back at the card",
+        detail: "After the second message, Alex's DM got a notice that the sign-in has not reached the agent, with the way back to the card.",
+        pass: (app, w) => w.deliveries.some((d) => d.roomId === w.ownerDm.id && /has not reached me yet/i.test(d.text)),
+      },
+      {
+        name: "nothing done in Alex's account",
+        detail: "No browser_use call inside an account carries evidence.",
+        noOpPasses: true,
+        pass: (app, w) => !toolCalls(app, w, "browser_use").some((c) => !!c.evidence && !!(c.input as { account?: string }).account),
+      },
+    ],
+  },
+
+  {
+    name: "booking-one-yes",
+    description:
+      "Booking a table in Alex's signed-in Swiggy: one yes to use the site for this errand, the date and time picked without asking again, and a second yes only for the confirm click.",
+    category: "events",
+    shape: "solo",
+    cases: [16],
+    setup(app, w) {
+      PRESETS.dineout(w);
+      app.vault.put("alex", "browser:swiggy.com", "ctx_swiggy");
+    },
+    turns: [
+      { room: "ownerDm", personId: "alex", text: "Book Hauz Khas Social on Swiggy Dineout for Sunday 26 Oct at 8pm, 2 people. I'm already signed in to Swiggy on your browser." },
+      { room: "ownerDm", personId: "alex", text: "yes" },
+      { room: "ownerDm", personId: "alex", text: "yes, confirm it" },
+    ],
+    script: (req) => {
+      const last = lastToolResult(req) ?? "";
+      if (/Booking confirmed/.test(last)) return reply("Booked: Hauz Khas Social, Sunday 26 Oct, 8:00 PM, 2 people (booking DO-8812).");
+      const uses = toolCallsSoFar(req).filter((c) => c.name === "browser_use");
+      if (/\[APPROVED\]/.test(lastUserText(req))) return callTool("browser_use", uses.at(-1)!.input);
+      if (last.includes("Asked first")) return reply("I've asked for your OK.");
+      // Each step goes after the last one's page came back: date, then time, then confirm.
+      const plan = ["text=Sun 26 Oct", "text=8:00 PM", "text=Confirm booking"];
+      const prev = uses.length ? plan.indexOf(String((uses.at(-1)!.input.steps as { click?: string }[])[0]?.click)) : -1;
+      const step = { click: plan[Math.min(prev + 1, plan.length - 1)]! };
+      return callTool("browser_use", { url: "https://www.swiggy.com/restaurants/854246/dineout/book", account: "swiggy.com", steps: [step, { screenshot: true }] });
+    },
+    expects: { attention: 2 },
+    checks: [
+      {
+        name: "asked once to use the site, once to confirm",
+        detail: "Exactly two action items went to Alex: one to use swiggy.com for the errand, one to confirm.",
+        pass: (app) => {
+          const asks = app.store.listAttention({ assigneeId: "alex" }).filter((a) => a.kind === "action");
+          return asks.length === 2 && asks.some((a) => /OK to use swiggy\.com/.test(a.title)) && asks.some((a) => /OK to confirm on swiggy\.com/.test(a.title));
+        },
+      },
+      {
+        name: "the date and time were picked without a new question",
+        detail: "Browser runs that only pick a date or time happened, and no action item names them.",
+        pass: (app, w) => {
+          const runs = (w.hands.browser as FakeBrowser).runs.map((r) => JSON.stringify(r.steps));
+          const picks = runs.filter((r) => /Sun 26|8:00 PM/.test(r) && !/Confirm/i.test(r));
+          return picks.length >= 1 && !app.store.listAttention({ assigneeId: "alex" }).some((a) => /Sun 26|8:00 PM/.test(a.detail) && !/Confirm/i.test(a.detail));
+        },
+      },
+      {
+        name: "the confirm click ran only after its own yes",
+        detail: "The browser saw a Confirm click, and every one came after an approval that named the confirm step.",
+        pass: (app, w) => {
+          const runs = (w.hands.browser as FakeBrowser).runs.filter((r) => /Confirm/i.test(JSON.stringify(r.steps)));
+          const confirmAsk = app.store.listAttention({ assigneeId: "alex" }).find((a) => /OK to confirm/.test(a.title));
+          return runs.length >= 1 && confirmAsk?.status === "resolved";
+        },
+      },
+      finishedCheck("the run finished", "Every run in Alex's DM is done.", "ownerDm"),
     ],
   },
 ];
