@@ -139,13 +139,20 @@ function dateOf(ms: number, zone: string) {
 
 /** Weekday and year spelled out: without them the model guessed, and "Thursday" landed a day late (eval run 13). */
 export function nowLine(at: number, zone: string): string {
-  return new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "long", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(
-    new Date(at),
-  );
+  // Built from parts: the joined format ("at" or a comma, a narrow space before AM) differs between ICU versions.
+  const p = partsOf(at, zone, { weekday: "long", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return `${p("weekday")}, ${p("month")} ${p("day")}, ${p("year")}, ${p("hour")}:${p("minute")} ${p("dayPeriod")}`;
 }
 
 /** The next fourteen days as "Wed Oct 14", so a weekday is looked up, never computed. */
 export function comingDays(at: number, zone: string): string {
-  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short", month: "short", day: "numeric" });
-  return Array.from({ length: 14 }, (_, i) => fmt.format(new Date(at + (i + 1) * 86_400_000)).replace(",", "")).join(", ");
+  return Array.from({ length: 14 }, (_, i) => {
+    const p = partsOf(at + (i + 1) * 86_400_000, zone, { weekday: "short", month: "short", day: "numeric" });
+    return `${p("weekday")} ${p("month")} ${p("day")}`;
+  }).join(", ");
+}
+
+function partsOf(at: number, zone: string, opts: Intl.DateTimeFormatOptions) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, ...opts }).formatToParts(new Date(at));
+  return (type: Intl.DateTimeFormatPartTypes) => parts.find((x) => x.type === type)?.value ?? "";
 }
