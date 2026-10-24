@@ -79,10 +79,11 @@ export class MemoryService {
     for (const pid of memberIds) {
       const personal = this.store.listMemories(agentId, { scope: "person", scopeId: pid });
       for (const m of personal) {
-        // In a person's own chat their private notes apply (no room list means "only the scope itself"),
-        // never another member's, whatever the room size. A note someone else made about them in that
-        // someone's own chat names that chat, so it stays there (multiplayer-spec §9.2: "that DM only").
-        const inDm = room.kind === "dm" && pid === opts.requesterId && m.visibleToRooms.length === 0;
+        // In a person's own chat, their own notes apply wherever they were learned, as long as every room the
+        // note names is one they are in: a note about Sam from the group shows in Sam's chat, while a note
+        // someone else made about Sam in that someone's own chat names a room Sam is not in, so it stays
+        // there (multiplayer-spec §9.2: "that DM only"). Never another member's notes, whatever the room size.
+        const inDm = room.kind === "dm" && pid === opts.requesterId && m.visibleToRooms.every((r) => !!this.store.getMembership(r, pid));
         if (inDm || m.visibleToRooms.includes(room.id)) out.push(m);
       }
     }

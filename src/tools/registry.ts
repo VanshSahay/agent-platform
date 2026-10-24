@@ -673,6 +673,7 @@ export const CORE_TOOLS: ToolDef[] = [
           owner: str("Member name, or 'me' for yourself."),
           beneficiary: str("Who it is for, if someone else."),
           dueAt: str("ISO 8601 instant, if any."),
+          overdue: { type: "boolean", description: "True when the due date is already past on purpose: it is owed now ('Sam owed this since Monday')." },
           detail: str("Context: address, confirmation numbers, what to bring."),
         },
         ["title", "owner"],
@@ -687,13 +688,15 @@ export const CORE_TOOLS: ToolDef[] = [
       if (!owner) return { ok: false, content: `No member named "${s(input.owner)}".` };
       const ben = s(input.beneficiary) ? ctx.findMember(s(input.beneficiary)) : undefined;
       const due = s(input.dueAt) ? Date.parse(s(input.dueAt)) : undefined;
-      // A new responsibility due before today is a slipped date (a wrong year, a past weekday), not a real
-      // deadline: it would nudge at once. Say what today is and let the model fix the date.
-      if (due !== undefined && Number.isFinite(due) && due < ctx.clock.now() - 60 * 60 * 1000) {
+      // A past due date is either something already owed ("since Monday", flagged overdue) or a slipped date
+      // (a wrong year, a past weekday) that would nudge at once. Unflagged, say what today is and let the model
+      // fix the date or say it is owed.
+      const past = due !== undefined && Number.isFinite(due) && due < ctx.clock.now() - 60 * 60 * 1000;
+      if (past && input.overdue !== true) {
         const zone = ctx.store.getPerson(ctx.agent.ownerId)?.timezone ?? "UTC";
         return {
           ok: false,
-          content: `dueAt ${s(input.dueAt)} is in the past. Now is ${fmtWhen(ctx.clock.now(), zone)} (${new Date(ctx.clock.now()).toISOString()}). Check the year and day and call again.`,
+          content: `dueAt ${s(input.dueAt)} is in the past. Now is ${fmtWhen(ctx.clock.now(), zone)} (${new Date(ctx.clock.now()).toISOString()}). Check the year and day and call again; if it really is already owed, call again with overdue: true.`,
         };
       }
       const c = ctx.commitments.track({
@@ -708,7 +711,7 @@ export const CORE_TOOLS: ToolDef[] = [
       });
       return {
         ok: true,
-        content: { commitmentId: c.id, owner: owner.name, nextNudgeAt: c.nextNudgeAt ? new Date(c.nextNudgeAt).toISOString() : null },
+        content: { commitmentId: c.id, owner: owner.name, ...(past ? { overdue: true } : {}), nextNudgeAt: c.nextNudgeAt ? new Date(c.nextNudgeAt).toISOString() : null },
         evidence: `commitment:${c.id}`,
       };
     },

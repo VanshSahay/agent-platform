@@ -769,6 +769,18 @@ describe("audit fixes, 23 October", () => {
     expect(new Date(open[0]!.dueAt!).getUTCFullYear()).toBe(2026);
   });
 
+  test("something already owed ('since Monday') is tracked when flagged overdue, and nudged in an hour rather than at once", async () => {
+    const w = groupWorld((req, i) => {
+      if (i === 0) return callTool("track_commitment", { title: "Pay Alex back for the groceries", owner: "Sam", dueAt: "2026-10-12T09:00:00-07:00", overdue: true });
+      return reply("Tracked.");
+    });
+    await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "alex", text: "@pip Sam has owed me $40 for groceries since Monday" });
+    const [c] = w.app.commitments.open(w.room.id);
+    expect(c?.dueAt).toBeLessThan(w.clock.now());
+    expect(c!.nextNudgeAt! - w.clock.now()).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1);
+    expect(w.app.store.toolCallsForRun(w.app.store.listRuns({ roomId: w.room.id })[0]!.id)[0]!.result).toMatchObject({ overdue: true });
+  });
+
   test("a run that chooses silence on a texting channel sends no 'on it'", async () => {
     const w = groupWorld((req, i) => (i === 0 ? callTool("stay_quiet", { reason: "chatter" }) : reply("ok")), { completer: () => "yes" });
     const chat = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Street" });

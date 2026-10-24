@@ -373,3 +373,17 @@ describe("memory mining", () => {
     expect(again.mined).toBe(0);
   });
 });
+
+test("in Sam's own chat, a note about Sam learned in a group Sam is in applies; one made in Alex's private chat does not", async () => {
+  const { groupWorld } = await import("./helpers.ts");
+  const { reply } = await import("../src/model/scripted.ts");
+  const w = groupWorld(() => reply("ok"));
+  const mem = w.app.memory;
+  const fromGroup = mem.write({ agentId: w.agent.id, scope: "person", scopeId: "sam", type: "preference", text: "Sam is vegetarian", visibleToRooms: [w.room.id] });
+  const fromAlexDm = mem.write({ agentId: w.agent.id, scope: "person", scopeId: "sam", type: "fact", text: "Sam is planning a surprise for Jo", visibleToRooms: [w.ownerDm.id] });
+  const own = mem.write({ agentId: w.agent.id, scope: "person", scopeId: "sam", type: "preference", text: "Sam likes window seats" });
+  const seen = mem.visibleIn(w.agent.id, w.samDm, w.app.rooms.memberIds(w.samDm.id), { requesterId: "sam" }).map((m) => m.id);
+  expect(seen).toContain(fromGroup.id);
+  expect(seen).toContain(own.id);
+  expect(seen).not.toContain(fromAlexDm.id);
+});

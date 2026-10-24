@@ -23,7 +23,7 @@ Not doing: Temporal (the loop is nearly activity-shaped; resume-in-place gives t
 
 Plus, already started: `revise_plan` (the model re-plans from what it learned; the ladder stays as the floor). The working rule from here on: **every bug becomes an eval**; the contract's §6.1 reliability matrix (restarts, duplicates, concurrency, cancellation, expired access) becomes offline tests and eval scenarios.
 
-Shipped so far: items 1–3 (two-block cache + per-run tools; boot resume + side-effect idempotency; message priority rules), refined after merge — a member's contribution to a live errand joins it attributed; only a separate ask queues. Item 8 is decided and done: **Railway with SQLite on a volume** (Ellie's deploy).
+Shipped so far: items 1–3 (two-block cache + per-run tools; boot resume + side-effect idempotency; message priority rules), refined after merge — a member's contribution to a live errand joins it attributed; only a separate ask queues. Item 8 is decided and done: **Fly.io on the Company's account, SQLite on a volume** (it replaced the earlier Railway deploy; see [runbook.md](runbook.md)).
 
 **Ellie's sweep (2026-10-21, merged 1ab1278)** absorbed and superseded parts of this plan: her Harness² loop over `skills/_core-rules.md` with the suite as judge is items 5 and 7's mechanism, built; her browser chain (Chrome → Browserbase → Jina) and task-note restarts extend item 2; DeepSeek V4.1 Flash is the default model; 18 eval scenarios with a strict contract (per-scenario script, noOpPasses labels, category/shape/cases) are the flywheel; her security audit fixed the privacy and authorisation holes with `docs/research/codebase-review-2026-10-21.md` recording what is left open on purpose.
 
