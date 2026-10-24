@@ -1725,7 +1725,7 @@ function settingsAssistant(box, agent) {
 }
 
 /** Which of my assistants answers the iMessage line. Only shown when the line is connected. */
-async function assistantLine(agent, mine) {
+async function assistantLine(_agent, mine) {
   const box = $("#lineBox");
   let info;
   try {

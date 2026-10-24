@@ -76,7 +76,7 @@ export class RoomService {
   /** Co-owners (multiplayer-spec §6.4/§7.3): a room owner promotes a member; a guest becomes a member first. */
   promoteOwner(roomId: Id, personId: Id): Membership | undefined {
     const m = this.store.getMembership(roomId, personId);
-    if (!m || m.role !== "member") return undefined;
+    if (m?.role !== "member") return undefined;
     m.role = "owner";
     this.store.putMembership(m);
     return m;

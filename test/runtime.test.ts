@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { callTool, callTools, lastToolResult, lastUserText, reply, toolCallsSoFar, ScriptedModel, transcriptHas } from "../src/model/scripted.ts";
 import { groupWorld, noticesTo, repliesTo } from "./helpers.ts";
 import { claimLinkCode, mintLinkCode, personIdForHandle } from "../src/channels/handles.ts";
-import { FakePayments, FakePhone, FakeSearch } from "../src/tools/hands.ts";
+import { FakePhone, FakeSearch } from "../src/tools/hands.ts";
 import { FakeBrowser } from "../src/tools/browser.ts";
 import { TOOLS, toolsForRun } from "../src/tools/registry.ts";
 import { createApp } from "../src/app.ts";
@@ -673,7 +673,7 @@ describe("co-owners", () => {
   });
 
   test("a co-owner's purchase above their own threshold cards them, not the other owner", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 12, what: "batteries", where: "Walgreens" }) : reply("ok")));
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 12, what: "batteries", where: "Walgreens" }) : reply("ok")));
     w.app.rooms.promoteOwner(w.room.id, "sam");
     w.app.store.putPerson({ ...w.app.store.getPerson("sam")!, trust: trustOf(10) });
     const run = await w.app.runtime.handleMessage({ roomId: w.room.id, personId: "sam", text: "@pip buy Jo the $12 batteries" });
@@ -685,7 +685,7 @@ describe("co-owners", () => {
   });
 
   test("a co-owner's small purchase passes under their own threshold, whatever the other owner allows", async () => {
-    const w = groupWorld((req, i) => {
+    const w = groupWorld((_req, i) => {
       if (i === 0) return callTool("request_purchase", { amountUsd: 8, what: "AA batteries", where: "Walgreens" });
       return reply("Cleared for $8 — the order has to be placed by hand.");
     });
@@ -702,7 +702,7 @@ describe("co-owners", () => {
   });
 
   test("the agent owner's own purchases still follow the agent trust", async () => {
-    const w = groupWorld((req, i) => {
+    const w = groupWorld((_req, i) => {
       if (i === 0) return callTool("request_purchase", { amountUsd: 12, what: "AA batteries", where: "Walgreens" });
       return reply("Cleared for $12.");
     });
@@ -742,7 +742,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("what Alex tells the agent privately about Sam never reaches Sam's own chat", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("remember", { type: "fact", text: "Sam is hiding his debts from Alex.", about: "Sam" }) : reply("Noted.")));
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("remember", { type: "fact", text: "Sam is hiding his debts from Alex.", about: "Sam" }) : reply("Noted.")));
     w.app.rooms.addMember(w.ownerDm.id, "sam", "guest"); // findMember resolves Sam from Alex's chat
     await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "remember Sam is hiding his debts from me" });
     w.app.rooms.removeMember(w.ownerDm.id, "sam");
@@ -770,7 +770,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("something already owed ('since Monday') is tracked when flagged overdue, and nudged in an hour rather than at once", async () => {
-    const w = groupWorld((req, i) => {
+    const w = groupWorld((_req, i) => {
       if (i === 0) return callTool("track_commitment", { title: "Pay Alex back for the groceries", owner: "Sam", dueAt: "2026-10-12T09:00:00-07:00", overdue: true });
       return reply("Tracked.");
     });
@@ -782,7 +782,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("a run that chooses silence on a texting channel sends no 'on it'", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("stay_quiet", { reason: "chatter" }) : reply("ok")), { completer: () => "yes" });
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("stay_quiet", { reason: "chatter" }) : reply("ok")), { completer: () => "yes" });
     const chat = w.app.rooms.createRoom({ agentId: w.agent.id, kind: "group", channel: "imessage", name: "Street" });
     w.app.rooms.addMember(chat.id, "alex", "owner", { consented: true });
     w.app.rooms.addMember(chat.id, "sam", "member");
@@ -811,7 +811,7 @@ describe("audit fixes, 23 October", () => {
 
   test("an abandoned sign-in card ends its live browser session without saving it", async () => {
     const browser = new FakeBrowser();
-    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), { browser });
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), { browser });
     await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "order batteries from walgreens" });
     const item = w.app.store.listAttention({ roomId: w.ownerDm.id, status: ["open"] }).find((a) => a.kind === "connect_account")!;
     w.app.attention.dismiss(item.id);
@@ -844,7 +844,7 @@ describe("audit fixes, 23 October", () => {
 
   test("an approval the requester must give themselves is put to them in the chat, so a text thread does not go silent", async () => {
     const phone = new FakePhone();
-    const w = groupWorld((req, i) => (i === 0 ? callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Can we move to Thursday?" }) : reply("ok")), { phone });
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("send_sms", { to: "+14085550100", who: "the clinic", text: "Can we move to Thursday?" }) : reply("ok")), { phone });
     const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "text the clinic to move my appointment to Thursday" });
     expect(run?.status).toBe("waiting");
     expect(phone.sms).toHaveLength(0);
@@ -853,7 +853,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("'just signed in' while the sign-in card is still open points at the card and starts no second run", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "swiggy.com", why: "book the table" }) : reply("Waiting for the sign-in.")), {
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("connect_account", { site: "swiggy.com", why: "book the table" }) : reply("Waiting for the sign-in.")), {
       browser: new FakeBrowser(),
     });
     const first = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "book Hauz Khas Social for Sunday 8pm" });
@@ -866,7 +866,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("a run waiting on a sign-in shows as blocked on the radar, naming who must sign in", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), {
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("connect_account", { site: "walgreens.com", why: "order batteries" }) : reply("Waiting for the sign-in.")), {
       browser: new FakeBrowser(),
     });
     await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "order batteries from walgreens" });
@@ -878,7 +878,7 @@ describe("audit fixes, 23 October", () => {
   test("a call on a server with no phone provider is refused: nothing dialled, nothing claimed", async () => {
     const phone = new FakePhone();
     const w = groupWorld(
-      (req, i) => (i === 0 ? callTool("place_call", { to: "+14085550100", who: "the clinic", objective: "confirm Thursday" }) : reply("I can't place calls on this server yet.")),
+      (_req, i) => (i === 0 ? callTool("place_call", { to: "+14085550100", who: "the clinic", objective: "confirm Thursday" }) : reply("I can't place calls on this server yet.")),
       { phone, providers: [] },
     );
     w.agent.trust.autoAllow = ["place_call"];
@@ -893,7 +893,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("a tool the run was not offered is refused even when the model names it", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("hotel_compare", { city: "Paris", checkIn: "2026-12-01", checkOut: "2026-12-03" }) : reply("ok")), { providers: [] });
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("hotel_compare", { city: "Paris", checkIn: "2026-12-01", checkOut: "2026-12-03" }) : reply("ok")), { providers: [] });
     const run = await w.app.runtime.handleMessage({ roomId: w.ownerDm.id, personId: "alex", text: "hotels in Paris" });
     const call = w.app.store.toolCallsForRun(run!.id).find((c) => c.name === "hotel_compare")!;
     expect(call.status).toBe("failed");
@@ -902,7 +902,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("a co-owner whose id sorts first still leaves the agent owner as the approver for guests", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("send_sms", { to: "+14085550100", who: "the plumber", text: "Can you come Thursday?" }) : reply("Asked.")));
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("send_sms", { to: "+14085550100", who: "the plumber", text: "Can you come Thursday?" }) : reply("Asked.")));
     w.app.rooms.createPerson({ id: "aaron", displayName: "Aaron", timezone: "UTC" });
     w.app.rooms.addMember(w.room.id, "aaron", "member");
     w.app.rooms.promoteOwner(w.room.id, "aaron"); // "aaron" sorts before "alex"
@@ -913,7 +913,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("a co-owner never borrows the agent owner's trust or accounts", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 12, what: "batteries", where: "Walgreens" }) : reply("ok")));
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("request_purchase", { amountUsd: 12, what: "batteries", where: "Walgreens" }) : reply("ok")));
     w.agent.trust.autoApproveUnderUsd = 25; // Alex's default
     w.agent.trust.autoAllow = ["send_sms"];
     w.app.store.putAgent(w.agent);
@@ -927,7 +927,7 @@ describe("audit fixes, 23 October", () => {
   });
 
   test("read_page only sees pages made in this chat", async () => {
-    const w = groupWorld((req, i) => (i === 0 ? callTool("read_page", { pageId: "Medication" }) : reply("ok")));
+    const w = groupWorld((_req, i) => (i === 0 ? callTool("read_page", { pageId: "Medication" }) : reply("ok")));
     w.app.store.putArtifact({
       id: "art_private",
       agentId: w.agent.id,

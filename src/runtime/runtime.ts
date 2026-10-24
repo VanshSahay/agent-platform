@@ -780,7 +780,7 @@ export class Runtime {
           : "DECLINED"
         : // Any gate (it carries a gate key) is a yes or a no to one action, whatever its kind: an "action" card
           // for a signed-in site resumed as a mere answer, and the model was never told to re-issue.
-          item.kind.endsWith("_approval") || item.kind === "guest_request" || !!item.gateKey
+          item.kind.endsWith("_approval") || item.kind === "guest_request" || item.gateKey
           ? isYes(item.answer ?? "", item.options)
             ? "APPROVED"
             : "DECLINED"
@@ -1146,7 +1146,6 @@ export class Runtime {
         if (use.name === "place_call") setState("calling");
 
         let result: ToolResult;
-        let blocked: ToolResult | undefined;
         let ran = false;
         // A connected account belongs to one person. When the request is someone else's (a guest, an
         // unconsented member), even reading it asks the account owner once per run; the tool's own
@@ -1169,31 +1168,32 @@ export class Runtime {
             content:
               "The budget already answered this errand (approved or declined). Reply the verdict in one line and stop — the fence has refused further shopping, searching or questions. Only a connected checkout tool may still run.",
           };
-        else if (foreignRead && (blocked = foreignReadBlocked(def.family))) result = blocked;
         else {
-          ran = true;
-          // Messages has no "working…" line, so the first tool that really runs texts an "on it" with an estimate, once per run.
-          if (!acked && use.name !== "stay_quiet" && run.trigger === "message" && TEXTING.has(room.channel)) {
-            acked = true;
-            store.setKv(`acked:${run.id}`, "1");
-            const text = `On it — ${estimateFor(use.name, input)}.`;
-            emit("progress", { text });
-            void this.d.deliver({ roomId: room.id, text, kind: "ack" });
-          }
-          // A side effect must not happen twice in one run: the same tool with the same input returns
-          // the first result instead of acting again (a resumed run re-issues its last action).
-          const prior = def.sideEffect
-            ? store.toolCallsForRun(run.id).find((c) => c.name === use.name && c.status === "done" && c.evidence && sha256([c.name, c.input]) === sha256([use.name, input]))
-            : undefined;
-          if (prior) {
-            result = { ok: true, content: prior.result, evidence: prior.evidence, label: `${prior.labelDone} (already done)` };
-          } else {
-            try {
-              result = await def.run(input, ctx);
-            } catch (e) {
-              result = { ok: false, content: `Tool error: ${redact(String((e as Error).message))}` }; // an SDK error can carry a connect URL with its key
+          // Runs the tool for real (an "on it" first on a texting channel, the repeat guard, then the tool).
+          const execute = async (): Promise<ToolResult> => {
+            ran = true;
+            // Messages has no "working…" line, so the first tool that really runs texts an "on it" with an estimate, once per run.
+            if (!acked && use.name !== "stay_quiet" && run.trigger === "message" && TEXTING.has(room.channel)) {
+              acked = true;
+              store.setKv(`acked:${run.id}`, "1");
+              const text = `On it — ${estimateFor(use.name, input)}.`;
+              emit("progress", { text });
+              void this.d.deliver({ roomId: room.id, text, kind: "ack" });
             }
-          }
+            // A side effect must not happen twice in one run: the same tool with the same input returns
+            // the first result instead of acting again (a resumed run re-issues its last action).
+            const prior = def.sideEffect
+              ? store.toolCallsForRun(run.id).find((c) => c.name === use.name && c.status === "done" && c.evidence && sha256([c.name, c.input]) === sha256([use.name, input]))
+              : undefined;
+            if (prior) return { ok: true, content: prior.result, evidence: prior.evidence, label: `${prior.labelDone} (already done)` };
+            try {
+              return await def.run(input, ctx);
+            } catch (e) {
+              return { ok: false, content: `Tool error: ${redact(String((e as Error).message))}` }; // an SDK error can carry a connect URL with its key
+            }
+          };
+          // A foreign read asks the account owner first; the card opens only once every earlier refusal is passed.
+          result = (foreignRead ? foreignReadBlocked(def.family) : undefined) ?? (await execute());
         }
 
         rec.status = result.waitingOn ? "running" : result.ok ? "done" : "failed";
