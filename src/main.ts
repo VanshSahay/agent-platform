@@ -225,14 +225,19 @@ console.log(`Circle listening on http://${host}:${server.port}${clerk ? " (Clerk
 // Chat channels through Photon Spectrum: CHANNELS lists which (default imessage); all share PROJECT_ID and PROJECT_SECRET.
 // IMESSAGE_MODE=local runs iMessage through this Mac's own Messages app instead (no credentials; macOS only).
 if (process.env.IMESSAGE_MODE === "local") {
+  app.ops.channel("imessage", "starting");
   startChannel(app, { channel: "imessage", local: true })
     .then((h) => {
       channels.push({ channel: "imessage", phone: h.phone, mode: h.mode, handle: h });
+      app.ops.channel("imessage", "up");
       console.log(
         `imessage: local mode, this Mac's Messages app${process.env.IMESSAGE_PHONE ? ` as ${process.env.IMESSAGE_PHONE}` : ""} (Full Disk Access needed to read chat.db)`,
       );
     })
-    .catch((e) => console.error("imessage: local mode failed to start", e));
+    .catch((e) => {
+      app.ops.channel("imessage", "down", (e as Error).message);
+      app.ops.error("imessage local start", e);
+    });
 } else if (process.env.PROJECT_ID && process.env.PROJECT_SECRET) {
   const wanted = (process.env.CHANNELS ?? "imessage")
     .split(",")
