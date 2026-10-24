@@ -8,6 +8,7 @@
     "start": "bun run src/main.ts",
     "dev": "bun --watch run src/main.ts",
     "local": "LOCAL=1 SEED_DEMO=1 bun run src/main.ts",
+    "imessage:local": "CLERK_PUBLISHABLE_KEY= CLERK_SECRET_KEY= PROJECT_ID= PROJECT_SECRET= HOST=127.0.0.1 PORT=3300 IMESSAGE_MODE=local DB_PATH=data/local-im.sqlite bun run src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
     "eval": "bun run src/eval/run.ts",
@@ -21,6 +22,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
     "@clerk/backend": "^3.23.2",
+    "@spectrum-ts/imessage-local": "^12.14.0",
     "playwright-core": "^1.64.0",
     "qrcode": "^1.5.4",
     "spectrum-ts": "^12.10.1"

@@ -1,4 +1,5 @@
 import { Spectrum } from "spectrum-ts";
+import { localIMessage } from "@spectrum-ts/imessage-local";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { slack } from "spectrum-ts/providers/slack";
 import { telegram } from "spectrum-ts/providers/telegram";
@@ -79,14 +80,22 @@ export async function startIMessage(app: App, cfg: { projectId: string; projectS
   return startChannel(app, { ...cfg, channel: "imessage" });
 }
 
-/** One Spectrum provider as a channel: iMessage, WhatsApp Business, Telegram or Slack. */
-export async function startChannel(app: App, cfg: { projectId: string; projectSecret: string; channel: SpectrumChannel }): Promise<IMessageHandle> {
-  const provider = SPECTRUM_CHANNELS[cfg.channel] as unknown as typeof imessage;
+/**
+ * One Spectrum provider as a channel: iMessage, WhatsApp Business, Telegram or Slack. With `local: true` the
+ * iMessage provider is this Mac's own Messages app (Photon's open-source local mode): no project credentials,
+ * the Apple ID signed into Messages is the agent's handle, existing group chats work, no reactions or typing.
+ */
+export async function startChannel(app: App, cfg: { projectId?: string; projectSecret?: string; channel: SpectrumChannel; local?: boolean }): Promise<IMessageHandle> {
+  const local = !!cfg.local && cfg.channel === "imessage";
+  const provider = (local ? localIMessage : SPECTRUM_CHANNELS[cfg.channel]) as unknown as typeof imessage;
   const channel: ChannelKind = cfg.channel;
-  const spectrum = await Spectrum({ projectId: cfg.projectId, projectSecret: cfg.projectSecret, providers: [provider.config()] });
+  const spectrum = local
+    ? await Spectrum({ providers: [provider.config()] })
+    : await Spectrum({ projectId: cfg.projectId ?? "", projectSecret: cfg.projectSecret ?? "", providers: [provider.config()] });
   const im = provider(spectrum);
-  // Spectrum does not always report the line's number; IMESSAGE_PHONE (from the Photon dashboard) fills it in for Settings.
-  const phone = (spectrum.config as { imessage?: { phone?: string } } | undefined)?.imessage?.phone ?? process.env.IMESSAGE_PHONE;
+  // Spectrum does not always report the line's number; IMESSAGE_PHONE (from the Photon dashboard, or the Apple ID
+  // signed into Messages in local mode) fills it in for Settings.
+  const phone = ((spectrum as { config?: { imessage?: { phone?: string } } }).config?.imessage?.phone ?? process.env.IMESSAGE_PHONE) || (local ? "this Mac's Messages" : undefined);
   const limiter = new HandleRateLimit();
 
   const agentFor = () => agentForChannel(app.store, channel);
@@ -212,7 +221,10 @@ export async function startChannel(app: App, cfg: { projectId: string; projectSe
       app.ops.error(`${channel} stream`, e);
     });
 
-  const users = spectrumUsers(cfg);
+  // Local mode has no pool: anyone can text the Mac's handle or add it to a group, so register is a no-op.
+  const users = local
+    ? { find: async () => undefined, create: async (phone: string) => ({ id: phone, phoneNumber: phone, assignedPhoneNumber: phone }) }
+    : spectrumUsers({ projectId: cfg.projectId ?? "", projectSecret: cfg.projectSecret ?? "" });
   const mode = phone && phone !== "shared" ? "dedicated" : "shared";
   return {
     phone: mode === "dedicated" ? phone : undefined,
